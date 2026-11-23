@@ -253,11 +253,12 @@ pub struct Limits {
     pub class_order: ClassOrder,
     /// Actual outgoing CORE priority; caller chooses source protocol policy.
     pub priority: u32,
-    /// Actual absolute CORE deadline when send_budget is None; FOREVER is MAX.
+    /// Absolute CORE deadline when send_budget is None; FOREVER is MAX.
     pub send_deadline: u64,
     /// Optional per-admission finite native lifetime. Some also overrides the
     /// fixed CORE deadline with that admission's absolute sample plus lifetime;
     /// absolute adjustments never change its independent native expiry.
+    /// Bounded local CREATEs also impose their original route deadline.
     pub send_budget: Option<SendBudget>,
 }
 impl Default for Limits {

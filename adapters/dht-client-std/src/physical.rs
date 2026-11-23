@@ -48,15 +48,19 @@ impl<'a> Physical<'a> {
             limits,
         })
     }
-    pub(super) fn stop(&mut self) {
+    pub(super) fn detach(&mut self) {
         drop(self.attempt.take());
-        self.timer = None;
         if let Some(mut framed) = self.framed.take() {
             framed.retire();
         }
         self.endpoint = None;
         self.round = 0;
         self.wait = None;
+    }
+    pub(super) fn stop(&mut self) {
+        self.detach();
+        self.timer = None;
+        self.delay = None;
     }
     pub(super) fn schedule(&mut self) -> Duration {
         let delay = Duration::from_micros(self.backoff);
@@ -66,6 +70,16 @@ impl<'a> Physical<'a> {
             self.backoff.saturating_mul(2).min(900_000_000)
         };
         self.delay = Some(delay);
+        // Reserve the original source-domain target at the failure, even if
+        // the caller suspends this source before its next connection poll.
+        self.timer = match self.source.timer(delay) {
+            Ok(timer) => Some(timer),
+            Err(error) => {
+                let error = PortError::mark(error);
+                self.port_error = PortError::from_io(&error).cloned();
+                None
+            }
+        };
         delay
     }
     pub(super) fn clock(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Error>> {

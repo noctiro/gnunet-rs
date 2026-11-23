@@ -2,12 +2,15 @@
 """Normal public PROGRAM_monolith_main: a real owned service bind/init/teardown.
 Only owned Unix service paths; no UID/GID, network client, target process or foreign path.
 """
-import argparse,json,os,shutil,subprocess,time
+import argparse,json,os,shutil,subprocess,time,sys
 from pathlib import Path
 from _common import sha,local_snapshot,require_disjoint_output,require_lint_contract
 from normal_reference import load,compile_probe
 from logging_compare import date_boundary
 BASE=Path(__file__).resolve().parents[1]
+sys.dont_write_bytecode=True
+sys.path.insert(0,str(BASE.parents[1]/"tools"))
+from rust_toolchain import rust_channel
 def save(p,v):p.write_text(json.dumps(v,indent=2)+'\n')
 def canonical(data,pid,before,after):
  rows=[];dates=[]
@@ -23,7 +26,7 @@ def canonical(data,pid,before,after):
 def main():
  p=argparse.ArgumentParser()
  for key in ['repo','source','reference','rust','output']:p.add_argument('--'+key,type=Path,required=True)
- p.add_argument('--toolchain',default='1.99.1');a=p.parse_args();cargo=['cargo','+'+a.toolchain,'metadata','--manifest-path',str(BASE/'Cargo.toml'),'--offline','--locked','--all-features','--format-version','1'];environment={**os.environ,'CARGO_TARGET_DIR':str(BASE/'target')};md=json.loads(subprocess.check_output(cargo,env=environment));_,inputs=local_snapshot(md,BASE,BASE/'tools');inputs[str(a.rust.resolve())]=sha(a.rust);policy=require_lint_contract(BASE,a.repo,md);r,normal=load(a.reference,a.source,a.repo);roots=[Path(row['manifest_path']).parent for row in md['packages']if row['source']is None];out=require_disjoint_output(a.output,[BASE,a.repo,a.source,a.reference.resolve().parent,Path(r['build']),Path(r['prefix']),*roots]);out.mkdir();rows=[];owned_runs=[];result={'status':'not-run'}
+ p.add_argument('--toolchain');a=p.parse_args();a.toolchain=rust_channel(a.repo.resolve(),a.toolchain);cargo=['cargo','+'+a.toolchain,'metadata','--manifest-path',str(BASE/'Cargo.toml'),'--offline','--locked','--all-features','--format-version','1'];environment={**os.environ,'CARGO_TARGET_DIR':str(BASE/'target')};md=json.loads(subprocess.check_output(cargo,env=environment));_,inputs=local_snapshot(md,BASE,BASE/'tools');inputs[str(a.rust.resolve())]=sha(a.rust);policy=require_lint_contract(BASE,a.repo,md);r,normal=load(a.reference,a.source,a.repo);roots=[Path(row['manifest_path']).parent for row in md['packages']if row['source']is None];out=require_disjoint_output(a.output,[BASE,a.repo,a.source,a.reference.resolve().parent,Path(r['build']),Path(r['prefix']),*roots]);out.mkdir();rows=[];owned_runs=[];result={'status':'not-run'}
  try:
   c=out/'normal-program-monolith';compiled=compile_probe(BASE/'reference/program_monolith.c',c,r);save(out/'compile.json',compiled);rust=out/'rust-program-monolith';shutil.copy2(a.rust,rust);binaries={str(c):sha(c),str(rust):sha(rust)};env={k:v for k,v in os.environ.items()if not k.startswith(('GNUNET_','OWNED_','LISTEN_','DYLD_','LD_'))and k not in ['POSIXLY_CORRECT','JOURNAL_STREAM']};env.update(r['runtime_environment']);env.update(LC_ALL='C',GNUNET_FORCE_LOG='util-program;;;;DEBUG/;;;;NONE',GNUNET_ARGS='--ordinary-program-only-ignored')
   cases=[('provided',[],2),('help',['--help'],0),('version',['--version'],0),('unknown-option',['--not-an-option'],0)]

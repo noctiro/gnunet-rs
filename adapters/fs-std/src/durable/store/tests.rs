@@ -44,10 +44,10 @@ fn exact_restart_lock_and_independently_checked_incomplete_tail_repair() -> Test
     let temp = Temporary::new()?;
     let path = temp.0.join("task");
     let mut store = Store::create(&path, Limits::default())?;
-    #[cfg(unix)]
-    assert_eq!(store.directory_sync(), Some(DirectorySync::Synchronized));
-    #[cfg(windows)]
-    assert_eq!(store.directory_sync(), Some(DirectorySync::Unavailable));
+    let barrier = Directory::open(&temp.0)?
+        .sync()?
+        .combine(Directory::open(&path)?.sync()?);
+    assert_eq!(store.directory_sync(), Some(barrier));
     let id = *store.task_id();
     assert_eq!(store.append(9, b"\0native\xffbytes")?, 1);
     assert_eq!(store.append(0, b"")?, 2);

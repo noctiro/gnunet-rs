@@ -17,10 +17,12 @@ peer policy. `USERNAME` selects the Unix process account; Windows verifies the
 account under which the supervisor launched the process. Configured and
 inherited listeners use the shared native runtime.
 
-The backend is volatile ciphertext memory. Restart clears it; successful cache
-and delete results describe completed memory operations. `[namecache-rust]
-BACKEND` defaults to `memory` and rejects other values. C SQL plugin selection
-does not load a backend in this executable.
+`[namecache-rust] BACKEND` defaults to `files`, which saves ciphertext under
+`DIRECTORY` (default `${GNUNET_DATA_HOME}/namecache-rust`). Use a dedicated
+private directory per service instance. The service restores unexpired entries
+before startup acknowledgement. `BACKEND = memory` selects a cache cleared at
+restart. Both modes serve the same NAMECACHE requests and responses.
+Set `DIRECTORY` only in file mode.
 
 ## Resource limits
 
@@ -47,16 +49,16 @@ Unix performs the daemon split and configured identity transition before new
 local endpoints are created. Windows uses original-process detachment, socket
 activation and a qualified private parent connection.
 
-Cache construction, clock subscription, listeners and flushed READY output
+Cache recovery, clock subscription, listeners and flushed READY output
 precede the parent acknowledgement. That acknowledgement has one independent
 finite deadline and observes stop/logging failures. Parent EOF does not request
 shutdown or prove readiness. Native termination and parent interrupt/terminate
 bytes drive the same foreground stop policy.
 
 Immediate shutdown is the default. Soft shutdown retains one finite grace for
-complete requests and queued output. Physical client closure precedes Resolver,
-statistics and listener retirement. Original operation, cleanup, readiness,
-output and logger errors remain independent.
+complete requests and queued output. Physical client closure precedes completion
+of any submitted storage operation and retirement of the Resolver, statistics and
+listeners. Operation, cleanup, readiness, output and logger errors remain independent.
 
 Four handler counters describe lookups, hits, cache calls and delete calls.
 They use the same Resolver and clock with bounded final publication. A failed

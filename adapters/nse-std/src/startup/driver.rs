@@ -1,17 +1,18 @@
 //! Caller-driven NSE, Resolver and statistics lifetime with one readiness phase.
 use super::{
-    AdmissionFailure, Report,
+    AdmissionFailure, LocalEndpoints, Report,
+    embedded::settings as embedded_settings,
     reporting::{ForegroundFailures, StatisticsErrors, abort_statistics},
     settings, unix_access,
 };
 use crate::{
-    Host, Instances, Limits, Ports, Progress, proof,
+    Host, Instances, Limits, Ports, Progress, histogram, proof,
     statistics::{Statistics, StatisticsFactory},
 };
 use gnunet_client_host::EndpointSource;
 use gnunet_config::{Configuration, ProcessEnvironment};
 use gnunet_nse::owner;
-use gnunet_resolver_broker::{FamilyProfile, LiveConfiguration, broker};
+use gnunet_resolver_broker::{LiveConfiguration, broker};
 use gnunet_service_runtime::{
     BoundListeners, accepted::SocketEvent, clock::RuntimeClock, service::ShutdownMode,
     service_options,
@@ -20,6 +21,7 @@ use std::{
     error::Error,
     future::{Future, poll_fn},
     io,
+    path::PathBuf,
     sync::Arc,
     task::Poll,
     time::Duration,
@@ -57,38 +59,82 @@ where
         Poll::Pending
     }
 }
+pub(super) enum Sources<'a> {
+    Configured,
+    Embedded {
+        endpoints: &'a LocalEndpoints,
+        proof_file: PathBuf,
+    },
+}
+
+pub(super) struct Foreground<'a> {
+    pub(super) config: &'a Configuration,
+    pub(super) bound: &'a BoundListeners,
+    pub(super) limits: Limits,
+    pub(super) clock: Arc<dyn RuntimeClock>,
+    pub(super) sources: Sources<'a>,
+}
+
 #[expect(
     clippy::too_many_arguments,
-    reason = "Explicit same source ports and actual caller diagnostic, no global logger"
+    reason = "Original readiness, cancellation, diagnostics and publisher stay independently owned"
 )]
 pub(super) async fn run_foreground<F: StatisticsFactory>(
-    config: &Configuration,
-    bound: BoundListeners,
-    limits: Limits,
+    input: Foreground<'_>,
     mut ready: impl FnMut(&BoundListeners, [u8; 32]) -> io::Result<()>,
     shutdown: impl Future<Output = io::Result<()>>,
     mut observe: impl FnMut(SocketEvent),
-    clock: Arc<dyn RuntimeClock>,
     mut diagnostic: impl FnMut(AdmissionFailure) -> Result<(), Box<dyn Error>>,
     diagnostic_failed: impl Fn() -> bool,
     statistics_factory: F,
-    notification: impl Future<Output = Result<(), Box<dyn Error>>>,
+    notification: Option<impl Future<Output = Result<(), Box<dyn Error>>>>,
 ) -> Result<Report<F::Report>, Box<dyn Error>> {
+    let Foreground {
+        config,
+        bound,
+        limits,
+        clock,
+        sources,
+    } = input;
+    let embedded = matches!(&sources, Sources::Embedded { .. });
+    let mut shutdown = std::pin::pin!(shutdown);
+    if embedded
+        && let Poll::Ready(result) = poll_fn(|cx| Poll::Ready(shutdown.as_mut().poll(cx))).await
+    {
+        result?;
+        return Ok(Report::default());
+    }
     let unix = unix_access(config)?;
-    let settings = settings(config)?;
-    let store =
-        proof::Store::open(config.get_filename(b"NSE", b"PROOFFILE", &ProcessEnvironment)?)?;
     let options = service_options(config, b"NSE", ShutdownMode::Immediate)?;
-    let native = gnunet_resolver_broker::native_profile()?;
-    let family = FamilyProfile::new(
-        native.encode(gnunet_resolver_broker::Family::V4),
-        native.encode(gnunet_resolver_broker::Family::V6),
-    )?;
-    let live = LiveConfiguration::new(config.duplicate()?);
-    let (context, mut resolver) =
-        broker::<128, 256>(live.clone(), Default::default(), family, clock.clone())?;
-    let core = EndpointSource::live(live.clone(), b"core", context.resolution_context());
-    let pils = EndpointSource::live(live.clone(), b"pils", context.resolution_context());
+    let (settings, proof_file, core, pils, process) = match sources {
+        Sources::Configured => {
+            let settings = settings(config)?;
+            let proof_file = config.get_filename(b"NSE", b"PROOFFILE", &ProcessEnvironment)?;
+            let family = gnunet_resolver_broker::native_profile()?;
+            let live = LiveConfiguration::new(config.duplicate()?);
+            let (context, resolver) =
+                broker::<128, 256>(live.clone(), Default::default(), family, clock.clone())?;
+            let core = EndpointSource::live(live.clone(), b"core", context.resolution_context());
+            let pils = EndpointSource::live(live.clone(), b"pils", context.resolution_context());
+            (
+                settings,
+                proof_file,
+                core,
+                pils,
+                Some((live, context, resolver)),
+            )
+        }
+        Sources::Embedded {
+            endpoints,
+            proof_file,
+        } => {
+            let settings = embedded_settings(config)?;
+            let core = EndpointSource::unix_with_clock(endpoints.core.clone(), clock.clone());
+            let pils = EndpointSource::unix_with_clock(endpoints.pils.clone(), clock.clone());
+            (settings, proof_file, core, pils, None)
+        }
+    };
+    let store = proof::Store::open(proof_file)?;
     let mut nse_instance = owner::Instance::new();
     let mut core_instance = gnunet_core_client_host::Instance::new();
     let mut pils_instance = gnunet_pils::client::Instance::new();
@@ -109,26 +155,42 @@ pub(super) async fn run_foreground<F: StatisticsFactory>(
         unix,
         store,
     )?;
+    let mut histogram_report = match (!embedded)
+        .then(|| histogram::Recorder::configured(config))
+        .flatten()
+    {
+        Some(Ok(recorder)) => {
+            host.histogram = Some(recorder);
+            None
+        }
+        Some(Err(error)) => Some(histogram::Report::refused(error)),
+        None => None,
+    };
     let mut statistics_errors = StatisticsErrors::default();
     let statistics_grace = Duration::from_secs(5);
     // The caller constructs the concrete publisher on these actual same
     // process sources; the NSE host has no native statistics dependency.
-    let mut statistics = match statistics_factory.create(
-        live,
-        context.resolution_context(),
-        clock,
-        host.metrics(),
-    ) {
-        Ok(publisher) => publisher,
-        Err(error) => {
-            statistics_errors.record(error);
-            None
+    let (mut resolver, mut statistics) = match process {
+        Some((live, context, resolver)) => {
+            let statistics = match statistics_factory.create(
+                live,
+                context.resolution_context(),
+                clock,
+                host.metrics(),
+            ) {
+                Ok(publisher) => publisher,
+                Err(error) => {
+                    statistics_errors.record(error);
+                    None
+                }
+            };
+            (Some(resolver), statistics)
         }
+        None => (None, None),
     };
     let listeners = bound.listeners();
-    let mut shutdown = std::pin::pin!(shutdown);
-    let notification = std::pin::pin!(notification);
-    let mut notification = Some(notification);
+    let mut notification = std::pin::pin!(notification);
+    let mut announced = false;
     let outcome = loop {
         // Refresh observes real domain coordinates only; it performs no new IO
         // and never extends an already admitted original mutation/hard target.
@@ -136,10 +198,20 @@ pub(super) async fn run_foreground<F: StatisticsFactory>(
             abort_statistics(&mut statistics, &mut statistics_errors);
             break Ok(());
         }
-        let observed = host.metrics();
+        let observed = statistics.as_ref().map(|_| host.metrics());
         let selected = {
-            let mut driving = std::pin::pin!(host.drive(&listeners, &mut observe, None));
-            let mut resolving = std::pin::pin!(resolver.drive_waiting(None, |_| {}));
+            let active_listeners = if !embedded || announced {
+                listeners.as_slice()
+            } else {
+                &[]
+            };
+            let mut driving = std::pin::pin!(host.drive(active_listeners, &mut observe, None));
+            let mut resolving = std::pin::pin!(async {
+                match resolver.as_mut() {
+                    Some(resolver) => resolver.drive_waiting(None, |_| {}).await,
+                    None => std::future::pending().await,
+                }
+            });
             poll_fn(|cx| {
                 // No canonical wait/IO precedes this original native guard.
                 if let Some(publisher) = statistics.as_mut()
@@ -161,6 +233,7 @@ pub(super) async fn run_foreground<F: StatisticsFactory>(
                 }
                 if let Some(publisher) = statistics.as_mut()
                     && !publisher.is_closed()
+                    && let Some(observed) = observed
                     && let Err(error) = publisher.refresh(observed)
                 {
                     statistics_errors.record(error);
@@ -209,10 +282,17 @@ pub(super) async fn run_foreground<F: StatisticsFactory>(
         match selected {
             Ok(None) => break Ok(()),
             Ok(Some(Progress::Activated(peer))) => {
-                if let Err(error) = ready(&bound, peer) {
+                if embedded
+                    && let Poll::Ready(result) =
+                        poll_fn(|cx| Poll::Ready(shutdown.as_mut().poll(cx))).await
+                {
+                    break result.map_err(Into::into);
+                }
+                if let Err(error) = ready(bound, peer) {
                     break Err(Box::new(error) as Box<dyn Error>);
                 }
-                if let Some(mut original) = notification.take() {
+                announced = true;
+                if let Some(mut original) = notification.as_mut().as_pin_mut() {
                     let Some(deadline) =
                         tokio::time::Instant::now().checked_add(Duration::from_secs(10))
                     else {
@@ -252,6 +332,7 @@ pub(super) async fn run_foreground<F: StatisticsFactory>(
                     if let Err(error) = acknowledged {
                         break Err(error);
                     }
+                    notification.set(None);
                 }
             }
             Ok(Some(Progress::AdmissionFailed { peer, error })) => {
@@ -269,6 +350,7 @@ pub(super) async fn run_foreground<F: StatisticsFactory>(
     };
     // Close original physical CORE/PILS/subscribers and perform their exact
     // proof flush before reading final metrics. No ? can bypass another owner.
+    let histogram_drain = host.histogram.take().map(histogram::Recorder::stop);
     let closed = host.close();
     let host_report = host.report();
     let final_metrics = host.metrics();
@@ -314,9 +396,11 @@ pub(super) async fn run_foreground<F: StatisticsFactory>(
                 return Poll::Ready(());
             }
             // End the original drive borrow before any abort or disconnect.
-            let result = {
+            let result = if let Some(resolver) = resolver.as_mut() {
                 let mut resolving = std::pin::pin!(resolver.drive_waiting(None, |_| {}));
                 resolving.as_mut().poll(cx)
+            } else {
+                Poll::Pending
             };
             match result {
                 Poll::Ready(Err(error)) => {
@@ -339,12 +423,21 @@ pub(super) async fn run_foreground<F: StatisticsFactory>(
     abort_statistics(&mut statistics, &mut statistics_errors);
     let statistics_report = statistics.as_ref().map(Statistics::report);
     drop(statistics);
-    let resolver_close = resolver.disconnect().err();
-    let resolver_io = resolver.take_io_error();
-    let resolver_connect = resolver.take_connect_error();
+    let (resolver_close, resolver_io, resolver_connect) = match resolver {
+        Some(mut resolver) => (
+            resolver.disconnect().err(),
+            resolver.take_io_error(),
+            resolver.take_connect_error(),
+        ),
+        None => (None, None, None),
+    };
+    if let Some(drain) = histogram_drain {
+        histogram_report = Some(drain.finish().await);
+    }
     let report = Report {
         host: host_report,
         statistics: statistics_report,
+        histogram: histogram_report,
     };
     let failures = ForegroundFailures {
         original: outcome.err(),

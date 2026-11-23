@@ -6,6 +6,7 @@ use crate::{
     peer::Peer,
 };
 mod history;
+mod resources;
 use gnunet_crypto::{EddsaPublicKey, Entropy};
 use gnunet_service_runtime::connection::Connection;
 use gnunet_tcp_communicator_core::{
@@ -14,6 +15,7 @@ use gnunet_tcp_communicator_core::{
 };
 use gnunet_types::{Error, Rejected};
 use history::Claim;
+pub use resources::Resources;
 use std::{
     collections::VecDeque,
     future::{Future, poll_fn},
@@ -236,6 +238,13 @@ struct Outbound {
     address: Vec<u8>,
     claimed: bool,
 }
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum Admission {
+    Open,
+    IdentityRetiring,
+    Stopping,
+}
+
 /// Process-level TCP communicator. A bounded caller-owned Session pool supplies
 /// non-self-referential engine storage; each admitted peer owns only its own socket.
 /// One PEERSTORE and one TRANSPORT connection serve every physical session.
@@ -271,7 +280,7 @@ pub struct Communicator<'a> {
     commands: VecDeque<Outbound>,
     scratch: Vec<u8>,
     announce: bool,
-    shutdown: bool,
+    admission: Admission,
     task_cursor: usize,
     timer: Pin<Box<tokio::time::Sleep>>,
     timer_key: Option<(u64, u64)>,
@@ -361,7 +370,7 @@ impl<'a> Communicator<'a> {
             commands,
             scratch,
             announce: false,
-            shutdown: false,
+            admission: Admission::Open,
             task_cursor: 0,
             timer: Box::pin(tokio::time::sleep_until(tokio::time::Instant::now())),
             timer_key: None,
@@ -449,7 +458,7 @@ impl<'a> Communicator<'a> {
         }
     }
     fn prepare(&self, address: &[u8]) -> Result<Prepared, Error> {
-        if self.shutdown || address.contains(&0) || address.len() > 65470 {
+        if self.admission != Admission::Open || address.contains(&0) || address.len() > 65470 {
             return Err(Error::InvalidInput);
         }
         let index = self
@@ -565,11 +574,18 @@ impl<'a> Communicator<'a> {
     }
     /// Disallow new peers and start bounded graceful close of every original peer.
     pub fn begin_shutdown(&mut self, time: Time) -> Result<(), HostError> {
-        self.shutdown = true;
+        self.admission = Admission::Stopping;
         for p in self.slots.iter_mut().filter_map(|s| s.peer.as_mut()) {
             p.core.finish(time)?;
         }
         Ok(())
+    }
+    /// Stop peer admission while keeping the original address registration live.
+    /// The caller retires original peers without signing under another identity.
+    pub fn begin_identity_retirement(&mut self) {
+        if self.admission != Admission::Stopping {
+            self.admission = Admission::IdentityRetiring;
+        }
     }
     /// Physical peers, original callbacks and previously admitted service bytes drained.
     #[must_use]
@@ -756,7 +772,7 @@ impl<'a> Communicator<'a> {
     }
     /// Reconnect once; preserve queue identities and reannounce each surviving queue.
     pub fn attach_transport(&mut self, connection: Connection) -> Result<(), Rejected<Connection>> {
-        if self.shutdown {
+        if self.admission == Admission::Stopping {
             return Err(Rejected {
                 reason: Error::Closed,
                 value: connection,
@@ -789,7 +805,7 @@ impl<'a> Communicator<'a> {
     /// Publish this actual listener/NAT-owned address on the original MQ. Failed
     /// capacity retains the caller's original intent; registration stays FIFO first.
     pub fn advertise(&mut self, id: u32, address: &[u8], network: u32) -> Result<(), HostError> {
-        if self.shutdown {
+        if self.admission == Admission::Stopping {
             return Err(Error::Closed.into());
         }
         if !self.transport.online() {
@@ -1032,7 +1048,7 @@ impl<'a> Communicator<'a> {
                 }
             }
             Transport::Create(wire_id, peer, address) => {
-                if self.shutdown {
+                if self.admission != Admission::Open {
                     let n = services::create_result(wire_id, false, &mut self.scratch)?;
                     self.transport.enqueue(&self.scratch[..n])?;
                     self.transport.release();
@@ -1442,7 +1458,7 @@ impl<'a> Communicator<'a> {
         ps: bool,
     ) -> Poll<Result<Activity, HostError>> {
         if !ps
-            && self.shutdown
+            && self.admission != Admission::Open
             && self.transport.online()
             && let Some(wire_id) = self
                 .commands

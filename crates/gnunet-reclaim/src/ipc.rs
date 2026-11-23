@@ -8,7 +8,10 @@ use core::fmt;
 use gnunet_gnsrecord::ZoneKey;
 use gnunet_types::Error;
 use gnunet_wire::official::{
-    Frame, MessageHeader, MessageType, RelativeTime, identity::SecretKeyView, message_type as mt,
+    Frame, MessageHeader, MessageType, RelativeTime,
+    identity::{KEY_LEN, SecretKeyView},
+    message_type as mt,
+    namestore::Records,
 };
 
 /// Complete fixed store prefix, followed by private key and one serialized object.
@@ -31,6 +34,8 @@ pub const CREDENTIAL_RESULT_PREFIX: usize = 12;
 pub const TICKET_RESULT_PREFIX: usize = 14;
 /// Complete consumed result prefix.
 pub const CONSUMED_PREFIX: usize = 20;
+/// Offset of the attribute list in a successful consume reply with its issuer.
+pub const CONSUMED_BODY_OFFSET: usize = CONSUMED_PREFIX + KEY_LEN;
 /// Complete SUCCESS_RESPONSE and REVOKE_TICKET_RESULT size.
 pub const STATUS_LEN: usize = 12;
 
@@ -689,20 +694,7 @@ impl<'a> Response<'a> {
                 uri,
                 presentations,
                 ..
-            } => {
-                let mut p = Plan::new(mt::RECLAIM_TICKET_RESULT, TICKET_RESULT_PREFIX, rid);
-                if let Some(v) = ticket {
-                    put16(&mut p.fixed, 8, len16(v.encoded_len())?);
-                    p.parts[0] = Part::Ticket(v)
-                }
-                if let Some(v) = uri {
-                    put16(&mut p.fixed, 10, len16(v.encoded_len())?);
-                    p.parts[1] = Part::Uri(v)
-                }
-                put16(&mut p.fixed, 12, len16(presentations.encoded_len())?);
-                p.parts[2] = Part::Presentations(presentations);
-                Ok(p)
-            }
+            } => ticket_plan(rid, ticket, uri, Part::Presentations(presentations)),
             Self::Consumed {
                 identity,
                 result,
@@ -711,12 +703,14 @@ impl<'a> Response<'a> {
                 presentations,
                 ..
             } => {
-                let mut p = Plan::new(mt::RECLAIM_CONSUME_TICKET_RESULT, CONSUMED_PREFIX, rid);
-                put32(&mut p.fixed, 8, result);
-                put16(&mut p.fixed, 12, reserved);
-                put16(&mut p.fixed, 14, len16(attributes.encoded_len())?);
-                put16(&mut p.fixed, 16, len16(presentations.encoded_len())?);
-                put16(&mut p.fixed, 18, if identity.is_some() { 36 } else { 0 });
+                let mut p = consumed_plan(
+                    rid,
+                    result,
+                    reserved,
+                    identity.is_some(),
+                    attributes.encoded_len(),
+                    presentations.encoded_len(),
+                )?;
                 if let Some(v) = identity {
                     p.parts[0] = Part::Public(v)
                 }
@@ -726,6 +720,82 @@ impl<'a> Response<'a> {
             }
         }
     }
+}
+
+/// Finish an in-place successful consumed result. The caller has already
+/// serialized complete attribute and presentation lists in that order at
+/// [`CONSUMED_BODY_OFFSET`]. Writes only the prefix and issuer, leaving the body
+/// in place. Returns the complete frame length after checking the wire bounds.
+pub fn encode_consumed_success_prefix(
+    rid: u32,
+    issuer: ZoneKey,
+    attribute_bytes: usize,
+    presentation_bytes: usize,
+    out: &mut [u8],
+) -> Result<usize, Error> {
+    let plan = consumed_plan(rid, 1, 0, true, attribute_bytes, presentation_bytes)?;
+    let total = CONSUMED_BODY_OFFSET
+        .checked_add(attribute_bytes)
+        .and_then(|n| n.checked_add(presentation_bytes))
+        .ok_or(Error::Overflow)?;
+    plan.encode_prefix(total, out)?;
+    Part::Public(issuer).encode(&mut out[CONSUMED_PREFIX..CONSUMED_BODY_OFFSET])?;
+    Ok(total)
+}
+
+fn consumed_plan<'a>(
+    rid: u32,
+    result: u32,
+    reserved: u16,
+    identity: bool,
+    attribute_bytes: usize,
+    presentation_bytes: usize,
+) -> Result<Plan<'a>, Error> {
+    let mut plan = Plan::new(mt::RECLAIM_CONSUME_TICKET_RESULT, CONSUMED_PREFIX, rid);
+    put32(&mut plan.fixed, 8, result);
+    put16(&mut plan.fixed, 12, reserved);
+    put16(&mut plan.fixed, 14, len16(attribute_bytes)?);
+    put16(&mut plan.fixed, 16, len16(presentation_bytes)?);
+    put16(&mut plan.fixed, 18, len16(if identity { KEY_LEN } else { 0 })?);
+    Ok(plan)
+}
+
+// The fixed issuance planner has already checked these record values as
+// complete presentations and counted their exact aggregate length.
+pub(crate) fn encode_issued_ticket(
+    rid: u32,
+    ticket: Ticket<'_>,
+    records: Records<'_>,
+    presentation_bytes: usize,
+    out: &mut [u8],
+) -> Result<usize, Error> {
+    ticket_plan(
+        rid,
+        Some(ticket),
+        None,
+        Part::RecordPresentations(records, presentation_bytes),
+    )?
+    .encode(out)
+}
+
+fn ticket_plan<'a>(
+    rid: u32,
+    ticket: Option<Ticket<'a>>,
+    uri: Option<Uri<'a>>,
+    presentations: Part<'a>,
+) -> Result<Plan<'a>, Error> {
+    let mut plan = Plan::new(mt::RECLAIM_TICKET_RESULT, TICKET_RESULT_PREFIX, rid);
+    if let Some(ticket) = ticket {
+        put16(&mut plan.fixed, 8, len16(ticket.encoded_len())?);
+        plan.parts[0] = Part::Ticket(ticket);
+    }
+    if let Some(uri) = uri {
+        put16(&mut plan.fixed, 10, len16(uri.encoded_len())?);
+        plan.parts[1] = Part::Uri(uri);
+    }
+    put16(&mut plan.fixed, 12, len16(presentations.len()?)?);
+    plan.parts[2] = presentations;
+    Ok(plan)
 }
 
 fn len16(n: usize) -> Result<u16, Error> {
@@ -760,6 +830,7 @@ enum Part<'a> {
     Credential(Credential<'a>),
     Attributes(AttributeList<'a>),
     Presentations(PresentationList<'a>),
+    RecordPresentations(Records<'a>, usize),
     Ticket(Ticket<'a>),
     Uri(Uri<'a>),
 }
@@ -772,6 +843,7 @@ impl Part<'_> {
             Self::Credential(c) => c.encoded_len(),
             Self::Attributes(a) => Ok(a.encoded_len()),
             Self::Presentations(p) => Ok(p.encoded_len()),
+            Self::RecordPresentations(_, bytes) => Ok(bytes),
             Self::Ticket(t) => Ok(t.encoded_len()),
             Self::Uri(u) => Ok(u.encoded_len()),
         }
@@ -793,6 +865,23 @@ impl Part<'_> {
             Self::Credential(c) => c.encode(out),
             Self::Attributes(a) => a.encode(out),
             Self::Presentations(p) => p.encode(out),
+            Self::RecordPresentations(records, bytes) => {
+                let mut tail = out.get_mut(..bytes).ok_or(Error::Capacity)?;
+                for record in records.records().iter() {
+                    let record = record?;
+                    if record.record_type == gnunet_gnsrecord::RecordType::RECLAIM_PRESENTATION {
+                        let (value, rest) = tail
+                            .split_at_mut_checked(record.data.len())
+                            .ok_or(Error::Malformed)?;
+                        value.copy_from_slice(record.data);
+                        tail = rest;
+                    }
+                }
+                if !tail.is_empty() {
+                    return Err(Error::Malformed);
+                }
+                Ok(bytes)
+            }
             Self::Ticket(t) => t.encode(out),
             Self::Uri(u) => u.encode(out),
         }
@@ -825,15 +914,20 @@ impl<'a> Plan<'a> {
     }
     fn encode(&self, out: &mut [u8]) -> Result<usize, Error> {
         let n = self.encoded_len()?;
-        let h = MessageHeader::from_total_size(self.kind, n)?;
+        self.encode_prefix(n, out)?;
         let out = out.get_mut(..n).ok_or(Error::Capacity)?;
-        out[..self.prefix].copy_from_slice(&self.fixed[..self.prefix]);
-        h.encode(out)?;
         let mut at = self.prefix;
         for part in self.parts {
             at += part.encode(&mut out[at..])?;
         }
         Ok(n)
+    }
+
+    fn encode_prefix(&self, total: usize, out: &mut [u8]) -> Result<(), Error> {
+        let header = MessageHeader::from_total_size(self.kind, total)?;
+        let out = out.get_mut(..total).ok_or(Error::Capacity)?;
+        out[..self.prefix].copy_from_slice(&self.fixed[..self.prefix]);
+        header.encode(out).map(|_| ())
     }
 }
 fn store_plan<'a>(

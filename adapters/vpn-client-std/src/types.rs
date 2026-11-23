@@ -12,6 +12,8 @@ pub struct Limits {
     pub output: Budget,
     /// Maximum bytes offered to one native syscall.
     pub io_slice_bytes: usize,
+    /// Maximum native time to assemble a response after a partial read.
+    pub input_timeout: Duration,
     /// Finite drain grace for a partially exposed original request.
     pub retirement_grace_micros: u64,
 }
@@ -24,6 +26,7 @@ impl Default for Limits {
                 bytes: 4096,
             },
             io_slice_bytes: 128,
+            input_timeout: Duration::from_secs(10),
             retirement_grace_micros: 5_000_000,
         }
     }
@@ -43,6 +46,7 @@ impl Limits {
         if self.operations == 0
             || self.output.frames == 0
             || self.output.bytes < 128
+            || self.input_timeout.is_zero()
             || self.retirement_grace_micros == 0
         {
             return Err(ProtocolError::Capacity);

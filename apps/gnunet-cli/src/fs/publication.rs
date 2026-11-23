@@ -3,11 +3,11 @@ use super::service::{datastore_client, duration, target};
 use gnunet::{
     crypto::gns::EdkeySecret,
     datastore_host::{Instance, ReservationSlot, Slot},
-    fs::{Limits as UriLimits, Uri},
+    fs::{Keywords, Limits as UriLimits, Uri, metadata},
     fs_host::{
         Buffers, Control,
         ipc::EndpointSource,
-        network::ublock::{PublishedUblocks, UblockFailure, UblockOptions},
+        network::ublock::{PublishedUblocks, UblockFailure, UblockOptions, UblockProgress},
     },
 };
 use std::{
@@ -124,7 +124,8 @@ pub(super) fn keywords(
     let parsed = super::publish::settings::keyword_arguments(args, true)?;
     let args = parsed.positional;
     let interval = duration(args.get(3))?;
-    let mut metadata = super::publish::settings::RecordMetadata::new(parsed.manual)?;
+    let mut metadata =
+        super::publish::settings::RecordMetadata::new(parsed.manual, parsed.compression)?;
     let metadata = metadata.plan()?;
     let Uri::Keywords(keywords) =
         Uri::parse(crate::argument::wire_bytes(args[1])?, UriLimits::default())?
@@ -142,18 +143,30 @@ pub(super) fn keywords(
         .enable_all()
         .build()?
         .block_on(async {
-            let mut identity = Instance::new();
-            let mut wire = vec![0; 65535];
-            let mut slots = [Slot::new(&mut wire)];
-            let mut reservations = [ReservationSlot::default(); 1];
-            let client = datastore_client(&mut identity, &mut slots, &mut reservations, source)?;
-            let result = Buffers::new()
-                .store_keywords(client, keywords, uri, metadata.as_ref(), options, |_| {
-                    Control::Continue
-                })
-                .await;
+            let result = store_keywords(source, keywords, uri, metadata.as_ref(), options, |_| {
+                Control::Continue
+            })
+            .await?;
             ublock_result(result, "keywords", &encoded, out)
         })
+}
+
+pub(super) async fn store_keywords(
+    source: EndpointSource,
+    keywords: Keywords<'_>,
+    uri: Uri<'_>,
+    metadata: Option<&metadata::Plan<'_>>,
+    options: UblockOptions,
+    control: impl FnMut(UblockProgress) -> Control,
+) -> Result<Result<PublishedUblocks, Box<UblockFailure>>, gnunet::datastore_host::Error> {
+    let mut identity = Instance::new();
+    let mut wire = vec![0; 65535];
+    let mut slots = [Slot::new(&mut wire)];
+    let mut reservations = [ReservationSlot::default(); 1];
+    let client = datastore_client(&mut identity, &mut slots, &mut reservations, source)?;
+    Ok(Buffers::new()
+        .store_keywords(client, keywords, uri, metadata, options, control)
+        .await)
 }
 
 pub(super) fn namespace(
@@ -173,7 +186,8 @@ pub(super) fn namespace(
         target(&source, interval)?,
         parsed.publication.select(source.clock().as_ref())?,
     );
-    let mut metadata = super::publish::settings::RecordMetadata::new(parsed.manual)?;
+    let mut metadata =
+        super::publish::settings::RecordMetadata::new(parsed.manual, parsed.compression)?;
     let metadata = metadata.plan()?;
     tokio::runtime::Builder::new_current_thread()
         .enable_all()

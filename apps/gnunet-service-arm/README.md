@@ -31,7 +31,9 @@ qualified import/readiness or original-child retirement.
 
 `BINARY`, `CONFIG`, `GLOBAL_PREFIX`, `GLOBAL_POSTFIX`, `PIPECONTROL`,
 `IMMEDIATE_START`, `START_ON_DEMAND` and category selection use the shared
-registry. `[arm-rust]` selects finite service/client/child/listener/frame/output
+registry. ARM passes each executable and configuration path as one native
+argument. It parses command fragments such as `PREFIX` and `OPTIONS` separately.
+`[arm-rust]` selects finite service/client/child/listener/frame/output
 limits, work budgets and fixed `SHUTDOWN_GRACE`/`KILL_GRACE` targets. Both grace
 periods default to five seconds. ABI selects `align8` or `align4`; 64-bit native
 entries default to the GNU 64-bit `align8` wire profile.

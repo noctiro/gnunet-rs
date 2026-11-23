@@ -14,7 +14,7 @@ use gnunet_fs_host::{
         ports::{self, Lookup, LookupProgress, NoSigner, StorePort},
     },
 };
-use gnunet_service_runtime::local::Stream;
+use gnunet_service_runtime::local::{Listener as LocalListener, Stream};
 use gnunet_service_runtime::{
     BoundListeners, LocalListenerAccess,
     clock::SystemClock,
@@ -47,7 +47,8 @@ use tokio::{
     time::{Instant, timeout},
 };
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
-type Native<'id, 'slots, 'seen> = Server<'id, 'slots, 'seen, ControlledStore, NoSigner, NoPeers>;
+type Native<'id, 'slots, 'seen, S = ControlledStore> =
+    Server<'id, 'slots, 'seen, S, NoSigner, NoPeers>;
 const WAIT: Duration = Duration::from_secs(3);
 
 struct Directory(PathBuf);
@@ -210,10 +211,31 @@ fn make_server<'id, 'slots, 'seen>(
     directory: &Directory,
     control: Control,
 ) -> TestResult<Native<'id, 'slots, 'seen>> {
+    make_server_with_rescan(protocol, directory, control, Duration::from_secs(3600))
+}
+fn make_server_with_rescan<'id, 'slots, 'seen>(
+    protocol: pure::Service<'id, 'slots, 'seen>,
+    directory: &Directory,
+    control: Control,
+    rescan_interval: Duration,
+) -> TestResult<Native<'id, 'slots, 'seen>> {
+    make_server_with_store(
+        protocol,
+        directory,
+        ControlledStore(control),
+        rescan_interval,
+    )
+}
+fn make_server_with_store<'id, 'slots, 'seen, S: StorePort>(
+    protocol: pure::Service<'id, 'slots, 'seen>,
+    directory: &Directory,
+    datastore: S,
+    rescan_interval: Duration,
+) -> TestResult<Native<'id, 'slots, 'seen, S>> {
     Ok(Server::new(
         protocol,
         Ports {
-            datastore: ControlledStore(control),
+            datastore,
             signer: NoSigner,
             peers: NoPeers,
             index: Index::open(directory.index(), IndexLimits::default())?,
@@ -224,7 +246,7 @@ fn make_server<'id, 'slots, 'seen>(
             route_slots: 1,
             index_queue: 2,
             io_slice_bytes: 3,
-            rescan_interval: Duration::from_secs(3600),
+            rescan_interval,
         },
         ServiceOptions::default(),
         UnixAccess {
@@ -308,8 +330,8 @@ async fn drain_ready(server: &mut Native<'_, '_, '_>, listeners: &[Listener<'_>]
     Err(io::Error::other("bounded fixture did not settle its ready work").into())
 }
 // Retain the original socket IO future and cancel only each observation wait.
-async fn with_server<T>(
-    server: &mut Native<'_, '_, '_>,
+async fn with_server<T, S: StorePort>(
+    server: &mut Native<'_, '_, '_, S>,
     listeners: &[Listener<'_>],
     io: impl Future<Output = io::Result<T>>,
 ) -> TestResult<T> {
@@ -336,13 +358,195 @@ async fn with_server<T>(
         }
     }
 }
-async fn stopped(server: &mut Native<'_, '_, '_>) -> TestResult {
+async fn stopped<S: StorePort>(server: &mut Native<'_, '_, '_, S>) -> TestResult {
     let report = timeout(WAIT, server.shutdown(|_| {})).await?;
     assert!(report.worker_quiesced);
     if let Some(error) = report.failure {
         return Err(error.into());
     }
     Ok(())
+}
+
+#[test]
+fn loopback_keyword_search_survives_a_datastore_read_interruption() -> TestResult {
+    let directory = Directory::new()?;
+    let config = directory.config()?;
+    let block = include_bytes!("../../../crates/gnunet-fs/tests/ublock_vectors/c-keyword.bin");
+    let query = gnunet_crypto::hash512(&block[72..104]);
+    runtime()?.block_on(async {
+        let bound =
+            BoundListeners::bind_configured(&config, b"fs", LocalListenerAccess::Owner).await?;
+        let listeners = bound.listeners();
+        let mut instance = pure::Instance::new();
+        let mut clients = [pure::ClientSlot::default(); 1];
+        let mut hashes = [[0; 64]; 2];
+        let mut queries = [pure::QuerySlot::new(&mut hashes)];
+        let protocol = pure::Service::new(
+            &mut instance,
+            &mut clients,
+            &mut queries,
+            pure::Limits::default(),
+        )?;
+        let control = Control::default();
+        let mut server = make_server_with_rescan(
+            protocol,
+            &directory,
+            control.clone(),
+            Duration::from_millis(20),
+        )?;
+        let mut socket = Stream::connect(directory.socket()).await?;
+        let request = Request::Search(Search {
+            options: SEARCH_LOOPBACK_ONLY,
+            block_type: BlockType::UBLOCK,
+            anonymity: 0,
+            target: [0; 32],
+            query,
+            seen: &[],
+        });
+        socket.write_all(&frame(request)?).await?;
+        while control.starts().is_empty() {
+            step(&mut server, &listeners).await?;
+        }
+        control.complete_error(ports::Error::DatastoreOperation {
+            outcome: gnunet_datastore_host::Outcome::Interrupted,
+            interruption: None,
+            cause: Some(Box::new(ports::Error::DatastoreLost(
+                gnunet_datastore_host::Loss::Io(io::Error::from(io::ErrorKind::UnexpectedEof)),
+            ))),
+            reply: None,
+        })?;
+        while control.starts().len() == 1 {
+            step(&mut server, &listeners).await?;
+        }
+        let starts = control.starts();
+        assert_eq!(starts.len(), 2);
+        assert_eq!(starts[0], starts[1]);
+        control.complete(stored(&query, block, 9, 1, u64::MAX)?)?;
+        let answer = with_server(&mut server, &listeners, read_frame(&mut socket)).await?;
+        assert!(matches!(
+            Response::decode(&answer)?,
+            Response::Put(put) if put.block_type == BlockType::UBLOCK && put.block == block
+        ));
+        drop(socket);
+        stopped(&mut server).await
+    })
+}
+
+#[test]
+fn native_datastore_keyword_sweep_restarts_at_zero_and_delivers_later_rows() -> TestResult {
+    use gnunet_datastore_host as ds;
+    use gnunet_fs::{Content, ublock};
+    use gnunet_types::Duration as DatastoreTimeout;
+
+    async fn expect_get(socket: &mut Stream, query: &[u8; 64], cursor: u64) -> TestResult {
+        assert_eq!(
+            gnunet_wire::official::datastore::Request::decode(&read_frame(socket).await?)?,
+            gnunet_wire::official::datastore::Request::Get {
+                key: Some(query),
+                kind: BlockType::UBLOCK.value(),
+                next_uid: cursor,
+                random: false,
+            }
+        );
+        Ok(())
+    }
+
+    let directory = Directory::new()?;
+    let config = directory.config()?;
+    let first = include_bytes!("../../../crates/gnunet-fs/tests/ublock_vectors/c-keyword.bin");
+    let publisher = ublock::Publisher::keyword(b"keyword", ublock::Limits::default())?;
+    let query = *publisher.context().query();
+    let mut wire = [0; 1024];
+    let second = publisher.seal(
+        b"",
+        Content {
+            key: [7; 64],
+            query: [8; 64],
+            size: 1,
+        }
+        .uri(),
+        None,
+        &mut wire,
+    )?;
+
+    runtime()?.block_on(async {
+        let datastore_path = directory.0.join("datastore.sock");
+        let datastore_listener = LocalListener::bind(&datastore_path)?;
+        let bound =
+            BoundListeners::bind_configured(&config, b"fs", LocalListenerAccess::Owner).await?;
+        let listeners = bound.listeners();
+
+        let mut ds_instance = ds::Instance::new();
+        let mut ds_bytes = [0; 2048];
+        let mut ds_slots = [ds::Slot::new(&mut ds_bytes)];
+        let mut reservations = [];
+        let ds_protocol = ds::ProtocolClient::new(
+            &mut ds_instance,
+            &mut ds_slots,
+            &mut reservations,
+            ds::ProtocolLimits {
+                max_pending: 1,
+                max_frame_bytes: 2048,
+                max_lifetime: DatastoreTimeout(1_000_000),
+                ..ds::ProtocolLimits::default()
+            },
+        )?;
+        let datastore = ports::Datastore::new(
+            ds::Client::new(
+                ds_protocol,
+                ds::EndpointSource::unix_with_clock(datastore_path, Arc::new(SystemClock)),
+                ds::Limits { frame_bytes: 2048, reply_frames: 1, reply_bytes: 2048, io_slice_bytes: 5 },
+            )?,
+            DatastoreTimeout(1_000_000),
+        )?;
+
+        let mut instance = pure::Instance::new();
+        let mut clients = [pure::ClientSlot::default()];
+        let mut hashes = [[0; 64]; 2];
+        let mut queries = [pure::QuerySlot::new(&mut hashes)];
+        let protocol = pure::Service::new(
+            &mut instance, &mut clients, &mut queries, pure::Limits::default(),
+        )?;
+        let mut server = make_server_with_store(protocol, &directory, datastore, Duration::from_millis(20))?;
+        let mut socket = Stream::connect(directory.socket()).await?;
+        let block = BlockType::UBLOCK;
+        let actor = async {
+            let (mut original, _) = datastore_listener.accept().await?;
+            expect_get(&mut original, &query, 0).await?;
+            original.write_all(stored(&query, first, block.value(), 20, u64::MAX)?.bytes()).await?;
+            expect_get(&mut original, &query, 21).await?;
+            drop(original);
+
+            let (mut replacement, _) = datastore_listener.accept().await?;
+            expect_get(&mut replacement, &query, 0).await?;
+            replacement.write_all(stored(&query, first, block.value(), 1, u64::MAX)?.bytes()).await?;
+            expect_get(&mut replacement, &query, 2).await?;
+            replacement.write_all(stored(&query, second.bytes(), block.value(), 7, u64::MAX)?.bytes()).await?;
+            expect_get(&mut replacement, &query, 8).await?;
+            replacement.write_all(store_end()?.bytes()).await?;
+            Ok::<_, Box<dyn std::error::Error>>(())
+        };
+        let search = async {
+            let request = Request::Search(Search {
+                options: SEARCH_LOOPBACK_ONLY,
+                block_type: block,
+                anonymity: 0,
+                target: [0; 32],
+                query,
+                seen: &[],
+            });
+            socket.write_all(&frame(request)?).await?;
+            for expected in [first.as_slice(), second.bytes()] {
+                let reply = read_frame(&mut socket).await?;
+                assert!(matches!(Response::decode(&reply)?, Response::Put(put) if put.block_type == block && put.block == expected));
+            }
+            Ok::<_, Box<dyn std::error::Error>>(())
+        };
+        with_server(&mut server, &listeners, async { Ok(tokio::try_join!(actor, search)) }).await??;
+        assert_eq!(server.report().local_results, 2);
+        drop(socket);
+        stopped(&mut server).await
+    })
 }
 
 #[test]

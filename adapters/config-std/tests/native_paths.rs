@@ -53,6 +53,40 @@ fn explicit_context_resolves_relative_paths_without_changing_process_state() -> 
     Ok(())
 }
 
+#[test]
+fn trusted_path_expands_variables_without_falling_back_to_cwd() -> Result<(), gnunet_config::Error>
+{
+    use gnunet_config::{Configuration, Error};
+
+    #[cfg(unix)]
+    let root = "/gnunet";
+    #[cfg(windows)]
+    let root = r"C:\gnunet";
+    let environment = Snapshot {
+        cwd: PathBuf::from(root),
+        home: None,
+        cwd_queries: Cell::new(0),
+    };
+    let mut config = Configuration::default();
+    config.set_value(b"provider", b"library", Some(b"provider.dll"))?;
+    assert!(matches!(
+        config.get_absolute_filename(b"provider", b"library", &environment),
+        Err(Error::InvalidInput)
+    ));
+    config.set_value(b"PATHS", b"PROVIDER_ROOT", Some(root.as_bytes()))?;
+    config.set_value(
+        b"provider",
+        b"library",
+        Some(b"${PROVIDER_ROOT}/provider.dll"),
+    )?;
+    assert_eq!(
+        config.get_absolute_filename(b"provider", b"library", &environment)?,
+        PathBuf::from(format!("{root}/provider.dll"))
+    );
+    assert_eq!(environment.cwd_queries.get(), 0);
+    Ok(())
+}
+
 #[cfg(windows)]
 mod windows {
     use super::*;

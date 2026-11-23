@@ -1,6 +1,5 @@
 //! Callable actual advanced epoch/group operations. All use the original room
-//! source/member and real Core signer/key/provider bindings. AUTHORIZATION's
-//! omitted wire MAC is never invented; it remains a real refusal in Core/M3.
+//! source/member and real Core signer/key/provider bindings.
 use crate::{types::*, *};
 use gnunet_types::Error as Fault;
 use std::time::Duration;
@@ -92,6 +91,7 @@ impl<'a, E: crypto::Entropy, const N: usize> Api<'a, E, N> {
         lifetime: Duration,
         timeout: Duration,
     ) -> Result<Operation<'a>, Error> {
+        self.frontier_capacity()?;
         let (now, span) = self.admission(timeout)?;
         let (_, source, epoch, member) = self.sending(room)?;
         let operation = self.core.prepare_appeal(
@@ -112,6 +112,7 @@ impl<'a, E: crypto::Entropy, const N: usize> Api<'a, E, N> {
         event: Hash,
         timeout: Duration,
     ) -> Result<Operation<'a>, Error> {
+        self.frontier_capacity()?;
         let (now, span) = self.admission(timeout)?;
         let (_, source, epoch, member) = self.sending(room)?;
         let operation = self.core.prepare_access(
@@ -122,6 +123,29 @@ impl<'a, E: crypto::Entropy, const N: usize> Api<'a, E, N> {
             now,
             span.logical,
         )?;
+        self.record_job(room, source, epoch, operation, span, Intent::User)?;
+        Ok(operation)
+    }
+    /// Transfer a possessed epoch/group key through the original wrapping group
+    /// and referenced announcement or proposal. Signer completion and the
+    /// original native write remain separate operation outcomes.
+    /// `id` selects the wrapping group; `event` identifies the target key.
+    ///
+    /// # Errors
+    /// Refuses stale source/member state, invalid group relations, missing keys
+    /// and the actual admission/provider failure.
+    pub fn authorize_epoch_key(
+        &mut self,
+        room: Room<'a>,
+        id: ShortHash,
+        event: Hash,
+        timeout: Duration,
+    ) -> Result<Operation<'a>, Error> {
+        let (now, span) = self.admission(timeout)?;
+        let (_, source, epoch, member) = self.sending(room)?;
+        let operation =
+            self.core
+                .prepare_authorization(source, member, id, event, now, span.logical)?;
         self.record_job(room, source, epoch, operation, span, Intent::User)?;
         Ok(operation)
     }

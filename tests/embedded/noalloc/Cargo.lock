@@ -10,9 +10,9 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "aes"
-version = "0.9.3"
+version = "0.9.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "35f0f96ce78e38c3dc6d8948aa8163d06385be74000f3c7a95bf1eef35d3ea32"
+checksum = "fc0fc36d7440d015b45468ba08a21e80e056ebbd014c611c6298bb7503e04bd1"
 dependencies = [
  "cipher",
  "cpubits",
@@ -116,9 +116,9 @@ dependencies = [
 
 [[package]]
 name = "crypto-bigint"
-version = "0.7.9"
+version = "0.7.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d811ea23fdfbcce2e2d5132344d471abdb8f901ac496a0893a3df92e70525e52"
+checksum = "914c195c4d7fbc5ed7f88d14cbf85914d5c664967658d43404b263913a477e82"
 dependencies = [
  "cpubits",
  "ctutils",
@@ -146,9 +146,9 @@ dependencies = [
 
 [[package]]
 name = "ctutils"
-version = "0.4.6"
+version = "0.4.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fe3e9d21d39e6f39ff46e03d5b621424f88ee23d8a1672c6bfc9ccc7f2da4f6a"
+checksum = "261af4dc7a06ea8a527a8717d8cbba3417530d6ea14e1edb3de6b67806be474f"
 dependencies = [
  "cmov",
 ]
@@ -244,6 +244,7 @@ dependencies = [
  "gnunet-datacache",
  "gnunet-datastore",
  "gnunet-did",
+ "gnunet-direct-peer",
  "gnunet-dns",
  "gnunet-dns-interception",
  "gnunet-dnsstub",
@@ -397,6 +398,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "gnunet-direct-peer"
+version = "0.1.0"
+dependencies = [
+ "gnunet-core",
+ "gnunet-crypto",
+ "gnunet-tcp-communicator-core",
+ "gnunet-transport",
+ "gnunet-types",
+ "zeroize",
+]
+
+[[package]]
 name = "gnunet-dns"
 version = "0.1.0"
 dependencies = [
@@ -410,8 +423,8 @@ version = "0.1.0"
 dependencies = [
  "gnunet-dns",
  "gnunet-types",
- "gnunet-vpn",
  "gnunet-wire",
+ "zeroize",
 ]
 
 [[package]]
@@ -439,6 +452,7 @@ dependencies = [
  "gnunet-session-crypto",
  "gnunet-types",
  "gnunet-wire",
+ "libm",
  "subtle",
  "zeroize",
 ]
@@ -460,6 +474,7 @@ dependencies = [
  "gnunet-gnsrecord",
  "gnunet-idna",
  "gnunet-types",
+ "zeroize",
 ]
 
 [[package]]
@@ -579,6 +594,7 @@ dependencies = [
  "gnunet-idna",
  "gnunet-types",
  "gnunet-wire",
+ "subtle",
  "zeroize",
 ]
 
@@ -875,9 +891,9 @@ dependencies = [
 
 [[package]]
 name = "inout"
-version = "0.2.5"
+version = "0.2.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3b5cf4372d022092674a83b8febf5865f7a573cc0c5baec5e49c879b6a20978f"
+checksum = "3a580c13f0ffc335ef42dd3f6b1a41b726051c5e1656d9a3aa6fddb3c5dfbbf9"
 dependencies = [
  "hybrid-array",
 ]
@@ -1036,9 +1052,9 @@ dependencies = [
 
 [[package]]
 name = "zeroize"
-version = "1.9.1"
+version = "1.9.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e13084392c5e4bc371903e2935a5eaeed24905a7511356b883835e18a78f6879"
+checksum = "85ccff8a4805aba1eaa4cd4afcd49f7557dd2cf5fd79ffc37f8959466effc5aa"
 dependencies = [
  "zeroize_derive",
 ]

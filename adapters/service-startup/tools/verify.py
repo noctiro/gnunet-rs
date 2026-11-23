@@ -15,6 +15,12 @@ import sys
 import time
 from _common import local_snapshot, require_disjoint_output, sha, unchanged, normal_reference, require_rust_fixture_success
 
+TOOLS = pathlib.Path(__file__).resolve().parents[3] / "tools"
+sys.dont_write_bytecode = True
+sys.path.insert(0, str(TOOLS))
+from cargo_artifacts import CargoArtifacts
+from rust_toolchain import rust_channel
+
 RUST_CHECKS = [
     'unix::capture::tests::native_hex_prefix_and_full_unsigned_profiles_are_distinct',
     'unix::capture::tests::full_count_preflight_rejects_missing_extra_and_preserves_empty_components',
@@ -77,14 +83,14 @@ def main():
     parser.add_argument('--build-receipt', type=pathlib.Path, required=True)
     parser.add_argument('--output', type=pathlib.Path, required=True)
     parser.add_argument('--cargo', default='cargo')
-    parser.add_argument('--toolchain', default='1.99.1')
+    parser.add_argument('--toolchain')
     args = parser.parse_args()
     if sys.flags.optimize:
         parser.error('reference verification requires assertion-enabled Python')
     package = args.package.resolve()
     manifest = package / 'Cargo.toml'
     tools = pathlib.Path(__file__).resolve().parent
-    cargo = [args.cargo, '+' + args.toolchain]
+    cargo = [args.cargo, '+' + rust_channel(TOOLS.parent, args.toolchain)]
     pinned = ['--manifest-path', str(manifest), '--offline', '--locked']
     # --locked prevents metadata from changing the shared workspace lockfile.
     initial_argv = cargo + ['metadata', *pinned, '--format-version', '1']
@@ -106,7 +112,10 @@ def main():
     output.mkdir()
     (output / 'metadata.stdout').write_bytes(meta_run.stdout)
     (output / 'metadata.stderr').write_bytes(meta_run.stderr)
+    def tooling_inputs():
+        return {str(path): sha(path) for path in [TOOLS / 'cargo_artifacts.py', TOOLS / 'rust_toolchain.py', TOOLS.parent / 'rust-toolchain.toml']}
     selected, inputs = local_snapshot(metadata, package, tools)
+    inputs.update(tooling_inputs())
     if selected['name'] != 'gnunet-service-startup':
         raise ValueError('requires actual gnunet-service-startup package')
     result = {
@@ -148,9 +157,9 @@ def main():
         result['rust_named_checks'] = require_rust_checks(decoded)
         run('clippy', cargo + ['clippy', *pinned, '--package', selected['name'],
             '--all-targets', '--target-dir', target, '--', '-D', 'warnings'])
-        run('rust-probe', cargo + ['build', *pinned, '--package', selected['name'],
-            '--example', 'primitive', '--target-dir', target])
-        binary = target / 'debug/examples/primitive'
+        build = run('rust-probe', cargo + ['build', *pinned, '--package', selected['name'],
+            '--example', 'primitive', '--target-dir', target, '--message-format=json'])
+        binary = CargoArtifacts(build).example('primitive', manifest)
         rust_binary = {'path': str(binary), 'sha256': sha(binary)}
         result['fresh_rust_binary'] = rust_binary
         shared_args = ['--package', package, '--source', args.source]
@@ -195,6 +204,7 @@ def main():
             raise RuntimeError('normal reference changed during verification')
         result['rust_binary_unchanged'] = sha(binary) == rust_binary['sha256']
         _, after_inputs = local_snapshot(metadata, package, tools)
+        after_inputs.update(tooling_inputs())
         result['inputs_unchanged'] = after_inputs == inputs
         if not result['inputs_unchanged'] or not result['rust_binary_unchanged']:
             raise RuntimeError('source or binary changed during verification')

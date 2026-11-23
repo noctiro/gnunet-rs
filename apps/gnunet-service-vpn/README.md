@@ -32,6 +32,14 @@ untouched. See [Wintun recovery](CONFIGURATION.md#windows-wintun).
 Physical reopen settles the old native scope before admitting the selected
 reappearing logical interface as borrowed, with fresh configuration verification.
 
+FreeBSD packet recovery retains the checkpointed interface while reopening its
+packet descriptor. The coordinator retires old packet and flow operations,
+repairs missing configuration and verifies the original FIB and IPv6 DAD before
+resuming with a new packet epoch. See the
+[FreeBSD recovery contract](../../adapters/tun-std/RECOVERY.md).
+When the device disappears, the coordinator settles the old FIB keys and
+provisions a fresh device under the original checkpoint lock and outage bound.
+
 Readiness requires the actual interface plan, routes, IPv6 DAD and CADET IPC
 attachment. It grants no remote-exit reachability claim. Original stop sources,
 fixed deadlines, source epochs and cleanup causes remain on their owners.
@@ -47,8 +55,10 @@ Unix and Windows process startup use their native lifecycle adapters.
 Protocol engines and packet bounds remain in the shared
 [VPN coordinator](../../adapters/vpn-std/COORDINATOR.md).
 
-Windows local access uses native endpoint ACLs; requested Unix UID/GID peer
-checks are refused. An existing device is verified without adopting its
+On Windows, `LOCAL_ACCESS` must select a
+[listener DACL](../../adapters/service-runtime/README.md#configured-local-listeners)
+that satisfies any requested owner or group restriction. An existing device is
+verified without adopting its
 administrative lifetime. Native synchronous calls cannot be preempted by an
 async deadline. See the [device contracts](CONFIGURATION.md#device-selection)
 and central [open work](../../IMPLEMENTATION_STATUS.md).

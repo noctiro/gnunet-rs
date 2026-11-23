@@ -52,7 +52,7 @@ fn entry() -> Result<(), Failure> {
     use gnunet_program_host::{
         logging::Logger,
         policy::Level,
-        program::{self, Defaults, Invocation, NlsDisabled, Preparation},
+        program::{self, Defaults, Invocation, Preparation},
         reporting::Reporter,
         shared_clock::SharedClock,
     };
@@ -66,7 +66,7 @@ fn entry() -> Result<(), Failure> {
     let arguments = options::Arguments::new();
     let mut logger = Logger::new(b"gnunet-scrypt", std::process::id(), false)?;
     let help: &[u8] = b"Offline GNUnet NSE proof work (historical name scrypt, actual Argon2id13). -k/--keyfile FILE defaults to [PEER] PRIVATE_KEY; -o/--outfile FILE defaults to [NSE] PROOFFILE; -b/--bits BITS (zero selects [NSE] WORKBITS); -t/--timeout DURATION is the delay between ten-candidate rounds, never a whole timeout. Missing raw32 keys may be durably created; existing malformed keys/proofs are refused. Proof artifact is exactly native-endian raw8. Standard PROGRAM -c/-L/-l; optional --total-timeout DURATION and --max-hashes COUNT. Signals/parent stop checkpoint the original cursor, with independent persistence errors retained. No service or network is started.";
-    let prepared = program::prepare(
+    let prepared = program::prepare_installed(
         configuration,
         Invocation {
             binary_name: b"gnunet-scrypt",
@@ -77,7 +77,6 @@ fn entry() -> Result<(), Failure> {
         arguments.options(),
         std::env::args_os(),
         &program::Environment::capture(),
-        &mut NlsDisabled,
         &mut logger,
         &clock,
         &mut io::stdout().lock(),

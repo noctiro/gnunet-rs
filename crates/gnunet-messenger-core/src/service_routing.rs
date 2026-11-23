@@ -1,12 +1,13 @@
 //! Official SERVICE first-write epoch hints. Missing hash lookup returns that
 //! original hash, keeping real IPC/REQUEST history recovery live.
 use crate::{
+    archive::CommittedRoomHistory,
     engine::Core,
-    state::{EpochAlias, RoomRow},
+    state::{AliasBuckets, EpochAlias, RoomRow},
     *,
 };
-use alloc::vec::Vec;
 use gnunet_types::Error as Fault;
+use wire::envelope::Kind;
 /// Actual frontier facts; these metadata values are not epoch membership proof.
 #[derive(Clone, Copy)]
 pub struct ServiceMerge {
@@ -30,7 +31,10 @@ fn start(key: &Hash, len: usize) -> usize {
     (u64::from_le_bytes(bytes) as usize) % len
 }
 
-impl<'id> RoomRow<'id> {
+/// A first-write slot in a room's unchanged alias table.
+pub(crate) struct VacantAlias(usize);
+
+impl RoomRow<'_> {
     pub(crate) fn alias(&self, key: &Hash) -> Option<Hash> {
         if self.epoch_aliases.is_empty() {
             return None;
@@ -45,31 +49,46 @@ impl<'id> RoomRow<'id> {
         }
         None
     }
-    fn epoch_for(&self, key: &Hash) -> Hash {
+    fn epoch_for(
+        &self,
+        key: &Hash,
+        history: Option<&CommittedRoomHistory<'_, '_>>,
+    ) -> Result<Hash, Error> {
         let mut cursor = *key;
         // A retired discourse has no retained own epoch. Follow its single
         // original previous link to an actual non-transient association; this
         // is a bounded metadata lookup, never membership/authentication proof.
         for _ in 0..=self.nodes.len() {
-            if let Some(epoch) = self.alias(&cursor) {
-                return epoch;
+            let alias = self.alias(&cursor);
+            if history.is_none()
+                && let Some(epoch) = alias
+            {
+                return Ok(epoch);
             }
-            let Some(slot) = self.find_node(&cursor) else {
-                return cursor;
+            let at = self.find_node(&cursor);
+            if at.is_none()
+                && let Some(history) = history
+                && let Some(parent) = history.detached_parent(&cursor)?
+            {
+                return Ok(parent.epoch);
+            }
+            if let Some(epoch) = alias {
+                return Ok(epoch);
+            }
+            let Some(slot) = at else {
+                return Ok(cursor);
             };
-            let Ok(node) = self.nodes.get(slot) else {
-                return cursor;
-            };
+            let node = self.nodes.get(slot)?;
             if !crate::graph::discourse_kind(node.kind) || node.phase != MessagePhase::Deleted {
-                return cursor;
+                return Ok(cursor);
             }
             if node.parents[0] == [0; 64] {
-                return [0; 64];
+                return Ok([0; 64]);
             }
             cursor = node.parents[0];
         }
         // A bounded cyclic/unresolved chain supplies no inferred association.
-        *key
+        Ok(*key)
     }
     fn alias_allowed(&self, key: &Hash) -> bool {
         !self
@@ -133,114 +152,164 @@ impl<'id> RoomRow<'id> {
         Ok(true)
     }
     pub(crate) fn put_alias(&mut self, key: Hash, epoch: Hash) -> Result<(), Error> {
-        if key == [0; 64] || !self.alias_allowed(&key) {
-            return Ok(());
+        if let Some(at) = self.vacant_alias(&key)? {
+            self.insert_alias(at, key, epoch);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn vacant_alias(&self, key: &Hash) -> Result<Option<VacantAlias>, Error> {
+        if *key == [0; 64] || !self.alias_allowed(key) {
+            return Ok(None);
         }
         let len = self.epoch_aliases.len();
         if len == 0 {
             return Err(Fault::Capacity.into());
         }
-        let at = start(&key, len);
+        let at = start(key, len);
         for n in 0..len {
             let i = (at + n) % len;
             match &self.epoch_aliases[i] {
-                Some(a) if a.key == key => return Ok(()),
+                Some(a) if &a.key == key => return Ok(None),
                 Some(_) => {}
-                None => {
-                    self.epoch_aliases[i] = Some(EpochAlias { key, epoch });
-                    self.epoch_alias_count += 1;
-                    return Ok(());
-                }
+                None => return Ok(Some(VacantAlias(i))),
             }
         }
         Err(Fault::Capacity.into())
     }
+
+    pub(crate) fn insert_alias(&mut self, at: VacantAlias, key: Hash, epoch: Hash) {
+        self.epoch_aliases[at.0] = Some(EpochAlias { key, epoch });
+        self.epoch_alias_count += 1;
+    }
 }
-impl<'id> Core<'id> {
-    /// Record exactly once after this node's actual authentication, before its
-    /// semantic handler. Deferred unknown signers consume no first-write hints
-    /// and never block other already authenticated original messages.
-    pub(crate) fn service_index_epoch(
+impl<'id, const ROOMS: usize> Core<'id, ROOMS> {
+    /// Register authenticated service originals still awaiting semantic work.
+    /// This bounded pass records their sequence and initial epoch aliases in
+    /// ready order without consuming the queue, applying message bodies or
+    /// granting membership. The archive may then preserve these originals even
+    /// when semantic work is temporarily blocked.
+    ///
+    /// # Errors
+    /// Refuses client mode, exhausted sequence space or insufficient alias
+    /// storage. Earlier registrations remain valid and are skipped on retry.
+    pub fn register_archive_ingress(&mut self) -> Result<(), Error> {
+        if self.mode != Mode::Service {
+            return Err(Error::Permission);
+        }
+        for index in 0..self.rooms.limit() {
+            let Some(room) = self.rooms.slot_at(index) else {
+                continue;
+            };
+            self.register_room_archive_ingress(room, None)?;
+        }
+        Ok(())
+    }
+
+    /// Register authenticated pending originals in one SERVICE room while
+    /// retaining the native owner's pinned graph pages. Like
+    /// [`Self::register_archive_ingress`], this leaves semantic work queued.
+    ///
+    /// # Errors
+    /// Refuses client mode, a foreign or future room history, and the same
+    /// sequence or storage failures as [`Self::register_archive_ingress`].
+    pub fn register_archive_ingress_with_committed_history(
         &mut self,
-        r: Slot,
-        node: Slot,
-        message: wire::message::Message<'_>,
+        room: Room<'id>,
+        history: CommittedRoomHistory<'_, '_>,
     ) -> Result<(), Error> {
         if self.mode != Mode::Service {
             return Err(Error::Permission);
         }
-        let n = self.rooms.get(r)?.nodes.get(node)?;
+        let room = self.check_room(room)?;
+        history.check_working_room(self.rooms.get(room)?, room, self.local_peer)?;
+        self.register_room_archive_ingress(room, Some(&history))
+    }
+
+    fn register_room_archive_ingress(
+        &mut self,
+        room: Slot,
+        history: Option<&CommittedRoomHistory<'_, '_>>,
+    ) -> Result<(), Error> {
+        let mut offset = 0;
+        while let Some(slot) = self.rooms.get(room)?.ready.get(offset) {
+            let node = self.rooms.get(room)?.nodes.get(slot)?;
+            if node.auth.is_some() && !node.epoch_indexed {
+                self.register_service_ingress(room, slot, history)?;
+            }
+            offset += 1;
+        }
+        Ok(())
+    }
+
+    /// Record exactly once after this node's actual authentication, before its
+    /// semantic handler. Deferred unknown signers consume no first-write hints
+    /// and never block other already authenticated original messages.
+    pub(crate) fn register_service_ingress(
+        &mut self,
+        r: Slot,
+        node: Slot,
+        history: Option<&CommittedRoomHistory<'_, '_>>,
+    ) -> Result<(), Error> {
+        let row = self.rooms.get(r)?;
+        let n = row.nodes.get(node)?;
         if n.auth.is_none() {
             return Err(Fault::NotReady.into());
         }
         if n.epoch_indexed {
             return Ok(());
         }
-        if self.rooms.get(r)?.epoch_aliases.is_empty() {
-            let count = self
-                .limits
-                .messages_per_room
-                .checked_mul(4)
-                .ok_or(Fault::Overflow)?;
-            let minimum = count
-                .checked_mul(core::mem::size_of::<Option<EpochAlias>>())
-                .ok_or(Fault::Overflow)?;
-            if minimum > self.remaining_bytes() {
-                return Err(Fault::Capacity.into());
-            }
-            let mut aliases = Vec::new();
-            aliases
-                .try_reserve_exact(count)
-                .map_err(|_| Fault::Capacity)?;
-            aliases.resize_with(count, || None);
-            let actual = aliases
-                .capacity()
-                .checked_mul(core::mem::size_of::<Option<EpochAlias>>())
-                .ok_or(Fault::Overflow)?;
+        let sequence = row.sequence.checked_add(1).ok_or(Fault::Overflow)?;
+        if row.epoch_aliases.is_empty() {
+            let count = AliasBuckets::bucket_count(self.limits.messages_per_room)?;
+            let budget = self.remaining_bytes();
+            let actual = self
+                .rooms
+                .get_mut(r)?
+                .epoch_aliases
+                .initialize(count, budget)?;
             self.charge(actual)?;
-            self.rooms.get_mut(r)?.epoch_aliases = aliases;
         }
-        let hash = self.rooms.get(r)?.nodes.get(node)?.hash;
-        let previous = *message.header().previous;
         let row = self.rooms.get(r)?;
-        let epoch = if let Some(existing) = row.alias(&hash) {
-            existing
+        let n = row.nodes.get(node)?;
+        let hash = n.hash;
+        let [previous, other] = n.parents;
+        let [first_epoch, second_epoch, _] = n.references;
+        let epoch = if let Some(epoch) = row.alias(&hash) {
+            epoch
         } else {
-            match message.body() {
-                wire::body::Body::Join { .. } | wire::body::Body::Leave { .. } => hash,
-                wire::body::Body::Merge {
-                    first_epoch,
-                    second_epoch,
-                    ..
-                } => {
-                    if first_epoch == second_epoch {
-                        *first_epoch
-                    } else {
-                        hash
-                    }
-                }
-                _ => row.epoch_for(&previous),
+            match n.kind {
+                Kind::JOIN | Kind::LEAVE => hash,
+                Kind::MERGE if first_epoch == second_epoch => first_epoch,
+                Kind::MERGE => hash,
+                _ => row.epoch_for(&previous, history)?,
             }
         };
-        let mut hints = [None, None, None];
-        hints[0] = Some((hash, epoch));
-        match message.body() {
-            wire::body::Body::Join { epoch, .. } | wire::body::Body::Leave { epoch } => {
-                hints[1] = Some((previous, *epoch))
+        let (previous_epoch, other_hint) = match n.kind {
+            Kind::JOIN | Kind::LEAVE => (first_epoch, None),
+            Kind::MERGE => (first_epoch, Some((other, second_epoch))),
+            _ => (epoch, None),
+        };
+        let mut hints = [
+            Some((hash, epoch)),
+            Some((previous, previous_epoch)),
+            other_hint,
+        ];
+        if let Some(history) = history {
+            for hint in &mut hints[1..] {
+                if let Some((key, _)) = hint
+                    && *key != [0; 64]
+                    && row.find_node(key).is_none()
+                    && history.detached_parent(key)?.is_some()
+                {
+                    // The pinned record already has its exact association;
+                    // a new hint must not reinsert or replace that alias.
+                    *hint = None;
+                }
             }
-            wire::body::Body::Merge {
-                first_epoch,
-                second_epoch,
-                previous: other,
-            } => {
-                hints[1] = Some((previous, *first_epoch));
-                hints[2] = Some((*other, *second_epoch));
-            }
-            _ => hints[1] = Some((previous, epoch)),
         }
-        // At most3 distinct keys per retained node, and4*M buckets. Preflight all
+        // At most three distinct keys per retained node. Preflight all
         // free cells before changing the table, even under duplicate/zero hints.
-        let row = self.rooms.get(r)?;
         let mut needed = 0;
         for (i, hint) in hints.iter().enumerate() {
             if let Some((key, _)) = hint
@@ -264,7 +333,9 @@ impl<'id> Core<'id> {
         for (key, value) in hints.into_iter().flatten() {
             row.put_alias(key, value)?
         }
+        row.sequence = sequence;
         let n = row.nodes.get_mut(node)?;
+        n.sequence = sequence;
         n.epoch = epoch;
         n.epoch_indexed = true;
         Ok(())
@@ -278,7 +349,7 @@ impl<'id> Core<'id> {
             return Err(Error::Permission);
         }
         let row = self.rooms.get(self.check_room(room)?)?;
-        Ok(row.epoch_for(hash))
+        row.epoch_for(hash, None)
     }
     /// Actual two-frontier facts for an original purpose12 peer MERGE draft.
     /// The original signer Binding subsequently fixes header and complete body.
@@ -288,6 +359,7 @@ impl<'id> Core<'id> {
         }
         let row = self.rooms.get(self.check_room(room)?)?;
         let Some(previous) = row
+            .queues
             .frontier
             .iter()
             .copied()
@@ -296,14 +368,14 @@ impl<'id> Core<'id> {
             return Ok(None);
         };
         Ok(Some(ServiceMerge {
-            first_epoch: row.epoch_for(&row.last_message),
-            second_epoch: row.epoch_for(&previous),
+            first_epoch: row.epoch_for(&row.last_message, None)?,
+            second_epoch: row.epoch_for(&previous, None)?,
             previous,
         }))
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "alloc"))]
 mod tests {
     use super::*;
     #[test]
@@ -324,10 +396,7 @@ mod tests {
         };
         let mut room = RoomRow::new([1; 64], None, limits, wire::profile::Profile::LITTLE_255)?;
         assert!(room.epoch_aliases.is_empty());
-        room.epoch_aliases
-            .try_reserve_exact(4)
-            .map_err(|_| Fault::Capacity)?;
-        room.epoch_aliases.resize_with(4, || None);
+        room.epoch_aliases.initialize(4, usize::MAX)?;
         // Explicit public bucket keys, not computed digests or crypto fixtures.
         let first = [2; 64];
         let mut collision = first;
@@ -336,11 +405,11 @@ mod tests {
         room.put_alias(first, original)?;
         room.put_alias(first, [5; 64])?;
         room.put_alias(collision, [6; 64])?;
-        assert_eq!(room.epoch_for(&first), original);
-        assert_eq!(room.epoch_for(&collision), [6; 64]);
-        assert_eq!(room.epoch_for(&[9; 64]), [9; 64]);
+        assert_eq!(room.epoch_for(&first, None)?, original);
+        assert_eq!(room.epoch_for(&collision, None)?, [6; 64]);
+        assert_eq!(room.epoch_for(&[9; 64], None)?, [9; 64]);
         room.put_alias([0; 64], [8; 64])?;
-        assert_eq!(room.epoch_for(&[0; 64]), [0; 64]);
+        assert_eq!(room.epoch_for(&[0; 64], None)?, [0; 64]);
         assert_eq!(room.epoch_alias_count, 2);
         room.put_alias([7; 64], [8; 64])?;
         room.put_alias([8; 64], [9; 64])?;
@@ -348,7 +417,7 @@ mod tests {
             room.put_alias([9; 64], [1; 64]),
             Err(Error::Protocol(Fault::Capacity))
         ));
-        assert_eq!(room.epoch_for(&first), original);
+        assert_eq!(room.epoch_for(&first, None)?, original);
         Ok(())
     }
 }

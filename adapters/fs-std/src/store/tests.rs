@@ -43,26 +43,28 @@ impl Drop for Temporary {
         let _cleanup = fs::remove_dir_all(&self.0);
     }
 }
-#[cfg(unix)]
-const DIRECTORY_SYNC: gnunet_native::DirectorySync = gnunet_native::DirectorySync::Synchronized;
-#[cfg(windows)]
-const DIRECTORY_SYNC: gnunet_native::DirectorySync = gnunet_native::DirectorySync::Unavailable;
-
 #[test]
 fn cache_preserves_raw_bytes_and_reports_real_retention() -> TestResult {
+    use gnunet_native::filesystem::Directory as NativeDirectory;
+
     let temporary = Temporary::new()?;
     let root = temporary.0.join("objects");
     let mut repository = Repository::open(&root)?;
     let bytes = vec![7; 1024];
     let query = gnunet_crypto::hash512(&bytes);
-    let retention = crate::Retention::FileSynchronized(DIRECTORY_SYNC);
-    assert_eq!(repository.cache(query, &bytes)?, Insert::Created(retention));
+    let created = repository.cache(query, &bytes)?;
+    let names = fs::read_dir(&root)?.collect::<std::io::Result<Vec<_>>>()?;
+    assert_eq!(names.len(), 1);
+    let barrier = NativeDirectory::open(&temporary.0)?
+        .sync()?
+        .combine(NativeDirectory::open(&root)?.sync()?)
+        .combine(NativeDirectory::open(&names[0].path())?.sync()?);
+    let retention = crate::Retention::FileSynchronized(barrier);
+    assert_eq!(created, Insert::Created(retention));
     assert_eq!(
         repository.cache(query, &bytes)?,
         Insert::Existing(retention)
     );
-    let names = fs::read_dir(&root)?.collect::<std::io::Result<Vec<_>>>()?;
-    assert_eq!(names.len(), 1);
     let objects = fs::read_dir(names[0].path())?.collect::<std::io::Result<Vec<_>>>()?;
     assert_eq!(objects.len(), 1, "owned temporary must be gone");
     assert_eq!(fs::read(objects[0].path())?, bytes);

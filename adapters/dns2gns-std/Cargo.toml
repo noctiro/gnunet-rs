@@ -26,5 +26,8 @@ gnunet-types.workspace = true
 socket2.workspace = true
 tokio = { workspace = true, features = ["rt", "net", "time", "io-util"] }
 
+[target.'cfg(any(windows, target_os = "linux", target_os = "freebsd", target_os = "macos"))'.dependencies]
+gnunet-native = { workspace = true, features = ["socket-io"] }
+
 [lints]
 workspace = true

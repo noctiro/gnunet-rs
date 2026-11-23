@@ -34,10 +34,17 @@ produces `Outcome::Allocation`; None is allocation failure. A successful
 allocation does not assert a connected exit, packet forwarding, kernel routes
 or remote application delivery.
 
+Unissued requests retain their original admission order across slot reuse.
+If the oldest request cannot fit, the existing writes drain first. Canceling
+an unissued request frees its place for the next original request.
+
 Admission fixes canonical and independent native response bounds before
 encoding. `next_deadline` exposes the absolute boundary;
 `next_native_deadline` exposes the original monotonic target. The driver checks
 native bounds before clock access, connection progress, I/O and reply dispatch.
+The first partial response read starts one native input timeout. Further bytes
+keep that original target. Expiry closes the original stream and settles each
+allocation from its own write exposure.
 Containing owners poll `poll_native_guard` before their own clock waits. This
 guard arms the original native wakeup and dispatches local retirement facts
 without sampling the canonical source.

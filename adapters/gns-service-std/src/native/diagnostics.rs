@@ -203,10 +203,10 @@ pub enum OwnedReport {
     System(crate::auxiliary::system::SystemReport),
     /// Real DNS sockets and partial byte observations.
     Dns(crate::auxiliary::dns::DnsReport),
-    /// Real files-profile lookup.
+    /// Real registry lookup retirement.
     Registry {
-        /// Actual prepared protocol/service mapping, or no match.
-        mapping: Option<(u16, u16)>,
+        /// Original lookup result, cancellation, or failure.
+        outcome: crate::auxiliary::registry::Outcome,
     },
     /// Actual NAMECACHE operation facts.
     Cache {
@@ -292,7 +292,7 @@ impl Report<'_> {
         match self {
             Self::System(report) => OwnedReport::System(report),
             Self::Dns(report) => OwnedReport::Dns(report),
-            Self::Registry { mapping } => OwnedReport::Registry { mapping },
+            Self::Registry { outcome } => OwnedReport::Registry { outcome },
             Self::Cache(report) => OwnedReport::Cache {
                 operation: report.operation.diagnostic(),
                 request_id: report.request_id,

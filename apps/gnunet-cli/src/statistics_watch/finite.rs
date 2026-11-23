@@ -1,10 +1,11 @@
 //! Finite GET/SET on the shared configured native owner, one held row at a time.
 use super::{
     Failure,
-    driver::{self, Bound, Errors, Failed, Inputs, Report, ResolverOwner},
+    driver::{self, Bound, Connection, Errors, Failed, Inputs, Names, Report},
     output::Output,
 };
 use crate::foreground::Signals;
+use gnunet_client::statistics::Statistic;
 use gnunet_client::statistics_handle::{
     DestroyOutcome, DestroyReport, GetFlow, GetId, SetterAdmission,
 };
@@ -14,10 +15,9 @@ use gnunet_ipc_unix::{
 };
 use gnunet_types::Error;
 use std::{
-    cell::RefCell,
     future::{Future, poll_fn},
+    io,
     pin::Pin,
-    rc::Rc,
     sync::Arc,
     task::Poll,
     time::Duration,
@@ -29,7 +29,7 @@ const HARD: Duration = Duration::from_secs(10);
 const CADENCE: Duration = Duration::from_millis(10);
 // Each name byte needs at most6 JSON string bytes and4 byte-array bytes.
 // Lossy UTF-8 adds no larger expansion. One full wire row fits below this cap.
-const OUTPUT: usize = 1024 * 1024;
+pub(super) const OUTPUT: usize = 1024 * 1024;
 #[derive(Clone, Copy)]
 pub(super) enum Mutation {
     Absolute(u64),
@@ -40,6 +40,41 @@ pub(super) enum Action {
     Get,
     Set { value: Mutation, persistent: bool },
 }
+pub(super) enum Destination<'a> {
+    Stdout(Output),
+    Collect(&'a mut dyn for<'frame> FnMut(Statistic<'frame>) -> Result<(), Failure>),
+    Silent,
+}
+impl Destination<'_> {
+    fn stage_get(&mut self, statistic: Statistic<'_>) -> Result<(), Failure> {
+        match self {
+            Self::Stdout(output) => output.stage_get(statistic),
+            Self::Collect(record) => record(statistic),
+            Self::Silent => Err("STATISTICS received GET data for a SET operation".into()),
+        }
+    }
+    fn stage_terminal(&mut self, count: Option<u64>, noop: bool) -> Result<(), Failure> {
+        if let Self::Stdout(output) = self {
+            output.stage_terminal(count, noop)?;
+        }
+        Ok(())
+    }
+    fn pending(&self) -> (usize, usize) {
+        match self {
+            Self::Stdout(output) => output.pending(),
+            _ => (0, 0),
+        }
+    }
+}
+
+pub(super) struct Node<'a> {
+    pub selector: &'a Names,
+    pub connection: &'a Connection,
+    pub signals: &'a mut Signals,
+    pub resolver: &'a mut gnunet_resolver_broker::Driver<4, 256>,
+    pub deadline: Option<Instant>,
+}
+
 struct Events<'id> {
     get: Option<GetId<'id>>,
     completed: bool,
@@ -51,7 +86,7 @@ impl<'id> Events<'id> {
     fn callback(
         &mut self,
         event: Event<'id, '_>,
-        output: &mut Output,
+        output: &mut Destination<'_>,
         report: &mut Report,
     ) -> GetFlow {
         match event {
@@ -102,25 +137,53 @@ impl<'id> Events<'id> {
 pub(super) async fn command(inputs: Inputs, action: Action) -> Result<Report, Failure> {
     let Inputs {
         selector,
+        style,
         parent,
+        connection,
+        mut resolver,
+    } = inputs;
+    if connection.stop.get() || connection.reports.failed() {
+        return Err("STATISTICS stopped before native admission".into());
+    }
+    let mut signals = Signals::new(parent)?;
+    let output = Destination::Stdout(Output::new(style, OUTPUT)?);
+    node(
+        Node {
+            selector: &selector,
+            connection: &connection,
+            signals: &mut signals,
+            resolver: &mut resolver,
+            deadline: None,
+        },
+        action,
+        output,
+    )
+    .await
+}
+
+pub(super) async fn node(
+    node: Node<'_>,
+    action: Action,
+    mut output: Destination<'_>,
+) -> Result<Report, Failure> {
+    let Node {
+        selector,
+        connection,
+        signals,
+        resolver,
+        deadline,
+    } = node;
+    let Connection {
         live,
         resolution,
         source,
         reports,
         stop: latch,
-        resolver,
-    } = inputs;
-    let cleanup = Rc::new(RefCell::new(None));
-    let mut resolver = ResolverOwner {
-        driver: resolver,
-        cleanup: cleanup.clone(),
-        closed: false,
-    };
+    } = connection;
     let mut report = Report::default();
     let mut errors = Errors::default();
     let mut instance = handle::Instance::new();
     let mut owner: Option<Owner<'_>> = None;
-    let mut output = None;
     let mut events = Events {
         get: None,
         completed: false,
@@ -134,23 +197,25 @@ pub(super) async fn command(inputs: Inputs, action: Action) -> Result<Report, Fa
         if latch.get() || reports.failed() {
             return Err("STATISTICS stopped before native admission".into());
         }
-        let mut signals = Signals::new(parent)?;
         let mut bound = Bound::new(HARD)?;
+        if let Some(deadline) = deadline
+            && deadline < bound.hard
+        {
+            bound = Bound::at(deadline)?;
+        }
         original_hard = Some(bound.hard);
-        output = Some(Output::with_capacity(OUTPUT)?);
-        let output = output.as_mut().ok_or("original stdout owner absent")?;
         let marker = gnunet_client_host::EndpointSource::live(
             live.clone(),
             b"statistics",
             resolution.clone(),
         );
-        if !Arc::ptr_eq(&marker.clock(), &source) {
+        if !Arc::ptr_eq(&marker.clock(), source) {
             return Err("STATISTICS actual clock source mismatch".into());
         }
         owner = Owner::from_live_config(
             &mut instance,
-            live,
-            resolution,
+            live.clone(),
+            resolution.clone(),
             &selector.subsystem,
             handle::Limits {
                 max_frame_bytes: 65535,
@@ -196,7 +261,7 @@ pub(super) async fn command(inputs: Inputs, action: Action) -> Result<Report, Fa
             if events.retry {
                 report.connect_retries = report.connect_retries.saturating_add(1);
                 events.retry = false;
-                driver::harvest_retry(current, &mut report, &reports);
+                driver::harvest_retry(current, &mut report, reports);
             }
             if !terminal && output.pending().1 == 0 {
                 match action {
@@ -227,6 +292,9 @@ pub(super) async fn command(inputs: Inputs, action: Action) -> Result<Report, Fa
                     _ => {}
                 }
             }
+            if terminal && output.pending().1 == 0 {
+                break;
+            }
             enum Step {
                 Native(Result<Progress, IpcError>),
                 Resolver(Result<(), Failure>),
@@ -238,11 +306,11 @@ pub(super) async fn command(inputs: Inputs, action: Action) -> Result<Report, Fa
             let step = {
                 let mut driving = std::pin::pin!(current.drive(None, |event, _| events.callback(
                     event,
-                    output,
+                    &mut output,
                     &mut report
                 )));
                 let diagnostic = reports.clone();
-                let mut resolving = std::pin::pin!(resolver.driver.drive_waiting(None, |event| {
+                let mut resolving = std::pin::pin!(resolver.drive_waiting(None, |event| {
                     diagnostic.debug(
                         "statistics.resolver",
                         format_args!("original Resolver={event:?}"),
@@ -254,7 +322,7 @@ pub(super) async fn command(inputs: Inputs, action: Action) -> Result<Report, Fa
                     if bound.guard(cx) {
                         return Poll::Ready(Ok(Step::Expired));
                     }
-                    if driver::stop(cx, &mut signals, &reports, &latch)? {
+                    if driver::stop(cx, signals, reports, latch)? {
                         return Poll::Ready(Ok(Step::Stop));
                     }
                     if held {
@@ -327,31 +395,39 @@ pub(super) async fn command(inputs: Inputs, action: Action) -> Result<Report, Fa
                     errors.resolver = Some(error);
                     break;
                 }
-                Ok(Step::Output) if !errors.deadline => match output.step() {
-                    Ok(Some(true)) => {
-                        output.release();
-                        retry = None;
-                        if terminal {
+                Ok(Step::Output) if !errors.deadline => match &mut output {
+                    Destination::Stdout(out) => match out.step() {
+                        Ok(Some(true)) => {
+                            out.release();
+                            retry = None;
+                            if terminal {
+                                break;
+                            }
+                            report.rows_written =
+                                report.rows_written.checked_add(1).ok_or(Error::Overflow)?;
+                        }
+                        Ok(Some(false)) => {
+                            // Positive byte progress has no artificial cadence wait.
+                            retry = None;
+                            tokio::task::yield_now().await;
+                        }
+                        Ok(None) => {
+                            let next = Instant::now()
+                                .checked_add(CADENCE)
+                                .ok_or(Error::Overflow)?
+                                .min(bound.hard);
+                            retry = Some(Box::pin(tokio::time::sleep_until(next)));
+                        }
+                        Err(error) => {
+                            errors.output = Some(error);
                             break;
                         }
-                        report.rows_written =
-                            report.rows_written.checked_add(1).ok_or(Error::Overflow)?;
-                    }
-                    Ok(Some(false)) => {
-                        // Positive byte progress has no artificial cadence wait.
-                        retry = None;
-                        tokio::task::yield_now().await;
-                    }
-                    Ok(None) => {
-                        let next = Instant::now()
-                            .checked_add(CADENCE)
-                            .ok_or(Error::Overflow)?
-                            .min(bound.hard);
-                        retry = Some(Box::pin(tokio::time::sleep_until(next)));
-                    }
-                    Err(error) => {
-                        errors.output = Some(error);
-                        break;
+                    },
+                    _ => {
+                        return Err(io::Error::other(
+                            "STATISTICS pending output lost its stdout owner",
+                        )
+                        .into());
                     }
                 },
                 _ => {}
@@ -366,14 +442,14 @@ pub(super) async fn command(inputs: Inputs, action: Action) -> Result<Report, Fa
     if let Err(error) = result {
         errors.original = Some(error);
     }
-    if let Some(output) = &mut output {
+    if let Destination::Stdout(output) = &mut output {
         let (prefix, total) = output.pending();
         report.output_prefix = prefix;
         report.output_total = total;
         errors.stdout_flush = output.flush().err();
-        if original_hard.is_some_and(|hard| Instant::now() >= hard) {
-            errors.deadline = true;
-        }
+    }
+    if original_hard.is_some_and(|hard| Instant::now() >= hard) {
+        errors.deadline = true;
     }
     if let Some(current) = owner.as_mut() {
         driver::harvest_terminal(current, &mut errors);
@@ -390,14 +466,16 @@ pub(super) async fn command(inputs: Inputs, action: Action) -> Result<Report, Fa
         &mut owner,
         &mut events.destroyed,
         destroy_started,
-        &mut resolver.driver,
-        &reports,
+        resolver,
+        reports,
         &mut report,
         &mut errors,
     )
     .await;
-    resolver.close();
-    errors.resolver_close = cleanup.borrow_mut().take();
+    errors.resolver_close = resolver
+        .disconnect()
+        .err()
+        .map(|error| Box::new(error) as Failure);
     errors.logging = reports.take_error();
     if errors.failed() {
         Err(Box::new(Failed { errors, report }))

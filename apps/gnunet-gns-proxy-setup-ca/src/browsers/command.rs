@@ -35,17 +35,11 @@ impl Helper {
     pub(crate) fn select(config: &gnunet_config::Configuration) -> Result<Self, Cause> {
         let explicit = config.get(b"gns-proxy-rust", b"NSS_CERTUTIL").is_some();
         let selected = if explicit {
-            let path = config.get_filename(
+            Some(config.get_absolute_filename(
                 b"gns-proxy-rust",
                 b"NSS_CERTUTIL",
                 &gnunet_config::ProcessEnvironment,
-            )?;
-            if !path.is_absolute() {
-                return Err(
-                    "NSS_CERTUTIL requires an absolute path to Mozilla NSS certutil".into(),
-                );
-            }
-            Some(path)
+            )?)
         } else {
             #[cfg(unix)]
             {

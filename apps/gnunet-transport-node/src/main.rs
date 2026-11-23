@@ -63,6 +63,7 @@ fn run() -> Result<(), Failure> {
     let state_directory =
         directory.ok_or("explicit --state-directory for new-format Rust backend is required")?;
     let config = startup::configuration(selected.as_deref())?;
+    let included_hellos = startup::IncludedHellos::configured(&config)?;
     let ikm_file = if local_key {
         Some(config.get_filename(
             b"peer",
@@ -122,6 +123,7 @@ fn run() -> Result<(), Failure> {
                             config: &config,
                             activation,
                             state_directory,
+                            included_hellos,
                             local_key: LocalKeyCapability { ikm_file },
                             limits: Limits::default(),
                         },
@@ -137,6 +139,7 @@ fn run() -> Result<(), Failure> {
                             config: &config,
                             activation,
                             state_directory,
+                            included_hellos,
                             limits: Limits::default(),
                         },
                         activated,

@@ -4,6 +4,8 @@
 //! independent; both must be live during actual crypto. Every packet still has
 //! real AEAD authentication, and authenticated output keeps its packet deadline.
 use super::*;
+use gnunet_wire::official::Frame;
+
 fn source_eq(a: &Source<'_>, b: &Source<'_>) -> bool {
     core::ptr::eq(a.instance, b.instance) && a.allocation == b.allocation
 }
@@ -24,11 +26,10 @@ pub struct Packet<'a> {
     /// One complete non-nested inner GNUnet frame.
     pub message: &'a [u8],
 }
-fn layout(
+pub(super) fn layout(
     local: PeerId,
     target: PeerId,
     packet: &Packet<'_>,
-    work: usize,
     out: usize,
 ) -> Result<(usize, usize), Error> {
     let inner = Frame::decode(packet.message)?;
@@ -56,7 +57,7 @@ fn layout(
         .and_then(|n| n.checked_add(plain))
         .filter(|n| *n <= u16::MAX as usize)
         .ok_or(Error::TooLarge)?;
-    if work < plain || out < size {
+    if out < size {
         return Err(Error::Capacity);
     }
     Ok((plain, size))
@@ -200,7 +201,10 @@ impl<'source, 'id> SendMaterial<'source, 'id> {
         if task.stamp != self.original.stamp {
             return Err(Error::InvalidInput);
         }
-        let (plain, bytes) = layout(task.local(), self.target, &packet, work.0.len(), out.len())?;
+        let (plain, bytes) = layout(task.local(), self.target, &packet, out.len())?;
+        if work.0.len() < plain {
+            return Err(Error::Capacity);
+        }
         let nonce = self.nonce()?;
         dv::encode_plaintext(
             task.local(),

@@ -156,8 +156,7 @@ pub enum Event {
         /// Original cause.
         cause: CloseCause,
     },
-    /// Actual completed memory-backend call, before result queueing. This is not
-    /// a disk commit, fsync receipt, client processing or remote publication.
+    /// Completed backend call for this live source, before result queueing.
     Result {
         /// Original source.
         client: Client,
@@ -186,7 +185,7 @@ pub enum Event {
         /// Original frame serial.
         write: u64,
     },
-    /// Actual expired memory rows removed by the explicit clock maintenance.
+    /// Actual expired rows removed by the explicit clock maintenance.
     Expired {
         /// Actual removed distinct queries.
         count: usize,
@@ -202,7 +201,7 @@ pub enum Progress {
     /// All sources have drained or physically stopped.
     Stopped,
 }
-/// Actual counters; cache state is volatile and has no hidden store worker.
+/// Actual request, source and expiry counters.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Report {
     /// Actual source admissions.
@@ -216,11 +215,11 @@ pub struct Report {
     /// Actual queries discarded by expiry maintenance.
     pub expired: u64,
 }
-/// Final memory-backend/source report, not a durable-storage receipt.
+/// Source and cache state sampled at shutdown.
 #[derive(Clone, Copy, Debug)]
 pub struct Shutdown {
     /// Source counters.
     pub report: Report,
-    /// Retained volatile cache allocation summary at stop.
+    /// Retained cache allocation summary at stop.
     pub cache: Stats,
 }

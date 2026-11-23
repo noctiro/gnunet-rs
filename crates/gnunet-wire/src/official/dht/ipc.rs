@@ -2,8 +2,8 @@
 //!
 //! Local request IDs are opaque eight bytes. They never appear in P2P RESULT.
 //! PUT has no service acknowledgement. Message152 is a registry TODO, not an ACK.
-use super::{Path, Reader, array, start, total_len};
-use crate::official::{AbsoluteTime, Frame, message_type};
+use super::{Path, Reader, array, start, start_prefix, total_len};
+use crate::official::{AbsoluteTime, Frame, HEADER_LEN, MessageHeader, message_type};
 use gnunet_types::Error;
 
 /// Opaque local-MQ GET correlation bytes, copied unchanged by the C API.
@@ -392,6 +392,22 @@ pub fn encode_hello(url: Option<&[u8]>, request: bool, out: &mut [u8]) -> Result
     }
     Ok(n)
 }
+
+/// Finish a HELLO_URL response whose URL is already written after the
+/// reserved header. Append its official NUL terminator without copying it.
+pub fn encode_hello_url_in_place(out: &mut [u8], url_len: usize) -> Result<usize, Error> {
+    let payload_len = url_len.checked_add(1).ok_or(Error::TooLarge)?;
+    let header = MessageHeader::new(message_type::DHT_CLIENT_HELLO_URL, payload_len)?;
+    let length = header.size();
+    let payload = out.get_mut(HEADER_LEN..length).ok_or(Error::Capacity)?;
+    if payload[..url_len].contains(&0) {
+        return Err(Error::InvalidInput);
+    }
+    payload[url_len] = 0;
+    header.encode(out)?;
+    Ok(length)
+}
+
 fn url(bytes: &[u8]) -> Result<Option<&[u8]>, Error> {
     if bytes.is_empty() {
         return Ok(None);
@@ -539,7 +555,25 @@ impl<'a> MonitorPut<'a> {
     /// Encode original PUT metadata, with no put-ack interpretation.
     pub fn encode(self, out: &mut [u8]) -> Result<usize, Error> {
         let n = self.encoded_len()?;
-        let mut w = start(out, n, message_type::DHT_MONITOR_PUT)?;
+        let out = out.get_mut(..n).ok_or(Error::Capacity)?;
+        let prefix = self.write_prefix(out, n)?;
+        out[prefix..].copy_from_slice(self.payload);
+        Ok(n)
+    }
+    /// Encode the official header and metadata of a separately retained
+    /// payload. The header declares the whole frame size and the returned
+    /// prefix length excludes the original payload.
+    ///
+    /// # Errors
+    /// Rejects invalid metadata, an oversized complete frame or insufficient
+    /// prefix storage before writing output.
+    pub fn encode_prefix(self, out: &mut [u8]) -> Result<usize, Error> {
+        self.write_prefix(out, self.encoded_len()?)
+    }
+
+    fn write_prefix(self, out: &mut [u8], n: usize) -> Result<usize, Error> {
+        let prefix = n - self.payload.len();
+        let mut w = start_prefix(out, n, prefix, message_type::DHT_MONITOR_PUT)?;
         w.u32(self.options)?;
         w.u32(self.block_type)?;
         w.u32(self.hop_count)?;
@@ -551,8 +585,7 @@ impl<'a> MonitorPut<'a> {
             w.put(p)?;
         }
         w.put(self.put_path.as_bytes())?;
-        w.put(self.payload)?;
-        Ok(n)
+        Ok(prefix)
     }
 }
 /// Monitor result150. There is deliberately no local operation ID here.
@@ -627,7 +660,25 @@ impl<'a> MonitorResult<'a> {
     /// Encode one original monitor result with zero reserved field.
     pub fn encode(self, out: &mut [u8]) -> Result<usize, Error> {
         let n = self.encoded_len()?;
-        let mut w = start(out, n, message_type::DHT_MONITOR_GET_RESP)?;
+        let out = out.get_mut(..n).ok_or(Error::Capacity)?;
+        let prefix = self.write_prefix(out, n)?;
+        out[prefix..].copy_from_slice(self.payload);
+        Ok(n)
+    }
+    /// Encode the official header and metadata of a separately retained
+    /// payload. The header declares the whole frame size and the returned
+    /// prefix length excludes the original payload.
+    ///
+    /// # Errors
+    /// Rejects invalid metadata, an oversized complete frame or insufficient
+    /// prefix storage before writing output.
+    pub fn encode_prefix(self, out: &mut [u8]) -> Result<usize, Error> {
+        self.write_prefix(out, self.encoded_len()?)
+    }
+
+    fn write_prefix(self, out: &mut [u8], n: usize) -> Result<usize, Error> {
+        let prefix = n - self.payload.len();
+        let mut w = start_prefix(out, n, prefix, message_type::DHT_MONITOR_GET_RESP)?;
         w.u32(self.block_type)?;
         w.u32(0)?;
         w.u32(self.options)?;
@@ -640,7 +691,6 @@ impl<'a> MonitorResult<'a> {
         }
         w.put(self.put_path.as_bytes())?;
         w.put(self.get_path.as_bytes())?;
-        w.put(self.payload)?;
-        Ok(n)
+        Ok(prefix)
     }
 }

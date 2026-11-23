@@ -23,6 +23,10 @@ import tempfile
 import time
 
 ROOT = Path(__file__).resolve().parents[3]
+sys.dont_write_bytecode = True
+sys.path.insert(0, str(ROOT / "tools"))
+from cargo_artifacts import CargoArtifacts
+from rust_toolchain import rust_channel
 REVISION = "346358e26d4dcc2dc4f51bef5d52dca29c7d8165"
 
 
@@ -36,6 +40,7 @@ def main():
     parser.add_argument("--reference", required=True, type=Path)
     parser.add_argument("--rust-service", type=Path)
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--toolchain")
     args = parser.parse_args()
     args.output = args.output.resolve()
     args.output.mkdir(parents=True, exist_ok=False)
@@ -43,7 +48,8 @@ def main():
     assert receipt["status"] == "passed" and receipt["upstream"]["revision"] == REVISION
     for item in [*receipt["artifacts"].values(), *receipt["libraries"], *receipt["default_configurations"]]:
         assert digest(item["path"]) == item["sha256"], item["path"]
-    inputs = [ROOT / "Cargo.toml", ROOT / "Cargo.lock",
+    inputs = [ROOT / "Cargo.toml", ROOT / "Cargo.lock", ROOT / "rust-toolchain.toml",
+              ROOT / "tools/cargo_artifacts.py", ROOT / "tools/rust_toolchain.py",
               ROOT / "apps/gnunet-service-statistics/Cargo.toml",
               *sorted((ROOT / "apps/gnunet-service-statistics/src").rglob("*.rs")),
               ROOT / "adapters/service-runtime/Cargo.toml",
@@ -55,18 +61,20 @@ def main():
               *sorted((ROOT / "adapters/service-runtime/src/path").rglob("*.rs")),
               ROOT / "adapters/service-runtime/src/signals.rs",
               *sorted((ROOT / "adapters/service-runtime/src/signals").rglob("*.rs")),
-              ROOT / "apps/gnunet-service-statistics/examples/activation_probe.rs",
+              ROOT / "apps/gnunet-service-statistics/examples/statistics_activation_probe.rs",
               Path(__file__).resolve(), ROOT / "apps/gnunet-service-statistics/ACTIVATION.md",
               ROOT / "apps/gnunet-service-statistics/tests/activation_abi.c"]
     before = {str(p.relative_to(ROOT)): digest(p) for p in inputs}
-    build_argv = ["cargo", "+1.99.1", "build", "--manifest-path", str(ROOT / "Cargo.toml"), "--target-dir", str(ROOT / "target"), "--locked", "--offline", "-p", "gnunet-service-statistics", "--bin", "gnunet-service-statistics", "--example", "activation_probe"]
+    build_argv = ["cargo", "+" + rust_channel(ROOT, args.toolchain), "build", "--manifest-path", str(ROOT / "Cargo.toml"), "--target-dir", str(ROOT / "target"), "--locked", "--offline", "-p", "gnunet-service-statistics", "--bin", "gnunet-service-statistics", "--example", "statistics_activation_probe", "--message-format=json"]
     build = subprocess.run(build_argv, cwd=ROOT, capture_output=True, text=True, timeout=180)
     (args.output / "fresh-build.stdout").write_text(build.stdout)
     (args.output / "fresh-build.stderr").write_text(build.stderr)
     assert build.returncode == 0, build.stderr
-    assert digest(args.probe) == digest(ROOT / "target/debug/examples/activation_probe"), "supplied probe does not match fresh current application build"
+    artifacts = CargoArtifacts(build.stdout)
+    manifest = ROOT / "apps/gnunet-service-statistics/Cargo.toml"
+    assert digest(args.probe) == digest(artifacts.example("statistics_activation_probe", manifest)), "supplied probe does not match fresh current application build"
     if args.rust_service:
-        assert digest(args.rust_service) == digest(ROOT / "target/debug/gnunet-service-statistics"), "supplied service does not match fresh current application build"
+        assert digest(args.rust_service) == digest(artifacts.binary("gnunet-service-statistics", manifest)), "supplied service does not match fresh current application build"
     binaries = args.output / "binaries"
     binaries.mkdir()
     participants = {}

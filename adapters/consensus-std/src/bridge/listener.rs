@@ -139,12 +139,7 @@ impl<'id> Bridge<'id, '_> {
                         accepted = Some((id, incoming.epoch.clone(), incoming.peer, context));
                         set::Decision::Accept {
                             mode: set::ResultMode::Symmetric,
-                            options: set::Options {
-                                force_delta: 0,
-                                force_full: 0,
-                                byzantine: 1,
-                                byzantine_lower_bound: 0,
-                            },
+                            options: Action::RECONCILIATION_OPTIONS,
                         }
                     }
                     Err(error) => {

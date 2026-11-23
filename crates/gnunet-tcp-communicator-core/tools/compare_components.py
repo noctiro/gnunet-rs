@@ -51,9 +51,9 @@ def main():
         header = out / 'tcp_source.inc'
         header.write_text('/* Original GNUnet AGPL-3.0-or-later test-only functions. */\n' + '\n\n'.join(chunks) + '\n')
         selected = [piece for name in PACKAGES for piece in ('-p', name)]
-        cmd.run('format', ['cargo', '+1.99.1', 'fmt', '--manifest-path', repo / 'Cargo.toml', *selected, '--check'])
+        cmd.run('format', [*cmd.cargo, 'fmt', '--manifest-path', repo / 'Cargo.toml', *selected, '--check'])
         tests = cmd.tests()
-        cmd.run('clippy', ['cargo', '+1.99.1', 'clippy', '--manifest-path', repo / 'Cargo.toml',
+        cmd.run('clippy', [*cmd.cargo, 'clippy', '--manifest-path', repo / 'Cargo.toml',
                            '--locked', '--offline', *selected, '--all-targets', '-j', '1', '--', '-D', 'warnings'])
         binary = cmd.example(CORE, 'components')
         rust = json.loads(cmd.run('rust-observer', [binary]))

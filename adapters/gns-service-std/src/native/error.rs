@@ -15,7 +15,7 @@ pub enum Error<'id> {
     Resolver(gnunet_resolver_broker::BrokerError),
     /// Actual DNS-only operation failure.
     Dns(crate::auxiliary::dns::Error),
-    /// Original unavailable protocol/service files, not a successful no-match.
+    /// Actual protocol/service registry failure.
     Registry(Arc<crate::auxiliary::registry::Error>),
     /// Original endpoint/clock/Resolver/native CLIENT refusal.
     Ports(ConnectError),
@@ -235,10 +235,10 @@ pub enum Report<'id> {
     System(crate::auxiliary::system::SystemReport),
     /// Actual owned DNS socket IO and retirement.
     Dns(crate::auxiliary::dns::DnsReport),
-    /// Actual prepared files registry lookup; None preserves literal SBOX.
+    /// Actual retirement of the original registry lookup.
     Registry {
-        /// Actual protocol number and service port, or no matching entry.
-        mapping: Option<(u16, u16)>,
+        /// Original lookup result, cancellation, or failure.
+        outcome: crate::auxiliary::registry::Outcome,
     },
     /// Retired original NAMECACHE row.
     Cache(CacheReport<'id>),

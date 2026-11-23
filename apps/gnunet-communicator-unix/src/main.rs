@@ -13,8 +13,6 @@ mod early;
 #[cfg(unix)]
 mod foreground;
 #[cfg(unix)]
-mod settings;
-#[cfg(unix)]
 mod statistics;
 #[cfg(unix)]
 fn diagnostic(args: std::fmt::Arguments<'_>) {
@@ -37,10 +35,11 @@ fn run() -> Result<(), Failure> {
 fn run() -> Result<(), Failure> {
     use gnunet_program_host::{
         logging::Logger,
-        program::{self, Defaults, Invocation, NlsDisabled, Preparation},
+        program::{self, Defaults, Invocation, Preparation},
         shared_clock::SharedClock,
     };
     use gnunet_service_startup::{GroupsProfile, apply_privileges, configured_user, resolve_user};
+    use gnunet_unix_communicator_host::embedded::Configured;
     use std::sync::Arc;
     let inherited = early::capture()?;
     let clock = SharedClock::native(1024)?;
@@ -49,7 +48,7 @@ fn run() -> Result<(), Failure> {
         Default::default(),
     )?;
     let mut logger = Logger::new(b"gnunet-communicator-unix", std::process::id(), false)?;
-    let prepared = program::prepare(
+    let prepared = program::prepare_installed(
         config,
         Invocation {
             binary_name: b"gnunet-communicator-unix",
@@ -60,7 +59,6 @@ fn run() -> Result<(), Failure> {
         Default::default(),
         std::env::args_os(),
         &program::Environment::capture(),
-        &mut NlsDisabled,
         &mut logger,
         &clock,
         &mut io::stdout().lock(),
@@ -78,7 +76,7 @@ fn run() -> Result<(), Failure> {
     if !prepared.main().arguments.is_empty() {
         return Err("UNIX communicator accepts no positional arguments".into());
     }
-    let settings = settings::Settings::read(prepared.main().config)?;
+    let settings = Configured::read(prepared.main().config)?;
     let user = configured_user(prepared.main().config, b"communicator-unix")?
         .map(|n| resolve_user(&n))
         .transpose()?;

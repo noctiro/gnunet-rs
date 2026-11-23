@@ -28,7 +28,7 @@ impl<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy>
             if retired {
                 // Keep actual positive-prefix facts while the original pure
                 // source is retained for held input; never revive a lost source.
-                if self.links[link].as_ref().is_some_and(|l| l.peer.is_some()) {
+                if self.links[link].as_ref().and_then(Link::peer).is_some() {
                     self.server.engine_mut().exposed(effect)?;
                 }
                 observe(Event::RetiredWrite {
@@ -54,8 +54,11 @@ impl<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy>
         }
         match p.action {
             Action::Open(i) => {
-                if let Some(l) = self.links[i].as_mut() {
-                    l.create_written = true;
+                if let Some(a) = self.links[i].as_mut().and_then(|l| l.attachment.as_mut())
+                    && let AttachmentState::Opening { progress, .. } = &mut a.state
+                    && let OpeningProgress::WritingCreate { until } = *progress
+                {
+                    *progress = OpeningProgress::WaitingForCredit { until };
                 }
             }
             Action::Data {
@@ -64,7 +67,7 @@ impl<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy>
                 retired,
             } => {
                 if retired {
-                    if self.links[link].as_ref().is_some_and(|l| l.peer.is_some()) {
+                    if self.links[link].as_ref().and_then(Link::peer).is_some() {
                         self.server.engine_mut().exposed(effect)?;
                     }
                     observe(Event::RetiredWrite {
@@ -99,18 +102,16 @@ impl<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy>
         let Some(l) = self.links.get_mut(i).and_then(Option::as_mut) else {
             return Err(Fault::StaleGeneration.into());
         };
-        let peer = l.peer.take();
-        let open = l.open.take();
-        l.channel = None;
-        l.open_until = None;
         l.input = None;
-        if let Some(peer) = peer {
-            let loss = self.server.engine_mut().peer_lost(peer, reason)?;
-            observe(Event::PeerLost(loss));
-        } else if let Some(open) = open {
-            self.server.engine_mut().open_failed(open, reason)?;
-        } else {
-            self.server.engine_mut().close_flow(l.flow, reason)?;
+        match l.attachment.take().map(|a| a.state) {
+            Some(AttachmentState::Bound(peer)) => {
+                let loss = self.server.engine_mut().peer_lost(peer, reason)?;
+                observe(Event::PeerLost(loss));
+            }
+            Some(AttachmentState::Opening { open, .. }) => {
+                self.server.engine_mut().open_failed(open, reason)?;
+            }
+            None => self.server.engine_mut().close_flow(l.flow, reason)?,
         }
         if let Some(p) = self.native.as_mut()
             && let Action::Data { link, retired, .. } = &mut p.action
@@ -124,11 +125,14 @@ impl<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy>
         let l = self.links[i].as_ref().ok_or(Fault::StaleGeneration)?;
         let flow = l.flow;
         let discard = self.stopping.is_some()
-            || l.peer.is_none()
+            || l.peer().is_none()
             || self.server.engine().flow_info(flow)?.phase == core::Phase::Closing;
         self.server.engine_mut().peer_ended(flow)?;
         let l = self.links[i].as_mut().ok_or(Fault::StaleGeneration)?;
-        l.remote_closed = true;
+        l.attachment
+            .as_mut()
+            .ok_or(Fault::StaleGeneration)?
+            .remote_closed = true;
         if discard {
             l.input = None;
         }
@@ -159,7 +163,7 @@ impl<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy>
         for i in 0..self.links.len() {
             if self.links[i]
                 .as_ref()
-                .is_some_and(|l| l.channel.is_some() || l.open.is_some() || l.peer.is_some())
+                .is_some_and(|l| l.attachment.is_some())
             {
                 self.lost_link(i, reason, observe)?;
             }
@@ -217,7 +221,7 @@ impl<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy>
                     return Err(Fault::StaleGeneration.into());
                 };
                 let l = self.links[i].as_mut().ok_or(Fault::StaleGeneration)?;
-                if l.remote_closed
+                if l.remote_closed()
                     || self.stopping.is_some()
                     || self.server.engine().flow_info(l.flow)?.phase == core::Phase::Closing
                 {
@@ -305,7 +309,13 @@ impl<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy>
                 self.server.engine_mut().discovery_queued(d.discovery)?;
                 if let Some(p) = selected {
                     self.server.engine_mut().select_exit(d.discovery, p.peer)?;
-                    self.links[i].as_mut().ok_or(Fault::StaleGeneration)?.af = p.af;
+                    self.links[i]
+                        .as_mut()
+                        .ok_or(Fault::StaleGeneration)?
+                        .selected_route = Some(PeerRoute {
+                        identity: p.peer,
+                        af: p.af,
+                    });
                     self.report.configured = self.report.configured.saturating_add(1);
                 } else {
                     self.server
@@ -326,20 +336,28 @@ impl<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy>
             return Ok(false);
         }
         let l = self.links[i].as_ref().ok_or(Fault::StaleGeneration)?;
-        if l.remote_closed || l.channel.is_some() || l.open.is_some() {
+        if l.attachment.is_some() {
             return Ok(false);
         }
+        let until = Self::deadline(self.limits.cadet_send_timeout)?;
         let request = self.server.engine_mut().open_request(l.flow)?;
+        let route = PeerRoute::for_open(l.selected_route, request.peer, self.profiles)?;
         self.server.engine_mut().can_queue_open(request.open)?;
-        match self.cadet.open(request.peer, request.port) {
+        match self.cadet.open(route.identity, request.port) {
             Ok(channel) => {
                 let tx = self.cadet.pending_transmit().ok_or(Fault::NotReady)?;
                 self.server.engine_mut().open_queued(request.open)?;
                 let l = self.links[i].as_mut().ok_or(Fault::StaleGeneration)?;
-                l.open = Some(request.open);
-                l.channel = Some(channel);
-                l.create_written = false;
-                l.open_until = Some(Self::deadline(self.limits.cadet_send_timeout)?);
+                l.selected_route = None;
+                l.attachment = Some(Attachment {
+                    channel,
+                    state: AttachmentState::Opening {
+                        open: request.open,
+                        route,
+                        progress: OpeningProgress::WritingCreate { until },
+                    },
+                    remote_closed: false,
+                });
                 self.pending(tx, Action::Open(i))?;
                 Ok(true)
             }
@@ -356,24 +374,29 @@ impl<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy>
         }
     }
     fn bind_link(&mut self, i: usize) -> Result<bool, Error> {
-        let l = self.links[i].as_ref().ok_or(Fault::StaleGeneration)?;
-        let (Some(channel), Some(open)) = (l.channel, l.open) else {
+        let l = self.links[i].as_mut().ok_or(Fault::StaleGeneration)?;
+        let Some(a) = l.attachment.as_mut().filter(|a| !a.remote_closed) else {
             return Ok(false);
         };
-        if l.remote_closed || !l.create_written {
+        let AttachmentState::Opening {
+            open,
+            route,
+            progress: OpeningProgress::WaitingForCredit { .. },
+        } = &a.state
+        else {
             return Ok(false);
-        }
-        let info = self.cadet.channel_info(channel)?;
+        };
+        let info = self.cadet.channel_info(a.channel)?;
         if info.closing || info.send_credit == 0 {
             return Ok(false);
         }
         // This current actual service source granted real credit for this exact
         // requested endpoint. No plaintext/CID field or queued CREATE binds it.
-        let peer = self.server.engine_mut().bind_peer(open, info.peer, l.af)?;
-        let l = self.links[i].as_mut().ok_or(Fault::StaleGeneration)?;
-        l.open = None;
-        l.open_until = None;
-        l.peer = Some(peer);
+        let peer = self
+            .server
+            .engine_mut()
+            .bind_peer(*open, info.peer, route.af)?;
+        a.state = AttachmentState::Bound(peer);
         Ok(true)
     }
     fn send_link(&mut self, i: usize) -> Result<bool, Error> {
@@ -381,20 +404,22 @@ impl<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy>
             return Ok(false);
         }
         let l = self.links[i].as_ref().ok_or(Fault::StaleGeneration)?;
-        if l.remote_closed {
-            return Ok(false);
-        }
-        let (Some(peer), Some(channel)) = (l.peer, l.channel) else {
+        let Some(Attachment {
+            channel,
+            state: AttachmentState::Bound(peer),
+            remote_closed: false,
+        }) = l.attachment.as_ref()
+        else {
             return Ok(false);
         };
-        if self.cadet.channel_info(channel)?.send_credit == 0 {
+        if self.cadet.channel_info(*channel)?.send_credit == 0 {
             return Ok(false);
         }
-        let Some(prepared) = self.server.engine_mut().prepare_peer(peer)? else {
+        let Some(prepared) = self.server.engine_mut().prepare_peer(*peer)? else {
             return Ok(false);
         };
         let effect = prepared.effect;
-        let result = self.cadet.send(channel, 0, prepared.bytes);
+        let result = self.cadet.send(*channel, 0, prepared.bytes);
         match result {
             Ok(tx) => {
                 self.server.engine_mut().queued(effect)?;
@@ -424,13 +449,9 @@ impl<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy>
             return Ok(false);
         }
         let l = self.links[i].as_ref().ok_or(Fault::StaleGeneration)?;
-        if let Some(channel) = l.channel {
-            let tx = self.cadet.destroy(channel)?;
+        if let Some(a) = &l.attachment {
+            let tx = self.cadet.destroy(a.channel)?;
             self.pending(tx, Action::Destroy(i))?;
-            Ok(true)
-        } else if let Some(open) = l.open {
-            self.server.engine_mut().open_failed(open, Fault::Closed)?;
-            self.links[i].as_mut().ok_or(Fault::StaleGeneration)?.open = None;
             Ok(true)
         } else if let Some(d) = l.discovery {
             if !d.queued {
@@ -456,7 +477,7 @@ impl<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy>
         for _ in 0..self.links.len() {
             let i = self.cursor;
             self.cursor = (self.cursor + 1) % self.links.len();
-            let Some(l) = self.links[i].as_ref() else {
+            let Some(l) = self.links[i].as_mut() else {
                 continue;
             };
             let phase = self.server.engine().flow_info(l.flow)?.phase;
@@ -464,15 +485,17 @@ impl<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy>
                 self.fail_flow(i, Fault::Closed)?;
                 return Ok(true);
             }
-            if l.open_until.is_some_and(|at| Instant::now() >= at) {
-                self.links[i]
-                    .as_mut()
-                    .ok_or(Fault::StaleGeneration)?
-                    .open_until = None;
+            if let Some(a) = l.attachment.as_mut()
+                && a.state
+                    .open_deadline()
+                    .is_some_and(|at| Instant::now() >= at)
+                && let AttachmentState::Opening { progress, .. } = &mut a.state
+            {
+                *progress = OpeningProgress::Expired;
                 self.fail_flow(i, Fault::Deadline)?;
                 return Ok(true);
             }
-            if l.remote_closed && (l.channel.is_some() || l.open.is_some() || l.peer.is_some()) {
+            if l.remote_closed() {
                 if phase == core::Phase::Closing {
                     self.links[i].as_mut().ok_or(Fault::StaleGeneration)?.input = None;
                 }

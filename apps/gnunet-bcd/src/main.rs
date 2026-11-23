@@ -52,7 +52,7 @@ fn entry() -> Result<(), Failure> {
     use gnunet_program_host::{
         logging::Logger,
         policy::Level,
-        program::{self, Defaults, Invocation, NlsDisabled, Preparation},
+        program::{self, Defaults, Invocation, Preparation},
         reporting::Reporter,
         shared_clock::SharedClock,
     };
@@ -65,10 +65,10 @@ fn entry() -> Result<(), Failure> {
     )?;
     let arguments = settings::Arguments::new();
     let mut logger = Logger::new(b"gnunet-bcd", std::process::id(), false)?;
-    let prepared=program::prepare(configuration,Invocation{
+    let prepared=program::prepare_installed(configuration,Invocation{
         binary_name:b"gnunet-bcd",select_default_filename:true,defaults:Defaults::Native,
         help:Some(b"Serve GNS business-card forms and generate PDF or QR PNG cards. -p/--port selects the port (8888). [bcd-rust] selects numeric BIND_TO, absolute PDFLATEX/GHOSTSCRIPT paths, private TEMP_ROOT and resource limits. Windows launches tools directly; Unix also selects LAUNCHER. Tools run only on generation requests. See README for routes and configuration."),
-    },arguments.options(),std::env::args_os(),&program::Environment::capture(),&mut NlsDisabled,&mut logger,&clock,&mut io::stdout().lock(),&mut io::stderr().lock());
+    },arguments.options(),std::env::args_os(),&program::Environment::capture(),&mut logger,&clock,&mut io::stdout().lock(),&mut io::stderr().lock());
     let reporter = Reporter::new(logger, clock.clone());
     #[cfg(unix)]
     if let Some(notice) = captured.notice {

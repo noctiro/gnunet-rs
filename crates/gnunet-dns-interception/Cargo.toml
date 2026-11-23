@@ -7,14 +7,13 @@ license.workspace = true
 
 [features]
 default = []
-alloc = ["dep:zeroize"]
+alloc = ["zeroize/alloc"]
 
 [dependencies]
 gnunet-types.workspace = true
 gnunet-wire.workspace = true
 gnunet-dns.workspace = true
-gnunet-vpn.workspace = true
-zeroize = { workspace = true, features = ["alloc"], optional = true }
+zeroize.workspace = true
 
 [lints]
 workspace = true

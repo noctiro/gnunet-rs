@@ -15,6 +15,7 @@ rules are defined in [Architecture](../ARCHITECTURE.md).
 | Commands, logging and bounded file/stdio work | [PROGRAM](program-std/README.md) |
 | Configuration and anchored publication | [CONFIG](config-std/README.md) |
 | Client connections and name resolution | [CLIENT](client-std/README.md), [Resolver](resolver-std/README.md), [broker](resolver-broker-std/README.md) |
+| In-process peer composition | [Embedded peer](node-std/README.md) |
 | Durable service images | [Snapshots](snapshot-std/README.md) |
 
 ## Domain hosts
@@ -25,7 +26,7 @@ rules are defined in [Architecture](../ARCHITECTURE.md).
 | Communicators | [TCP](tcp-runtime-std/README.md), [UDP](udp-communicator-std/README.md), [QUIC/HTTP3](quic-communicator-std/README.md), [Unix](unix-communicator-std/README.md) |
 | Storage | [DATASTORE](datastore-std/README.md), [FS](fs-std/README.md), [PEERSTORE](peerstore-std/README.md), [STATISTICS](ipc-unix/README.md) |
 | Naming | [GNS](gns-service-std/README.md), [NAMESTORE](namestore-std/README.md), [NAMECACHE](namecache-std/README.md), [ZONEMASTER](zonemaster-std/README.md), [zone import](zoneimport-std/README.md) |
-| DNS and routing | [DNS service](dns-service-std/README.md), [DNS2GNS](dns2gns-std/README.md), [TUN](tun-std/README.md), [VPN](vpn-std/README.md), [EXIT](exit-std/README.md), [PT](pt-std/README.md) |
+| DNS and routing | [DNS service](dns-service-std/README.md), [Windows WFP](wfp-dns-std/README.md), [DNS2GNS](dns2gns-std/README.md), [TUN](tun-std/README.md), [VPN](vpn-std/README.md), [EXIT](exit-std/README.md), [PT](pt-std/README.md) |
 | Discovery | [DHT](dht-std/README.md), [NAT](nat-std/README.md), [RPS](rps-std/README.md), [NSE](nse-std/README.md), [HOSTLIST](hostlist-std/README.md) |
 | Multi-party operations | [SET](set-std/README.md), [SETI](seti-std/README.md), [SETU](setu-std/README.md), [CONSENSUS](consensus-std/README.md), [SCALARPRODUCT](scalarproduct-std/README.md), [SECRETSHARING](secretsharing-std/README.md) |
 | Calls and messaging | [Conversation](conversation-std/README.md), [audio](conversation-audio-std/README.md), [Messenger service](messenger-std/README.md), [Messenger API](messenger-api-std/README.md) |

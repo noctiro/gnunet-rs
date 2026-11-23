@@ -23,7 +23,10 @@ After attachment, RX and TX are polled fairly on the same original MQ. A caller 
 EOF or read/protocol errors; an output queue or a pending native write cannot
 hide that loss behind its later original deadline. Ready classes alternate and
 both directions are polled when one is pending. Every IO turn rechecks the same
-original source, native and canonical bounds. Before physical retirement the retained input prefix is snapshotted from
+original source, native and canonical bounds. A write records its actual prefix
+before the post-write deadline check. If the check fails after a whole write,
+the loss report retains that whole frame's write observation. Before physical
+retirement the retained input prefix is snapshotted from
 Framed, including a malformed header that failed before a positive read-progress
 event. Prefix accounting and FIFO write
 receipts retain their original meaning; no receive event acknowledges a write. A complete premature response, including525 before the original whole524, is a
@@ -33,7 +36,8 @@ owned when its source later retires, and no replacement MQ/replay is introduced.
 Only real525 after the original whole CONCLUDE yields Done. EOF, source failure,
 protocol error, timeout or explicit destroy yields Loss with the epoch,
 original cause, whole JOIN/CONCLUDE facts, insertion-write count and every
-unfinished original request's independent prefix/whole/bound metadata. Loss
+original request without a timely receipt, including its prefix, whole-frame
+observation and original bound. Loss
 reporting moves the already owned FIFO after physical retirement and allocates
 no new request list. There is no invented cancellation frame or failure ACK. The caller retains already delivered receipts and each pre-attach Retry.
 

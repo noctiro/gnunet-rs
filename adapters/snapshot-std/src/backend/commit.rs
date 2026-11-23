@@ -1,5 +1,6 @@
 //! One bounded replacement, exact readback and sticky first-cause ownership.
 use super::*;
+use gnunet_native::filesystem::{private_data_file_info, publication};
 use std::ffi::OsStr;
 
 impl Store {
@@ -34,66 +35,62 @@ impl Store {
                 .dir
                 .create_private_file(name)
                 .map_err(|error| os("create-pending", error))?;
-            self.pending = Some(HeldFile::qualify(file, "pending-policy")?);
+            self.pending = Some(HeldFile::qualify_created(file, "pending-policy", |file| {
+                self.dir
+                    .remove_file(name, file)
+                    .and_then(|()| self.dir.sync().map(|_| ()))
+            })?);
             let pending = self
                 .pending
                 .as_mut()
                 .ok_or_else(|| failure("pending-owner", Error::Storage, None))?;
-            image::write(&mut pending.file, self.namespace, next, &body)?;
-            pending
-                .file
-                .sync_all()
-                .map_err(|error| os("sync-pending", error))?;
+            let header = image::write(&mut pending.file, self.namespace, next, &body)?;
+            let image_bytes = (header.len() + body.len()) as u64;
+            let prepared =
+                publication::seal_retained(&self.dir, name, &mut pending.file, image_bytes)
+                    .map_err(|error| {
+                        let stage = if error.stage == "file-sync" {
+                            "sync-pending"
+                        } else {
+                            error.stage
+                        };
+                        os(stage, error.cause)
+                    })?;
             self.fence()?;
             let pending = self
                 .pending
                 .as_ref()
                 .ok_or_else(|| failure("pending-owner", Error::Storage, None))?;
-            pending.validate("pending-before-publish")?;
-            if !self
-                .dir
-                .same_file(name, &pending.file)
-                .map_err(|error| os("pending-before-publish", error))?
+            let observed = private_data_file_info(&pending.file)
+                .map_err(|error| os("pending-before-publish", error))?;
+            if observed != prepared
+                || observed.identity != pending.identity
+                || !self
+                    .dir
+                    .same_file(name, &pending.file)
+                    .map_err(|error| os("pending-before-publish", error))?
             {
                 return Err(failure("pending-replaced", Error::Conflict, None));
             }
+            let target = OsStr::new(self.namespace.image());
             exposed = true;
             self.dir
-                .replace_file(name, &pending.file, OsStr::new(self.namespace.image()))
+                .replace_file(name, &pending.file, target)
                 .map_err(|error| os("publish-image", error))?;
             self.image = self.pending.take();
             let published = self
                 .image
                 .as_ref()
                 .ok_or_else(|| failure("published-owner", Error::OutcomeUnknown, None))?;
-            let directory_sync = self
-                .dir
-                .sync()
-                .map_err(|error| os("sync-published-directory", error))?;
-            if directory_sync == DirectorySync::Unavailable {
-                // Flush the actual renamed file on Windows. Unix already
-                // flushed its data before rename and completed its directory
-                // barrier, so a second file fsync would add no required fact.
-                published
-                    .file
-                    .sync_all()
-                    .map_err(|error| os("sync-published-file", error))?;
-            }
+            let directory_sync =
+                publication::synchronize_published(&self.dir, target, &published.file)
+                    .map_err(|error| os(error.stage, error.cause))?;
             self.fence()?;
-            let mut check = HeldFile::qualify(
-                self.dir
-                    .open_file(OsStr::new(self.namespace.image()))
-                    .map_err(|error| os("readback-open", error))?,
-                "readback-policy",
-            )?;
-            if check.identity != published.identity {
-                return Err(failure("readback-replaced", Error::Conflict, None));
-            }
-            let (generation, check_body) =
-                image::read(&mut check.file, self.namespace, self.limits)?;
-            if generation != next || check_body.as_slice() != body.as_slice() {
-                return Err(failure("readback-mismatch", Error::Storage, None));
-            }
+            let published = self
+                .image
+                .as_mut()
+                .ok_or_else(|| failure("published-owner", Error::OutcomeUnknown, None))?;
+            image::verify(&mut published.file, &header, &body)?;
             self.fence()?;
             Ok(directory_sync)
         })();

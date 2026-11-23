@@ -6,7 +6,11 @@
 use crate::peer;
 use core::{fmt, ptr};
 use gnunet_types::Error;
-use gnunet_wire::official::cadet::{CLIENT_CHANNEL_BOUNDARY, Request, Response};
+use gnunet_wire::official::cadet::{
+    CLIENT_CHANNEL_BOUNDARY, DATA_PREFIX, MAX_APPLICATION_MESSAGE_SIZE, Request, Response,
+};
+
+const LOOP_PAYLOAD_LIMIT: usize = u16::MAX as usize - DATA_PREFIX;
 
 /// Distinct exclusively borrowed service identity, without allocation.
 #[derive(Default)]
@@ -186,8 +190,8 @@ impl Default for Limits {
     fn default() -> Self {
         Self {
             window: 4,
-            loop_payload_bytes: 65523,
-            remote_payload_bytes: 64348,
+            loop_payload_bytes: LOOP_PAYLOAD_LIMIT,
+            remote_payload_bytes: MAX_APPLICATION_MESSAGE_SIZE,
         }
     }
 }
@@ -607,8 +611,8 @@ impl<'id, 'slots, 'bytes> Service<'id, 'slots, 'bytes> {
         if clients.is_empty()
             || channels.is_empty()
             || !(1..=4).contains(&limits.window)
-            || !(4..=65523).contains(&limits.loop_payload_bytes)
-            || !(4..=64348).contains(&limits.remote_payload_bytes)
+            || !(4..=LOOP_PAYLOAD_LIMIT).contains(&limits.loop_payload_bytes)
+            || !(4..=MAX_APPLICATION_MESSAGE_SIZE).contains(&limits.remote_payload_bytes)
             || messages.len() < clients.len()
         {
             return Err(Error::InvalidInput);
@@ -830,7 +834,6 @@ impl<'id, 'slots, 'bytes> Service<'id, 'slots, 'bytes> {
             draining: record.draining,
         })
     }
-    /// Actual currently owned logical port bytes; stale owner handles refuse.
     /// Resolve only a currently registered application listener's official
     /// SHA512(port || local-peer) challenge. Unknown hashes grant no owner/ACK.
     #[must_use]

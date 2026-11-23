@@ -6,6 +6,22 @@ use gnunet_fs::{
 };
 use gnunet_fs_codec::Inflate;
 
+struct DirectoryInput<'p, 's> {
+    plan: &'p dir::BuildPlan<'s>,
+    offset: u64,
+}
+
+impl std::io::Read for DirectoryInput<'_, '_> {
+    fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+        let length = self
+            .plan
+            .read_at(self.offset, output)
+            .map_err(std::io::Error::other)?;
+        self.offset += length as u64;
+        Ok(length)
+    }
+}
+
 impl Buffers {
     /// Encode/store a complete prepared directory using the same fixed block
     /// buffers as a file import, without a complete directory output allocation.
@@ -16,22 +32,19 @@ impl Buffers {
         limits: Limits,
         control: impl FnMut(Progress) -> Control,
     ) -> Result<Published> {
-        struct Input<'p, 's> {
-            plan: &'p dir::BuildPlan<'s>,
-            offset: u64,
-        }
-        impl std::io::Read for Input<'_, '_> {
-            fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
-                let length = self
-                    .plan
-                    .read_at(self.offset, output)
-                    .map_err(std::io::Error::other)?;
-                self.offset += length as u64;
-                Ok(length)
-            }
-        }
-        let mut input = Input { plan, offset: 0 };
+        let mut input = DirectoryInput { plan, offset: 0 };
         self.publish(&mut input, plan.report().wire_bytes, sink, limits, control)
+    }
+
+    #[cfg(feature = "network")]
+    pub(crate) fn measure_directory(
+        &mut self,
+        plan: &dir::BuildPlan<'_>,
+        limits: Limits,
+        control: impl FnMut(Progress) -> Control,
+    ) -> Result<(Content, Progress)> {
+        let mut input = DirectoryInput { plan, offset: 0 };
+        self.measure(&mut input, plan.report().wire_bytes, limits, control)
     }
     /// Stream an authenticated directory and lend its actual parent-bound entry
     /// records to the owner. The callback can admit them to walk::Walk without

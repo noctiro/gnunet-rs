@@ -66,6 +66,7 @@ impl<'id, 'store, 'bytes> Engine<'id, 'store, 'bytes> {
         if f.pending.is_some() {
             return Ok(None);
         }
+        let source = f.peer.bound().ok_or(Error::NotReady)?;
         let found = self
             .store
             .packets
@@ -75,7 +76,7 @@ impl<'id, 'store, 'bytes> Engine<'id, 'store, 'bytes> {
                 p.state
                     .filter(|p| {
                         p.flow == r
-                            && matches!(p.kind, PacketKind::Peer)
+                            && matches!(p.kind, PacketKind::Peer { .. })
                             && p.status == Outcome::Buffered
                     })
                     .map(|p| (i, p.serial))
@@ -85,10 +86,18 @@ impl<'id, 'store, 'bytes> Engine<'id, 'store, 'bytes> {
             return Ok(None);
         };
         let attempt = self.serial()?;
-        let p = self.store.packets[row]
-            .state
-            .as_mut()
-            .ok_or(Error::StaleGeneration)?;
+        let slot = &mut self.store.packets[row];
+        let p = slot.state.as_mut().ok_or(Error::StaleGeneration)?;
+        if let PacketKind::Peer {
+            wire_family: Some(family),
+        } = p.kind
+        {
+            // The encoder reserved this word for the retained address family.
+            // Finish the frame once before issuing its first immutable effect.
+            let word = slot.bytes.get_mut(4..8).ok_or(Error::Conflict)?;
+            word.copy_from_slice(&source.transmit_af.value(family).to_be_bytes());
+            p.kind = PacketKind::Peer { wire_family: None };
+        }
         p.status = Outcome::Prepared;
         p.attempt = Some(attempt);
         p.bound = Some(peer.serial);
@@ -183,7 +192,7 @@ impl<'id, 'store, 'bytes> Engine<'id, 'store, 'bytes> {
                     return Err(Error::StaleGeneration);
                 }
                 match (p.kind, effect.destination) {
-                    (PacketKind::Peer, Destination::Peer(peer)) => {
+                    (PacketKind::Peer { .. }, Destination::Peer(peer)) => {
                         if peer.flow != self.flow(p.flow) || p.bound != Some(peer.serial) {
                             return Err(Error::StaleGeneration);
                         }
@@ -346,7 +355,7 @@ impl<'id, 'store, 'bytes> Engine<'id, 'store, 'bytes> {
                 self.store.flows[p.flow.row].state.is_none_or(|f| {
                     f.serial != p.flow.serial
                         || f.phase == Phase::Closing
-                        || (f.peer_ended && matches!(p.kind, PacketKind::Peer))
+                        || (f.peer_ended && matches!(p.kind, PacketKind::Peer { .. }))
                 })
             }
         };
@@ -445,7 +454,7 @@ impl<'id, 'store, 'bytes> Engine<'id, 'store, 'bytes> {
         for p in &mut *self.store.packets {
             if let Some(p) = p.state.as_mut()
                 && p.flow == r
-                && matches!(p.kind, PacketKind::Peer)
+                && matches!(p.kind, PacketKind::Peer { .. })
                 && p.status == Outcome::Buffered
             {
                 p.status = Outcome::Canceled;
@@ -485,13 +494,16 @@ impl<'id, 'store, 'bytes> Engine<'id, 'store, 'bytes> {
     pub fn close_required(&self) -> Option<Peer<'id>> {
         self.store.flows.iter().enumerate().find_map(|(row, f)| {
             f.state
-                .filter(|f| f.phase == Phase::Closing && f.source.is_some())
+                .as_ref()
+                .filter(|f| f.phase == Phase::Closing)
                 .and_then(|f| {
-                    self.peer(Reference {
-                        row,
-                        serial: f.serial,
-                    })
-                    .ok()
+                    Some(self.peer(
+                        Reference {
+                            row,
+                            serial: f.serial,
+                        },
+                        f.peer.bound()?,
+                    ))
                 })
         })
     }
@@ -513,7 +525,7 @@ impl<'id, 'store, 'bytes> Engine<'id, 'store, 'bytes> {
                 && p.flow == r
             {
                 match &mut p.kind {
-                    PacketKind::Peer => {
+                    PacketKind::Peer { .. } => {
                         if !p.status.terminal() {
                             loss.outputs += 1;
                             if p.status.exposed() {
@@ -534,7 +546,7 @@ impl<'id, 'store, 'bytes> Engine<'id, 'store, 'bytes> {
             .state
             .as_mut()
             .ok_or(Error::StaleGeneration)?;
-        f.source = None;
+        f.peer = FlowPeer::Unselected;
         f.pending = None;
         f.receive = None;
         Ok(PeerLoss {
@@ -639,7 +651,7 @@ impl<'id, 'store, 'bytes> Engine<'id, 'store, 'bytes> {
             .state
             .ok_or(Error::StaleGeneration)?;
         if f.phase != Phase::Closing
-            || f.source.is_some()
+            || f.peer.bound().is_some()
             || f.discovery.is_some()
             || f.open.is_some()
             || f.receive.is_some()

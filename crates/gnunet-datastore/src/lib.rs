@@ -1,17 +1,19 @@
-//! Complete official local DATASTORE service semantics over synchronous Rust
-//! backend ports. This allocation-free owner starts no service, socket or task.
+//! Official local DATASTORE semantics over Rust backend ports.
+//! The allocation-free owner starts no service, socket or task.
 #![no_std]
 #![forbid(unsafe_code)]
 pub mod backend;
+mod work;
 use backend::{
-    Backend, BackendError, ENTRY_OVERHEAD, Failure, Maintenance, MaintenancePolicy, Put, PutPolicy,
-    Selection,
+    Backend, BackendError, ENTRY_OVERHEAD, Failure, Lifecycle, Maintenance, MaintenancePolicy,
+    Usage,
 };
 use gnunet_types::Error;
 use gnunet_wire::official::{
     AbsoluteTime, MAX_MESSAGE_SIZE,
-    datastore::{Data, MAX_VALUE_BYTES, Request, Response, Status},
+    datastore::{MAX_VALUE_BYTES, Request, Response, Status},
 };
+pub use work::{Command, Completion, Dispatch, WorkId};
 
 /// Minimum caller buffer for any status request, including all bounded diagnostics.
 pub const STATUS_BUFFER_BYTES: usize = 128;
@@ -59,6 +61,13 @@ pub struct ClientSlot {
     serial: u64,
     active: bool,
 }
+impl ClientSlot {
+    /// Unused storage for one original local connection.
+    pub const EMPTY: Self = Self {
+        serial: 0,
+        active: false,
+    };
+}
 /// Caller-owned connection-scoped storage reservation.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ReservationSlot {
@@ -67,6 +76,14 @@ pub struct ReservationSlot {
     // One quota guarantee covers content and per-entry storage overhead.
     // Entry counts are sizing inputs, not a separate PUT permission counter.
     remaining: u64,
+}
+impl ReservationSlot {
+    /// Unused storage for one connection-scoped reservation.
+    pub const EMPTY: Self = Self {
+        client: 0,
+        rid: 0,
+        remaining: 0,
+    };
 }
 /// Service policy. Cache space follows the official quota/8 policy.
 #[derive(Clone, Copy, Debug)]
@@ -161,6 +178,8 @@ pub struct Service<'id, 'slots> {
     config: Config,
     client_serial: u64,
     reservation_serial: u32,
+    work_serial: u64,
+    work: Option<work::Pending>,
     reserved: u64,
     min_expiration: AbsoluteTime,
     drop_on_shutdown: bool,
@@ -188,6 +207,8 @@ impl<'id, 'slots> Service<'id, 'slots> {
             config,
             client_serial: 0,
             reservation_serial: 0,
+            work_serial: 0,
+            work: None,
             reserved: 0,
             min_expiration: AbsoluteTime::from_micros(0),
             drop_on_shutdown: false,
@@ -232,6 +253,13 @@ impl<'id, 'slots> Service<'id, 'slots> {
     /// This remains available while fenced; it sends no fabricated service ACK.
     pub fn disconnect(&mut self, client: ClientId<'id>) -> Result<u64, Error> {
         let index = self.index(client)?;
+        if self
+            .work
+            .as_ref()
+            .is_some_and(|work| work.client == client.serial)
+        {
+            return Err(Error::WouldBlock);
+        }
         let mut released = 0_u64;
         for slot in &*self.reservations {
             if slot.rid != 0 && slot.client == client.serial {
@@ -255,7 +283,7 @@ impl<'id, 'slots> Service<'id, 'slots> {
     }
     /// Current accounting. When fenced, backend usage is only its last known
     /// value and cannot be interpreted as authority to acknowledge new work.
-    pub fn accounting(&self, backend: &impl Backend) -> Result<Accounting, Error> {
+    pub fn accounting(&self, backend: &impl Lifecycle) -> Result<Accounting, Error> {
         Ok(Accounting {
             quota_bytes: self.config.quota_bytes,
             cache_bytes: self.config.quota_bytes / 8,
@@ -339,16 +367,16 @@ impl<'id, 'slots> Service<'id, 'slots> {
             None => self.empty(output, Some(Fault::Backend(error))),
         }
     }
-    fn reserve<B: Backend>(
+    fn reserve<E>(
         &mut self,
         client: ClientId<'id>,
         amount: u64,
         entries: u32,
-        backend: &B,
+        usage: Usage,
         output: &mut [u8],
-    ) -> Result<ReplyAction<B::Error>, Error> {
+    ) -> Result<ReplyAction<E>, Error> {
         let cost = amount.checked_add(u64::from(entries) * ENTRY_OVERHEAD);
-        let used = backend.usage().charged()?;
+        let used = usage.charged()?;
         let fits = cost.is_some_and(|cost| {
             u128::from(used) + u128::from(self.reserved) + u128::from(cost)
                 <= u128::from(self.config.quota_bytes)
@@ -412,190 +440,14 @@ impl<'id, 'slots> Service<'id, 'slots> {
         now: AbsoluteTime,
         entropy: &mut impl Entropy,
     ) -> Result<ReplyAction<B::Error>, Error> {
-        if self.closed {
-            return Err(Error::Closed);
-        }
-        if self.fenced {
-            return Err(Error::OutcomeUnknown);
-        }
-        self.index(client)?;
-        request.encoded_len()?;
-        let required = required_output(request);
-        if output.len() < required {
-            return Err(Error::Capacity);
-        }
-        let hint = self.min_expiration;
-        match request {
-            Request::Reserve { amount, entries } => {
-                self.reserve(client, amount, entries, backend, output)
-            }
-            Request::Release { reservation } => {
-                let Some(index) = self.reservation(client, reservation) else {
-                    return self.status(
-                        output,
-                        -1,
-                        Some(b"Could not find matching reservation\0"),
-                        hint,
-                        None,
-                    );
-                };
-                let remaining = self
-                    .reserved
-                    .checked_sub(self.reservations[index].remaining)
-                    .ok_or(Error::InvalidInput)?;
-                self.reservations[index] = ReservationSlot::default();
-                self.reserved = remaining;
-                self.status(output, 1, None, hint, None)
-            }
-            Request::Put(data) => {
-                if data.reservation != 0 {
-                    let Some(index) = self.reservation(client, data.reservation) else {
-                        return self.status(
-                            output,
-                            -1,
-                            Some(b"Could not find matching reservation\0"),
-                            hint,
-                            None,
-                        );
-                    };
-                    let charge = (data.value.len() as u64)
-                        .checked_add(ENTRY_OVERHEAD)
-                        .ok_or(Error::Overflow)?;
-                    // The reservation guarantees only its remaining quota.
-                    // Normal clients may underestimate encoded block sizes;
-                    // surplus is an ordinary PUT, still constrained by the
-                    // backend ceiling and every other live reservation.
-                    let spent = self.reservations[index].remaining.min(charge);
-                    self.reserved = self
-                        .reserved
-                        .checked_sub(spent)
-                        .ok_or(Error::InvalidInput)?;
-                    self.reservations[index].remaining -= spent;
-                }
-                // An admitted PUT consumes its covered quota even when the
-                // backend fails or updates an existing item.
-                if data.value.len() > self.config.max_value_bytes {
-                    return self.status(output, -1, Some(b"Data too large\0"), hint, None);
-                }
-                let random = match entropy.next_u64() {
-                    Ok(random) => random,
-                    Err(error) => {
-                        return self.status(
-                            output,
-                            -1,
-                            Some(b"Randomness unavailable\0"),
-                            hint,
-                            Some(Fault::Entropy(error)),
-                        );
-                    }
-                };
-                let policy = self.policy(now, self.reserved, self.config.max_put_evictions)?;
-                let put = Put {
-                    key: data.key,
-                    kind: data.kind,
-                    priority: data.priority,
-                    anonymity: data.anonymity,
-                    replication: data.replication,
-                    expiration: data.expiration,
-                    value: data.value,
-                };
-                match backend.put(
-                    put,
-                    PutPolicy {
-                        ceiling_bytes: policy.ceiling_bytes,
-                        target_bytes: policy.target_bytes,
-                        now,
-                        max_evictions: policy.max_evictions,
-                        random,
-                    },
-                ) {
-                    Ok(report) => {
-                        self.record_hint(report.maintenance);
-                        self.status(output, 1, None, hint, None)
-                    }
-                    Err(error) => self.backend_failure(error, output, Some(-1), hint),
-                }
-            }
-            Request::Remove { key, value } => match backend.remove(key, value) {
-                Ok(true) => self.status(output, 1, None, hint, None),
-                Ok(false) => self.status(output, 0, Some(b"Content not found\0"), hint, None),
-                // The public API reserves STATUS0 for an actual missing value.
-                // A known backend failure is SYSERR; Unknown still closes/fences.
-                Err(error) => self.backend_failure(error, output, Some(-1), hint),
-            },
-            Request::Get {
-                key,
-                kind,
-                next_uid,
-                random,
-            } => self.select(
-                Selection::Get {
-                    key,
-                    kind,
-                    next_uid,
-                    random,
-                },
-                random,
-                backend,
-                output,
-                entropy,
-            ),
-            Request::ZeroAnonymity { kind, next_uid } => self.select(
-                Selection::ZeroAnonymity { kind, next_uid },
-                false,
-                backend,
-                output,
-                entropy,
-            ),
-            Request::Replication => {
-                self.select(Selection::Replication, true, backend, output, entropy)
-            }
-            Request::Drop => {
-                self.drop_on_shutdown = true;
-                Ok(ReplyAction::NoReply)
-            }
-        }
-    }
-    fn select<B: Backend>(
-        &mut self,
-        selection: Selection<'_>,
-        random: bool,
-        backend: &mut B,
-        output: &mut [u8],
-        entropy: &mut impl Entropy,
-    ) -> Result<ReplyAction<B::Error>, Error> {
-        let bits = if random {
-            match entropy.next_u64() {
-                Ok(bits) => bits,
-                Err(error) => return self.empty(output, Some(Fault::Entropy(error))),
-            }
-        } else {
-            0
-        };
-        match backend.select(selection, bits) {
-            Ok(Some(record)) => {
-                let meta = record.meta;
-                let bytes = Response::Data(Data {
-                    reservation: 0,
-                    kind: meta.kind,
-                    priority: meta.priority,
-                    anonymity: meta.anonymity,
-                    replication: meta.replication,
-                    uid: meta.uid,
-                    expiration: meta.expiration,
-                    key: &meta.key,
-                    value: record.value,
-                })
-                .encode(output)?;
-                Ok(ReplyAction::Reply { bytes, fault: None })
-            }
-            Ok(None) => self.empty(output, None),
-            Err(error) => self.backend_failure(error, output, None, self.min_expiration),
+        match self.begin(client, request, || backend.usage(), output, now, entropy)? {
+            Dispatch::Reply(reply) => Ok(reply),
+            Dispatch::Run { id, command } => self.finish(&id, command.execute(backend), output),
         }
     }
     /// Run one explicit bounded expiry/cache slice on the dedicated backend
     /// worker. Any uncertain commit fences every subsequent ordinary request.
-    pub fn maintain<B: Backend>(
+    pub fn maintain<B: Lifecycle>(
         &mut self,
         backend: &mut B,
         now: AbsoluteTime,
@@ -605,6 +457,9 @@ impl<'id, 'slots> Service<'id, 'slots> {
         }
         if self.fenced {
             return Err(WorkError::Protocol(Error::OutcomeUnknown));
+        }
+        if self.work.is_some() {
+            return Err(WorkError::Protocol(Error::WouldBlock));
         }
         let policy = self
             .policy(now, self.reserved, self.config.max_maintenance_evictions)
@@ -624,14 +479,21 @@ impl<'id, 'slots> Service<'id, 'slots> {
         }
     }
     /// Permanently stop this owner and release connection accounting. Only an
-    /// actual prior DROP clears the backend, at shutdown, without a wire ACK.
-    pub fn shutdown<B: Backend>(&mut self, backend: &mut B) -> Result<bool, B::Error> {
+    /// actual prior DROP clears a healthy backend, without a wire ACK. Recovery
+    /// is required before another mutation if the original outcome is unknown.
+    pub fn shutdown<B: Lifecycle>(&mut self, backend: &mut B) -> Result<bool, WorkError<B::Error>> {
+        if self.work.is_some() {
+            return Err(WorkError::Protocol(Error::WouldBlock));
+        }
         self.closed = true;
         self.clients.fill(ClientSlot::default());
         self.reservations.fill(ReservationSlot::default());
         self.reserved = 0;
         if !self.drop_on_shutdown {
             return Ok(false);
+        }
+        if self.fenced {
+            return Err(WorkError::Protocol(Error::OutcomeUnknown));
         }
         match backend.drop_all() {
             Ok(()) => {
@@ -642,7 +504,7 @@ impl<'id, 'slots> Service<'id, 'slots> {
                 if error.certainty() == Failure::Unknown {
                     self.fenced = true;
                 }
-                Err(error)
+                Err(WorkError::Backend(error))
             }
         }
     }

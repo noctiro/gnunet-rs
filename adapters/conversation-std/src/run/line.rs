@@ -41,6 +41,11 @@ struct Packet<'c> {
     waiting: Option<u64>,
     bound: Bounds,
 }
+#[derive(Clone, Copy)]
+enum ReceiveOwner {
+    Stream,
+    Call(usize),
+}
 struct Call<'s, 'c> {
     id: CallId<'s>,
     channel: Option<cadet::Channel<'c>>,
@@ -175,15 +180,13 @@ impl<'s, 'p, 'c, 'slots> State<'s, 'p, 'c, 'slots> {
             .chain(self.cadet_recovery.as_ref().map(|recovery| recovery.bound))
             .chain(self.client_input)
             .chain(self.pils_input)
-            .chain(self.cadet_input)
             .chain(self.ttl)
             .chain(self.pending_client.as_ref().map(|p| p.bound))
-            .chain(self.pending_native.as_ref().map(|p| p.bound))
             .chain(
-                self.calls
-                    .iter()
-                    .flatten()
-                    .filter_map(|c| c.input.as_ref().map(|p| p.bound)),
+                self.pending_native
+                    .as_ref()
+                    .filter(|p| p.ack.is_none())
+                    .map(|p| p.bound),
             )
             .chain(self.rejects.iter().map(|r| r.bound))
         {
@@ -236,7 +239,12 @@ impl<'s, 'p, 'c, 'slots> State<'s, 'p, 'c, 'slots> {
         Ok(())
     }
     fn arm(&mut self, cx: &mut Context<'_>) -> Result<(), Error> {
-        let mut at = self.earliest()?.map(|b| b.hard);
+        let mut at = self
+            .earliest()?
+            .into_iter()
+            .chain(self.cadet_receive_deadline().map(|(_, bound)| bound))
+            .map(|bound| bound.hard)
+            .min();
         if let Some(d) = self.session.core().and_then(Session::next_deadline) {
             let d = self.origin.at(d)?.hard;
             at = Some(at.map_or(d, |old| old.min(d)));
@@ -420,6 +428,9 @@ impl<'s, 'p, 'c, 'slots> State<'s, 'p, 'c, 'slots> {
         let progress = core.progress(now)? || core.pending_effects() != before;
         if let Some(error) = core.failure() {
             return Err(error.into());
+        }
+        if self.expire_cadet_input()? {
+            return Ok(true);
         }
         let progress = self.reconcile_cancelled()? || progress;
         if !self.pending_allowed()? {

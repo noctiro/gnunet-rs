@@ -39,6 +39,8 @@ pub enum Stage {
     Remove,
     /// Synchronizing the directory after replacement/removal.
     SyncDirectory,
+    /// Synchronizing the original published file when a directory barrier is unavailable.
+    SyncPublished,
 }
 
 /// An original OS failure or a bounded official message/state failure.
@@ -73,6 +75,7 @@ pub struct StoreError {
     outcome: CommitOutcome,
     offset: Option<u64>,
     temporary: Option<PathBuf>,
+    cleanup: Option<io::Error>,
     cause: Cause,
 }
 impl StoreError {
@@ -82,6 +85,7 @@ impl StoreError {
             outcome: CommitOutcome::DestinationUnchanged,
             offset,
             temporary: None,
+            cleanup: None,
             cause: Cause::Protocol(error),
         }
     }
@@ -91,12 +95,17 @@ impl StoreError {
             outcome: CommitOutcome::DestinationUnchanged,
             offset,
             temporary: None,
+            cleanup: None,
             cause: Cause::Io(error),
         }
     }
     pub(crate) fn unknown(mut self, temporary: Option<PathBuf>) -> Self {
         self.outcome = CommitOutcome::Unknown;
         self.temporary = temporary;
+        self
+    }
+    pub(crate) fn with_cleanup(mut self, cleanup: io::Error) -> Self {
+        self.cleanup = Some(cleanup);
         self
     }
     /// Stage whose actual operation or validation failed.
@@ -114,11 +123,16 @@ impl StoreError {
     pub const fn offset(&self) -> Option<u64> {
         self.offset
     }
-    /// Candidate snapshot path retained after an ambiguous failed rename, if
-    /// it still exists. Successful rename may already have consumed this name.
+    /// Diagnostic candidate path at admission to an ambiguous rename. The
+    /// original directory may have moved or the rename consumed the name.
     #[must_use]
     pub fn temporary_path(&self) -> Option<&std::path::Path> {
         self.temporary.as_deref()
+    }
+    /// Independent failure while removing the original temporary file.
+    #[must_use]
+    pub const fn cleanup_error(&self) -> Option<&io::Error> {
+        self.cleanup.as_ref()
     }
     /// Original filesystem or protocol error.
     #[must_use]
@@ -136,7 +150,11 @@ impl fmt::Display for StoreError {
         if let Some(offset) = self.offset {
             write!(formatter, " at byte {offset}")?;
         }
-        write!(formatter, ": {}", self.cause)
+        write!(formatter, ": {}", self.cause)?;
+        if let Some(cleanup) = &self.cleanup {
+            write!(formatter, ". Temporary cleanup: {cleanup}")?;
+        }
+        Ok(())
     }
 }
 impl std::error::Error for StoreError {

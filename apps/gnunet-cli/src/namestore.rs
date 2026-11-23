@@ -1,6 +1,7 @@
 //! NAMESTORE commands with opaque IDENTITY lookup and original bounded MQs.
 mod orphans;
 mod recordline;
+mod standalone;
 mod zonefile;
 use super::peer::hexadecimal;
 use gnunet::{
@@ -14,6 +15,7 @@ use gnunet::{
     gnsrecord::{self, RecordData, RecordFlags, RecordType, ZoneKey},
 };
 use serde_json::{Value, json};
+pub(super) use standalone::run as run_standalone;
 use std::{
     error::Error,
     ffi::{OsStr, OsString},
@@ -26,6 +28,8 @@ use std::{
 };
 use tokio::time::Instant;
 use zeroize::Zeroizing;
+pub(super) use zonefile::{missing_zone, run_standalone as run_zonefile};
+
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 const MAX_JSON_BYTES: usize = 1024 * 1024;
 const MAX_TIMEOUT_MS: u64 = 86_400_000;
@@ -50,8 +54,6 @@ struct EncodedSets {
 }
 struct Command {
     action: Action,
-    socket: PathBuf,
-    identity_socket: PathBuf,
     ego: Vec<u8>,
     label: Vec<u8>,
     hint: Vec<u8>,
@@ -64,6 +66,40 @@ struct Command {
     max_results: u64,
     timeout: Duration,
     limits: Limits,
+}
+struct DirectEndpoints {
+    namestore: PathBuf,
+    identity: PathBuf,
+}
+impl Command {
+    fn new(action: Action, ego: Vec<u8>, timeout: Duration) -> Self {
+        Self {
+            action,
+            ego,
+            label: Vec::new(),
+            hint: Vec::new(),
+            replacement: Vec::new(),
+            sets: None,
+            target: None,
+            single_tx: true,
+            filter: 0,
+            iterate_first: true,
+            max_results: 1000,
+            timeout,
+            limits: Limits {
+                reconnect: false,
+                operations: 1,
+                ..Limits::default()
+            },
+        }
+    }
+
+    fn set_delegation(&mut self, uri: &str, expiration: u64, flags: RecordFlags) -> Result<()> {
+        let (label, sets) = import_uri(uri, expiration, flags, self.limits)?;
+        self.label = label;
+        self.sets = Some(sets);
+        Ok(())
+    }
 }
 fn bytes(value: &OsStr, maximum: usize, what: &str) -> Result<Vec<u8>> {
     let value = crate::argument::wire_bytes(value)?;
@@ -224,12 +260,11 @@ fn encode_sets(value: Value, limits: Limits) -> Result<EncodedSets> {
     })
 }
 fn import_uri(
-    value: &OsStr,
+    value: &str,
     expiration: u64,
     flags: RecordFlags,
     limits: Limits,
 ) -> Result<(Vec<u8>, EncodedSets)> {
-    let value = text(value)?;
     let rest = value
         .strip_prefix("gnunet://gns/")
         .ok_or("expected gnunet://gns/<typed-public-key>/<label>")?;
@@ -270,7 +305,7 @@ fn import_uri(
     )?;
     Ok((label.as_bytes().to_vec(), sets))
 }
-fn parse(args: &[OsString]) -> Result<Command> {
+fn parse(args: &[OsString]) -> Result<(Command, DirectEndpoints)> {
     let (action, positional) = match args.first().and_then(|s| s.to_str()) {
         Some("lookup") => (Action::Lookup, 1),
         Some("replace") => (Action::Replace, 2),
@@ -284,7 +319,7 @@ fn parse(args: &[OsString]) -> Result<Command> {
         Some("edit-cancel") => (Action::EditCancel, 3),
         _ => return Err("expected namestore lookup|replace|import-uri|delete|batch|reverse|iterate|monitor|edit-begin|edit-cancel".into()),
     };
-    let socket = PathBuf::from(args.get(1).ok_or("missing explicit NAMESTORE UNIXPATH")?);
+    let namestore = PathBuf::from(args.get(1).ok_or("missing explicit NAMESTORE UNIXPATH")?);
     let inputs = args
         .get(2..2 + positional)
         .ok_or("missing command arguments")?;
@@ -303,11 +338,6 @@ fn parse(args: &[OsString]) -> Result<Command> {
     let mut uri_relative = false;
     let mut uri_shadow = false;
     let mut uri_maintenance = false;
-    let limits = Limits {
-        reconnect: false,
-        operations: 1,
-        ..Limits::default()
-    };
     let mut at = 2 + positional;
     while at < args.len() {
         let option = text(&args[at])?;
@@ -340,7 +370,7 @@ fn parse(args: &[OsString]) -> Result<Command> {
         }
         at += 2;
     }
-    let identity_socket = identity_socket.ok_or("required --identity-socket UNIXPATH")?;
+    let identity = identity_socket.ok_or("required --identity-socket UNIXPATH")?;
     let ego = ego.ok_or("required --ego NAME (resolved by real IDENTITY lookup)")?;
     if timeout_ms == 0 || timeout_ms > MAX_TIMEOUT_MS || max_results == 0 || max_results > 1_000_000
     {
@@ -350,23 +380,12 @@ fn parse(args: &[OsString]) -> Result<Command> {
     if Instant::now().checked_add(timeout).is_none() {
         return Err("native timeout overflow".into());
     }
-    let mut command = Command {
-        action,
-        socket,
-        identity_socket,
-        ego,
-        label: Vec::new(),
-        hint: Vec::new(),
-        replacement: Vec::new(),
-        sets: None,
-        target: None,
-        single_tx,
-        filter,
-        iterate_first,
-        max_results,
-        timeout,
-        limits,
-    };
+    let mut command = Command::new(action, ego, timeout);
+    command.single_tx = single_tx;
+    command.filter = filter;
+    command.iterate_first = iterate_first;
+    command.max_results = max_results;
+    let limits = command.limits;
     if matches!(
         action,
         Action::Lookup | Action::Replace | Action::Delete | Action::EditBegin | Action::EditCancel
@@ -388,14 +407,11 @@ fn parse(args: &[OsString]) -> Result<Command> {
             if uri_maintenance {
                 flags = flags.union(RecordFlags::MAINTENANCE);
             }
-            let (label, sets) = import_uri(
-                &inputs[0],
+            command.set_delegation(
+                text(&inputs[0])?,
                 uri_expiration.ok_or("import-uri requires --expiration-us U64")?,
                 flags,
-                limits,
             )?;
-            command.label = label;
-            command.sets = Some(sets);
         }
         Action::Replace | Action::Delete => {
             let input = if action == Action::Delete {
@@ -442,7 +458,13 @@ fn parse(args: &[OsString]) -> Result<Command> {
         }
         _ => {}
     }
-    Ok(command)
+    Ok((
+        command,
+        DirectEndpoints {
+            namestore,
+            identity,
+        },
+    ))
 }
 fn boolean(value: &OsStr) -> Result<bool> {
     match text(value)? {
@@ -703,16 +725,19 @@ async fn single(
                     return match c.outcome {
                         Outcome::Reply(r) => {
                             let response = r.view()?;
-                            let successful = match response {
-                                ipc::Response::Generic {code,..} => code == 0,
-                                ipc::Response::Lookup {found,..} => found >= 0,
-                                ipc::Response::ZoneToName {code,..} => code == 0,
-                                ipc::Response::Edit {code,..} => code == 0,
-                                _ => false,
+                            let status = match response {
+                                ipc::Response::Generic {code,..} | ipc::Response::ZoneToName {code,..} => {
+                                    Some((code == 0, i64::from(code)))
+                                }
+                                ipc::Response::Lookup {found,..} => Some((found >= 0, i64::from(found))),
+                                ipc::Response::Edit {code,..} => Some((code == 0, i64::from(code))),
+                                _ => None,
                             };
                             reply(out,response)?;
-                            if successful { Ok(()) } else {
-                                Err("NAMESTORE actual service result was unsuccessful; see raw status above".into())
+                            match status {
+                                Some((true, _)) => Ok(()),
+                                Some((false, code)) => Err(format!("NAMESTORE service returned status {code}").into()),
+                                None => Err("unexpected NAMESTORE response for one-shot operation".into()),
                             }
                         },
                         Outcome::Local {reason,submission} => {
@@ -747,11 +772,11 @@ impl<'id> Stream<'id> {
     }
     async fn drive(
         &mut self,
-        hard: Instant,
+        hard: Option<Instant>,
     ) -> std::result::Result<Progress<'id>, gnunet::clients::namestore::Error> {
         match self {
-            Self::Iterator(s) => s.drive(Some(hard)).await,
-            Self::Monitor(s) => s.drive(Some(hard)).await,
+            Self::Iterator(s) => s.drive(hard).await,
+            Self::Monitor(s) => s.drive(hard).await,
         }
     }
     fn next(&mut self, until: u64) -> Result<()> {
@@ -807,7 +832,7 @@ async fn stream(
                 row(out,json!({"event":"namestore_local_window_end","records":count,"natural_end":false,"complete_snapshot":false}))?;
                 return if command.action == Action::Monitor { Ok(()) } else { Err("iterator deadline before actual END; snapshot incomplete".into()) };
             }
-            let Some(progress) = observed(stream.drive(hard), signal.as_mut()).await? else {
+            let Some(progress) = observed(stream.drive(Some(hard)), signal.as_mut()).await? else {
                 return Err("NAMESTORE stream interrupted; original source closed".into());
             };
             observe(out, &progress)?;
@@ -955,37 +980,43 @@ pub(super) fn run(args: &[OsString], out: &mut impl Write) -> Result<()> {
         return help(out);
     }
     // All JSON/record/length/resource preflight happens before either service MQ.
-    let command = parse(args)?;
+    let (command, endpoints) = parse(args)?;
+    let source = EndpointSource::unix(endpoints.namestore);
+    let identity_source = EndpointSource::unix_with_clock(endpoints.identity, source.clock());
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?
-        .block_on(async {
-            let source = EndpointSource::unix(command.socket.clone());
-            let identity_source =
-                EndpointSource::unix_with_clock(command.identity_socket.clone(), source.clock());
-            let now = source.clock().sample()?.now.as_micros();
-            let until = now
-                .checked_add(u64::try_from(command.timeout.as_micros())?)
-                .filter(|n| *n != u64::MAX)
-                .ok_or("canonical deadline overflow")?;
-            let hard = Instant::now()
-                .checked_add(command.timeout)
-                .ok_or("native deadline overflow")?;
-            let interrupt = tokio::signal::ctrl_c();
-            tokio::pin!(interrupt);
-            let key = ego(
-                &command,
-                identity_source,
-                hard,
-                until,
-                interrupt.as_mut(),
-                out,
-            )
-            .await?;
-            if matches!(command.action, Action::Iterate | Action::Monitor) {
-                stream(&command, source, &key, hard, until, interrupt.as_mut(), out).await
-            } else {
-                single(&command, source, &key, hard, until, interrupt.as_mut(), out).await
-            }
-        })
+        .block_on(execute(&command, source, identity_source, out))
+}
+
+async fn execute(
+    command: &Command,
+    source: EndpointSource,
+    identity_source: EndpointSource,
+    out: &mut impl Write,
+) -> Result<()> {
+    let now = source.clock().sample()?.now.as_micros();
+    let until = now
+        .checked_add(u64::try_from(command.timeout.as_micros())?)
+        .filter(|n| *n != u64::MAX)
+        .ok_or("canonical deadline overflow")?;
+    let hard = Instant::now()
+        .checked_add(command.timeout)
+        .ok_or("native deadline overflow")?;
+    let interrupt = tokio::signal::ctrl_c();
+    tokio::pin!(interrupt);
+    let key = ego(
+        command,
+        identity_source,
+        hard,
+        until,
+        interrupt.as_mut(),
+        out,
+    )
+    .await?;
+    if matches!(command.action, Action::Iterate | Action::Monitor) {
+        stream(command, source, &key, hard, until, interrupt.as_mut(), out).await
+    } else {
+        single(command, source, &key, hard, until, interrupt.as_mut(), out).await
+    }
 }

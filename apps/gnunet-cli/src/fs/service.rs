@@ -15,6 +15,8 @@ use std::{
     path::Path,
 };
 
+pub(super) const DEFAULT_INTERVAL_MICROS: u64 = 300_000_000;
+
 pub(super) fn duration(value: Option<&impl AsRef<OsStr>>) -> Result<u64, Box<dyn Error>> {
     let seconds = match value {
         Some(value) => value
@@ -22,7 +24,7 @@ pub(super) fn duration(value: Option<&impl AsRef<OsStr>>) -> Result<u64, Box<dyn
             .to_str()
             .ok_or("timeout must be UTF-8 digits")?
             .parse::<u64>()?,
-        None => 300,
+        None => return Ok(DEFAULT_INTERVAL_MICROS),
     };
     if seconds == 0 {
         return Err("timeout must be positive".into());

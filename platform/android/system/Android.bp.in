@@ -1,0 +1,24 @@
+package {
+    default_applicable_licenses: ["gnunet_node_android_license"],
+}
+
+license {
+    name: "gnunet_node_android_license",
+    license_kinds: ["SPDX-license-identifier-MPL-2.0"],
+    license_text: ["LICENSE", "THIRD_PARTY_LICENSES.txt"],
+}
+
+cc_prebuilt_binary {
+    name: "gnunet-node",
+@NAT_HELPER_REQUIRED@    vendor: true,
+    compile_multilib: "first",
+    srcs: ["gnunet-node"],
+    init_rc: ["gnunet-node.rc"],
+    stl: "none",
+    system_shared_libs: ["libc", "libm", "libdl"],
+    shared_libs: ["liblog"],
+    check_elf_files: true,
+    strip: {
+        none: true,
+    },
+}

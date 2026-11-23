@@ -118,7 +118,7 @@ impl PublicKey {
         Self::from_integer(U2048::from_be_slice(bytes))
     }
     pub(crate) fn from_integer(n: U2048) -> Result<Self, Error> {
-        if !(2047..=2048).contains(&n.bits()) || !n.bit_vartime(0) {
+        if !(2047..=2048).contains(&n.bit_width()) || !n.bit_vartime(0) {
             return Err(Error::InvalidKey);
         }
         let square: U4096 = n.concatenating_square();
@@ -166,7 +166,7 @@ impl PublicKey {
         if desired > i32::MAX as u32 || *m >= self.n {
             return Err(Error::Range);
         }
-        let mut possible = 2047u32.saturating_sub(m.bits());
+        let mut possible = 2047u32.saturating_sub(m.bit_width());
         // The fixed C formula assumes its2048-bit n. Preserve its normal count,
         // but never overstate a guarantee for an admitted2047-bit remote modulus.
         if *m != U2048::ZERO && possible > 0 {

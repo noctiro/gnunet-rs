@@ -1,11 +1,18 @@
-//! DNSSEC canonical RRsets, DS trust anchoring and actual RRSIG verification.
+//! DNSSEC canonical RRsets, trust anchors and actual RRSIG verification.
 //! No heap, clock, entropy, network or implicit trust anchor is used here.
 //! Callers supply bounded scratch and a real cryptographic verifier. A validated
 //! RRset proves its signature under the supplied chain; wildcard/denial proofs
 //! are additional obligations, never inferred from AD or an empty answer.
+mod anchors;
+/// Allocation-free Rust verification of DNSSEC signatures and digests.
+#[cfg(feature = "dnssec-crypto")]
+pub mod crypto;
 pub mod denial;
+mod retained;
 use crate::{Error, Name};
+pub use anchors::{Anchor, trust_dnskeys, trust_dnskeys_with_anchors};
 use core::cmp::Ordering;
+pub use retained::RetainedKeys;
 /// One canonical, fully expanded RRset. Individual records contain only RDATA.
 #[derive(Clone, Copy)]
 pub struct Rrset<'a> {
@@ -32,6 +39,16 @@ pub struct Scratch<'a> {
 }
 /// Actual crypto operations, inverted to keep this wire/chain core no_std.
 pub trait Crypto {
+    /// Whether this provider recognizes the DNSKEY signature algorithm.
+    /// An unspecified capability leaves the algorithm eligible for verification.
+    fn supports_signature(&self, _algorithm: u8) -> bool {
+        true
+    }
+    /// Whether this provider recognizes the DS digest algorithm.
+    /// An unspecified capability leaves the algorithm eligible for digesting.
+    fn supports_digest(&self, _algorithm: u8) -> bool {
+        true
+    }
     /// Verify the real signature under the DNSKEY public-key field.
     fn verify(
         &self,
@@ -44,7 +61,7 @@ pub trait Crypto {
     /// actual digest extent; unknown digests must return Unsupported.
     fn digest(&self, algorithm: u8, parts: &[&[u8]], output: &mut [u8]) -> Result<usize, Error>;
 }
-/// DNSKEY RRset authenticated through at least one original DS trust anchor
+/// DNSKEY RRset authenticated through at least one original trust anchor
 /// and a real self-signature. There is no public unchecked constructor.
 #[derive(Clone, Copy)]
 pub struct TrustedKeys<'a> {
@@ -150,9 +167,10 @@ impl<'a> Dnskey<'a> {
         (sum & 0xffff) as u16
     }
     fn usable(self) -> bool {
-        self.flags & 0x100 != 0
-            && self.flags & 0x80 == 0
-            && !matches!(self.algorithm, 0 | 1 | 2 | 3 | 6 | 12)
+        self.flags & 0x100 != 0 && self.flags & 0x80 == 0 && Self::algorithm_usable(self.algorithm)
+    }
+    fn algorithm_usable(algorithm: u8) -> bool {
+        !matches!(algorithm, 0 | 1 | 2 | 3 | 6 | 12)
     }
 }
 /// Parsed uncompressed public RRSIG data, without signature/trust authority.
@@ -267,27 +285,9 @@ pub fn name_cmp(a: Name<'_>, b: Name<'_>) -> Ordering {
     an.cmp(&bn)
 }
 
-fn name_end(input: &[u8], mut at: usize) -> Result<usize, Error> {
-    let start = at;
-    loop {
-        let n = usize::from(*input.get(at).ok_or(Error::Truncated)?);
-        at += 1;
-        if n > 63 {
-            return Err(Error::Malformed);
-        }
-        if n == 0 {
-            break;
-        }
-        at = at.checked_add(n).ok_or(Error::Overflow)?;
-        if at > input.len() {
-            return Err(Error::Truncated);
-        }
-        if at - start >= 255 {
-            return Err(Error::TooLarge);
-        }
-    }
-    Name::from_wire(input.get(start..at).ok_or(Error::Truncated)?)?;
-    Ok(at)
+fn name_end(input: &[u8], start: usize) -> Result<usize, Error> {
+    let (name, _) = Name::uncompressed_prefix(input.get(start..).ok_or(Error::Truncated)?)?;
+    Ok(start + name.wire_len())
 }
 fn lower_name(input: &mut [u8], at: usize) -> Result<usize, Error> {
     let end = name_end(input, at)?;
@@ -302,7 +302,17 @@ pub fn canonical_rdata(kind: u16, input: &[u8], output: &mut [u8]) -> Result<usi
         return Err(Error::Capacity);
     }
     output[..input.len()].copy_from_slice(input);
-    let data = &mut output[..input.len()];
+    canonicalize_rdata(kind, &mut output[..input.len()])?;
+    Ok(input.len())
+}
+
+/// Canonicalize fully expanded RDATA in place. Wire types whose specifications
+/// prohibit name compression must carry complete names. Newly specified names
+/// such as SVCB/HTTPS TargetName retain their original case (RFC 3597).
+pub fn canonicalize_rdata(kind: u16, data: &mut [u8]) -> Result<(), Error> {
+    if data.len() > u16::MAX as usize {
+        return Err(Error::Capacity);
+    }
     let names = match kind {
         2 | 3 | 4 | 5 | 7 | 8 | 9 | 12 | 30 | 39 => Some((0, 1)),
         6 | 14 | 17 => Some((0, 2)),
@@ -341,6 +351,10 @@ pub fn canonical_rdata(kind: u16, input: &[u8], output: &mut [u8]) -> Result<usi
             name_end(data, 0)?;
             None
         }
+        64 | 65 => {
+            crate::svcb::validate_structure(data)?;
+            None
+        }
         _ => None,
     };
     if let Some((mut at, count)) = names {
@@ -357,8 +371,9 @@ pub fn canonical_rdata(kind: u16, input: &[u8], output: &mut [u8]) -> Result<usi
             _ => {}
         }
     }
-    Ok(data.len())
+    Ok(())
 }
+
 fn owner_for<'a>(
     owner: Name<'_>,
     labels: u8,
@@ -452,7 +467,7 @@ fn verify_key<'a>(
     zone: Name<'a>,
     key: Dnskey<'_>,
     set: Rrset<'a>,
-    signatures: Rrset<'a>,
+    signatures: Rrset<'_>,
     now: u32,
     crypto: &impl Crypto,
     scratch: &mut Scratch<'_>,
@@ -506,74 +521,12 @@ fn verify_key<'a>(
     }
     Err(last)
 }
-/// Authenticate a DNSKEY RRset from the exact original DS trust anchors. A
-/// digest match alone is insufficient: a matching key must sign the whole set.
-pub fn trust_dnskeys<'a>(
-    zone: Name<'a>,
-    ds: &[&[u8]],
-    keys: Rrset<'a>,
-    signatures: Rrset<'a>,
-    now: u32,
-    crypto: &impl Crypto,
-    scratch: &mut Scratch<'_>,
-) -> Result<TrustedKeys<'a>, Error> {
-    if keys.kind != 48 || !name_eq(keys.owner, zone) || ds.is_empty() {
-        return Err(Error::Authentication);
-    }
-    let mut name = [0; 255];
-    name[..zone.wire_len()].copy_from_slice(zone.wire());
-    name[..zone.wire_len()].make_ascii_lowercase();
-    let strong = ds.iter().any(|d| d.len() >= 4 && matches!(d[3], 2 | 4));
-    let mut last = Error::Authentication;
-    for raw in keys.records {
-        let key = match Dnskey::parse(raw) {
-            Ok(key) if key.usable() => key,
-            _ => continue,
-        };
-        for anchor in ds {
-            if anchor.len() < 4 {
-                last = Error::Truncated;
-                continue;
-            }
-            if key.tag() != u16::from_be_bytes([anchor[0], anchor[1]])
-                || key.algorithm != anchor[2]
-                || (strong && anchor[3] == 1)
-            {
-                continue;
-            }
-            let mut hash = [0; 48];
-            let n = match crypto.digest(anchor[3], &[&name[..zone.wire_len()], raw], &mut hash) {
-                Ok(n) if n <= hash.len() => n,
-                Ok(_) => return Err(Error::Malformed),
-                Err(error) => {
-                    last = error;
-                    continue;
-                }
-            };
-            if hash[..n] != anchor[4..] {
-                continue;
-            }
-            match verify_key(zone, key, keys, signatures, now, crypto, scratch) {
-                Ok(validated) => {
-                    return Ok(TrustedKeys {
-                        zone,
-                        set: keys,
-                        verified_at: now,
-                        ttl: validated.ttl(),
-                    });
-                }
-                Err(error) => last = error,
-            }
-        }
-    }
-    Err(last)
-}
 /// Verify a complete real RRset under an already authenticated DNSKEY set.
 /// Any expanded wildcard still requires a separate positive-wildcard proof.
 pub fn verify_rrset<'a>(
     keys: TrustedKeys<'a>,
     set: Rrset<'a>,
-    signatures: Rrset<'a>,
+    signatures: Rrset<'_>,
     now: u32,
     crypto: &impl Crypto,
     scratch: &mut Scratch<'_>,

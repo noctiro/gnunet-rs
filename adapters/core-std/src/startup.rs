@@ -12,7 +12,15 @@ use gnunet_service_runtime::{
     service_options,
 };
 use gnunet_wire::official::core::{PeerClass, PeerId};
-use std::{error::Error as StdError, future::Future, io, path::Path, sync::Arc};
+use std::{
+    error::Error as StdError,
+    future::{Future, poll_fn},
+    io,
+    path::Path,
+    pin::Pin,
+    sync::Arc,
+    task::Poll,
+};
 mod driver;
 use driver::run_foreground;
 mod pils;
@@ -84,6 +92,11 @@ pub async fn foreground(
 /// PILS verification, Resolver callbacks and both configured CLIENT endpoints.
 /// Like [`foreground`], this never changes process identity; USERNAME requires
 /// the explicit prepared-process path.
+///
+/// An embedding host supplies the same absolute `[PEER] PRIVATE_KEY` path as
+/// PILS and already resolved absolute `UNIXPATH` values for its local services.
+/// The caller owns stop and readiness. A successful stop before activation
+/// returns its report without invoking readiness.
 pub async fn foreground_with_clock(
     config: &Configuration,
     activation: Activation,
@@ -93,17 +106,39 @@ pub async fn foreground_with_clock(
     observe: impl FnMut(SocketEvent),
     clock: Arc<dyn RuntimeClock>,
 ) -> Result<Report, Box<dyn StdError>> {
-    verify_configured_identity(config)?;
-    let resources = ForegroundResources::bind(config, activation).await?;
+    let mut shutdown = std::pin::pin!(shutdown);
+    let binding = async {
+        verify_configured_identity(config)?;
+        ForegroundResources::bind(config, activation).await
+    };
+    let Some(resources) = until_stop(binding, shutdown.as_mut()).await? else {
+        return Ok(Report::default());
+    };
     run_foreground(
-        resources,
+        resources?,
         limits,
         ready,
-        shutdown,
+        shutdown.as_mut(),
         observe,
         clock,
         std::future::ready(Ok(())),
     )
+    .await
+}
+
+// Each stage polls the original stop first, even if the operation would be
+// ready immediately. None is a successful stop and ends the entire foreground.
+async fn until_stop<T>(
+    operation: impl Future<Output = T>,
+    mut shutdown: Pin<&mut impl Future<Output = io::Result<()>>>,
+) -> io::Result<Option<T>> {
+    let mut operation = std::pin::pin!(operation);
+    poll_fn(|cx| {
+        if let Poll::Ready(result) = shutdown.as_mut().poll(cx) {
+            return Poll::Ready(result.map(|()| None));
+        }
+        operation.as_mut().poll(cx).map(|result| Ok(Some(result)))
+    })
     .await
 }
 
@@ -146,7 +181,7 @@ impl<'config> ForegroundResources<'config> {
         let bound = if activation.is_empty() {
             BoundListeners::bind_configured(config, b"core", policy.unix_access.into()).await?
         } else {
-            BoundListeners::from_activation(activation)?
+            BoundListeners::from_activation_with_access(activation, policy.unix_access)?
         };
         Ok(Self {
             config,

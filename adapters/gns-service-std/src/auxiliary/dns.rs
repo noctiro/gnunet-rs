@@ -1,7 +1,10 @@
 // Root fresh DNSSEC seam; original ordinary operations retain their own flags.
 //! DNS-only recursive owner. No DNS response is redirected back into GNS.
 //! AD never grants authentication; required security uses an explicit real provider.
+mod bootstrap;
 pub mod dnssec;
+#[cfg(test)]
+mod tests;
 use crate::{
     Bounds, Close, Operation, Value,
     native::{Error as NativeError, Report},
@@ -11,7 +14,7 @@ use gnunet_gns::{Origin, Record, RecordFlags, RecordType};
 use gnunet_service_runtime::clock::{ClockSample, ClockSubscription, Deadline, RuntimeClock};
 use gnunet_types::{AbsoluteTime, Error as CoreError};
 use std::{
-    cell::RefCell,
+    cell::{OnceCell, RefCell},
     future::{Future, poll_fn},
     io,
     marker::PhantomData,
@@ -222,24 +225,12 @@ pub struct DnsReport {
 }
 struct Shared {
     clock: Arc<dyn RuntimeClock>,
-    bootstrap: Vec<SocketAddr>,
-    bootstrap_error: Option<Arc<Error>>,
+    bootstrap: bootstrap::Source,
     limits: DnsLimits,
     active: AtomicUsize,
     closing: AtomicBool,
 }
-impl Shared {
-    fn unavailable_bootstrap(&self) -> Error {
-        match &self.bootstrap_error {
-            Some(error) => Error {
-                cause: Cause::Bootstrap(error.clone()),
-                spent: 0,
-            },
-            None => CoreError::NotReady.into(),
-        }
-    }
-}
-/// Explicit DNS-only factory with numeric bootstrap servers.
+/// DNS-only factory with an explicit numeric bootstrap source.
 #[derive(Clone)]
 pub struct RecursiveDns {
     shared: Arc<Shared>,
@@ -302,7 +293,11 @@ pub trait Secure {
 struct Run {
     shared: Arc<Shared>,
     bounds: Bounds,
-    trace: Rc<RefCell<DnsReport>>,
+    state: Rc<RunState>,
+}
+struct RunState {
+    trace: RefCell<DnsReport>,
+    bootstrap: OnceCell<Result<Vec<SocketAddr>, Arc<Error>>>,
 }
 type OperationFuture = Pin<Box<dyn Future<Output = Result<Value, Error>>>>;
 struct OwnedQuery<'id> {
@@ -310,7 +305,7 @@ struct OwnedQuery<'id> {
     permit: Option<Permit>,
     bounds: Bounds,
     alarm: Option<Pin<Box<Sleep>>>,
-    trace: Option<Rc<RefCell<DnsReport>>>,
+    state: Option<Rc<RunState>>,
     closing: bool,
     lifetime: PhantomData<&'id ()>,
 }
@@ -376,12 +371,12 @@ impl Default for DnsLimits {
 struct Budget {
     initial: u32,
     left: u32,
-    trace: Rc<RefCell<DnsReport>>,
+    state: Rc<RunState>,
 }
 impl Budget {
     fn spend(&mut self) -> Result<(), Error> {
         self.left = self.left.checked_sub(1).ok_or(CoreError::Capacity)?;
-        self.trace.borrow_mut().work_spent = self.spent();
+        self.state.trace.borrow_mut().work_spent = self.spent();
         Ok(())
     }
     fn spent(&self) -> u32 {
@@ -437,27 +432,22 @@ impl RecursiveDns {
         bootstrap: &[SocketAddr],
         limits: DnsLimits,
     ) -> Result<Self, Error> {
-        Self::prepare(clock, bootstrap, limits, None)
-    }
-    /// Keep direct numeric GNS2DNS usable when system nameserver preparation
-    /// failed. Any operation which actually needs bootstrap returns this same
-    /// original cause, rather than a successful empty result or a registry miss.
-    pub fn without_bootstrap(
-        clock: Arc<dyn RuntimeClock>,
-        error: Error,
-        limits: DnsLimits,
-    ) -> Result<Self, Error> {
-        Self::prepare(clock, &[], limits, Some(Arc::new(error)))
-    }
-    /// Original preparation failure, if this factory lacks nameserver data.
-    pub fn bootstrap_error(&self) -> Option<&Arc<Error>> {
-        self.shared.bootstrap_error.as_ref()
+        if bootstrap.len() > limits.servers {
+            return Err(CoreError::InvalidInput.into());
+        }
+        for address in bootstrap {
+            valid_server(*address)?;
+        }
+        Self::prepare(
+            clock,
+            bootstrap::Source::Fixed(copy_slice(bootstrap)?),
+            limits,
+        )
     }
     fn prepare(
         clock: Arc<dyn RuntimeClock>,
-        bootstrap: &[SocketAddr],
+        bootstrap: bootstrap::Source,
         limits: DnsLimits,
-        bootstrap_error: Option<Arc<Error>>,
     ) -> Result<Self, Error> {
         if limits.operations == 0
             || limits.operations > 65_535
@@ -482,18 +472,13 @@ impl RecursiveDns {
                 .checked_add(std::time::Duration::from_micros(limits.timeout_micros))
                 .is_none()
             || limits.port == 0
-            || bootstrap.len() > limits.servers
         {
             return Err(CoreError::InvalidInput.into());
-        }
-        for address in bootstrap {
-            valid_server(*address)?;
         }
         Ok(Self {
             shared: Arc::new(Shared {
                 clock,
-                bootstrap: copy_slice(bootstrap)?,
-                bootstrap_error,
+                bootstrap,
                 limits,
                 active: AtomicUsize::new(0),
                 closing: AtomicBool::new(false),
@@ -501,46 +486,34 @@ impl RecursiveDns {
             security: None,
         })
     }
-    /// Snapshot configured Windows DNS endpoints without issuing DNS queries.
-    /// Native API order and IPv6 scopes are retained; the selected DNS port
-    /// applies consistently with the explicit resolv.conf factory.
+    /// Use the Windows configured DNS snapshot for each raw DNS operation that
+    /// needs bootstrap. Preserves endpoint order and IPv6 scope identifiers.
     #[cfg(windows)]
     pub fn from_native(clock: Arc<dyn RuntimeClock>, limits: DnsLimits) -> Result<Self, Error> {
-        let mut servers = gnunet_native::dns::servers(gnunet_native::dns::Limits {
-            servers: limits.servers,
-            ..Default::default()
-        })?;
-        for server in &mut servers {
-            server.set_port(limits.port);
-        }
-        Self::new(clock, &servers, limits)
+        Self::prepare(
+            clock,
+            bootstrap::Source::Dynamic(bootstrap::Dynamic::Windows),
+            limits,
+        )
     }
-    /// Read explicit resolv.conf configuration with a hard byte limit. This
-    /// factory performs file I/O, never name-service lookup or network I/O.
+    /// Configure a trusted regular resolv.conf file with a hard byte limit.
+    /// Each raw operation that needs bootstrap reads the current file once.
+    ///
+    /// # Errors
+    ///
+    /// Invalid limits are rejected at construction. File and parse errors are
+    /// reported by the operation that requests bootstrap.
     pub fn from_resolv_conf(
         clock: Arc<dyn RuntimeClock>,
         path: &std::path::Path,
         maximum_bytes: usize,
         limits: DnsLimits,
     ) -> Result<Self, Error> {
-        if maximum_bytes == 0 || maximum_bytes > 1_048_576 {
-            return Err(CoreError::InvalidInput.into());
-        }
-        let file = std::fs::File::open(path)?;
-        let mut reader = std::io::Read::take(
-            file,
-            u64::try_from(maximum_bytes).map_err(|_| CoreError::Overflow)? + 1,
-        );
-        let mut bytes = Vec::new();
-        bytes
-            .try_reserve_exact(maximum_bytes.min(4096))
-            .map_err(Error::allocation)?;
-        std::io::Read::read_to_end(&mut reader, &mut bytes)?;
-        if bytes.len() > maximum_bytes {
-            return Err(CoreError::Capacity.into());
-        }
-        let servers = Self::resolvers_from_bytes(&bytes, limits.port, limits.servers)?;
-        Self::new(clock, &servers, limits)
+        Self::prepare(
+            clock,
+            bootstrap::Dynamic::file(path, maximum_bytes)?,
+            limits,
+        )
     }
     /// Parse numeric system DNS endpoints. Unknown options are ignored, while
     /// a malformed nameserver is explicit; no hostname/NSS fallback is made.
@@ -549,40 +522,45 @@ impl RecursiveDns {
         default_port: u16,
         maximum_servers: usize,
     ) -> Result<Vec<SocketAddr>, Error> {
-        if default_port == 0 || maximum_servers == 0 || input.len() > 1_048_576 {
-            return Err(CoreError::InvalidInput.into());
-        }
-        let text = std::str::from_utf8(input).map_err(|_| CoreError::Malformed)?;
-        let mut result = Vec::new();
-        for line in text.lines() {
-            let line = line.split(['#', ';']).next().unwrap_or("");
-            let mut words = line.split_whitespace();
-            if !words
-                .next()
-                .is_some_and(|key| key.eq_ignore_ascii_case("nameserver"))
-            {
-                continue;
-            }
-            let value = words.next().ok_or(CoreError::Malformed)?;
-            let address = if let Ok(ip) = value.parse::<IpAddr>() {
-                SocketAddr::new(ip, default_port)
-            } else {
-                value
-                    .parse::<SocketAddr>()
-                    .or_else(|_| format!("[{value}]:{default_port}").parse::<SocketAddr>())
-                    .map_err(|_| CoreError::InvalidInput)?
-            };
-            push_server(&mut result, address, maximum_servers)?;
-        }
-        if result.is_empty() {
-            return Err(CoreError::NotReady.into());
-        }
-        Ok(result)
+        bootstrap::parse(input, default_port, maximum_servers)
     }
 }
 impl Run {
+    fn new(shared: Arc<Shared>, bounds: Bounds) -> Self {
+        Self {
+            shared,
+            bounds,
+            state: Rc::new(RunState {
+                trace: RefCell::new(DnsReport::new(bounds)),
+                bootstrap: OnceCell::new(),
+            }),
+        }
+    }
+
+    fn bootstrap(&self) -> Result<&[SocketAddr], Error> {
+        self.native(self.bounds.hard())?;
+        let servers = match &self.shared.bootstrap {
+            bootstrap::Source::Fixed(servers) => servers,
+            bootstrap::Source::Dynamic(source) => {
+                let result = self
+                    .state
+                    .bootstrap
+                    .get_or_init(|| source.snapshot(self.shared.limits).map_err(Arc::new));
+                self.native(self.bounds.hard())?;
+                result.as_ref().map_err(|error| Error {
+                    cause: Cause::Bootstrap(error.clone()),
+                    spent: 0,
+                })?
+            }
+        };
+        if servers.is_empty() {
+            return Err(CoreError::NotReady.into());
+        }
+        Ok(servers)
+    }
+
     fn retain(&self, error: Error) {
-        let mut trace = self.trace.borrow_mut();
+        let mut trace = self.state.trace.borrow_mut();
         if trace.first_recovered_error.is_none() {
             trace.first_recovered_error = Some(error);
         } else {
@@ -597,7 +575,7 @@ impl Run {
         Ok(Budget {
             initial: n,
             left: n,
-            trace: self.trace.clone(),
+            state: self.state.clone(),
         })
     }
     fn native(&self, hard: Instant) -> Result<(), Error> {
@@ -698,7 +676,7 @@ impl Run {
         let mut id = [0; 2];
         getrandom::fill(&mut id).map_err(Error::entropy)?;
         self.native(native_hard)?;
-        self.trace.borrow_mut().exchanges += 1;
+        self.state.trace.borrow_mut().exchanges += 1;
         let mut query = query_bytes(name, kind, id, flags.recursion_desired)?;
         if flags.dnssec {
             // EDNS0 with DO, and CD so a forwarding server cannot discard the
@@ -720,10 +698,10 @@ impl Run {
                 };
                 self.native(native_hard)?;
                 let socket = UdpSocket::bind(bind).await?;
-                self.trace.borrow_mut().udp_bindings += 1;
+                self.state.trace.borrow_mut().udp_bindings += 1;
                 self.native(native_hard)?;
                 let sent = socket.send_to(&query, server).await?;
-                self.trace.borrow_mut().written_bytes += sent as u64;
+                self.state.trace.borrow_mut().written_bytes += sent as u64;
                 if sent != query.len() {
                     return Err(io::Error::new(
                         io::ErrorKind::WriteZero,
@@ -736,7 +714,7 @@ impl Run {
                 loop {
                     self.native(native_hard)?;
                     let (n, source) = socket.recv_from(&mut input).await?;
-                    self.trace.borrow_mut().read_bytes += n as u64;
+                    self.state.trace.borrow_mut().read_bytes += n as u64;
                     self.native(native_hard)?;
                     if source == server
                         && n <= self.shared.limits.bytes
@@ -746,7 +724,7 @@ impl Run {
                         break Ok(input);
                     }
                     rejected += 1;
-                    self.trace.borrow_mut().rejected_datagrams += 1;
+                    self.state.trace.borrow_mut().rejected_datagrams += 1;
                     if rejected == self.shared.limits.rejected_packets {
                         return Err(CoreError::Malformed.into());
                     }
@@ -762,7 +740,7 @@ impl Run {
                 .bounded(end, native_hard, async {
                     self.native(native_hard)?;
                     let mut socket = TcpStream::connect(server).await?;
-                    self.trace.borrow_mut().tcp_connections += 1;
+                    self.state.trace.borrow_mut().tcp_connections += 1;
                     self.native(native_hard)?;
                     let n = u16::try_from(query.len()).map_err(|_| CoreError::TooLarge)?;
                     self.write(&mut socket, &n.to_be_bytes(), native_hard)
@@ -798,7 +776,7 @@ impl Run {
         while !input.is_empty() {
             self.native(hard)?;
             let n = socket.write(input).await?;
-            self.trace.borrow_mut().written_bytes += n as u64;
+            self.state.trace.borrow_mut().written_bytes += n as u64;
             if n == 0 {
                 return Err(io::Error::from(io::ErrorKind::WriteZero).into());
             }
@@ -816,7 +794,7 @@ impl Run {
         while !output.is_empty() {
             self.native(hard)?;
             let n = socket.read(output).await?;
-            self.trace.borrow_mut().read_bytes += n as u64;
+            self.state.trace.borrow_mut().read_bytes += n as u64;
             if n == 0 {
                 return Err(io::Error::from(io::ErrorKind::UnexpectedEof).into());
             }
@@ -932,8 +910,8 @@ impl Run {
             Ok(out)
         };
         let code = response_code(input, limits.records)?;
-        self.trace.borrow_mut().last_response_code = Some(code);
-        self.trace.borrow_mut().last_flags = Some(packet.flags);
+        self.state.trace.borrow_mut().last_response_code = Some(code);
+        self.state.trace.borrow_mut().last_flags = Some(packet.flags);
         Ok(Reply {
             at: now,
             code,
@@ -1234,10 +1212,13 @@ impl Run {
                                     }
                                     continue;
                                 }
-                                if !suffix(&target, &zone) && self.shared.bootstrap.is_empty() {
-                                    if let Some(previous) =
-                                        last.replace(self.shared.unavailable_bootstrap())
-                                    {
+                                if !suffix(&target, &zone)
+                                    && let Err(error) = self.bootstrap()
+                                {
+                                    if terminal(&error, budget) {
+                                        return Err(error);
+                                    }
+                                    if let Some(previous) = last.replace(error) {
                                         self.retain(previous);
                                     }
                                     continue;
@@ -1275,10 +1256,7 @@ impl Run {
                         recursion_desired = false;
                     } else {
                         if !suffix(&target, &zone) {
-                            if self.shared.bootstrap.is_empty() {
-                                return Err(self.shared.unavailable_bootstrap());
-                            }
-                            servers = copy_slice(&self.shared.bootstrap)?;
+                            servers = copy_slice(self.bootstrap()?)?;
                             zone = vec![0];
                             recursion_desired = self.shared.limits.bootstrap_recursion_desired;
                         }
@@ -1294,9 +1272,7 @@ impl Run {
                 }
                 if !missing.is_empty() {
                     let ns = missing.remove(0);
-                    if self.shared.bootstrap.is_empty() {
-                        return Err(self.shared.unavailable_bootstrap());
-                    }
+                    let bootstrap = self.bootstrap()?;
                     let mut addresses = Vec::new();
                     for family in [1, 28] {
                         match self
@@ -1309,7 +1285,7 @@ impl Run {
                                         .limits
                                         .bootstrap_recursion_desired,
                                 },
-                                copy_slice(&self.shared.bootstrap)?,
+                                copy_slice(bootstrap)?,
                                 vec![0],
                                 budget,
                                 depth + 1,
@@ -1594,6 +1570,9 @@ impl RecursiveDns {
     pub fn clock(&self) -> Arc<dyn RuntimeClock> {
         self.shared.clock.clone()
     }
+    pub(super) fn server_limit(&self) -> usize {
+        self.shared.limits.servers
+    }
     /// Install a genuine full security provider. It must own no native work
     /// outside returned operations; cloning this port starts no task or worker.
     pub fn with_security(mut self, security: Arc<dyn Secure>) -> Result<Self, Error> {
@@ -1632,7 +1611,7 @@ impl RecursiveDns {
                 permit: Some(permit),
                 bounds,
                 alarm: None,
-                trace: Some(run.trace),
+                state: Some(run.state),
                 closing: false,
                 lifetime: PhantomData,
             }),
@@ -1703,12 +1682,7 @@ impl RecursiveDns {
         }
         let server = SocketAddr::new(server, self.shared.limits.port);
         valid_server(server).map_err(NativeError::Dns)?;
-        let trace = Rc::new(RefCell::new(DnsReport::new(bounds)));
-        let run = Run {
-            shared: self.shared.clone(),
-            bounds,
-            trace,
-        };
+        let run = Run::new(self.shared.clone(), bounds);
         let mut budget = run.budget(remaining_steps).map_err(NativeError::Dns)?;
         let work = run.clone();
         super::guard(bounds)?;
@@ -1747,19 +1721,12 @@ impl RecursiveDns {
         if name.len() + 16 > self.shared.limits.bytes {
             return Err(CoreError::Capacity.into());
         }
-        if self.shared.bootstrap.is_empty() {
-            return Err(NativeError::Dns(self.shared.unavailable_bootstrap()));
-        }
-        let trace = Rc::new(RefCell::new(DnsReport::new(bounds)));
-        let run = Run {
-            shared: self.shared.clone(),
-            bounds,
-            trace,
-        };
+        let run = Run::new(self.shared.clone(), bounds);
         let mut budget = run.budget(remaining_steps).map_err(NativeError::Dns)?;
         let work = run.clone();
         super::guard(bounds)?;
         Ok(self.ordinary(bounds, permit, run, async move {
+            let bootstrap = work.bootstrap()?;
             let mut addresses = Vec::new();
             let mut last = None;
             for family in [1, 28] {
@@ -1773,7 +1740,7 @@ impl RecursiveDns {
                             kind: family,
                             recursion_desired: work.shared.limits.bootstrap_recursion_desired,
                         },
-                        copy_slice(&work.shared.bootstrap)?,
+                        copy_slice(bootstrap)?,
                         vec![0],
                         &mut budget,
                         0,
@@ -1809,7 +1776,7 @@ impl RecursiveDns {
                 if addresses.is_empty() {
                     return Err(error);
                 }
-                work.trace.borrow_mut().partial_addresses = true;
+                work.state.trace.borrow_mut().partial_addresses = true;
                 work.retain(error);
             }
             Ok(Value::Addresses {
@@ -1836,8 +1803,8 @@ impl OwnedQuery<'_> {
         let had_work = self.future.take().is_some();
         self.alarm = None;
         self.closing = true;
-        if let Some(trace) = &self.trace {
-            let mut trace = trace.borrow_mut();
+        if let Some(state) = &self.state {
+            let mut trace = state.trace.borrow_mut();
             trace.cancelled |= cancelled && had_work;
             trace.closed = true;
         }
@@ -1859,9 +1826,9 @@ impl<'id> Operation for Query<'id> {
                 if Instant::now() >= owner.bounds.hard() || alarm.as_mut().poll(cx).is_ready() {
                     owner.retire(true);
                     let spent = owner
-                        .trace
+                        .state
                         .as_ref()
-                        .map_or(0, |trace| trace.borrow().work_spent);
+                        .map_or(0, |state| state.trace.borrow().work_spent);
                     return Some(NativeError::Dns(
                         Error::from(CoreError::Timeout).with_spent(spent),
                     ));
@@ -1887,13 +1854,13 @@ impl<'id> Operation for Query<'id> {
                 match future.as_mut().poll(cx) {
                     Poll::Pending => Poll::Pending,
                     Poll::Ready(result) => {
-                        if let Some(trace) = &owner.trace {
-                            trace.borrow_mut().completed = result.is_ok();
+                        if let Some(state) = &owner.state {
+                            state.trace.borrow_mut().completed = result.is_ok();
                         }
                         let spent = owner
-                            .trace
+                            .state
                             .as_ref()
-                            .map_or(0, |trace| trace.borrow().work_spent);
+                            .map_or(0, |state| state.trace.borrow().work_spent);
                         owner.retire(false);
                         Poll::Ready(
                             result.map_err(|error| NativeError::Dns(error.with_spent(spent))),
@@ -1925,11 +1892,11 @@ impl<'id> Operation for Query<'id> {
                 if !owner.closing || owner.future.is_some() {
                     return Poll::Pending;
                 }
-                let Some(trace) = owner.trace.take() else {
+                let Some(state) = owner.state.take() else {
                     return Poll::Pending;
                 };
                 let report =
-                    std::mem::replace(&mut *trace.borrow_mut(), DnsReport::new(owner.bounds));
+                    std::mem::replace(&mut *state.trace.borrow_mut(), DnsReport::new(owner.bounds));
                 owner.permit = None;
                 Poll::Ready(Close::Closed(Report::Dns(report)))
             }

@@ -261,6 +261,15 @@ impl<'a> RequestHead<'a> {
     pub const fn header_len(&self) -> usize {
         self.end
     }
+    /// Complete request extent when the body is framed by Content-Length (or
+    /// absent). Chunked requests require validating their terminating chunk.
+    pub const fn contiguous_end(&self) -> Option<usize> {
+        if self.chunked {
+            None
+        } else {
+            Some(self.end + self.length)
+        }
+    }
     /// Exact original validated header fields; body/trailers are not included.
     pub const fn headers(&self) -> Headers<'a> {
         Headers { raw: self.headers }
@@ -623,16 +632,23 @@ pub struct Response<'a> {
 impl Response<'_> {
     /// Required complete wire bytes with Content-Length and Connection: close.
     pub fn encoded_len(&self) -> Result<usize, Error> {
-        self.write(None)
+        self.write(None, !self.head_only)
     }
     /// Encode after complete preflight; no partial output on refusal. HTTP host
     /// sockets/listener/persistence are intentionally outside this pure codec.
     pub fn encode(&self, out: &mut [u8]) -> Result<usize, Error> {
         let n = self.encoded_len()?;
         let out = out.get_mut(..n).ok_or(Error::Capacity)?;
-        self.write(Some(out))
+        self.write(Some(out), !self.head_only)
     }
-    fn write(&self, mut out: Option<&mut [u8]>) -> Result<usize, Error> {
+    /// Encode only the validated response head, retaining the original body
+    /// length. Socket owners can write the body separately without copying it.
+    pub fn encode_head(&self, out: &mut [u8]) -> Result<usize, Error> {
+        let n = self.write(None, false)?;
+        let out = out.get_mut(..n).ok_or(Error::Capacity)?;
+        self.write(Some(out), false)
+    }
+    fn write(&self, mut out: Option<&mut [u8]>, emit_body: bool) -> Result<usize, Error> {
         if !(200..600).contains(&self.status)
             || self.content_type.iter().any(|b| *b < 0x20 || *b > 0x7e)
         {
@@ -685,6 +701,7 @@ impl Response<'_> {
             403 => b"Forbidden",
             404 => b"Not Found",
             405 => b"Method Not Allowed",
+            408 => b"Request Timeout",
             409 => b"Conflict",
             413 => b"Content Too Large",
             415 => b"Unsupported Media Type",
@@ -721,7 +738,7 @@ impl Response<'_> {
         }
         for part in [
             b"Connection: close\r\n\r\n".as_slice(),
-            if self.head_only { b"" } else { self.body },
+            if emit_body { self.body } else { b"" },
         ] {
             append(&mut out, &mut at, part)?;
         }

@@ -130,11 +130,12 @@ fn unrepresentable_actual_attempt_refuses_without_reduction_retry_or_output() ->
         fail_at: None,
     };
     let expected = Error::Source(Fault::TooLarge);
-    check(finish(&mut job, &mut draws) == Err(expected))?;
-    check(draws.calls == 3 && job.secrets.is_none() && matches!(job.work, Work::Closed))?;
+    check(job.advance(&mut draws, 1)? == Progress::Advanced && draws.calls == 1)?;
+    check(job.advance(&mut draws, 1) == Err(expected))?;
+    check(draws.calls == 2 && job.secrets.is_none() && matches!(job.work, Work::Closed))?;
     check(job.fields.ciphertext == [0; 516] && job.fields.z == [0; 128])?;
     check(job.advance(&mut draws, 64) == Err(expected))?;
-    check(job.take_result() == Err(expected) && draws.calls == 3)
+    check(job.take_result() == Err(expected) && draws.calls == 2)
 }
 
 #[test]

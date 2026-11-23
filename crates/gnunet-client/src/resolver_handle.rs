@@ -8,6 +8,11 @@ use crate::resolver::{Family, FamilyProfile, MAX_HOSTNAME_LEN, Request, Response
 use core::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use gnunet_types::{AbsoluteTime, Duration, Error, GenerationalId};
 use gnunet_wire::official::Frame;
+mod storage;
+#[cfg(feature = "alloc")]
+pub use storage::HeapSlots;
+use storage::Table;
+pub use storage::{InlineSlots, SlotStorage};
 
 const INITIAL_BACKOFF: Duration = Duration(1_000);
 const MAX_BACKOFF: Duration = Duration(900_000_000);
@@ -136,11 +141,11 @@ impl<const N: usize> Slot<N> {
         state: None,
     };
 }
-/// Allocation-free resolver owner. R bounds all live/draining/event slots; N
-/// bounds each owned forward name. No completion queue can overflow after admission.
-/// Native hostname/getaddrinfo helpers are deliberately outside this pure core.
-pub struct ResolverHandle<const R: usize, const N: usize> {
-    slots: [Slot<N>; R],
+/// Resolver owner with fixed inline storage by default. R bounds all live,
+/// draining and event slots. N bounds each owned forward name.
+/// No completion queue can overflow after admission.
+pub struct ResolverHandle<const R: usize, const N: usize, S: SlotStorage = InlineSlots> {
+    slots: Table<S, Slot<N>, R>,
     head: Option<usize>,
     tail: Option<usize>,
     profile: FamilyProfile,
@@ -155,15 +160,43 @@ pub struct ResolverHandle<const R: usize, const N: usize> {
     continuation: Option<RequestId>,
     finish_sequence: u64,
 }
+/// Resolver owner with the same protocol logic and a heap-backed slot table.
+#[cfg(feature = "alloc")]
+pub type HeapResolverHandle<const R: usize, const N: usize> = ResolverHandle<R, N, HeapSlots>;
+
 impl<const R: usize, const N: usize> ResolverHandle<R, N> {
-    /// Equivalent to storing a resolver configuration via connect; no network I/O.
-    /// configured is the host's actual check_config result, not service reachability.
+    /// Start without allocation or network I/O. `configured` records the host's
+    /// actual configuration check.
     pub fn new(profile: FamilyProfile, configured: bool) -> Result<Self, Error> {
+        Self::validate_capacity()?;
+        Ok(Self::with_slots(profile, configured, [Slot::EMPTY; R]))
+    }
+}
+
+#[cfg(feature = "alloc")]
+impl<const R: usize, const N: usize> HeapResolverHandle<R, N> {
+    /// Allocate and initialize R slots directly on the heap. Allocation failure
+    /// returns [`Error::Capacity`]. This starts no network I/O.
+    pub fn new_heap(profile: FamilyProfile, configured: bool) -> Result<Self, Error> {
+        Self::validate_capacity()?;
+        let mut slots = alloc::vec::Vec::new();
+        slots.try_reserve_exact(R).map_err(|_| Error::Capacity)?;
+        slots.resize_with(R, || Slot::EMPTY);
+        Ok(Self::with_slots(profile, configured, slots))
+    }
+}
+
+impl<const R: usize, const N: usize, S: SlotStorage> ResolverHandle<R, N, S> {
+    fn validate_capacity() -> Result<(), Error> {
         if R > u32::MAX as usize {
             return Err(Error::TooLarge);
         }
-        Ok(Self {
-            slots: [Slot::EMPTY; R],
+        Ok(())
+    }
+
+    fn with_slots(profile: FamilyProfile, configured: bool, slots: S::Entries<Slot<N>, R>) -> Self {
+        Self {
+            slots: Table::new(slots),
             head: None,
             tail: None,
             profile,
@@ -177,7 +210,7 @@ impl<const R: usize, const N: usize> ResolverHandle<R, N> {
             idle_at: None,
             continuation: None,
             finish_sequence: 0,
-        })
+        }
     }
     /// Store a new check_config result and reset the next backoff, as C connect does.
     /// The host retains the actual configuration and endpoint ownership.
@@ -933,6 +966,27 @@ mod boundaries {
         reason = "Private exhaustion boundaries must fail without generation or timer reuse."
     )]
     use super::*;
+    #[cfg(feature = "alloc")]
+    #[test]
+    fn heap_slots_keep_the_same_request_capacity_without_inline_tables() -> Result<(), Error> {
+        assert_eq!(
+            size_of::<HeapResolverHandle<64, 1024>>(),
+            size_of::<HeapResolverHandle<2, 16>>(),
+        );
+        let mut owner = HeapResolverHandle::<2, 16>::new_heap(FamilyProfile::LINUX, true)?;
+        let host = b"127.0.0.1";
+        let now = AbsoluteTime::from_micros(0);
+        let first = owner.ip_get(host, Family::V4, Duration(0), now)?;
+        let second = owner.ip_get(host, Family::V4, Duration(0), now)?;
+        assert_ne!(first, second);
+        assert_eq!(
+            owner.ip_get(host, Family::V4, Duration(0), now),
+            Err(Error::Capacity),
+        );
+        assert!(owner.owns_request(first) && owner.owns_request(second));
+        Ok(())
+    }
+
     #[test]
     fn exhausted_slot_generation_is_retired_instead_of_wrapping() -> Result<(), Error> {
         let mut h = ResolverHandle::<1, 16>::new(FamilyProfile::LINUX, true)?;

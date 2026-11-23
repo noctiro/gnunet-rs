@@ -1,0 +1,44 @@
+; Non-PnP WDM kernel service; minimum runtime is Windows 10 version 2004.
+; The deployment entry must enforce build 19041 or newer before installation.
+; Supply the externally signed catalog and matching image beside this INF.
+
+[Version]
+Signature   = "$Windows NT$"
+Class       = System
+ClassGuid   = {4d36e97d-e325-11ce-bfc1-08002be10318}
+Provider    = %ProviderName%
+DriverVer   = 11/19/2026,0.1.0.0
+CatalogFile = gnunet-wfp-driver.cat
+PnpLockdown = 1
+
+[SourceDisksNames]
+1 = %MediaDescription%
+
+[SourceDisksFiles]
+gnunet-wfp-driver.sys = 1
+
+[DestinationDirs]
+DnsIntercept.DriverFiles = 13
+
+[DefaultInstall.NT@ARCH@]
+CopyFiles = DnsIntercept.DriverFiles
+
+[DefaultInstall.NT@ARCH@.Services]
+AddService = GNUnetDnsIntercept,0x00000000,DnsIntercept.Service
+
+[DnsIntercept.DriverFiles]
+gnunet-wfp-driver.sys
+
+[DnsIntercept.Service]
+DisplayName   = %ServiceName%
+Description   = %ServiceDescription%
+ServiceType   = 1
+StartType     = 3
+ErrorControl  = 1
+ServiceBinary = %13%\gnunet-wfp-driver.sys
+
+[Strings]
+ProviderName       = "gnunet-rs"
+MediaDescription   = "GNUnet DNS interception driver package"
+ServiceName        = "GNUnet DNS Interception"
+ServiceDescription = "Native GNUnet DNS capture and guarded reply injection"

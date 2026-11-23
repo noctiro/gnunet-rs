@@ -12,6 +12,7 @@ use gnunet_types::Error as ProtocolError;
 use std::{collections::VecDeque, pin::Pin, sync::Arc, time::Duration};
 use tokio::time::{Instant, Sleep};
 mod io;
+mod queue;
 #[derive(Clone, Copy)]
 struct Origin<'a> {
     epoch: Epoch<'a>,
@@ -47,6 +48,7 @@ pub struct Client<'a> {
     alarm: Option<Pin<Box<Deadline>>>,
     alarm_at: Option<u64>,
     native_alarm: Option<Pin<Box<Sleep>>>,
+    input_hard: Option<Instant>,
     read_first: bool,
     yield_due: bool,
     closed: bool,
@@ -88,6 +90,7 @@ impl<'a> Client<'a> {
             alarm: None,
             alarm_at: None,
             native_alarm: None,
+            input_hard: None,
             read_first: false,
             yield_due: false,
             closed: false,
@@ -259,14 +262,15 @@ impl<'a> Client<'a> {
             .map(|s| s.retirement.unwrap_or(s.bounds).expires())
             .min()
     }
-    /// Earliest unchanged native response or partial-retirement target. This
-    /// remains effective while the canonical clock is stalled or refused.
+    /// Earliest unchanged native response, partial input or retirement target.
+    /// This remains effective while the canonical clock is stalled or refused.
     #[must_use]
     pub fn next_native_deadline(&self) -> Option<Instant> {
         self.slots
             .iter()
             .filter_map(|slot| slot.as_ref())
             .map(|state| state.retirement.unwrap_or(state.bounds).hard())
+            .chain(self.input_hard)
             .min()
     }
     /// Consume one retained local completion, without IO.
@@ -357,37 +361,33 @@ impl<'a> Client<'a> {
     }
     fn prepare(&mut self) -> Result<(), Error> {
         let epoch = self.epoch.ok_or(ProtocolError::NotReady)?;
-        for state in self.slots.iter_mut().flatten() {
-            let Some(source) = state.source.as_ref() else {
-                continue;
-            };
-            if state.reason.is_some() {
-                continue;
-            }
-            let frame = self.channel.framing_mut().ok_or(ProtocolError::NotReady)?;
-            if !frame.capacity(source.len(), Class::Ordinary) {
-                continue;
-            }
-            frame.reserve(source.len(), Class::Ordinary)?;
-            let origin = Origin {
-                epoch,
-                operation: state.operation,
-                write: self.scope.write()?,
-            };
-            let bytes = state.source.take().ok_or(ProtocolError::Stale)?;
-            if let Err(rejected) = frame.enqueue_owned(bytes, origin, Class::Ordinary) {
-                state.source = Some(rejected.value.0);
-                return Err(rejected.reason.into());
-            }
-            state.pending = true;
-            state.epoch = Some(epoch);
+        let frame = self.channel.framing().ok_or(ProtocolError::NotReady)?;
+        let Some(index) = queue::next(&self.slots, |bytes| frame.capacity(bytes, Class::Ordinary))
+        else {
             return Ok(());
+        };
+        let state = self.slots[index].as_mut().ok_or(ProtocolError::Stale)?;
+        let source = state.source.as_ref().ok_or(ProtocolError::Stale)?;
+        let frame = self.channel.framing_mut().ok_or(ProtocolError::NotReady)?;
+        frame.reserve(source.len(), Class::Ordinary)?;
+        let origin = Origin {
+            epoch,
+            operation: state.operation,
+            write: self.scope.write()?,
+        };
+        let bytes = state.source.take().ok_or(ProtocolError::Stale)?;
+        if let Err(rejected) = frame.enqueue_owned(bytes, origin, Class::Ordinary) {
+            state.source = Some(rejected.value.0);
+            return Err(rejected.reason.into());
         }
+        state.pending = true;
+        state.epoch = Some(epoch);
         Ok(())
     }
     fn retire(&mut self, cause: LossCause, retry: bool) -> Result<Progress<'a>, Error> {
         let epoch = self.epoch.take();
         self.channel.detach(); // The physical fence precedes every logical settlement.
+        self.input_hard = None;
         for index in 0..self.slots.len() {
             let Some(state) = &self.slots[index] else {
                 continue;

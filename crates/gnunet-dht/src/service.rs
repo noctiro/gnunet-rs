@@ -1,7 +1,9 @@
 //! Real volatile DHT local IPC state. Native IO and network routes are separate.
+mod cache;
 /// Bounded R5N GET/PUT/RESULT owner over original peer capabilities.
 pub mod network;
 use alloc::vec::Vec;
+use cache::Cache;
 use core::{fmt, ptr};
 use gnunet_block::{
     BlockType, ReplyEvaluation, ReturnValue,
@@ -300,6 +302,35 @@ struct Reply<'a> {
     get: Path<'a>,
     truncated: Option<&'a [u8; 32]>,
 }
+
+// A concrete BLOCK that passed the installed handler. Keep the original
+// payload and both verified path segments borrowed until storage is chosen.
+struct ValidatedBlock<'a> {
+    reply: Reply<'a>,
+    hash: [u8; 64],
+}
+
+impl ValidatedBlock<'_> {
+    fn retain(&self) -> Result<Entry, Error> {
+        let reply = &self.reply;
+        let put = reply.put.as_bytes();
+        let get = reply.get.as_bytes();
+        let mut path = reserved(put.len().checked_add(get.len()).ok_or(Error::Overflow)?)?;
+        path.extend_from_slice(put);
+        path.extend_from_slice(get);
+        Ok(Entry {
+            key: *reply.key,
+            kind: reply.kind,
+            options: reply.options,
+            expiration: reply.expiration,
+            payload: copy(reply.payload)?,
+            hash: self.hash,
+            put_path: path,
+            truncated_peer: reply.truncated.copied(),
+        })
+    }
+}
+
 struct Entry {
     key: [u8; 64],
     kind: u32,
@@ -309,6 +340,24 @@ struct Entry {
     hash: [u8; 64],
     put_path: Vec<u8>,
     truncated_peer: Option<[u8; 32]>,
+}
+
+impl Entry {
+    fn view(&self) -> Result<ValidatedBlock<'_>, Error> {
+        Ok(ValidatedBlock {
+            hash: self.hash,
+            reply: Reply {
+                key: &self.key,
+                kind: self.kind,
+                options: self.options,
+                expiration: self.expiration,
+                payload: &self.payload,
+                put: Path::new(&self.put_path)?,
+                get: Path::empty(),
+                truncated: self.truncated_peer.as_ref(),
+            },
+        })
+    }
 }
 #[derive(Clone, Copy, Eq, PartialEq)]
 struct Monitor<'id> {
@@ -362,8 +411,11 @@ impl<'id> Output<'id> {
 /// Local transition only. None of these values asserts network replication.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Outcome<'id> {
-    /// Block really entered or updated the volatile cache.
+    /// The validated value is retained in the volatile cache.
     Cached,
+    /// Validated PUT remains eligible for forwarding. It was not retained by
+    /// this node's cache placement or quota policy.
+    UncachedPut,
     /// A concrete type has no installed local BLOCK handler. This original
     /// PUT may be forwarded by the containing network owner, but acquired no
     /// validated cache entry, local query result or replication acknowledgement.
@@ -418,8 +470,7 @@ pub struct LocalOwner<'id> {
     clients: Vec<ClientId<'id>>,
     queries: Vec<Query<'id>>,
     monitors: Vec<Monitor<'id>>,
-    cache: Vec<Entry>,
-    cache_bytes: usize,
+    cache: Cache,
     // Only NetworkOwner can install an actual validated local-peer HELLO.
     // It cannot consume ordinary cache records or their payload quota.
     own_hello: Option<Entry>,
@@ -427,6 +478,13 @@ pub struct LocalOwner<'id> {
     output_bytes: usize,
     closed: bool,
 }
+
+#[derive(Clone, Copy)]
+enum PutPlacement {
+    Cache,
+    DeliverOnly,
+}
+
 impl<'id> LocalOwner<'id> {
     /// Reserve bounded metadata before publishing any client/operation token.
     pub fn new(instance: &'id mut Instance, limits: Limits) -> Result<Self, Error> {
@@ -440,8 +498,7 @@ impl<'id> LocalOwner<'id> {
             clients: reserved(limits.clients)?,
             queries: reserved(limits.queries)?,
             monitors: reserved(limits.monitors)?,
-            cache: reserved(limits.cache_records)?,
-            cache_bytes: 0,
+            cache: Cache::new(limits)?,
             own_hello: None,
             output: reserved(limits.output_frames)?,
             output_bytes: 0,
@@ -483,8 +540,25 @@ impl<'id> LocalOwner<'id> {
         blocks: &mut impl Blocks,
     ) -> Result<Outcome<'id>, Error> {
         self.client(client)?;
-        match Request::decode(input)? {
-            Request::Put(p) => self.put(client, p, now, blocks),
+        self.ingest_request(
+            client,
+            Request::decode(input)?,
+            now,
+            blocks,
+            PutPlacement::Cache,
+        )
+    }
+
+    fn ingest_request(
+        &mut self,
+        client: ClientId<'id>,
+        request: Request<'_>,
+        now: u64,
+        blocks: &mut impl Blocks,
+        placement: PutPlacement,
+    ) -> Result<Outcome<'id>, Error> {
+        match request {
+            Request::Put(p) => self.put(p, now, blocks, placement),
             Request::Get(g) => self.get(client, g, now, blocks),
             Request::Stop(s) => {
                 let before = self.queries.len();
@@ -574,8 +648,7 @@ impl<'id> LocalOwner<'id> {
     /// Logical time may move backwards; removed expired entries are not resurrected.
     pub fn tick(&mut self, now: u64) -> Result<(), Error> {
         self.open()?;
-        self.cache.retain(|e| e.expiration >= now);
-        self.cache_bytes = self.cache.iter().map(|e| e.payload.len()).sum();
+        self.cache.expire(now);
         if self.own_hello.as_ref().is_some_and(|e| e.expiration < now) {
             self.own_hello = None;
         }
@@ -598,8 +671,8 @@ impl<'id> LocalOwner<'id> {
             clients: self.clients.len(),
             queries: self.queries.len(),
             monitors: self.monitors.len(),
-            cache_records: self.cache.len(),
-            cache_bytes: self.cache_bytes,
+            cache_records: self.cache.entries().len(),
+            cache_bytes: self.cache.payload_bytes(),
             own_hello_bytes: self.own_hello.as_ref().map_or(0, |e| e.payload.capacity()),
             output_frames: self.output.len(),
             output_bytes: self.output_bytes,
@@ -615,7 +688,6 @@ impl<'id> LocalOwner<'id> {
         self.cache.clear();
         self.own_hello = None;
         self.output.clear();
-        self.cache_bytes = 0;
         self.output_bytes = 0;
     }
     fn open(&self) -> Result<(), Error> {
@@ -676,10 +748,10 @@ impl<'id> LocalOwner<'id> {
     }
     fn put(
         &mut self,
-        _client: ClientId<'id>,
         p: ipc::Put<'_>,
         now: u64,
         blocks: &mut impl Blocks,
+        placement: PutPlacement,
     ) -> Result<Outcome<'id>, Error> {
         // ANY denotes a query wildcard, never a concrete PUT block.
         if p.block_type == 0 {
@@ -723,39 +795,28 @@ impl<'id> LocalOwner<'id> {
             Validity::Invalid => return Err(Error::Authentication),
             Validity::Unsupported => return Err(Error::Unsupported),
         }
-        let existing = self
-            .cache
-            .iter()
-            .position(|e| e.key == *p.key && e.kind == p.block_type && e.payload == p.payload);
-        if existing.is_none()
-            && (self.cache.len() == self.limits.cache_records
-                || self
-                    .cache_bytes
-                    .checked_add(p.payload.len())
-                    .ok_or(Error::Overflow)?
-                    > self.limits.cache_bytes)
-        {
-            return Err(Error::Capacity);
-        }
-        let entry = Entry {
-            key: *p.key,
-            kind: p.block_type,
-            options: p.options,
-            expiration: p.expiration.as_micros(),
-            payload: copy(p.payload)?,
+        let block = ValidatedBlock {
+            reply: Reply {
+                key: p.key,
+                kind: p.block_type,
+                options: p.options,
+                expiration: p.expiration.as_micros(),
+                payload: p.payload,
+                put: Path::empty(),
+                get: Path::empty(),
+                truncated: None,
+            },
             hash: hash512(p.payload),
-            put_path: Vec::new(),
-            truncated_peer: None,
         };
         let mut stage = Vec::new();
         let mut updates = Vec::new();
         for (i, q) in self.queries.iter().enumerate() {
-            if let Some(last) = self.deliver(q, &entry, now, blocks, &mut stage)? {
+            if let Some(last) = self.deliver(q, &block, now, blocks, &mut stage)? {
                 updates.try_reserve(1).map_err(|_| Error::Capacity)?;
                 updates.push((i, last));
             }
         }
-        self.monitor_put(&entry, p.replication, &mut stage)?;
+        self.monitor_put(&block.reply, p.replication, &mut stage)?;
 
         for (i, last) in &updates {
             let q = &mut self.queries[*i];
@@ -766,25 +827,20 @@ impl<'id> LocalOwner<'id> {
                 q.seen.try_reserve(1).map_err(|_| Error::Capacity)?;
             }
         }
-        if let Some(i) = existing {
-            if entry.expiration > self.cache[i].expiration {
-                // A local replacement has no inherited signed path. Keeping
-                // an older network path would bind the wrong expiration.
-                self.cache[i] = entry;
-            }
-        } else {
-            self.cache_bytes += entry.payload.len();
-            self.cache.push(entry);
-        }
+        let retained = matches!(placement, PutPlacement::Cache) && self.cache.store(&block, now);
         for (i, last) in updates.into_iter().rev() {
             if last {
                 self.queries.remove(i);
             } else {
-                self.queries[i].seen.push(hash512(p.payload));
+                self.queries[i].seen.push(block.hash);
             }
         }
         self.commit(stage);
-        Ok(Outcome::Cached)
+        Ok(if retained {
+            Outcome::Cached
+        } else {
+            Outcome::UncachedPut
+        })
     }
     fn get(
         &mut self,
@@ -836,10 +892,11 @@ impl<'id> LocalOwner<'id> {
         };
         let mut stage = Vec::new();
         let mut complete = false;
-        let selected = if installed || g.block_type == 0 {
-            self.cache_selection(&q, now)?
+        let selected = if installed || q.kind == 0 {
+            self.cache.select(&q.key, q.kind, q.options, now);
+            self.cache.selected()
         } else {
-            Vec::new()
+            &[]
         };
         // Retain local GET access to the actual self announcement without
         // placing another copy in the ordinary volatile cache. The existing
@@ -850,13 +907,13 @@ impl<'id> LocalOwner<'id> {
             let e = if own_hello && candidate == 0 {
                 self.own_hello.as_ref().ok_or(Error::Stale)?
             } else {
-                &self.cache[selected[candidate - usize::from(own_hello)]]
+                &self.cache.entries()[selected[candidate - usize::from(own_hello)]]
             };
             match blocks.validate(e.kind, &e.key, &e.payload, now)? {
                 Validity::Valid => {}
                 Validity::Invalid | Validity::Unsupported => continue,
             }
-            if let Some(last) = self.deliver(&q, e, now, blocks, &mut stage)? {
+            if let Some(last) = self.deliver(&q, &e.view()?, now, blocks, &mut stage)? {
                 if last {
                     complete = true;
                     break;
@@ -876,92 +933,30 @@ impl<'id> LocalOwner<'id> {
         self.commit(stage);
         Ok(Outcome::Get(token))
     }
-    fn cache_selection(&self, q: &Query<'id>, now: u64) -> Result<Vec<usize>, Error> {
-        self.cache_selection_for(&q.key, q.kind, q.options, now)
-    }
-    fn cache_selection_for(
-        &self,
-        target: &[u8; 64],
-        kind: u32,
-        options: u32,
-        now: u64,
-    ) -> Result<Vec<usize>, Error> {
-        let mut order = Vec::new();
-        for (i, e) in self.cache.iter().enumerate() {
-            if e.expiration >= now
-                && (kind == 0 || kind == e.kind)
-                && (options & 4 != 0 || e.key == *target)
-            {
-                order.try_reserve(1).map_err(|_| Error::Capacity)?;
-                order.push(i);
-            }
-        }
-        order.sort_unstable_by(|a, b| {
-            distance(&self.cache[*a].key, target).cmp(&distance(&self.cache[*b].key, target))
-        });
-        let mut keys = Vec::new();
-        let mut keep = Vec::new();
-        for i in order {
-            let key = self.cache[i].key;
-            if !keys.contains(&key) {
-                if keys.len() == self.limits.approximate_keys {
-                    break;
-                }
-                keys.try_reserve(1).map_err(|_| Error::Capacity)?;
-                keys.push(key);
-            }
-            keep.try_reserve(1).map_err(|_| Error::Capacity)?;
-            keep.push(i);
-        }
-        Ok(keep)
-    }
     fn deliver(
         &self,
         q: &Query<'id>,
-        e: &Entry,
+        block: &ValidatedBlock<'_>,
         now: u64,
         blocks: &mut impl Blocks,
         stage: &mut Vec<Output<'id>>,
     ) -> Result<Option<bool>, Error> {
-        self.deliver_paths(q, e, Path::empty(), now, blocks, stage)
-    }
-    fn deliver_paths(
-        &self,
-        q: &Query<'id>,
-        e: &Entry,
-        get_path: Path<'_>,
-        now: u64,
-        blocks: &mut impl Blocks,
-        stage: &mut Vec<Output<'id>>,
-    ) -> Result<Option<bool>, Error> {
+        let e = &block.reply;
         if e.expiration < now
             || (q.kind != 0 && q.kind != e.kind)
-            || (q.options & 4 == 0 && q.key != e.key)
-            || q.seen.contains(&e.hash)
+            || (q.options & 4 == 0 && q.key != *e.key)
+            || q.seen.contains(&block.hash)
         {
             return Ok(None);
         }
-        let last = match blocks.reply(q.kind, &e.key, &q.xquery, e.kind, &e.payload, now)? {
+        let last = match blocks.reply(q.kind, e.key, &q.xquery, e.kind, e.payload, now)? {
             ReplyEvaluation::More => false,
             // One concrete type cannot complete an ANY subscription.
             ReplyEvaluation::Last => q.kind != 0,
             ReplyEvaluation::Duplicate | ReplyEvaluation::Irrelevant => return Ok(None),
             ReplyEvaluation::Unsupported => return Err(Error::Unsupported),
         };
-        self.stage_reply(
-            q,
-            &Reply {
-                key: &e.key,
-                kind: e.kind,
-                options: e.options,
-                expiration: e.expiration,
-                payload: &e.payload,
-                put: Path::new(&e.put_path)?,
-                get: get_path,
-                truncated: e.truncated_peer.as_ref(),
-            },
-            stage,
-        )?;
+        self.stage_reply(q, e, stage)?;
         Ok(Some(last))
     }
     fn stage_reply(
@@ -1053,7 +1048,7 @@ impl<'id> LocalOwner<'id> {
     }
     fn monitor_put(
         &self,
-        e: &Entry,
+        e: &Reply<'_>,
         replication: u32,
         stage: &mut Vec<Output<'id>>,
     ) -> Result<(), Error> {
@@ -1064,10 +1059,10 @@ impl<'id> LocalOwner<'id> {
                 hop_count: 0,
                 replication,
                 expiration: AbsoluteTime::from_micros(e.expiration),
-                key: &e.key,
+                key: e.key,
                 truncated_peer: None,
                 put_path: Path::empty(),
-                payload: &e.payload,
+                payload: e.payload,
             },
             stage,
         )
@@ -1107,11 +1102,4 @@ fn copy(value: &[u8]) -> Result<Vec<u8>, Error> {
     let mut v = reserved(value.len())?;
     v.extend_from_slice(value);
     Ok(v)
-}
-fn distance(a: &[u8; 64], b: &[u8; 64]) -> [u8; 64] {
-    let mut v = [0; 64];
-    for (i, x) in v.iter_mut().enumerate() {
-        *x = a[i] ^ b[i];
-    }
-    v
 }

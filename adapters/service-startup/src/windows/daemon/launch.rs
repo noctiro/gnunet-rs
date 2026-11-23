@@ -3,7 +3,7 @@ pub use super::super::launch::LaunchCause;
 use super::super::parent::{ParentFailure, ReadyReceipt};
 use gnunet_native::process::{Console, LaunchLimits, Stdio};
 use gnunet_service_runtime::{
-    Activation,
+    ActivatedSocket, Activation,
     process::{ChildRegistry, OriginalChild, RegistryError},
 };
 use std::{
@@ -122,7 +122,7 @@ pub fn launch(
             .activation
             .sockets()
             .iter()
-            .map(|socket| socket.as_socket()),
+            .map(ActivatedSocket::launch_source),
     );
     let launched = super::super::launch::launch(
         registry,

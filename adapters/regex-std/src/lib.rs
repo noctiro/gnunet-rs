@@ -8,6 +8,8 @@ pub mod dht;
 pub mod driver;
 /// Actual PILS-backed original signing owner.
 pub mod pils;
+/// Private embedded listening and shared native REGEX settings.
+pub mod startup;
 mod server;
 mod types;
 pub use gnunet_regex_service as core;

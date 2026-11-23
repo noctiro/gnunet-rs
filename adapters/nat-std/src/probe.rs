@@ -6,7 +6,7 @@ use crate::{
     stun::{Event, Limits, Request},
 };
 use gnunet_client_host::resolution::SharedResolution;
-use gnunet_service_runtime::clock::RuntimeClock;
+use gnunet_service_runtime::{clock::RuntimeClock, network::SocketPolicy};
 use gnunet_types::Error as Fault;
 use std::{
     future::poll_fn,
@@ -14,21 +14,43 @@ use std::{
     sync::Arc,
     task::Poll,
 };
-use tokio::{io::ReadBuf, net::UdpSocket};
+use tokio::io::ReadBuf;
 /// Perform a real original bounded IPv4 STUN transaction, returning only the
 /// server's matched mapped-address claim. It is not a remote reachability test.
 pub async fn external_ipv4(
     resolver: SharedResolution,
     clock: Arc<dyn RuntimeClock>,
-    server: Vec<u8>,
+    server: &[u8],
     port: u16,
     bounds: Bounds,
     max_datagrams: usize,
 ) -> Result<Ipv4Addr, Error> {
+    external_ipv4_with_socket_policy(
+        resolver,
+        clock,
+        server,
+        port,
+        bounds,
+        max_datagrams,
+        SocketPolicy::default(),
+    )
+    .await
+}
+
+/// Run the bounded STUN probe using the application's original socket policy.
+pub async fn external_ipv4_with_socket_policy(
+    resolver: SharedResolution,
+    clock: Arc<dyn RuntimeClock>,
+    server: &[u8],
+    port: u16,
+    bounds: Bounds,
+    max_datagrams: usize,
+    socket_policy: SocketPolicy,
+) -> Result<Ipv4Addr, Error> {
     if max_datagrams == 0 {
         return Err(Fault::InvalidInput.into());
     }
-    let mut gate = Gate::new(clock.clone(), bounds)?;
+    let mut gate = Gate::new_with_socket_policy(clock.clone(), bounds, socket_policy)?;
     // One complete UDP payload fits without a truncated oversized datagram
     // masquerading as a shorter valid STUN response. Keep this out of the
     // future's inline storage and fail before creating a socket on allocation loss.
@@ -37,15 +59,12 @@ pub async fn external_ipv4(
         .try_reserve_exact(65536)
         .map_err(|_| Fault::Capacity)?;
     received.resize(65536, 0);
-    let socket = Arc::new(
-        gate.run(UdpSocket::bind(SocketAddr::from(([0, 0, 0, 0], 0))))
-            .await?,
-    );
+    let socket = Arc::new(gate.bind_udp(SocketAddr::from(([0, 0, 0, 0], 0))).await?);
     let mut request = Request::start(
         resolver,
         clock,
         socket.clone(),
-        &server,
+        server,
         port,
         bounds,
         Limits::default(),

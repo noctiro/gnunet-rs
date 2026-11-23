@@ -1369,6 +1369,11 @@ impl<'scope, 'spec, 'slots, 'bytes> Owner<'scope, 'spec, 'slots, 'bytes> {
         }
         Ok(self.restart_wake)
     }
+    /// Whether the current restart scan is paused at an automatic spawn.
+    /// The host resumes it only after settling that native admission attempt.
+    pub const fn restart_in_progress(&self) -> bool {
+        self.scan_active
+    }
     /// Lease the global scheduler operation; ordinary Arm epochs never wrap.
     /// Cancel consumes an existing registration and is independent from epoch/output limits.
     pub fn take_timer(&mut self) -> Result<Option<TimerEffect<'scope>>, Error> {
@@ -1818,6 +1823,18 @@ impl<'scope, 'spec, 'slots, 'bytes> Owner<'scope, 'spec, 'slots, 'bytes> {
             },
             bytes: &s.buffer[..s.len],
         })
+    }
+    /// Borrow the original frame during a partial native write. The retained
+    /// ticket refers only to this exact queued envelope and recipient.
+    pub fn leased_frame(&self, ticket: FrameTicket) -> Result<&[u8], Error> {
+        if ticket.scope != self.scope {
+            return Err(Error::Stale);
+        }
+        let slot = self.frames.get(ticket.slot).ok_or(Error::Stale)?;
+        if slot.generation != ticket.generation || slot.client.is_none() || !slot.leased {
+            return Err(Error::Stale);
+        }
+        Ok(&slot.buffer[..slot.len])
     }
     /// Complete actual host handoff/write according to its persistent TX ownership contract.
     pub fn release_frame(&mut self, ticket: FrameTicket) -> Result<(), Error> {

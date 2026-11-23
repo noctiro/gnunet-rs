@@ -3,6 +3,7 @@
 #![forbid(unsafe_code)]
 use core::fmt;
 
+pub mod monotime;
 mod time;
 /// Canonical absolute/relative units, distinct from native monotonic coordinates.
 pub use time::{AbsoluteTime, RelativeTime};

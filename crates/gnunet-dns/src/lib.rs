@@ -39,6 +39,9 @@ mod name;
 mod native;
 mod packet;
 mod record;
+pub mod svcb;
+/// TLSA association parsing and optional no-allocator SHA-2 comparison.
+pub mod tlsa;
 pub use gnunet_types::Error;
 pub use gnunet_wire::official::AbsoluteTime;
 pub use header::{Flags, Header, class, opcode, return_code};

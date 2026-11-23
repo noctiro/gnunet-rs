@@ -8,6 +8,7 @@ use crate::{
     pool::{BlobId, BlobSlot, BytePool},
     storage::{Limits, TextScratch},
 };
+use core::net::IpAddr;
 use gnunet_client::resolver::{Family, Query as ResolverQuery, Request, WireId};
 use gnunet_dns::{
     AbsoluteTime, Arena, Idna, Limits as DnsLimits, Name as DnsName, Packet, Query, Type,
@@ -15,6 +16,9 @@ use gnunet_dns::{
 use gnunet_dnsstub::{Admission, RequestId as StubId};
 use gnunet_types::{Error, GenerationalId, MonoInstant};
 use gnunet_wire::official::{MessageHeader, message_type};
+mod system;
+pub use system::{SystemAnswer, SystemQuery, SystemQuestion};
+
 /// Official service lookup duration, microseconds.
 pub const DNS_TIMEOUT: u64 = 30_000_000;
 /// Maximum complete uncompressed DNS query bytes, independently of RDATA width.
@@ -54,6 +58,12 @@ pub struct EffectTicket {
     scope: PairId,
     serial: u64,
 }
+/// One original DNS exchange admitted by an external native transport.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NativeDnsId {
+    lookup: LookupId,
+    ticket: EffectTicket,
+}
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct Slot {
     current: u32,
@@ -89,22 +99,133 @@ impl ClientSlot {
     };
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Phase {
+enum UdpPhase {
+    Queued,
+    AwaitAdmission,
+    Active(Option<DnsOwner>),
+    UpstreamChanged,
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DnsOwner {
+    Stub(StubId),
+    Native(NativeDnsId),
+}
+
+impl DnsOwner {
+    const fn cancellation(self) -> QueryCancellation {
+        match self {
+            Self::Stub(id) => QueryCancellation::Stub(id),
+            Self::Native(id) => QueryCancellation::NativeDns(id),
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SystemPhase {
     Queued,
     AwaitAdmission,
     Active,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct Active {
-    client: ClientId,
-    wire: WireId,
-    name: BlobId,
+enum LookupName {
+    Original(BlobId),
+    Cname { original: BlobId, target: BlobId },
+}
+impl LookupName {
+    const fn current(self) -> BlobId {
+        match self {
+            Self::Original(name) | Self::Cname { target: name, .. } => name,
+        }
+    }
+    const fn original(self) -> BlobId {
+        match self {
+            Self::Original(name) | Self::Cname { original: name, .. } => name,
+        }
+    }
+    fn forget_target(&mut self, pool: &mut BytePool<'_>) -> Result<(), Error> {
+        if let Self::Cname { original, target } = *self {
+            pool.release(target)?;
+            *self = Self::Original(original);
+        }
+        Ok(())
+    }
+    fn release(mut self, pool: &mut BytePool<'_>) -> Result<(), Error> {
+        self.forget_target(pool)?;
+        pool.release(self.original())
+    }
+}
+#[derive(Clone, Copy)]
+enum LookupStart<'a> {
+    Client(&'a [u8]),
+    Cname { original: BlobId, target: BlobId },
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct UdpLookup {
+    name: LookupName,
     desired: u16,
     second: bool,
     dns_id: [u8; 2],
+    phase: UdpPhase,
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum StoredSystemQuestion {
+    Forward { family: Family, hostname: BlobId },
+    Reverse(IpAddr),
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LookupSource {
+    Udp(UdpLookup),
+    System {
+        question: StoredSystemQuestion,
+        phase: SystemPhase,
+    },
+}
+impl LookupSource {
+    fn release(self, pool: &mut BytePool<'_>) -> Result<(), Error> {
+        match self {
+            Self::Udp(udp) => udp.name.release(pool),
+            Self::System {
+                question: StoredSystemQuestion::Forward { hostname, .. },
+                ..
+            } => pool.release(hostname),
+            Self::System {
+                question: StoredSystemQuestion::Reverse(_),
+                ..
+            } => Ok(()),
+        }
+    }
+
+    fn await_admission(&mut self) -> Result<(), Error> {
+        match self {
+            Self::Udp(udp) if udp.phase == UdpPhase::Queued => {
+                udp.phase = UdpPhase::AwaitAdmission;
+            }
+            Self::System { phase, .. } if *phase == SystemPhase::Queued => {
+                *phase = SystemPhase::AwaitAdmission;
+            }
+            _ => return Err(Error::Conflict),
+        }
+        Ok(())
+    }
+
+    fn admission_pending(self) -> bool {
+        matches!(
+            self,
+            Self::Udp(UdpLookup {
+                phase: UdpPhase::AwaitAdmission,
+                ..
+            }) | Self::System {
+                phase: SystemPhase::AwaitAdmission,
+                ..
+            }
+        )
+    }
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct Active {
+    client: ClientId,
+    wire: WireId,
+    source: LookupSource,
     deadline: MonoInstant,
-    stub: Option<StubId>,
-    phase: Phase,
     order: u64,
 }
 /// Small caller-owned lookup metadata, without an inline native-name buffer.
@@ -146,12 +267,24 @@ enum StoredEffect {
         bytes: [u8; QUERY_BYTES],
         len: usize,
     },
-    Cancel(StubId),
+    SystemQuery {
+        lookup: LookupId,
+        client: ClientId,
+    },
+    Cancel(QueryCancellation),
     Close {
         client: ClientId,
         reason: Error,
     },
     Stop,
+}
+impl StoredEffect {
+    fn query_lookup(self) -> Option<LookupId> {
+        match self {
+            Self::Query { lookup, .. } | Self::SystemQuery { lookup, .. } => Some(lookup),
+            _ => None,
+        }
+    }
 }
 /// Small fixed-question/effect metadata slot. No per-record RDATA reservation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -231,6 +364,16 @@ pub struct StartQuery<'a> {
     /// Complete official DNS packet, with no private fields.
     pub bytes: &'a [u8],
 }
+/// Exact original backend association to retire through reserved cleanup storage.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum QueryCancellation {
+    /// DNSSTUB request generation.
+    Stub(StubId),
+    /// Actual connected native DNS exchange generation.
+    NativeDns(NativeDnsId),
+    /// Native lookup generation.
+    System(LookupId),
+}
 /// One effect view borrowed for immediate local execution/copy only. Do not hold
 /// this borrow across await: copy into a real bounded TX queue before release.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -239,8 +382,14 @@ pub enum Effect<'a> {
     Output(Output<'a>),
     /// Packed query requiring real stub admission.
     StartQuery(StartQuery<'a>),
+    /// Query requiring real native system admission.
+    StartSystemQuery(SystemQuery<'a>),
     /// Exact original stub generation to cancel.
     CancelQuery(StubId),
+    /// Cancel the original native DNS exchange, without affecting replacement.
+    CancelNativeDns(NativeDnsId),
+    /// Cancel the exact native lookup.
+    CancelSystemQuery(LookupId),
     /// Close this original client, not a replacement generation.
     DropClient {
         /// Original client.
@@ -287,7 +436,7 @@ pub struct Buffers<'a> {
     /// At least one ordinary effect metadata slot.
     pub effects: &'a mut [EffectSlot],
     /// Reserved cancel slots, at least lookup count.
-    pub cleanups: &'a mut [Option<StubId>],
+    pub cleanups: &'a mut [Option<QueryCancellation>],
     /// Variable-byte object metadata, independent from max RDATA width.
     pub blobs: &'a mut [BlobSlot],
     /// Aggregate initialized byte storage, not per-record capacity.
@@ -300,7 +449,7 @@ struct State<'a> {
     cache: Cache<'a>,
     effects: &'a mut [EffectSlot],
     used: usize,
-    cleanups: &'a mut [Option<StubId>],
+    cleanups: &'a mut [Option<QueryCancellation>],
     cleanup_used: usize,
     current: Option<InFlight>,
     ticket_serial: u64,
@@ -395,6 +544,23 @@ impl<'a> State<'a> {
             && self.cleanups.len() == o.cleanups.len()
             && self.cache.same_geometry(&o.cache)
     }
+
+    fn reset_epoch(&mut self, epoch: u64) {
+        self.clients.fill(ClientSlot::EMPTY);
+        self.lookups.fill(LookupSlot::EMPTY);
+        self.cache.reset_epoch(epoch);
+        self.effects.fill(EffectSlot::EMPTY);
+        self.used = 0;
+        self.cleanups.fill(None);
+        self.cleanup_used = 0;
+        self.current = None;
+        self.ticket_serial = 0;
+        self.search = None;
+        self.search_ignored = false;
+        self.order = 0;
+        self.soft = false;
+        self.closed = false;
+    }
     fn copy_from(&mut self, o: &Self) -> Result<(), Error> {
         if !self.same_geometry(o) {
             return Err(Error::Capacity);
@@ -477,7 +643,7 @@ impl<'a> State<'a> {
         self.used += 1;
         Ok(())
     }
-    fn cancel(&mut self, id: StubId) -> Result<(), Error> {
+    fn cancel(&mut self, id: QueryCancellation) -> Result<(), Error> {
         if self.cleanups.iter().flatten().any(|t| *t == id)
             || self
                 .current
@@ -504,19 +670,22 @@ impl<'a> State<'a> {
             _ => Ok(()),
         }
     }
-    fn pop_queue(&mut self) -> Option<StoredEffect> {
-        let value = self.effects.first_mut()?.value.take()?;
-        for i in 1..self.effects.len() {
+    fn remove_effect(&mut self, index: usize) -> Option<StoredEffect> {
+        let value = self.effects.get_mut(index)?.value.take()?;
+        for i in index + 1..self.used {
             self.effects[i - 1].value = self.effects[i].value.take();
         }
         self.used -= 1;
         Some(value)
     }
-    fn is_query(e: StoredEffect, id: LookupId) -> bool {
-        matches!(e,StoredEffect::Query{lookup,..}if lookup==id)
-    }
     fn is_client(e: StoredEffect, id: ClientId) -> bool {
-        matches!(e,StoredEffect::Output{client,..}|StoredEffect::Query{client,..}|StoredEffect::Close{client,..}if client==id)
+        matches!(
+            e,
+            StoredEffect::Output { client, .. }
+                | StoredEffect::Query { client, .. }
+                | StoredEffect::SystemQuery { client, .. }
+                | StoredEffect::Close { client, .. } if client == id
+        )
     }
     fn purge(&mut self, predicate: impl Fn(StoredEffect) -> bool) -> Result<(), Error> {
         let mut write = 0;
@@ -537,15 +706,27 @@ impl<'a> State<'a> {
         }
         Ok(())
     }
-    fn retire(&mut self, scope: PairId, id: LookupId) -> Result<Active, Error> {
+    fn remove_lookup(&mut self, scope: PairId, id: LookupId) -> Result<Active, Error> {
         let i = self.lookup(scope, id)?;
-        let v = self.lookups[i].value.take().ok_or(Error::StaleGeneration)?;
+        let active = self.lookups[i].value.take().ok_or(Error::StaleGeneration)?;
         self.lookups[i].id.active = false;
-        self.purge(|e| Self::is_query(e, id))?;
-        if let Some(token) = v.stub {
-            self.cancel(token)?;
+        self.purge(|effect| effect.query_lookup() == Some(id))?;
+        Ok(active)
+    }
+    fn retire(&mut self, scope: PairId, id: LookupId) -> Result<Active, Error> {
+        let active = self.remove_lookup(scope, id)?;
+        match active.source {
+            LookupSource::Udp(UdpLookup {
+                phase: UdpPhase::Active(Some(owner)),
+                ..
+            }) => self.cancel(owner.cancellation())?,
+            LookupSource::System {
+                phase: SystemPhase::Active,
+                ..
+            } => self.cancel(QueryCancellation::System(id))?,
+            _ => {}
         }
-        Ok(v)
+        Ok(active)
     }
     fn output(
         &mut self,
@@ -604,26 +785,24 @@ impl<'a> State<'a> {
         }
         Ok(hit)
     }
-    fn draw<I: Idna, R: FnMut(u32) -> Result<u32, Error>>(
-        p: &mut Evaluation<'_, I, R>,
-    ) -> Result<[u8; 2], Error> {
-        let n = (p.random)(65535)?;
+    fn draw(random: &mut impl FnMut(u32) -> Result<u32, Error>) -> Result<[u8; 2], Error> {
+        let n = random(65535)?;
         if n >= 65535 {
             return Err(Error::InvalidInput);
         }
         Ok((n as u16).to_be_bytes())
     }
-    fn pack<I: Idna, R: FnMut(u32) -> Result<u32, Error>>(
+    fn pack(
         &self,
         name: BlobId,
         kind: u16,
         id: [u8; 2],
-        p: &mut Evaluation<'_, I, R>,
+        idna: &impl Idna,
+        text: &mut TextScratch<'_>,
     ) -> Result<([u8; QUERY_BYTES], usize), Error> {
         let input = self.cache.pool.get(name)?;
-        let mut arena = Arena::new(p.text.wire_name);
-        let name =
-            DnsName::from_native_text(input, p.idna, p.text.work, &mut arena, DnsLimits::DNS)?;
+        let mut arena = Arena::new(text.wire_name);
+        let name = DnsName::from_native_text(input, idna, text.work, &mut arena, DnsLimits::DNS)?;
         let q = [Query {
             name,
             kind: Type(kind),
@@ -637,27 +816,14 @@ impl<'a> State<'a> {
     fn content(e: Error) -> bool {
         matches!(e, Error::Malformed | Error::InvalidInput | Error::TooLarge)
     }
-    fn start<I: Idna, R: FnMut(u32) -> Result<u32, Error>>(
+    fn allocate_lookup(
         &mut self,
         scope: PairId,
         client: ClientId,
         wire: WireId,
-        name: BlobId,
-        desired: u16,
-        p: &mut Evaluation<'_, I, R>,
-    ) -> Result<Option<LookupId>, Error> {
-        let id = Self::draw(p)?;
-        let kind = if desired == 255 { 1 } else { desired };
-        let (bytes, len) = match self.pack(name, kind, id, p) {
-            Ok(v) => v,
-            Err(e) if Self::content(e) => {
-                self.output(client, wire, StoredPayload::End)?;
-                self.cache.pool.release(name)?;
-                return Ok(None);
-            }
-            Err(e) => return Err(e),
-        };
-        let deadline = MonoInstant(p.mono.0.checked_add(DNS_TIMEOUT).ok_or(Error::Overflow)?);
+        source: LookupSource,
+        deadline: MonoInstant,
+    ) -> Result<LookupId, Error> {
         let i = self
             .lookups
             .iter()
@@ -669,31 +835,57 @@ impl<'a> State<'a> {
             .filter(|o| *o != u64::MAX)
             .ok_or(Error::Overflow)?;
         let generation = self.lookups[i].id.allocate()?;
-        let lookup = LookupId {
+        self.lookups[i].value = Some(Active {
+            client,
+            wire,
+            source,
+            deadline,
+            order,
+        });
+        self.order = order;
+        Ok(LookupId {
             scope,
             id: GenerationalId {
                 index: i as u32,
                 generation,
             },
+        })
+    }
+    fn start<I: Idna, R: FnMut(u32) -> Result<u32, Error>>(
+        &mut self,
+        scope: PairId,
+        client: ClientId,
+        wire: WireId,
+        name: LookupName,
+        desired: u16,
+        p: &mut Evaluation<'_, I, R>,
+    ) -> Result<Option<LookupId>, Error> {
+        let id = Self::draw(p.random)?;
+        let kind = if desired == 255 { 1 } else { desired };
+        let current = name.current();
+        let (bytes, len) = match self.pack(current, kind, id, p.idna, &mut p.text) {
+            Ok(v) => v,
+            Err(e) if Self::content(e) => {
+                self.output(client, wire, StoredPayload::End)?;
+                name.release(&mut self.cache.pool)?;
+                return Ok(None);
+            }
+            Err(e) => return Err(e),
         };
-        self.lookups[i].value = Some(Active {
-            client,
-            wire,
+        let deadline = MonoInstant(p.mono.0.checked_add(DNS_TIMEOUT).ok_or(Error::Overflow)?);
+        let source = LookupSource::Udp(UdpLookup {
             name,
             desired,
             second: false,
             dns_id: id,
-            deadline,
-            stub: None,
-            phase: Phase::Queued,
-            order,
+            phase: UdpPhase::Queued,
         });
-        self.order = order;
-        self.cache.pool.retain(name)?;
+        let lookup = self.allocate_lookup(scope, client, wire, source, deadline)?;
+        self.cache.pool.retain(current)?;
         self.push(StoredEffect::Query {
             lookup,
             client,
-            name,
+            name: current,
             kind,
             deadline,
             bytes,
@@ -732,21 +924,22 @@ impl<'a> State<'a> {
     }
     #[expect(
         clippy::too_many_arguments,
-        reason = "Original client/ID, explicit owned-name lease and evaluation ports remain independently visible for CNAME ownership auditing."
+        reason = "Original client/ID, lookup name, query type and evaluation ports remain independently visible."
     )]
     fn process<I: Idna, R: FnMut(u32) -> Result<u32, Error>>(
         &mut self,
         scope: PairId,
         client: ClientId,
         wire: WireId,
-        initial: NameRef<'_>,
-        owned: Option<BlobId>,
+        start: LookupStart<'_>,
         desired: u16,
         p: &mut Evaluation<'_, I, R>,
         limits: Limits,
     ) -> Result<Option<LookupId>, Error> {
-        let mut name = initial;
-        let mut owned = owned;
+        let (mut name, mut owned) = match start {
+            LookupStart::Client(name) => (NameRef::External(name), None),
+            LookupStart::Cname { target, .. } => (NameRef::Stored(target), Some(target)),
+        };
         for _ in 0..=limits.cname_hops {
             match self.cached(client, wire, name, desired, p.utc)? {
                 Hit::Rows => {
@@ -800,57 +993,93 @@ impl<'a> State<'a> {
                 Hit::Miss => {}
             }
             let effective = self.cache.text(&p.text.native[..n])?;
+            let name = match start {
+                LookupStart::Client(original) if owned.is_some() => {
+                    let n = self.expanded(NameRef::External(original), p.text.native)?;
+                    LookupName::Cname {
+                        original: self.cache.text(&p.text.native[..n])?,
+                        target: effective,
+                    }
+                }
+                LookupStart::Client(_) => LookupName::Original(effective),
+                LookupStart::Cname { original, .. } => {
+                    self.cache.pool.retain(original)?;
+                    LookupName::Cname {
+                        original,
+                        target: effective,
+                    }
+                }
+            };
             if let Some(id) = owned {
                 self.cache.pool.release(id)?;
             }
-            return self.start(scope, client, wire, effective, desired, p);
+            return self.start(scope, client, wire, name, desired, p);
         }
         Err(Error::Capacity)
     }
     fn complete_cache<I: Idna, R: FnMut(u32) -> Result<u32, Error>>(
         &mut self,
         scope: PairId,
-        v: Active,
+        active: Active,
+        udp: UdpLookup,
         p: &mut Evaluation<'_, I, R>,
         limits: Limits,
     ) -> Result<(), Error> {
-        match self.cached(v.client, v.wire, NameRef::Stored(v.name), v.desired, p.utc)? {
+        match self.cached(
+            active.client,
+            active.wire,
+            NameRef::Stored(udp.name.current()),
+            udp.desired,
+            p.utc,
+        )? {
             Hit::Rows => {}
-            Hit::Miss => self.output(v.client, v.wire, StoredPayload::End)?,
+            Hit::Miss => self.output(active.client, active.wire, StoredPayload::End)?,
             Hit::Follow(target) => {
                 self.process(
                     scope,
-                    v.client,
-                    v.wire,
-                    NameRef::Stored(target),
-                    Some(target),
-                    v.desired,
+                    active.client,
+                    active.wire,
+                    LookupStart::Cname {
+                        original: udp.name.original(),
+                        target,
+                    },
+                    udp.desired,
                     p,
                     limits,
                 )?;
             }
         }
-        self.cache.pool.release(v.name)
+        udp.name.release(&mut self.cache.pool)
     }
     fn detach(&mut self, stub: StubId) -> usize {
         let mut count = 0;
         for l in &mut *self.lookups {
-            if let Some(v) = l.value.as_mut()
-                && v.stub == Some(stub)
+            if let Some(Active {
+                source: LookupSource::Udp(udp),
+                ..
+            }) = l.value.as_mut()
+                && udp.phase == UdpPhase::Active(Some(DnsOwner::Stub(stub)))
             {
-                v.stub = None;
+                udp.phase = UdpPhase::Active(None);
                 count += 1;
             }
         }
         count
     }
-    fn authority(&self, scope: PairId, id: LookupId, stub: StubId) -> Result<Active, Error> {
-        let v = self.active(scope, id)?;
-        self.client(scope, v.client)?;
-        if v.phase != Phase::Active || v.stub != Some(stub) {
-            return Err(Error::StaleGeneration);
+    fn authority(
+        &self,
+        scope: PairId,
+        id: LookupId,
+        owner: DnsOwner,
+    ) -> Result<(Active, UdpLookup), Error> {
+        let active = self.active(scope, id)?;
+        self.client(scope, active.client)?;
+        match active.source {
+            LookupSource::Udp(udp) if udp.phase == UdpPhase::Active(Some(owner)) => {
+                Ok((active, udp))
+            }
+            _ => Err(Error::StaleGeneration),
         }
-        Ok(v)
     }
     fn disconnect(
         &mut self,
@@ -876,7 +1105,7 @@ impl<'a> State<'a> {
                 },
             };
             let v = self.retire(scope, id)?;
-            self.cache.pool.release(v.name)?;
+            v.source.release(&mut self.cache.pool)?;
         }
         self.clients[i].id.active = false;
         self.clients[i].closing = reason;
@@ -997,7 +1226,13 @@ impl<'a> Resolver<'a> {
     }
     /// Exact associated current real stub generation.
     pub fn lookup_stub(&self, id: LookupId) -> Result<Option<StubId>, Error> {
-        Ok(self.state.active(self.scope, id)?.stub)
+        Ok(match self.state.active(self.scope, id)?.source {
+            LookupSource::Udp(UdpLookup {
+                phase: UdpPhase::Active(Some(DnsOwner::Stub(stub))),
+                ..
+            }) => Some(stub),
+            _ => None,
+        })
     }
     /// Earliest service timer, including still-due callbacks after bounded tick.
     pub fn next_wakeup(&self) -> Option<MonoInstant> {
@@ -1113,8 +1348,7 @@ impl<'a> Resolver<'a> {
                     scope,
                     client,
                     request.id(),
-                    NameRef::External(hostname),
-                    None,
+                    LookupStart::Client(hostname),
                     match family {
                         Family::Any => 255,
                         Family::V4 => 1,
@@ -1130,8 +1364,7 @@ impl<'a> Resolver<'a> {
                         scope,
                         client,
                         request.id(),
-                        NameRef::External(&bytes[..n]),
-                        None,
+                        LookupStart::Client(&bytes[..n]),
                         12,
                         p,
                         limits,
@@ -1152,23 +1385,63 @@ impl<'a> Resolver<'a> {
         self.stage(s, |v, scope, _| {
             let i = v.lookup(scope, id)?;
             let active = v.active(scope, id)?;
-            if active.phase != Phase::AwaitAdmission || a.evicted == Some(a.request) {
+            if !matches!(
+                active.source,
+                LookupSource::Udp(UdpLookup {
+                    phase: UdpPhase::AwaitAdmission,
+                    ..
+                })
+            ) || a.evicted == Some(a.request)
+            {
                 return Err(Error::InvalidInput);
             }
             if let Some(old) = a.evicted {
                 v.detach(old);
             }
-            if v.lookups
-                .iter()
-                .filter_map(|l| l.value)
-                .any(|l| l.stub == Some(a.request))
-            {
+            if v.lookups.iter().filter_map(|l| l.value).any(|l| {
+                matches!(
+                    l.source,
+                    LookupSource::Udp(UdpLookup {
+                        phase: UdpPhase::Active(Some(DnsOwner::Stub(stub))),
+                        ..
+                    }) if stub == a.request
+                )
+            }) {
                 return Err(Error::Conflict);
             }
             let active = v.lookups[i].value.as_mut().ok_or(Error::StaleGeneration)?;
-            active.phase = Phase::Active;
-            active.stub = Some(a.request);
+            let LookupSource::Udp(udp) = &mut active.source else {
+                return Err(Error::InvalidInput);
+            };
+            udp.phase = UdpPhase::Active(Some(DnsOwner::Stub(a.request)));
             Ok(())
+        })
+    }
+    /// Bind a real native transport to the original currently leased DNS start.
+    /// The returned generation distinguishes every attempt phase of one lookup.
+    pub fn query_admitted_native(
+        &mut self,
+        s: &mut Scratch<'a>,
+        ticket: EffectTicket,
+    ) -> Result<NativeDnsId, Error> {
+        let Effect::StartQuery(original) = self.effect(ticket)? else {
+            return Err(Error::InvalidInput);
+        };
+        let id = NativeDnsId {
+            lookup: original.lookup,
+            ticket,
+        };
+        self.stage(s, |v, scope, _| {
+            let i = v.lookup(scope, id.lookup)?;
+            let active = v.lookups[i].value.as_mut().ok_or(Error::StaleGeneration)?;
+            let LookupSource::Udp(udp) = &mut active.source else {
+                return Err(Error::InvalidInput);
+            };
+            if udp.phase != UdpPhase::AwaitAdmission {
+                return Err(Error::InvalidInput);
+            }
+            udp.phase = UdpPhase::Active(Some(DnsOwner::Native(id)));
+            Ok(id)
         })
     }
     /// Actual failed/unavailable stub admission keeps the original30s deadline.
@@ -1176,10 +1449,13 @@ impl<'a> Resolver<'a> {
         self.stage(s, |v, scope, _| {
             let i = v.lookup(scope, id)?;
             let active = v.lookups[i].value.as_mut().ok_or(Error::StaleGeneration)?;
-            if active.phase != Phase::AwaitAdmission {
+            let LookupSource::Udp(udp) = &mut active.source else {
+                return Err(Error::InvalidInput);
+            };
+            if udp.phase != UdpPhase::AwaitAdmission {
                 return Err(Error::InvalidInput);
             }
-            active.phase = Phase::Active;
+            udp.phase = UdpPhase::Active(None);
             Ok(())
         })
     }
@@ -1187,9 +1463,113 @@ impl<'a> Resolver<'a> {
     pub fn stub_evicted(&mut self, id: StubId) -> usize {
         self.state.detach(id)
     }
+    /// Revoke the previous network's DNS queries and dynamic cache. The caller
+    /// must retire their actual DNSSTUB owner associations at the same boundary.
+    /// Original IPC clients, lookup deadlines, hosts and queued results remain.
+    pub fn replace_upstreams(
+        &mut self,
+        scratch: &mut Scratch<'a>,
+        has_servers: bool,
+    ) -> Result<(), Error> {
+        self.stage(scratch, |state, _, _| {
+            if state.closed {
+                return Err(Error::Closed);
+            }
+            state.cache.clear_dynamic()?;
+            state.purge(|effect| matches!(effect, StoredEffect::Query { .. }))?;
+            for active in state
+                .lookups
+                .iter_mut()
+                .filter_map(|slot| slot.value.as_mut())
+            {
+                if let LookupSource::Udp(udp) = &mut active.source {
+                    udp.name.forget_target(&mut state.cache.pool)?;
+                    udp.second = false;
+                    udp.phase = if has_servers {
+                        UdpPhase::UpstreamChanged
+                    } else {
+                        UdpPhase::Active(None)
+                    };
+                }
+            }
+            Ok(())
+        })
+    }
+    /// Prepare one previous lookup for the current upstream set with a fresh
+    /// DNS transaction draw and its original absolute deadline. Capacity stays
+    /// with the existing effect queue.
+    pub fn resume_upstream_lookup(
+        &mut self,
+        now: MonoInstant,
+        idna: &impl Idna,
+        random: &mut impl FnMut(u32) -> Result<u32, Error>,
+        text: &mut TextScratch<'_>,
+    ) -> Result<bool, Error> {
+        let state = &mut self.state;
+        if state.closed || state.used == state.effects.len() {
+            return Ok(false);
+        }
+        let candidate = state
+            .lookups
+            .iter()
+            .enumerate()
+            .filter_map(|(index, slot)| {
+                let active = slot.value?;
+                match active.source {
+                    LookupSource::Udp(udp)
+                        if udp.phase == UdpPhase::UpstreamChanged && now < active.deadline =>
+                    {
+                        Some((index, active, udp))
+                    }
+                    _ => None,
+                }
+            })
+            .min_by_key(|(_, active, _)| active.order);
+        let Some((index, mut active, mut udp)) = candidate else {
+            return Ok(false);
+        };
+        let lookup = LookupId {
+            scope: self.scope,
+            id: GenerationalId {
+                index: index as u32,
+                generation: state.lookups[index].id.current,
+            },
+        };
+        let kind = if udp.desired == 255 { 1 } else { udp.desired };
+        // Exclude the old wire ID even when the new network uses the same
+        // server addresses. Each old UDP socket is retired independently.
+        let draw = random(65534)?;
+        if draw >= 65534 {
+            return Err(Error::InvalidInput);
+        }
+        let previous = u32::from(u16::from_be_bytes(udp.dns_id));
+        let dns_id = ((draw + u32::from(draw >= previous)) as u16).to_be_bytes();
+        let name = udp.name.original();
+        let (bytes, len) = state.pack(name, kind, dns_id, idna, text)?;
+        let slot = &mut state.effects[state.used];
+        if slot.value.is_some() {
+            return Err(Error::Conflict);
+        }
+        state.cache.pool.retain(name)?;
+        slot.value = Some(StoredEffect::Query {
+            lookup,
+            client: active.client,
+            name,
+            kind,
+            deadline: active.deadline,
+            bytes,
+            len,
+        });
+        state.used += 1;
+        udp.dns_id = dns_id;
+        udp.phase = UdpPhase::Queued;
+        active.source = LookupSource::Udp(udp);
+        state.lookups[index].value = Some(active);
+        Ok(true)
+    }
     /// Parser failure is ignored only for the exact original live association.
     pub fn malformed_dns(&self, id: LookupId, stub: StubId) -> Result<Disposition, Error> {
-        self.state.authority(self.scope, id, stub)?;
+        self.state.authority(self.scope, id, DnsOwner::Stub(stub))?;
         Ok(Disposition::Ignored)
     }
     /// Cache all actual sections, preserve Any/CNAME clocks and reject capability
@@ -1202,16 +1582,40 @@ impl<'a> Resolver<'a> {
         packet: Packet<'_, '_>,
         p: &mut Evaluation<'_, I, R>,
     ) -> Result<Disposition, Error> {
+        self.network_result(s, id, DnsOwner::Stub(stub), packet, p)
+    }
+
+    /// Apply a parsed, matched response from the exact admitted native DNS phase.
+    pub fn native_dns_result<I: Idna, R: FnMut(u32) -> Result<u32, Error>>(
+        &mut self,
+        s: &mut Scratch<'a>,
+        original: NativeDnsId,
+        packet: Packet<'_, '_>,
+        p: &mut Evaluation<'_, I, R>,
+    ) -> Result<Disposition, Error> {
+        self.network_result(s, original.lookup, DnsOwner::Native(original), packet, p)
+    }
+
+    fn network_result<I: Idna, R: FnMut(u32) -> Result<u32, Error>>(
+        &mut self,
+        s: &mut Scratch<'a>,
+        id: LookupId,
+        owner: DnsOwner,
+        packet: Packet<'_, '_>,
+        p: &mut Evaluation<'_, I, R>,
+    ) -> Result<Disposition, Error> {
         self.stage(s, |v, scope, limits| {
-            let active = v.authority(scope, id, stub)?;
-            if packet.id != active.dns_id {
+            let (active, udp) = v.authority(scope, id, owner)?;
+            if packet.id != udp.dns_id {
                 return Ok(Disposition::Ignored);
             }
-            let nonempty = !packet.answers.is_empty()
-                || !packet.authority.is_empty()
-                || !packet.additional.is_empty();
-            if nonempty {
-                v.cache.begin_batch()?;
+            let name = udp.name.current();
+            let incoming = packet.answers.len() + packet.authority.len() + packet.additional.len();
+            if incoming != 0 {
+                match owner {
+                    DnsOwner::Native(_) => v.cache.begin_native_batch(name, incoming)?,
+                    DnsOwner::Stub(_) => v.cache.begin_batch()?,
+                }
                 for r in packet
                     .answers
                     .iter()
@@ -1219,27 +1623,29 @@ impl<'a> Resolver<'a> {
                     .chain(packet.additional)
                 {
                     let record = v.cache.project(*r, p.idna, &mut p.text)?;
-                    v.cache.insert(active.name, record)?;
+                    v.cache.insert(name, record)?;
                 }
             }
             // No A records does not establish the absence of IPv6 records.
             // AF_UNSPEC still owes its original AAAA phase before final END.
-            if active.desired == 255 && !active.second {
-                let dns_id = State::draw(p)?;
-                match v.pack(active.name, 28, dns_id, p) {
+            if udp.desired == 255 && !udp.second {
+                let dns_id = State::draw(p.random)?;
+                match v.pack(name, 28, dns_id, p.idna, &mut p.text) {
                     Ok((bytes, len)) => {
-                        v.cancel(stub)?;
+                        v.cancel(owner.cancellation())?;
                         let i = v.lookup(scope, id)?;
                         let a = v.lookups[i].value.as_mut().ok_or(Error::StaleGeneration)?;
-                        a.second = true;
-                        a.dns_id = dns_id;
-                        a.stub = None;
-                        a.phase = Phase::Queued;
-                        v.cache.pool.retain(active.name)?;
+                        a.source = LookupSource::Udp(UdpLookup {
+                            second: true,
+                            dns_id,
+                            phase: UdpPhase::Queued,
+                            ..udp
+                        });
+                        v.cache.pool.retain(name)?;
                         v.push(StoredEffect::Query {
                             lookup: id,
                             client: active.client,
-                            name: active.name,
+                            name,
                             kind: 28,
                             deadline: active.deadline,
                             bytes,
@@ -1252,7 +1658,7 @@ impl<'a> Resolver<'a> {
                 }
             }
             let active = v.retire(scope, id)?;
-            v.complete_cache(scope, active, p, limits)?;
+            v.complete_cache(scope, active, udp, p, limits)?;
             Ok(Disposition::Completed)
         })
     }
@@ -1281,7 +1687,7 @@ impl<'a> Resolver<'a> {
             };
             let active = v.retire(scope, id)?;
             v.output(active.client, active.wire, StoredPayload::End)?;
-            v.cache.pool.release(active.name)?;
+            active.source.release(&mut v.cache.pool)?;
             Ok(1)
         })
     }
@@ -1310,6 +1716,34 @@ impl<'a> Resolver<'a> {
             Ok(())
         })
     }
+
+    /// Reopen the original backing with no clients, lookups, hosts or cache.
+    ///
+    /// The host must have retired every original native port and released the
+    /// shutdown `Stop` effect. Old client, lookup, payload and effect IDs cannot
+    /// regain authority even when the new service uses the same slots.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a foreign scratch pair, an unsettled shutdown or exhausted epochs.
+    pub fn restart(&mut self, s: &mut Scratch<'a>) -> Result<(), Error> {
+        if s.scope != self.scope || s.limits != self.limits || !self.state.same_geometry(&s.state) {
+            return Err(Error::InvalidInput);
+        }
+        if !self.state.closed
+            || self.state.current.is_some()
+            || self.state.used != 0
+            || self.state.cleanup_used != 0
+        {
+            return Err(Error::NotReady);
+        }
+        let epoch = self.scope.epoch.checked_add(1).ok_or(Error::Overflow)?;
+        self.state.reset_epoch(epoch);
+        s.state.reset_epoch(epoch);
+        self.scope.epoch = epoch;
+        s.scope = self.scope;
+        Ok(())
+    }
     /// Recover the exact current effect after a canceled host drive future.
     pub fn current_effect(&self) -> Option<EffectTicket> {
         self.state.current.map(|c| EffectTicket {
@@ -1320,13 +1754,33 @@ impl<'a> Resolver<'a> {
     /// Lease reserved cleanup/close first, then the oldest ordinary effect. No
     /// payload is copied or dropped; repeated call returns the same current ticket.
     pub fn take_effect(&mut self) -> Result<Option<EffectTicket>, Error> {
+        self.take_effect_with_output(|_| true)
+    }
+
+    /// Lease the oldest effect whose original destination can accept it.
+    /// Cleanup and close retain priority. A blocked output stays queued in
+    /// order for its client, while other clients and DNS starts can progress.
+    /// An already leased ticket retains its original authority.
+    pub fn take_effect_with_output(
+        &mut self,
+        mut can_write: impl FnMut(ClientId) -> bool,
+    ) -> Result<Option<EffectTicket>, Error> {
         if let Some(t) = self.current_effect() {
             return Ok(Some(t));
         }
-        let available = self.state.cleanup_used != 0
-            || self.state.clients.iter().any(|c| c.closing.is_some())
-            || self.state.used != 0;
-        if !available {
+        let closing = self.state.clients.iter().position(|c| c.closing.is_some());
+        let ordinary = (self.state.cleanup_used == 0 && closing.is_none())
+            .then(|| {
+                self.state.effects[..self.state.used]
+                    .iter()
+                    .position(|slot| match slot.value.as_ref() {
+                        Some(StoredEffect::Output { client, .. }) => can_write(*client),
+                        Some(_) => true,
+                        None => false,
+                    })
+            })
+            .flatten();
+        if self.state.cleanup_used == 0 && closing.is_none() && ordinary.is_none() {
             return Ok(None);
         }
         let serial = self
@@ -1340,13 +1794,7 @@ impl<'a> Resolver<'a> {
             }
             self.state.cleanup_used -= 1;
             StoredEffect::Cancel(id)
-        } else if let Some((i, reason)) = self
-            .state
-            .clients
-            .iter()
-            .enumerate()
-            .find_map(|(i, c)| c.closing.map(|e| (i, e)))
-        {
+        } else if let Some(i) = closing {
             StoredEffect::Close {
                 client: ClientId {
                     scope: self.scope,
@@ -1355,18 +1803,21 @@ impl<'a> Resolver<'a> {
                         generation: self.state.clients[i].id.current,
                     },
                 },
-                reason,
+                reason: self.state.clients[i].closing.ok_or(Error::Malformed)?,
             }
         } else {
-            self.state.pop_queue().ok_or(Error::Malformed)?
+            self.state
+                .remove_effect(ordinary.ok_or(Error::Malformed)?)
+                .ok_or(Error::Malformed)?
         };
-        if let StoredEffect::Query { lookup, .. } = effect {
+        if let Some(lookup) = effect.query_lookup() {
             let i = self.state.lookup(self.scope, lookup)?;
             self.state.lookups[i]
                 .value
                 .as_mut()
                 .ok_or(Error::StaleGeneration)?
-                .phase = Phase::AwaitAdmission;
+                .source
+                .await_admission()?;
         }
         self.state.ticket_serial = serial;
         self.state.current = Some(InFlight { serial, effect });
@@ -1455,7 +1906,30 @@ impl<'a> Resolver<'a> {
                     bytes: &bytes[..*len],
                 })
             }
-            StoredEffect::Cancel(id) => Effect::CancelQuery(id),
+            StoredEffect::SystemQuery { lookup, .. } => {
+                let active = self.state.active(self.scope, lookup)?;
+                let LookupSource::System { question, .. } = active.source else {
+                    return Err(Error::Malformed);
+                };
+                Effect::StartSystemQuery(SystemQuery {
+                    lookup,
+                    deadline: active.deadline,
+                    question: match question {
+                        StoredSystemQuestion::Forward { family, hostname } => {
+                            let hostname = self.state.cache.pool.get(hostname)?;
+                            SystemQuestion::Forward {
+                                family,
+                                hostname: core::str::from_utf8(hostname)
+                                    .map_err(|_| Error::Malformed)?,
+                            }
+                        }
+                        StoredSystemQuestion::Reverse(address) => SystemQuestion::Reverse(address),
+                    },
+                })
+            }
+            StoredEffect::Cancel(QueryCancellation::Stub(id)) => Effect::CancelQuery(id),
+            StoredEffect::Cancel(QueryCancellation::NativeDns(id)) => Effect::CancelNativeDns(id),
+            StoredEffect::Cancel(QueryCancellation::System(id)) => Effect::CancelSystemQuery(id),
             StoredEffect::Close { client, reason } => Effect::DropClient { client, reason },
             StoredEffect::Stop => Effect::Stop,
         })
@@ -1472,8 +1946,12 @@ impl<'a> Resolver<'a> {
             .current
             .filter(|c| c.serial == ticket.serial)
             .ok_or(Error::StaleGeneration)?;
-        if let StoredEffect::Query { lookup, .. } = c.effect
-            && self.state.active(self.scope, lookup)?.phase == Phase::AwaitAdmission
+        if let Some(lookup) = c.effect.query_lookup()
+            && self
+                .state
+                .active(self.scope, lookup)?
+                .source
+                .admission_pending()
         {
             return Err(Error::NotReady);
         }
@@ -1516,7 +1994,7 @@ mod tests {
         buckets: Vec<Option<BucketMeta>>,
         records: Vec<Option<RecordEntry>>,
         effects: Vec<EffectSlot>,
-        cleanups: Vec<Option<StubId>>,
+        cleanups: Vec<Option<QueryCancellation>>,
         blobs: Vec<BlobSlot>,
         bytes: Vec<u8>,
     }
@@ -1550,6 +2028,147 @@ mod tests {
             }
         }
     }
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "Assert the native lookup scope, exact response frames and retirement."
+    )]
+    fn system_lookup_uses_original_name_and_ordinary_resolver_frames() -> Result<(), Error> {
+        let mut owner = Backing::new()?;
+        let mut staging = Backing::new()?;
+        let mut core = Resolver::new(
+            owner.buffers(),
+            Limits {
+                max_name_bytes: 1024,
+                max_record_bytes: 65535,
+                cname_hops: 8,
+            },
+            1,
+        )?;
+        let mut stage = core.make_scratch(staging.buffers())?;
+        let client = core.connect()?;
+        core.set_search(&mut stage, Some(b"different.suffix"))?;
+        let wire_id = WireId([10, 20, 30, 40]);
+        let lookup = core
+            .request_system(
+                &mut stage,
+                client,
+                Request::forward(wire_id, Family::Any, b"source")?,
+                MonoInstant(37),
+            )?
+            .ok_or(Error::NotReady)?;
+        let ticket = core.take_effect()?.ok_or(Error::NotReady)?;
+        assert_eq!(
+            core.effect(ticket)?,
+            Effect::StartSystemQuery(SystemQuery {
+                lookup,
+                deadline: MonoInstant(37 + DNS_TIMEOUT),
+                question: SystemQuestion::Forward {
+                    family: Family::Any,
+                    hostname: "source",
+                },
+            }),
+        );
+        assert_eq!(core.release_effect(ticket), Err(Error::NotReady));
+        core.system_admitted(&mut stage, lookup)?;
+        core.release_effect(ticket)?;
+
+        let v4 = core::net::Ipv4Addr::new(192, 0, 2, 1);
+        let v6 = core::net::Ipv6Addr::LOCALHOST;
+        core.system_result(
+            &mut stage,
+            lookup,
+            [SystemAnswer::V4(v4), SystemAnswer::V6(v6)],
+        )?;
+        assert_eq!(core.pending_cleanups(), 0);
+        assert_eq!(core.cache().bucket_count(), 0);
+        for expected in [
+            Payload::Raw(&v4.octets()),
+            Payload::Raw(&v6.octets()),
+            Payload::End,
+        ] {
+            let ticket = core.take_effect()?.ok_or(Error::NotReady)?;
+            assert_eq!(
+                core.effect(ticket)?,
+                Effect::Output(Output {
+                    client,
+                    wire_id,
+                    payload: expected,
+                }),
+            );
+            core.release_effect(ticket)?;
+        }
+        assert_eq!(core.take_effect()?, None);
+        Ok(())
+    }
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "Assert exact cancellation and stale result rejection across lookup reuse."
+    )]
+    fn native_expiry_and_unavailable_start_retire_only_their_original_lookup() -> Result<(), Error>
+    {
+        let mut owner = Backing::new()?;
+        let mut staging = Backing::new()?;
+        let mut core = Resolver::new(
+            owner.buffers(),
+            Limits {
+                max_name_bytes: 1024,
+                max_record_bytes: 65535,
+                cname_hops: 8,
+            },
+            1,
+        )?;
+        let mut stage = core.make_scratch(staging.buffers())?;
+        let client = core.connect()?;
+        let addr = IpAddr::V6(core::net::Ipv6Addr::LOCALHOST);
+        let request = Request::reverse(WireId([1, 3, 5, 7]), addr);
+        let lookup = core
+            .request_system(&mut stage, client, request, MonoInstant(0))?
+            .ok_or(Error::NotReady)?;
+        let ticket = core.take_effect()?.ok_or(Error::NotReady)?;
+        assert!(matches!(
+            core.effect(ticket)?,
+            Effect::StartSystemQuery(q) if q.question == SystemQuestion::Reverse(addr)
+        ));
+        core.system_admitted(&mut stage, lookup)?;
+        core.release_effect(ticket)?;
+        assert_eq!(core.tick(&mut stage, MonoInstant(DNS_TIMEOUT))?, 1);
+
+        let ticket = core.take_effect()?.ok_or(Error::NotReady)?;
+        assert_eq!(core.effect(ticket)?, Effect::CancelSystemQuery(lookup));
+        core.release_effect(ticket)?;
+        let ticket = core.take_effect()?.ok_or(Error::NotReady)?;
+        assert!(matches!(
+            core.effect(ticket)?,
+            Effect::Output(out) if out.payload == Payload::End && out.wire_id == request.id()
+        ));
+        core.release_effect(ticket)?;
+
+        let next = core
+            .request_system(&mut stage, client, request, MonoInstant(DNS_TIMEOUT))?
+            .ok_or(Error::NotReady)?;
+        assert_eq!(lookup.resource_id().index, next.resource_id().index);
+        assert_ne!(lookup, next);
+        assert_eq!(
+            core.system_result(&mut stage, lookup, [SystemAnswer::Name(b"old.example")]),
+            Err(Error::StaleGeneration),
+        );
+        let ticket = core.take_effect()?.ok_or(Error::NotReady)?;
+        core.system_unavailable(&mut stage, next)?;
+        assert_eq!(core.release_effect(ticket), Err(Error::StaleGeneration));
+        assert_eq!(core.pending_cleanups(), 0);
+        let ticket = core.take_effect()?.ok_or(Error::NotReady)?;
+        assert!(matches!(
+            core.effect(ticket)?,
+            Effect::Output(out) if out.payload == Payload::End && out.wire_id == request.id()
+        ));
+        core.release_effect(ticket)?;
+        assert_eq!(core.take_effect()?, None);
+        Ok(())
+    }
+
     struct UnavailableText;
     impl Idna for UnavailableText {
         fn to_ascii(&self, _: &[u8], _: &mut [u8]) -> Result<usize, Error> {

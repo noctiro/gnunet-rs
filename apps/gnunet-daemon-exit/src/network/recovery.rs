@@ -1,11 +1,14 @@
-//! Bounded installed-service session recovery above the original Wintun owner.
+//! Bounded recovery above a retired native packet epoch.
 use super::verification::Plan;
 use crate::{Failure, foreground::Stop, lifecycle::Cleanup, settings::Settings};
-use gnunet_exit_host::runtime::{Event, PacketSource, Report as NativeReport};
+use gnunet_exit_host::runtime::{Event, Report as NativeReport};
 use gnunet_program_host::reporting::Reporter;
+use gnunet_tun_host::{Action, AsyncTun, Epoch, Loss, RecoveryBudget};
+#[cfg(target_os = "freebsd")]
+use gnunet_tun_host::{FreeBsdRecovery as OriginalRecovery, FreeBsdRecreate, FreeBsdReopen};
+#[cfg(windows)]
 use gnunet_tun_host::{
-    Action, AsyncTun, Epoch, Loss, RecoveryBudget, WintunRecovery, WintunReopen,
-    WintunReplacementKind, WintunScopeRetirement,
+    WintunRecovery as OriginalRecovery, WintunReopen, WintunReplacementKind, WintunScopeRetirement,
 };
 use std::{
     future::Future,
@@ -15,12 +18,24 @@ use std::{
 };
 use tokio::time::Instant;
 mod admission;
+#[cfg(target_os = "freebsd")]
+mod freebsd;
+#[cfg(windows)]
 mod provisioning;
 mod verification;
+#[cfg(windows)]
+mod windows;
 pub(crate) use admission::Admission;
 use admission::Prepared;
+#[cfg(target_os = "freebsd")]
+use freebsd::{Provisioning as FreeBsdProvisioning, RecreatedRoutes, RouteScope};
+#[cfg(target_os = "freebsd")]
+pub(super) use freebsd::{RoutePresence, classify_route};
+#[cfg(windows)]
 use provisioning::Provisioning;
 use verification::Verification;
+#[cfg(windows)]
+use windows::Restart;
 
 #[derive(Debug, Default)]
 pub(crate) struct Report {
@@ -31,7 +46,9 @@ pub(crate) struct Report {
     last: Option<Loss>,
     first_error: Option<Failure>,
     last_error: Option<Failure>,
+    #[cfg(windows)]
     first_scope: Option<WintunScopeRetirement>,
+    #[cfg(windows)]
     last_scope: Option<WintunScopeRetirement>,
 }
 impl Report {
@@ -56,76 +73,52 @@ struct Candidate {
     source: Option<AsyncTun>,
     cleanup: Cleanup,
     reports: Reporter,
+    #[cfg(target_os = "freebsd")]
+    provisioning: Option<FreeBsdProvisioning>,
+    #[cfg(target_os = "freebsd")]
+    recreated_routes: Option<RecreatedRoutes>,
+    #[cfg(windows)]
     provisioning: Option<Provisioning>,
+    #[cfg(windows)]
     owned_routes: Vec<Action>,
 }
 impl Drop for Candidate {
     fn drop(&mut self) {
         self.verification.cancel(&self.cleanup, &self.reports);
-        if !self.owned_routes.is_empty() {
-            self.cleanup.retain(
-                crate::lifecycle::Stage::Routes,
-                Box::new(CandidateRoutes {
-                    epoch: self.source.as_ref().map(AsyncTun::epoch),
-                    actions: std::mem::take(&mut self.owned_routes),
-                }),
+        #[cfg(target_os = "freebsd")]
+        if let Some(provisioning) = &mut self.provisioning {
+            provisioning.cancel(&self.cleanup);
+        }
+        #[cfg(target_os = "freebsd")]
+        if let Some(recreated) = self.recreated_routes.take() {
+            retain_candidate_routes(
+                &self.cleanup,
+                self.source.as_ref().map(AsyncTun::epoch),
+                recreated.acknowledged,
             );
         }
-    }
-}
-#[derive(Debug)]
-struct CandidateRoutes {
-    epoch: Option<Epoch>,
-    actions: Vec<Action>,
-}
-impl std::fmt::Display for CandidateRoutes {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "EXIT closed fresh source {:?} retains unconfirmed route cleanup: {:?}",
-            self.epoch, self.actions
-        )
-    }
-}
-impl std::error::Error for CandidateRoutes {}
-#[derive(Debug)]
-struct RestartFailure {
-    stage: gnunet_tun_host::WintunRestartStage,
-    original: std::io::Error,
-}
-#[derive(Debug)]
-struct PhysicalFailure {
-    stage: gnunet_tun_host::WintunReopenStage,
-    original: std::io::Error,
-}
-impl std::fmt::Display for PhysicalFailure {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "EXIT Wintun physical recovery {:?}: {}",
-            self.stage, self.original
-        )
-    }
-}
-impl std::error::Error for PhysicalFailure {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(&self.original)
-    }
-}
-impl std::fmt::Display for RestartFailure {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "EXIT Wintun restart {:?}: {}", self.stage, self.original)
-    }
-}
-impl std::error::Error for RestartFailure {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(&self.original)
+        #[cfg(target_os = "freebsd")]
+        if let Some(source) = self.source.take() {
+            admission::close_uninstalled(source, &self.cleanup, &self.reports);
+        }
+        #[cfg(windows)]
+        retain_candidate_routes(
+            &self.cleanup,
+            self.source.as_ref().map(AsyncTun::epoch),
+            std::mem::take(&mut self.owned_routes),
+        );
     }
 }
 enum State {
-    Adapter(Box<WintunRecovery>),
-    Refresh(Box<WintunRecovery>),
+    Retained(Box<OriginalRecovery>),
+    #[cfg(windows)]
+    Refresh(Box<OriginalRecovery>),
+    #[cfg(windows)]
     Reopen(Box<WintunReopen>),
+    #[cfg(target_os = "freebsd")]
+    FreeBsdReopen(Box<FreeBsdReopen>),
+    #[cfg(target_os = "freebsd")]
+    FreeBsdRecreate(Box<FreeBsdRecreate>),
     Candidate(Box<Candidate>),
 }
 pub(crate) struct Controller {
@@ -140,7 +133,9 @@ pub(crate) struct Controller {
     fatal: Option<Failure>,
     cleanup: Cleanup,
     report: Report,
+    #[cfg(windows)]
     pending_scope: Option<WintunScopeRetirement>,
+    #[cfg(windows)]
     reconciled: Option<Epoch>,
 }
 impl Controller {
@@ -157,7 +152,9 @@ impl Controller {
             fatal: None,
             cleanup,
             report: Report::default(),
+            #[cfg(windows)]
             pending_scope: None,
+            #[cfg(windows)]
             reconciled: None,
         })
     }
@@ -169,12 +166,19 @@ impl Controller {
             crate::foreground::observe(event, reports, &self.cleanup);
             return;
         };
-        let Some(recovery) = loss.recovery.take() else {
+        #[cfg(windows)]
+        let recovery = loss.recovery.take();
+        #[cfg(target_os = "freebsd")]
+        let recovery = loss.freebsd_recovery.take();
+        let Some(recovery) = recovery else {
             crate::foreground::observe(Event::TunLost(loss), reports, &self.cleanup);
             return;
         };
         if self.active() || loss.close_error.is_some() || loss.epoch != *recovery.original_epoch() {
+            #[cfg(windows)]
             recovery.close();
+            #[cfg(target_os = "freebsd")]
+            self.release_original(*recovery);
             self.fatal = Some("EXIT received conflicting original TUN recovery ownership".into());
             crate::foreground::observe(Event::TunLost(loss), reports, &self.cleanup);
             return;
@@ -190,12 +194,15 @@ impl Controller {
         {
             Ok(hard) => {
                 self.hard = Some((hard, Box::pin(tokio::time::sleep_until(hard))));
-                self.state = Some(State::Adapter(recovery));
+                self.state = Some(State::Retained(recovery));
                 self.retry = None;
                 self.delay = Duration::from_millis(100);
             }
             Err(error) => {
+                #[cfg(windows)]
                 recovery.close();
+                #[cfg(target_os = "freebsd")]
+                self.release_original(*recovery);
                 self.fatal = Some(error.into());
             }
         }
@@ -236,7 +243,9 @@ impl Controller {
     fn candidate(
         &self,
         source: AsyncTun,
-        kind: WintunReplacementKind,
+        #[cfg(windows)] kind: WintunReplacementKind,
+        #[cfg(target_os = "freebsd")] provisioning: Option<FreeBsdProvisioning>,
+        #[cfg(target_os = "freebsd")] recreated_routes: Option<RecreatedRoutes>,
         reports: &Reporter,
     ) -> State {
         State::Candidate(Box::new(Candidate {
@@ -244,50 +253,21 @@ impl Controller {
             source: Some(source),
             cleanup: self.cleanup.clone(),
             reports: reports.clone(),
+            #[cfg(target_os = "freebsd")]
+            provisioning,
+            #[cfg(target_os = "freebsd")]
+            recreated_routes,
+            #[cfg(windows)]
             provisioning: (kind == WintunReplacementKind::Created).then(Provisioning::default),
+            #[cfg(windows)]
             owned_routes: Vec::new(),
         }))
-    }
-    fn reconcile_routes(
-        &mut self,
-        routes: &mut Vec<Action>,
-        reports: &Reporter,
-    ) -> Result<(), Failure> {
-        if let Some(scope) = self.pending_scope.take() {
-            let expected = self
-                .report
-                .last
-                .as_ref()
-                .or(self.report.first.as_ref())
-                .ok_or("EXIT physical scope has no original loss")?;
-            if scope.original_epoch() != &expected.epoch {
-                return Err("EXIT physical retirement belongs to another packet source".into());
-            }
-            if self.reconciled.as_ref() != Some(scope.original_epoch()) {
-                // Initial configuration jobs have completed before this serving
-                // loop. The sealed receipt proves all old-LUID routes absent.
-                reports.debug(
-                    "exit.packet.scope.retired",
-                    format_args!(
-                        "EXIT actual old-scope observation: {scope:?}; released cleanup intents={}",
-                        routes.len()
-                    ),
-                );
-                routes.clear();
-                self.reconciled = Some(scope.original_epoch().clone());
-                if self.report.first_scope.is_none() {
-                    self.report.first_scope = Some(scope);
-                } else {
-                    self.report.last_scope = Some(scope);
-                }
-            }
-        }
-        Ok(())
     }
     fn poll(
         &mut self,
         cx: &mut Context<'_>,
         stop: &mut Stop,
+        #[cfg(target_os = "freebsd")] owned_routes: &mut Vec<Action>,
     ) -> Poll<Result<Option<Prepared>, Failure>> {
         if let Some(error) = self.fatal.take() {
             return Poll::Ready(Err(error));
@@ -299,7 +279,7 @@ impl Controller {
             return Poll::Pending;
         }
         if Instant::now() >= *hard || alarm.as_mut().poll(cx).is_ready() {
-            return Poll::Ready(Err("EXIT original Wintun recovery target expired".into()));
+            return Poll::Ready(Err("EXIT original TUN recovery target expired".into()));
         }
         let hard = *hard;
         match stop.poll(cx) {
@@ -318,68 +298,56 @@ impl Controller {
         let Some(state) = self.state.take() else {
             return Poll::Pending;
         };
-        let refresh = matches!(&state, State::Refresh(_));
         match state {
-            State::Adapter(recovery) | State::Refresh(recovery) => {
-                self.report.attempts = self.report.attempts.saturating_add(1);
-                let result = if refresh {
-                    recovery.refresh_scope()
-                } else {
-                    recovery.restart()
-                };
-                match result {
-                    Ok(source) => {
-                        self.state = Some(self.candidate(
-                            source,
-                            WintunReplacementKind::Reopened,
-                            &stop.reports,
-                        ));
-                    }
-                    Err(error) => {
-                        let (recovery, stage, original) = error.into_parts();
-                        self.failure(Box::new(RestartFailure { stage, original }), &stop.reports);
-                        if !refresh && stage == gnunet_tun_host::WintunRestartStage::Start {
-                            self.state = Some(State::Refresh(Box::new(recovery)));
-                        } else if refresh {
-                            match recovery.detach_missing() {
-                                Ok(owner) => self.state = Some(State::Reopen(Box::new(owner))),
-                                Err(error) => {
-                                    let (owner, stage, original) = error.into_parts();
-                                    if original.kind() != std::io::ErrorKind::WouldBlock {
-                                        self.failure(
-                                            Box::new(RestartFailure { stage, original }),
-                                            &stop.reports,
-                                        );
-                                    }
-                                    self.retry(State::Adapter(Box::new(owner)));
-                                }
-                            }
-                        } else {
-                            self.retry(State::Adapter(Box::new(recovery)));
-                        }
-                    }
+            #[cfg(target_os = "freebsd")]
+            State::Retained(recovery) => {
+                self.begin_freebsd(*recovery, hard, owned_routes, &stop.reports)?
+            }
+            #[cfg(target_os = "freebsd")]
+            State::FreeBsdReopen(owner) => {
+                self.open_freebsd(*owner, hard, owned_routes, &stop.reports)?
+            }
+            #[cfg(target_os = "freebsd")]
+            State::FreeBsdRecreate(owner) => {
+                if self
+                    .recreate_freebsd(cx, owner, hard, owned_routes, &stop.reports)?
+                    .is_pending()
+                {
+                    return Poll::Pending;
                 }
             }
-            State::Reopen(owner) => match owner.open_or_recreate(hard) {
-                Ok(replacement) => {
-                    let kind = replacement.kind();
-                    let (source, scope) = replacement.into_parts();
-                    self.pending_scope = Some(scope);
-                    self.state = Some(self.candidate(source, kind, &stop.reports));
-                }
-                Err(error) => {
-                    let (owner, stage, original) = error.into_parts();
-                    self.failure(Box::new(PhysicalFailure { stage, original }), &stop.reports);
-                    self.pending_scope = owner.retirement().cloned();
-                    self.retry(State::Reopen(Box::new(owner)));
-                }
-            },
+            #[cfg(windows)]
+            State::Retained(recovery) => {
+                self.restart_wintun(*recovery, Restart::Retained, &stop.reports);
+            }
+            #[cfg(windows)]
+            State::Refresh(recovery) => {
+                self.restart_wintun(*recovery, Restart::Refresh, &stop.reports);
+            }
+            #[cfg(windows)]
+            State::Reopen(owner) => self.reopen_wintun(*owner, hard, &stop.reports),
             State::Candidate(mut candidate) => {
                 let Some(source) = candidate.source.as_mut() else {
                     return Poll::Ready(Err(
                         "EXIT recovery candidate lost its original source".into()
                     ));
                 };
+                #[cfg(target_os = "freebsd")]
+                if let Some(provisioning) = candidate.provisioning.as_mut() {
+                    let routes = match candidate.recreated_routes.as_mut() {
+                        Some(routes) => RouteScope::Recreated(routes),
+                        None => RouteScope::Retained(owned_routes),
+                    };
+                    match provisioning.poll(cx, source, &self.plan, routes, &stop.reports) {
+                        Poll::Pending => {
+                            self.state = Some(State::Candidate(candidate));
+                            return Poll::Pending;
+                        }
+                        Poll::Ready(Err(error)) => return Poll::Ready(Err(error)),
+                        Poll::Ready(Ok(())) => candidate.provisioning = None,
+                    }
+                }
+                #[cfg(windows)]
                 if let Some(provisioning) = candidate.provisioning.as_mut() {
                     match provisioning.poll(
                         cx,
@@ -406,20 +374,31 @@ impl Controller {
                         return Poll::Pending;
                     }
                     Poll::Ready(Err(error)) => {
-                        candidate.verification.cancel(&self.cleanup, &stop.reports);
-                        candidate.verification = Verification::new();
-                        self.again(State::Candidate(candidate), error, &stop.reports);
+                        #[cfg(windows)]
+                        {
+                            candidate.verification.cancel(&self.cleanup, &stop.reports);
+                            candidate.verification = Verification::new();
+                            self.again(State::Candidate(candidate), error, &stop.reports);
+                        }
+                        #[cfg(target_os = "freebsd")]
+                        return Poll::Ready(Err(error));
                     }
-                    Poll::Ready(Ok(watch)) => {
+                    Poll::Ready(Ok(verification)) => {
                         let source = candidate
                             .source
                             .take()
                             .ok_or("EXIT recovery source already consumed")?;
                         return Poll::Ready(Ok(Some(Prepared {
-                            source: PacketSource::Native(source),
-                            watch,
+                            source,
+                            verification,
                             hard,
+                            #[cfg(windows)]
                             routes: std::mem::take(&mut candidate.owned_routes),
+                            #[cfg(target_os = "freebsd")]
+                            routes: candidate
+                                .recreated_routes
+                                .take()
+                                .map(|routes| routes.acknowledged),
                         })));
                     }
                 }
@@ -429,7 +408,16 @@ impl Controller {
         Poll::Pending
     }
     pub fn close(&mut self) {
-        self.state = None;
+        let state = self.state.take();
+        #[cfg(target_os = "freebsd")]
+        match state {
+            Some(State::Retained(recovery)) => self.release_original(*recovery),
+            Some(State::FreeBsdReopen(owner)) => self.release_reopen(*owner),
+            Some(State::FreeBsdRecreate(owner)) => self.release_recreate(*owner),
+            other => drop(other),
+        }
+        #[cfg(windows)]
+        drop(state);
         self.retry = None;
         self.hard = None;
     }
@@ -437,3 +425,28 @@ impl Controller {
         std::mem::take(&mut self.report)
     }
 }
+
+fn retain_candidate_routes(cleanup: &Cleanup, epoch: Option<Epoch>, actions: Vec<Action>) {
+    if !actions.is_empty() {
+        cleanup.retain(
+            crate::lifecycle::Stage::Routes,
+            Box::new(CandidateRoutes { epoch, actions }),
+        );
+    }
+}
+
+#[derive(Debug)]
+struct CandidateRoutes {
+    epoch: Option<Epoch>,
+    actions: Vec<Action>,
+}
+impl std::fmt::Display for CandidateRoutes {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "EXIT closed fresh source {:?} retains unconfirmed route cleanup: {:?}",
+            self.epoch, self.actions
+        )
+    }
+}
+impl std::error::Error for CandidateRoutes {}

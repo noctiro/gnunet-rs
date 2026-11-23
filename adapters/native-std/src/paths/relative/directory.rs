@@ -1,5 +1,6 @@
 //! Original directory leases, single-component access and private creation.
-use super::{leaf::Leaf, link, open};
+use super::{leaf::Leaf, link, open, rename, sync};
+use crate::filesystem::CreateDirectoryError;
 use crate::paths::metadata;
 use std::{ffi::OsStr, fs::File, io, os::windows::fs::OpenOptionsExt, path::Path};
 use windows_sys::{
@@ -69,7 +70,11 @@ impl Directory {
         )?)
     }
     fn checked(file: File) -> io::Result<Self> {
-        let info = metadata::attributes(&file)?;
+        Self::validate_handle(&file)?;
+        Ok(Self { file })
+    }
+    pub(super) fn validate_handle(file: &File) -> io::Result<()> {
+        let info = metadata::attributes(file)?;
         if info.FileAttributes & FILE_ATTRIBUTE_DIRECTORY == 0
             || info.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
                 && info.ReparseTag & 0x2000_0000 != 0
@@ -79,7 +84,7 @@ impl Directory {
                 "ordinary directory handle required",
             ));
         }
-        Ok(Self { file })
+        Ok(())
     }
     /// Borrow the held original directory without granting a pathname binding.
     pub fn as_file(&self) -> &File {
@@ -126,10 +131,31 @@ impl Directory {
     pub fn validate_namespace(&self) -> io::Result<()> {
         crate::identity::validate_parent(&self.file)
     }
-    /// Report directory synchronization support independently of file syncing.
-    /// Windows supplies no directory barrier through this adapter.
+    /// Synchronize the held local NTFS directory. Other filesystems return
+    /// `Unavailable`, as do permissions or sharing that exclude a writable
+    /// lease. Reopening uses the original handle without resolving a name.
+    /// Other open and flush failures are returned to the caller.
     pub fn sync(&self) -> io::Result<crate::DirectorySync> {
-        Ok(crate::DirectorySync::Unavailable)
+        sync::directory(&self.file)
+    }
+    /// Exclusively create an ordinary child with normal inherited permissions.
+    /// The NT create request returns the original handle directly.
+    ///
+    /// # Errors
+    /// Preserves native creation failures and rejects invalid child names.
+    pub fn create_directory(&self, name: &OsStr) -> Result<Self, CreateDirectoryError> {
+        let mut leaf = Leaf::new(name).map_err(CreateDirectoryError::Create)?;
+        let (file, _) = open::child(
+            &self.file,
+            &mut leaf,
+            FILE_GENERIC_READ,
+            DIRECTORY_SHARING,
+            FILE_CREATE,
+            FILE_DIRECTORY_FILE,
+            None,
+        )
+        .map_err(CreateDirectoryError::Create)?;
+        Ok(Self { file })
     }
     /// Create one protected current-user-only directory, refusing an existing
     /// name. A later native failure can leave the new directory present.
@@ -278,11 +304,39 @@ impl Directory {
         original: &File,
         target_name: &OsStr,
     ) -> io::Result<()> {
-        super::rename::replace(&self.file, source_name, original, target_name)?;
+        rename::regular_file(
+            &self.file,
+            source_name,
+            original,
+            target_name,
+            rename::Mode::Replace,
+        )?;
         if !self.same_file(target_name, original)? {
             return Err(io::Error::other("original replacement target changed"));
         }
         Ok(())
+    }
+    /// Move the captured single-link source to an absent child name. The
+    /// publication owner verifies the installed name and handles synchronization.
+    pub(crate) fn rename_new_file(
+        &self,
+        source_name: &OsStr,
+        original: &File,
+        target_name: &OsStr,
+    ) -> io::Result<()> {
+        // Alternate spellings, such as an NTFS short alias, can select the
+        // stage itself. Other collisions and lookup failures go to the native
+        // no-replace request for authoritative classification.
+        if self.same_file(target_name, original).is_ok_and(|same| same) {
+            return Err(io::ErrorKind::AlreadyExists.into());
+        }
+        rename::regular_file(
+            &self.file,
+            source_name,
+            original,
+            target_name,
+            rename::Mode::Create,
+        )
     }
     /// Link the original regular source at a new child name atomically. Existing
     /// names and cross-volume moves are refused; no copy/replace fallback exists.

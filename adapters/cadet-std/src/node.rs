@@ -23,8 +23,8 @@ use std::{
 };
 use tokio::time::{Instant, Sleep};
 pub use types::{
-    ChannelBuffers, Close, Discovery, Error, Limits, NativeStage, Parts, PeerClose, Refusal,
-    Report, Signing, Step, Storage, TransportDemand,
+    ChannelBuffers, Close, Discovery, DiscoveryStatus, Error, Limits, NativeStage, Parts,
+    PeerClose, Refusal, Report, Signing, Step, Storage, TransportDemand,
 };
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -383,48 +383,56 @@ impl<
     pub fn transport_after(&self, cursor: usize) -> Option<(usize, TransportDemand<'node, 'app>)> {
         self.state.transport_after(cursor)
     }
-    /// Original pending open that needs caller-supplied discovery/transport
-    /// work. This starts no lookup and creates no neighbor/route/authentication.
+    /// Original pending open or established tunnel that needs discovery.
+    /// This starts no lookup and creates no neighbor or route.
     #[must_use]
-    pub fn discovery_needed(&self) -> Option<Discovery<'app>> {
-        self.state.discovery_needed(&self.book, None)
+    pub fn discovery_needed(&self) -> Option<Discovery<'node, 'app>> {
+        self.discovery_after(0).map(|(_, search)| search)
     }
     /// Next original pending discovery in bounded slot order; no lookup or route is created.
     #[must_use]
-    pub fn discovery_after(
-        &self,
-        after: Option<gnunet_cadet::service::Open<'app>>,
-    ) -> Option<Discovery<'app>> {
-        self.state.discovery_needed(&self.book, after)
+    pub fn discovery_after(&self, cursor: usize) -> Option<(usize, Discovery<'node, 'app>)> {
+        self.state.discovery_after(&self.book, cursor)
     }
-    /// Original native opening target, minted when this exact application open was admitted.
-    pub fn discovery_hard(&self, wanted: Discovery<'app>) -> Result<Instant, Error> {
+    /// Original native target for this exact open or route search.
+    pub fn discovery_hard(&self, wanted: Discovery<'node, 'app>) -> Result<Instant, Error> {
         self.state
-            .discovery_hard(wanted)
+            .discovery_hard(&self.book, wanted)
             .ok_or(ProtocolError::StaleGeneration.into())
     }
-    /// Whether this exact original open remains pending, independent of route readiness.
+    /// Whether this exact original ticket still owns its lookup.
     #[must_use]
-    pub fn discovery_current(&self, wanted: Discovery<'app>) -> bool {
-        self.state.discovery_hard(wanted).is_some()
+    pub fn discovery_current(&self, wanted: Discovery<'node, 'app>) -> bool {
+        self.discovery_status(wanted) != DiscoveryStatus::Finished
     }
-    /// Expire only this original open without creating a clock/IO or peer-success receipt.
-    pub fn expire_discovery(&mut self, wanted: Discovery<'app>) -> Result<(), Error> {
-        Ok(self.state.expire_discovery(wanted)?)
+    /// Check route opening independently of the original ticket's retirement.
+    #[must_use]
+    pub fn discovery_status(&self, wanted: Discovery<'node, 'app>) -> DiscoveryStatus {
+        self.state.discovery_status(&self.book, wanted)
+    }
+    /// Expire this original lookup. An established tunnel retains its channels.
+    pub fn expire_discovery(&mut self, wanted: Discovery<'node, 'app>) -> Result<(), Error> {
+        self.state.expire_discovery(&mut self.book, wanted)?;
+        if let Some(wake) = &self.wake {
+            wake.wake_by_ref();
+        }
+        Ok(())
     }
     /// Admit a caller-verified public DHT routing candidate. Book still requires a
     /// current real first-hop neighbor and performs the normal CREATE/signing/KX.
     /// true means an actual route opening was admitted, never an established channel.
-    /// `now` must be sampled from this Node's shared native timebase.
+    /// `now` and `attempt_until` use this Node's shared native timebase. The
+    /// opening attempt cannot outlive the ticket's original deadline.
     pub fn admit_discovery(
         &mut self,
-        wanted: Discovery<'app>,
+        wanted: Discovery<'node, 'app>,
         path: &[[u8; 32]],
         now: MonoInstant,
+        attempt_until: MonoInstant,
     ) -> Result<bool, Error> {
-        let admitted = self
-            .state
-            .admit_discovery(wanted, path, &mut self.book, now)?;
+        let admitted =
+            self.state
+                .admit_discovery(wanted, path, &mut self.book, now, attempt_until)?;
         if admitted && let Some(wake) = &self.wake {
             wake.wake_by_ref();
         }
@@ -591,6 +599,12 @@ impl<
                     }
                 }
                 2 if !self.core_stopped => {
+                    // Retire any expired opening before CORE can offer its
+                    // CREATE or treat a late ACK as route confirmation.
+                    if self.state.fence_repair_paths(&mut self.book, now)? {
+                        cx.waker().wake_by_ref();
+                        return Poll::Ready(Ok(Step::Progress));
+                    }
                     match self
                         .bridge
                         .poll(&mut *cx, &mut self.book, &mut self.state, deadline)
@@ -719,6 +733,10 @@ impl<
             return Poll::Ready(Err(ProtocolError::Authentication.into()));
         }
         let now = self.now(cx)?;
+        if self.state.fence_repair_paths(&mut self.book, now)? {
+            cx.waker().wake_by_ref();
+            return Poll::Ready(Ok(SigningProgress::Progress));
+        }
         for i in 0..self.state.signs.len() {
             let Some(task) = self.state.signs[i] else {
                 continue;
@@ -743,6 +761,11 @@ impl<
                 match signer.finish(&mut self.book, job)? {
                     signing::Completion::Pending | signing::Completion::Blocked(_) => {}
                     signing::Completion::Signed { .. } => {
+                        self.state.signs[i] = None;
+                        return Poll::Ready(Ok(SigningProgress::Progress));
+                    }
+                    signing::Completion::Failed(ProtocolError::Deadline) => {
+                        let _closed = self.book.close_route(task.request.route());
                         self.state.signs[i] = None;
                         return Poll::Ready(Ok(SigningProgress::Progress));
                     }

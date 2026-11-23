@@ -699,11 +699,14 @@ impl Buffers {
             let mut keywords = if let Some(words) = retained_keywords {
                 words
             } else {
-                match extraction::file_keywords_with_metadata(
+                match extraction::file_keywords_for_verified_source(
                     input,
                     filename,
-                    Default::default(),
                     options.metadata.clone(),
+                    extraction::VerifiedSource {
+                        observed: original.0,
+                        digest: file_id,
+                    },
                     |_| {
                         if Instant::now() >= options.native_deadline {
                             Control::Cancel

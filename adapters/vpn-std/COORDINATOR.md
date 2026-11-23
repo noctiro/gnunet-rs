@@ -1,6 +1,6 @@
 # Native VPN coordinator
 
-`Coordinator::new(Parts { server, cadet, device }, policies, Limits)` composes
+`Coordinator::new(Parts { server, cadet, device }, policies, profiles, limits)` composes
 caller-owned Engine pools, the local SERVICE, one exclusive CADET client and one
 qualified packet device. SERVICE and CADET share the same `RuntimeClock` owner.
 Construction allocates a bounded flow table and returns all original owners on
@@ -27,6 +27,24 @@ cannot grant readiness. Periodic IPv6 monitoring uses separate finite queries;
 non-ready state or independent close failure stops admission. Typed `Event`
 values preserve actual mutation, query, DAD and cleanup results.
 
+## Application providers
+
+Pass an application-owned implementation of `Provider` to
+`Device::from_provider`. Each instance admits one settings request and one
+packet write at a time. Carry the original request ID through the system
+callback. Complete install only after the full address, route and MTU plan is
+active. Complete removal only after the matching settings are absent and a
+late callback cannot reinstall them. This path has no descriptor-specific
+interface index, route query or DAD snapshot.
+
+`application::channel` connects the coordinator to an application worker.
+The worker claims a route or immutable packet command and reports its actual
+completion. Keep the original system owner through cancellation. Removal
+waits behind a claimed install until its result is known. Ingress is bounded
+and opens only after the coordinator observes the install result. Unknown
+packet submission remains exposed and cannot be retried. The application
+reports actual native retirement through `Controller::revoke`.
+
 ## Packet and peer ownership
 
 TUN input enters `Engine::forward_tun`; the caller's shared slabs retain official
@@ -34,10 +52,16 @@ VPN/EXIT frames. Configured exits use explicit bounded policies. External
 selection emits `DiscoveryRequest` and requires matching admission, result and
 retirement through `discovery_queued`, `select_exit`, `discovery_failed` and
 `retire_discovery`. The consuming application owns actual REGEX discovery.
-Service flows retain their requested peer and explicit numeric AF profile.
+Named peers and Internet discovery use immutable AF assignments keyed by peer
+identity. Unassigned peers use the explicit fallback when supplied. The default
+for a discovered Internet gateway is the Linux AF profile used by the official
+C gateway. Named services default to the local native profile. Configured exits
+keep their rule's explicit AF profile.
 
-CADET CREATE must finish writing and receive actual current-channel credit before
-peer binding. One immutable native transmission retains each admitted frame and
+A pending CADET channel owns its open token, peer route and original deadline
+until CREATE has fully written and the channel has credit. Binding replaces
+that state with the peer token. The channel keeps its original identity through
+retirement. One immutable native transmission retains each admitted frame and
 its original deadline, including partial writes. Replacement MQs never replay
 application bytes. Completion after channel retirement remains a retired write,
 separate from successful peer sending or remote processing.
@@ -72,11 +96,12 @@ packet handle on the exact retained native scope. Original creator lifetime and
 owned route debt remain attached; no absence or borrowed ownership is inferred.
 Its explicit native stage failures retain the original recovery owner.
 
-Core `rebind_tun_same_interface` transfers the original route scope without
-claiming absence. Owned routes use an explicit Verify action and
-`route_reverified`; borrowed routes retain borrowed verification. No route
-mutation or old packet is replayed, and owned cleanup debt never becomes borrowed
-by replacing its packet session.
+Core `rebind_tun_same_interface` carries the existing route scope and cleanup
+responsibility into the new packet epoch. Owned configuration uses `Verify`
+for a retained descriptor and `Restore` when a confirmed FreeBSD descriptor
+close may have removed addresses or routes. Borrowed configuration remains
+read-only. The adapter performs restoration on the qualified original interface
+and FIB, then reads back configuration and verifies routing and IPv6 readiness.
 
 One outage deadline covers old-debt draining, restart and verification. Rapid
 failures reuse it; positive native I/O or one second admitted without an observed
@@ -86,6 +111,12 @@ failure diagnostics. Native device qualification remains in the central
 [open work](../../IMPLEMENTATION_STATUS.md).
 
 ## Physical interface recovery
+
+FreeBSD managed-interface recreation first settles original packet and flow
+jobs. The TUN owner verifies its old index, devfs node and every owned route
+key in the original FIB. A fresh checkpointed device attaches with a new
+core generation and runs the regular configuration, route and DAD workflow.
+[FreeBSD TUN recreation](../tun-std/RECOVERY.md#recreating-a-missing-interface)
 
 `reopen_wintun` consumes the shared physical recovery intent. It checks the lost
 packet epoch and waits for original routing, flow and packet debt. The native

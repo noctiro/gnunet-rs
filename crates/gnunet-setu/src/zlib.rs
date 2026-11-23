@@ -23,4 +23,14 @@ impl Codec for Zlib {
     fn decompress(&mut self, input: &[u8], output: &mut [u8]) -> Result<usize, Error> {
         self.0.decompress(input, output)
     }
+
+    fn visit_decompressed(
+        &mut self,
+        input: &[u8],
+        workspace: &mut [u8],
+        limit: usize,
+        visit: &mut dyn FnMut(&[u8]) -> Result<(), Error>,
+    ) -> Result<usize, Error> {
+        self.0.visit_decompressed(input, workspace, limit, visit)
+    }
 }

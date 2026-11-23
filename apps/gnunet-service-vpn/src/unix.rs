@@ -115,7 +115,7 @@ pub(super) fn run() -> Result<ExitCode, Failure> {
         if reports.failed() {
             return Ok(());
         }
-        let bound = runtime.block_on(pending.finish_with_access(settings.unix.into()))?;
+        let bound = runtime.block_on(pending.finish_with_access(settings.service.unix.into()))?;
         for error in bound.failures() {
             reports.warning(
                 "vpn.listener.alternate",

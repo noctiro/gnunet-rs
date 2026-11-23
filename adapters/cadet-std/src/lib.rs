@@ -19,6 +19,8 @@ pub mod node;
 pub mod server;
 /// Actual source-bound PILS signing and explicit durable monotime reservations.
 pub mod signing;
+#[cfg(feature = "startup")]
+pub mod startup;
 /// One fixed native scheduling epoch alongside the actual logical absolute source.
 pub mod time;
 pub use client::{Client, Limits, LossCause, Received, Step};

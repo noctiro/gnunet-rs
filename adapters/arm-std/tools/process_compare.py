@@ -6,18 +6,27 @@ import argparse,json,os,pathlib,socket,subprocess,sys,tempfile,time
 from reference import load,compile_probe,sha
 from _common import local_snapshot,require_disjoint_output,require_lint_contract
 
+TOOLS=pathlib.Path(__file__).resolve().parents[3]/"tools"
+sys.dont_write_bytecode=True
+sys.path.insert(0,str(TOOLS))
+from cargo_artifacts import CargoArtifacts
+from rust_toolchain import rust_channel
+
 def main():
  p=argparse.ArgumentParser()
  for name in ['repo','source','reference','output']:p.add_argument('--'+name,type=pathlib.Path,required=True)
- p.add_argument('--package',type=pathlib.Path,default=pathlib.Path(__file__).resolve().parents[1]);a=p.parse_args()
- package=a.package.resolve();repo=a.repo.resolve();reference,normal=load(a.reference,a.source,repo)
+ p.add_argument('--package',type=pathlib.Path,default=pathlib.Path(__file__).resolve().parents[1]);p.add_argument('--toolchain');a=p.parse_args()
+ package=a.package.resolve();repo=a.repo.resolve();cargo=['cargo','+'+rust_channel(repo,a.toolchain)];reference,normal=load(a.reference,a.source,repo)
  out=require_disjoint_output(a.output,[package,repo,a.source,a.reference.resolve().parent,pathlib.Path(reference['build']),pathlib.Path(reference['prefix'])]);out.mkdir(mode=0o700)
- metadata=json.loads(subprocess.check_output(['cargo','+1.99.1','metadata','--manifest-path',str(package/'Cargo.toml'),'--offline','--locked','--format-version','1'],cwd=repo));selected,before=local_snapshot(metadata,package,package/'tools');lints=require_lint_contract(package,repo,metadata)
+ metadata=json.loads(subprocess.check_output(cargo+['metadata','--manifest-path',str(package/'Cargo.toml'),'--offline','--locked','--format-version','1'],cwd=repo));selected,before=local_snapshot(metadata,package,package/'tools');lints=require_lint_contract(package,repo,metadata)
+ def tooling_inputs():return {str(path):sha(path) for path in [TOOLS/'cargo_artifacts.py',TOOLS/'rust_toolchain.py',repo/'rust-toolchain.toml']}
+ before.update(tooling_inputs())
  commands=[]
  def run(label,argv,**kwargs):
   result=subprocess.run([str(v)for v in argv],stdout=subprocess.PIPE,stderr=subprocess.PIPE,**kwargs);(out/(label+'.stdout')).write_bytes(result.stdout);(out/(label+'.stderr')).write_bytes(result.stderr);commands.append({'label':label,'argv':[str(v)for v in argv],'exit':result.returncode});assert result.returncode==0,(label,result.stderr.decode(errors='replace'));return result
- target=out/'cargo-target';run('build',['cargo','+1.99.1','build','--manifest-path',package/'Cargo.toml','--bins','--example','process_owner','--locked','--offline','--jobs','2','--target-dir',target],cwd=repo)
- rust=target/'debug/examples/process_owner';helper=target/'debug/gnunet-arm-spawn-helper';c=out/'normal-process-owner';child=out/'plain-child'
+ target=out/'cargo-target';build=run('build',cargo+['build','--message-format=json','--manifest-path',package/'Cargo.toml','--bins','--example','process_owner','--locked','--offline','--jobs','2','--target-dir',target],cwd=repo)
+ artifacts=CargoArtifacts(build.stdout)
+ rust=artifacts.example('process_owner',package/'Cargo.toml');helper=artifacts.binary('gnunet-arm-spawn-helper',package/'Cargo.toml');c=out/'normal-process-owner';child=out/'plain-child'
  compilation=compile_probe(package/'tools/process_owner.c',c,reference);run('target-build',['cc',package/'tests/support/process_fixture.c','-Wall','-Wextra','-Werror','-o',child]);run('cc-version',['cc','--version'])
  binaries={str(path):sha(path)for path in [c,child,rust,helper]};cases=[]
  labels=['simple-raw','empty-argv','directory-late-exec','not-executable','late-interpreter','control-one-byte','control-epipe','control-default-sigpipe','two-queued-listeners']
@@ -72,7 +81,7 @@ def main():
     if socket_directory is not None:socket_directory.cleanup()
   assert observed['c']==observed['rust'],(label,observed)
   cases.append({'label':label,'matched':True,'actors':observed})
- _,after=local_snapshot(metadata,package,package/'tools');after_ref,after_normal=load(a.reference,a.source,repo);assert before==after and normal==after_normal and reference==after_ref and all(sha(path)==digest for path,digest in binaries.items())
+ _,after=local_snapshot(metadata,package,package/'tools');after.update(tooling_inputs());after_ref,after_normal=load(a.reference,a.source,repo);assert before==after and normal==after_normal and reference==after_ref and all(sha(path)==digest for path,digest in binaries.items())
  result={'status':'passed','scope':'9 actual shared Rust process port/normal unmodified C util API cases; no full ARM daemon certification','cases':cases,'case_count':len(cases),'normal_compilation':compilation,'root_lints':lints,'binaries':binaries,'inputs':before,'normal_inputs':normal,'inputs_unchanged':True,'commands':commands,'default_sigpipe':'actual new-exec callers terminate by13 before fallback; finite children auto-exit, no fabricated wait'}
  (out/'result.json').write_text(json.dumps(result,indent=2)+'\n');print(json.dumps({'status':'passed','cases':len(cases),'result':str(out/'result.json')}))
 if __name__=='__main__':main()

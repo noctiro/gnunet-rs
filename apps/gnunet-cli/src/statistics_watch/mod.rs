@@ -2,20 +2,40 @@
 mod driver;
 mod finite;
 mod output;
+mod standalone;
+mod testbed;
 use gnunet_program_host::{
     logging::Logger,
-    program::{self, Defaults, Invocation, NlsDisabled, Preparation},
+    program::{self, Defaults, Invocation, Preparation},
     reporting::Reporter,
     shared_clock::SharedClock,
 };
 use std::{cell::Cell, error::Error, ffi::OsString, io, rc::Rc, sync::Arc};
 type Failure = Box<dyn Error>;
+const SERVICE: &[u8] = b"statistics";
+struct Request {
+    selector: driver::Names,
+    operation: Operation,
+    style: output::Style,
+}
+
+enum Operation {
+    Watch,
+    Finite(finite::Action),
+    Testbed(std::path::PathBuf, finite::Action),
+}
+
 #[derive(Clone, Copy)]
 enum Command {
     Watch,
     Get,
     Set,
 }
+enum InvocationKind {
+    Grouped(Command),
+    Standalone(standalone::Arguments),
+}
+
 pub(super) fn run(args: &[OsString]) -> Result<(), Failure> {
     let command = match args.first().and_then(|arg| arg.to_str()) {
         Some("watch") => Command::Watch,
@@ -23,16 +43,53 @@ pub(super) fn run(args: &[OsString]) -> Result<(), Failure> {
         Some("set") => Command::Set,
         _ => return Err("expected statistics get|set|watch".into()),
     };
+    run_program(InvocationKind::Grouped(command), args[1..].iter().cloned())
+}
+
+pub(super) fn run_standalone() -> Result<(), Failure> {
+    run_program(
+        InvocationKind::Standalone(standalone::Arguments::new()),
+        std::env::args_os().skip(1),
+    )
+}
+
+fn run_program(
+    kind: InvocationKind,
+    arguments: impl IntoIterator<Item = OsString>,
+) -> Result<(), Failure> {
     let inherited = crate::foreground::capture()?;
     let clock = SharedClock::native(64)?;
     let config = gnunet_config::Configuration::create(
         Arc::new(gnunet_config::ProjectData::default()),
         Default::default(),
     )?;
-    let mut logger = Logger::new(b"gnunet-cli.statistics", std::process::id(), false)?;
+    let (logger_name, invocation, options) = match &kind {
+        InvocationKind::Grouped(_) => (
+            b"gnunet-cli.statistics".as_slice(),
+            Invocation {
+                binary_name: b"gnunet-cli statistics",
+                help: Some(GROUPED_HELP),
+                select_default_filename: true,
+                defaults: Defaults::Native,
+            },
+            Default::default(),
+        ),
+        InvocationKind::Standalone(arguments) => (
+            b"gnunet-statistics".as_slice(),
+            Invocation {
+                binary_name: b"gnunet-statistics",
+                help: Some(b"Print GNUnet statistics. Use -s SUBSYSTEM and -n NAME to filter, -w to watch, or provide a value to set. -r HOST [-o PORT] selects a remote statistics service."),
+                select_default_filename: true,
+                defaults: Defaults::Native,
+            },
+            arguments.options(),
+        ),
+    };
+    let mut logger = Logger::new(logger_name, std::process::id(), false)?;
     let mut environment = program::Environment::capture();
-    let mut argv = vec![OsString::from("gnunet-cli statistics")];
-    if !matches!(command, Command::Watch) {
+    let binary_name = std::str::from_utf8(invocation.binary_name)?;
+    let mut argv = vec![OsString::from(binary_name)];
+    if matches!(kind, InvocationKind::Grouped(Command::Get | Command::Set)) {
         // Finite commands interpret GNUNET_ARGS as prefix defaults so its
         // common options cannot become literal selectors after the endpoint.
         // Explicit argv options follow and therefore take precedence.
@@ -41,26 +98,18 @@ pub(super) fn run(args: &[OsString]) -> Result<(), Failure> {
             environment.arguments.as_deref(),
         )?;
         environment.arguments = None;
-    }
-    argv.extend(args[1..].iter().cloned());
-    if !matches!(command, Command::Watch) {
         // Finite positional values include signed numbers and native names.
         // Require common PROGRAM options before the first endpoint; after it
         // only this command's explicit SET suffix flags are interpreted.
         environment.posixly_correct = true;
     }
-    let prepared = program::prepare(
+    argv.extend(arguments);
+    let prepared = program::prepare_installed(
         config,
-        Invocation {
-            binary_name: b"gnunet-cli statistics",
-            help: Some(b"Official STATISTICS get|set|watch. Finite syntax: get [common options] <UNIXPATH|-> [subsystem [name]]; set [common options] <UNIXPATH|-> <subsystem> <name> <u64|signed i64> [--relative] [--persistent]. Common -c/-L/-l precede the endpoint for GET/SET; -- explicitly ends PROGRAM options. '-' uses configured official Unix/TCP. GET streams until real END; SET requires the original processing confirmation (not disk sync). Relative zero reports a no-op. Watch arguments: <UNIXPATH|-> <subsystem> <name>; SIGINT/SIGTERM retires the original source."),
-            select_default_filename: true,
-            defaults: Defaults::Native,
-        },
-        Default::default(),
+        invocation,
+        options,
         argv,
         &environment,
-        &mut NlsDisabled,
         &mut logger,
         &clock,
         &mut io::stdout().lock(),
@@ -80,9 +129,11 @@ pub(super) fn run(args: &[OsString]) -> Result<(), Failure> {
         }
     };
     let reports = Reporter::new(logger, clock.clone());
-    let result = run_selected(command, prepared, inherited, clock, reports.clone());
+    let result = run_selected(kind, prepared, inherited, clock, reports.clone());
     driver::finish(result, reports).map_err(|error| Box::new(Selected(error)) as Failure)
 }
+
+const GROUPED_HELP: &[u8] = b"Official STATISTICS get|set|watch. Finite syntax: get [common options] <UNIXPATH|-> [subsystem [name]]; set [common options] <UNIXPATH|-> <subsystem> <name> <u64|signed i64> [--relative] [--persistent]. Common -c/-L/-l precede the endpoint for GET/SET; -- explicitly ends PROGRAM options. '-' uses configured official Unix/TCP. GET streams until real END; SET requires the original processing confirmation (not disk sync). Relative zero reports a no-op. Watch arguments: <UNIXPATH|-> <subsystem> <name>; SIGINT/SIGTERM retires the original source.";
 
 // Only STATISTICS failures after PROGRAM selected its logger carry this marker.
 // Main keeps its existing fallback for early setup/other command failures.
@@ -101,15 +152,12 @@ impl Error for Selected {
 pub(super) fn selected(error: &(dyn Error + 'static)) -> bool {
     error.is::<Selected>()
 }
-fn run_selected(
+fn grouped_request(
     command: Command,
-    prepared: program::Prepared,
-    inherited: crate::foreground::Inherited,
-    clock: SharedClock,
-    reports: Reporter,
-) -> Result<driver::Report, Failure> {
-    let args = prepared.main().arguments;
-    let (selector, action) = match command {
+    args: &[Vec<u8>],
+    config: &mut gnunet_config::Configuration,
+) -> Result<Request, Failure> {
+    let (selector, operation) = match command {
         Command::Watch => {
             if args.len() != 3 {
                 return Err(
@@ -121,8 +169,7 @@ fn run_selected(
                 subsystem: args[1].clone(),
                 name: args[2].clone(),
             };
-            validate_names(&selector, 512, 8)?;
-            (selector, None)
+            (selector, Operation::Watch)
         }
         Command::Get => {
             if !(1..=3).contains(&args.len()) {
@@ -135,8 +182,7 @@ fn run_selected(
                 subsystem: args.get(1).cloned().unwrap_or_default(),
                 name: args.get(2).cloned().unwrap_or_default(),
             };
-            validate_names(&selector, 65535, 4)?;
-            (selector, Some(finite::Action::Get))
+            (selector, Operation::Finite(finite::Action::Get))
         }
         Command::Set => {
             if args.len() < 4 {
@@ -161,17 +207,51 @@ fn run_selected(
                 subsystem: args[1].clone(),
                 name: args[2].clone(),
             };
-            validate_names(&selector, 65535, 16)?;
-            (selector, Some(finite::Action::Set { value, persistent }))
+            (
+                selector,
+                Operation::Finite(finite::Action::Set { value, persistent }),
+            )
         }
     };
-    let mut config = prepared.main().config.duplicate()?;
     if args[0] != b"-" {
-        config.set_value(b"statistics", b"UNIXPATH", Some(&args[0]))?;
+        config.set_value(SERVICE, b"UNIXPATH", Some(&args[0]))?;
         // Explicit socket mode must not fall back to another configured service.
-        config.set_value(b"statistics", b"HOSTNAME", Some(b"localhost"))?;
-        config.set_number(b"statistics", b"PORT", 0)?;
+        config.set_value(SERVICE, b"HOSTNAME", Some(b"localhost"))?;
+        config.set_number(SERVICE, b"PORT", 0)?;
     }
+    Ok(Request {
+        selector,
+        operation,
+        style: output::Style::Json,
+    })
+}
+
+fn run_selected(
+    kind: InvocationKind,
+    prepared: program::Prepared,
+    inherited: crate::foreground::Inherited,
+    clock: SharedClock,
+    reports: Reporter,
+) -> Result<driver::Report, Failure> {
+    let args = prepared.main().arguments;
+    let mut config = prepared.main().config.duplicate()?;
+    let Request {
+        selector,
+        operation,
+        style,
+    } = match kind {
+        InvocationKind::Grouped(command) => grouped_request(command, args, &mut config)?,
+        InvocationKind::Standalone(arguments) => arguments.request(args, &mut config)?,
+    };
+    let (capacity, prefix) = match operation {
+        Operation::Watch => (512, 8),
+        Operation::Finite(finite::Action::Get) | Operation::Testbed(_, finite::Action::Get) => {
+            (65535, 4)
+        }
+        Operation::Finite(finite::Action::Set { .. })
+        | Operation::Testbed(_, finite::Action::Set { .. }) => (65535, 16),
+    };
+    validate_names(&selector, capacity, prefix)?;
     if let Some(notice) = inherited.notice {
         reports.warning("statistics.parent", format_args!("{notice}"));
     }
@@ -200,19 +280,22 @@ fn run_selected(
     let stop = Rc::new(Cell::new(false));
     let inputs = driver::Inputs {
         selector,
+        style,
         parent: inherited.parent,
-        live,
-        resolution,
-        source,
-        reports,
-        stop: stop.clone(),
+        connection: driver::Connection {
+            live,
+            resolution,
+            source,
+            reports,
+            stop: stop.clone(),
+        },
         resolver,
     };
     let original = async move {
-        if let Some(action) = action {
-            finite::command(inputs, action).await
-        } else {
-            driver::command(inputs).await
+        match operation {
+            Operation::Watch => driver::command(inputs).await,
+            Operation::Finite(action) => finite::command(inputs, action).await,
+            Operation::Testbed(path, action) => testbed::command(inputs, &path, action).await,
         }
     };
     let result = runtime.block_on(gnunet_program_host::foreground::run(

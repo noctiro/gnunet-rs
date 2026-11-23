@@ -71,7 +71,7 @@ impl Error for PreparationFailure {
 fn execute() -> Result<(), Cause> {
     use gnunet_program_host::{
         logging::Logger,
-        program::{self, Defaults, Invocation, NlsDisabled, Preparation},
+        program::{self, Defaults, Invocation, Preparation},
         reporting::Reporter,
         shared_clock::SharedClock,
     };
@@ -84,11 +84,11 @@ fn execute() -> Result<(), Cause> {
     )?;
     let mut logger = Logger::new(b"gnunet-gns-proxy-setup-ca", std::process::id(), false)?;
     let selection = options::Selection::new();
-    let prepared=program::prepare(configuration,Invocation {
+    let prepared=program::prepare_installed(configuration,Invocation {
         binary_name:b"gnunet-gns-proxy-setup-ca",
         help:Some(b"Prepare the GNS proxy CA. -c FILE selects configuration; -h help; -v version; -V verbose; -t reports the compiled CA provider and probes optional NSS certutil without generating a CA; -o repeats status results. The expanded [gns-proxy] PROXY_CACERT receives a self-signed CA and unencrypted PKCS#8 private key in a new private combined PEM. Existing CA files and NSS nicknames are preserved. Optional NSS certutil imports only the public certificate into native Firefox/Icecat profiles and Unix ~/.pki/nssdb. [gns-proxy-rust] NSS_CERTUTIL selects an absolute NSS executable (required on Windows); NSS_DATABASE selects a custom NSS database; missing helpers/profiles are explicitly skipped. No system-wide trust-store modification is performed."),
         select_default_filename:true,defaults:Defaults::Native,
-    },selection.options(),std::env::args_os(),&program::Environment::capture(),&mut NlsDisabled,&mut logger,&clock,&mut io::stdout().lock(),&mut io::stderr().lock())?;
+    },selection.options(),std::env::args_os(),&program::Environment::capture(),&mut logger,&clock,&mut io::stdout().lock(),&mut io::stderr().lock())?;
     let reporter = Reporter::new(logger, clock.clone());
     let mut published = None;
     let mut output = None;

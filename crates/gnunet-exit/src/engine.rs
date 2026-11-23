@@ -1,12 +1,12 @@
 //! Bounded actual forwarding owner. All IO/clock/entropy is an explicit port.
 use crate::{
-    AfProfile, Family,
+    AfProfile, Family, PeerProfiles,
     nat::{Entropy, Pool},
+    packet::{Forward, Returned},
     policy::{Endpoint, Policy, Protocol, Tuple},
 };
 use alloc::{collections::VecDeque, rc::Rc, vec::Vec};
 use gnunet_types::{Error, MonoInstant};
-use gnunet_vpn::packet::{self, Packet};
 use gnunet_wire::official::vpn::PeerMessage;
 mod types;
 use types::Stamp;
@@ -40,11 +40,42 @@ struct Processing {
     input: Input,
     expires: u64,
 }
+#[derive(Clone, Copy)]
+struct ChannelAf {
+    fallback: AfProfile,
+    assigned: Option<AfProfile>,
+    observed: Option<AfProfile>,
+}
+
+impl ChannelAf {
+    fn receive(&mut self, bytes: &[u8]) -> Result<AfProfile, Error> {
+        if let Some(observed) = self.observed {
+            return Ok(observed);
+        }
+        let fallback = self.fallback;
+        self.observed = PeerMessage::exit_request_af(bytes)?.and_then(|af| {
+            if af == fallback.ipv4 {
+                None
+            } else if af == fallback.ipv6 {
+                Some(fallback)
+            } else {
+                AfProfile::from_official_ipv6(af)
+            }
+        });
+        Ok(self.observed.unwrap_or(fallback))
+    }
+
+    fn reply(self) -> AfProfile {
+        self.assigned.or(self.observed).unwrap_or(self.fallback)
+    }
+}
+
 struct Record {
     flow: Flow,
     source: Source,
     peer: [u8; 32],
     target: Target,
+    af: ChannelAf,
     tuple: Option<Tuple>,
     last: u64,
     idle: u64,
@@ -109,7 +140,6 @@ impl<'a> Engine<'a> {
     /// Validate explicit configured sources and reserve bounded metadata only.
     pub fn new(config: Config<'a>, limits: Limits) -> Result<Self, Error> {
         limits.validate()?;
-        config.af.validate()?;
         config.policy.validate()?;
         if let Some(p) = config.ipv4 {
             p.validate()?;
@@ -215,9 +245,9 @@ impl<'a> Engine<'a> {
         self.tun = Some(tun.clone());
         Ok(tun)
     }
-    /// Bind metadata to one actual accepted original CADET channel. A full table
-    /// requests oldest live closure and returns WouldBlock; no slot is reused
-    /// until its real IO debts and configured NAT quarantine are finished.
+    /// Bind the authenticated peer and target from one accepted CADET channel.
+    /// A full table requests oldest live closure and returns WouldBlock; no slot
+    /// is reused until its IO debts and configured NAT quarantine are finished.
     pub fn accept(
         &mut self,
         source: &Source,
@@ -263,6 +293,11 @@ impl<'a> Engine<'a> {
             source: source.clone(),
             peer,
             target,
+            af: ChannelAf {
+                fallback: self.config.peer_profiles.fallback(),
+                assigned: self.config.peer_profiles.assigned(&peer),
+                observed: None,
+            },
             tuple: None,
             last: now,
             idle,
@@ -355,13 +390,18 @@ impl<'a> Engine<'a> {
         });
         Ok(())
     }
-    fn queue_peer(&mut self, flow: &Flow, message: PeerMessage<'_>) -> Result<(), Error> {
+    fn queue_peer(
+        &mut self,
+        flow: &Flow,
+        af: AfProfile,
+        message: PeerMessage<'_>,
+    ) -> Result<(), Error> {
         let n = message.encoded_len()?;
         if n > self.limits.peer_bytes {
             return Err(Error::TooLarge);
         }
         let mut b = zero(n)?;
-        message.encode_with_profile(&mut b, self.config.af)?;
+        message.encode_with_profile(&mut b, af)?;
         self.queue(Side::Peer, flow, b, None)
     }
     fn output(queue: &mut VecDeque<Pending>) -> Option<Output<'_>> {

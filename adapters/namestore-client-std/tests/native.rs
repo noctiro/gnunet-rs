@@ -513,3 +513,50 @@ fn active_calls_original_sources_and_stream_credit() -> Result<(), Failure> {
         .build()?;
     runtime.block_on(async { tokio::time::timeout(Duration::from_secs(12), model()).await? })
 }
+
+#[test]
+fn synchronized_follow_accepts_next_after_initial_deadline() -> Result<(), Failure> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    runtime.block_on(async {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let scratch = Scratch::new()?;
+            let path = scratch.0.join("follow");
+            let listener = UnixListener::bind(&path)?;
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await?;
+                assert!(matches!(Request::decode(&frame(&mut socket).await?)?, Request::MonitorStart { iterate_first: 0, .. }));
+                send(&mut socket, Response::MonitorSync).await?;
+                assert!(matches!(Request::decode(&frame(&mut socket).await?)?, Request::MonitorNext { limit: 1, .. }));
+                record(&mut socket, 0, b"after-startup").await?;
+                eof(&mut socket).await
+            });
+            let clock: Arc<dyn RuntimeClock> = Arc::new(SystemClock);
+            let started = Instant::now();
+            let startup = clock.sample()?.now.as_micros() + 1_000_000;
+            let instance = Instance::new();
+            let mut monitor = Monitor::follow(
+                &instance, EndpointSource::unix_with_clock(path, clock.clone()), None, false, 0, startup, Limits::default(),
+            )?;
+            loop {
+                if matches!(monitor.drive(None).await?, Progress::Synchronized { .. }) {
+                    break;
+                }
+            }
+            tokio::time::sleep_until(started + Duration::from_millis(1100)).await;
+            let next = clock.sample()?.now.as_micros() + 1_000_000;
+            assert!(next > startup);
+            monitor.next(1, next)?;
+            loop {
+                if let Progress::Record { reply, .. } = monitor.drive(None).await? {
+                    assert!(matches!(reply.view()?, Response::Records { label, .. } if label.bytes() == b"after-startup"));
+                    break;
+                }
+            }
+            let _closed = monitor.close();
+            server.await??;
+            Ok::<(), Failure>(())
+        }).await?
+    })
+}

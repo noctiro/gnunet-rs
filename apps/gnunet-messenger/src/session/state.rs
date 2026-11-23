@@ -36,7 +36,7 @@ pub(super) struct State<'id> {
     pub(super) seen: Vec<Hash>,
     pub(super) requested: Vec<Hash>,
     pub(super) fetch: VecDeque<Fetch>,
-    pub(super) history: messenger::HistoryWorkspace,
+    pub(super) history: messenger::HistoryWorkspace<'static>,
     pub(super) walked: bool,
     pub(super) close: Option<Deadline>,
     pub(super) leave: bool,

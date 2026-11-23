@@ -1,31 +1,76 @@
 //! Frozen native address scope used by startup state retirement and monitoring.
 use gnunet_native::interfaces::InterfaceAddress;
-use std::{cmp::Ordering, io};
+use std::{
+    io,
+    net::{IpAddr, SocketAddr},
+    num::NonZeroU32,
+};
 
-pub(super) struct Scope(Vec<InterfaceAddress>);
+pub(in crate::platform) struct Scope(Vec<Address>);
 
-fn compare(left: &InterfaceAddress, right: &InterfaceAddress) -> Ordering {
-    left.name
-        .cmp(&right.name)
-        .then_with(|| left.index.cmp(&right.index))
-        .then_with(|| left.address.cmp(&right.address))
+#[derive(Eq, Ord, PartialEq, PartialOrd)]
+struct Address {
+    index: NonZeroU32,
+    name: Vec<u8>,
+    address: SocketAddr,
 }
 
 impl Scope {
-    pub fn new(mut rows: Vec<InterfaceAddress>) -> Self {
-        rows.sort_unstable_by(compare);
-        rows.dedup_by(|left, right| compare(left, right).is_eq());
-        Self(rows)
+    pub fn new(rows: Vec<InterfaceAddress>) -> io::Result<Self> {
+        let mut addresses = Vec::new();
+        addresses
+            .try_reserve_exact(rows.len())
+            .map_err(io::Error::other)?;
+        for row in rows {
+            addresses.push(Address {
+                index: NonZeroU32::new(row.index).ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::NotConnected,
+                        "PF address has no original native interface index",
+                    )
+                })?,
+                name: row.name,
+                address: row.address,
+            });
+        }
+        addresses.sort_unstable();
+        addresses.dedup();
+        if addresses
+            .windows(2)
+            .any(|rows| rows[0].index == rows[1].index && rows[0].name != rows[1].name)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::NotConnected,
+                "PF native interface index has conflicting names",
+            ));
+        }
+        Ok(Self(addresses))
+    }
+
+    pub fn contains_interface(&self, index: NonZeroU32) -> bool {
+        self.0
+            .binary_search_by_key(&index, |address| address.index)
+            .is_ok()
+    }
+
+    pub fn names(&self) -> impl Iterator<Item = &[u8]> {
+        self.0
+            .chunk_by(|left, right| left.index == right.index)
+            .map(|addresses| addresses[0].name.as_slice())
+    }
+
+    pub fn ip_addresses(&self) -> io::Result<Vec<IpAddr>> {
+        let mut ips = Vec::new();
+        ips.try_reserve_exact(self.0.len())
+            .map_err(io::Error::other)?;
+        ips.extend(self.0.iter().map(|row| row.address.ip()));
+        ips.sort_unstable();
+        ips.dedup();
+        Ok(ips)
     }
 
     pub fn require_same(&self, current: &Self) -> io::Result<()> {
-        if self.0.len() != current.0.len()
-            || !self
-                .0
-                .iter()
-                .zip(&current.0)
-                .all(|(left, right)| compare(left, right).is_eq())
-        {
+        if self.0 != current.0 {
             return Err(io::Error::new(
                 io::ErrorKind::NotConnected,
                 "PF original native address scope changed; startup state retirement must be repeated",

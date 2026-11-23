@@ -46,5 +46,4 @@ Performance comparisons require equivalent protocol and security behavior,
 reproducible workloads and measured latency, throughput, CPU, memory and resource
 use. Internal C function coverage is reference-navigation data, not a substitute
 for external semantic coverage. The [release criteria](external/RELEASE.md)
-define the completion gate; unresolved checker and inventory work remains in
-[Implementation status](../../IMPLEMENTATION_STATUS.md#pending-qualification).
+define the completion gate and the required semantic inventory.

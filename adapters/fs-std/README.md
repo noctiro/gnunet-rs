@@ -28,8 +28,9 @@ share their content logic on Unix and Windows. The repository separates
 [shared admission](src/store/repository.rs) from [native operations](src/store/native.rs).
 `Insert` distinguishes new and existing objects and carries `Retention`:
 volatile backing or a synchronized file with a `DirectorySync` observation.
-Windows reports `Unavailable` for directory barriers; it still synchronizes
-the actual data file. Cleanup errors retain the completed retention separately.
+The [native directory barrier](../native-std/API.md#anchored-filesystem-operations)
+reports the result separately from data-file synchronization. Cleanup errors
+retain the completed retention separately.
 
 Anchored plaintext output shares [path validation](src/output/path.rs),
 [publication](src/output/observed.rs) and original directory owners on Unix and
@@ -42,11 +43,33 @@ and Windows. Bounded extraction snapshots live in
 [input_tree/frame.rs](src/input_tree/frame.rs) and consume native enumeration,
 full identities and change fences. Local names remain native; publication
 metadata checks protocol encoding separately. Source fingerprints and automatic
-sharing catalogs use tagged complete identities.
+sharing catalogs use tagged complete identities. Automatic sharing rechecks the
+original catalog before acting on a scan or admitting a publication task.
 
-Builtin extraction, directory inspection and metadata snapshots share their
-implementation on Unix and Windows. The optional [GNU libextractor provider](../extractor-std/README.md)
-uses platform input backends below that shared layer.
+Built-in extraction uses the same file probe on every host. It recognizes
+common MIME signatures, HTML fields, image dimensions, JPEG header comments,
+ID3 audio tags and image metadata from TIFF, BigTIFF, Olympus ORF,
+Fujifilm RAF, Minolta MRW, Panasonic RW2 and Canon CRW. TIFF-based RAW
+identification uses the CR2 header, DNG version and known compression values.
+The shared EXIF reader handles standard camera, exposure and GPS fields,
+JIS comments, and Canon, Fujifilm and Nikon type 3 MakerNotes. JPEG, EXV sidecars,
+TIFF, ORF, PNG, PSD, PSB and JPEG 2000 supply IPTC and XMP. PGF uses metadata
+from its embedded image or EXV carrier. GIF, WebP and PDF also supply XMP.
+JPEG XL supplies dimensions and orientation, plus XMP and EXIF from plain
+and Brotli-compressed boxes.
+HEIF and AVIF supply image dimensions, orientation, EXIF and XMP from
+primary items and supported tracks. Canon CR3 supplies camera, exposure and
+GPS fields from its Canon directories, frame metadata from CTMD tracks and
+XMP from its Adobe UUID box.
+PDFs supply document information, version, page count and dates
+through classic cross-references and structural streams using Flate, LZW,
+RunLength, ASCIIHex or ASCII85 filters. Standard security revisions 2–6 use
+the implicit empty user or owner password. A locked document contributes
+its MIME type.
+Positioned reads share one probe budget and avoid scanning page and image payloads.
+ID3v1 uses a fixed tail read when applicable. Optional fields must fit the
+publication's metadata byte and item limits. The [GNU libextractor provider](../extractor-std/README.md)
+can supply additional formats through the original file descriptor.
 
 The [task WAL](src/durable/store.rs) shares bounded framing, recovery and
 unknown-write fencing. It uses native entropy, private directories, single-link
@@ -76,9 +99,14 @@ unlimited unless an outer native bound was selected. Directory downloads and
 full/indexed tree publication pass the same stop target to every child operation.
 Durable runs include WAL setup and revalidation; native targets are not persisted.
 Search retains one limit across its query graph, reconnects and staged results;
-expiry closes the original MQs. Historical replay and independent completed
-probes preserve their own clock observations. Construction registers the clock;
-native timers are created on first poll. The persistent publication runner shares
+expiry closes the original MQs. Each query keeps its own reconnect backoff. A new
+verified result resets that query's backoff and leaves its deadline, seen list
+and matched keywords intact. Historical replay and independent completed
+probes preserve their own clock observations. After authenticating and admitting
+a journaled advertisement, replay seeds the original query's official seen list
+with the hash of the complete signed block. Historical hints are evictable so
+new results can use the original bounded client capacity. Construction registers
+the clock. Native timers are created on first poll. The persistent publication runner shares
 one limit across verification, index registrations and PUTs. Synchronous provider work cannot be forcibly interrupted. Actual storage
 receipts, partial output and uncertain effects remain independent observations.
 

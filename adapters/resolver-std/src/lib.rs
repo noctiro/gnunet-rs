@@ -1,13 +1,19 @@
 //! Actual bounded Unix/TCP Resolver reactor using the official request4/response5.
 //! Caller backing, native IDNA capability and clocks/entropy are explicit.
-//! No system DNS lookup, private frame, detached task or timeout reset is added.
-#![forbid(unsafe_code)]
+//! Datagram upstreams and native system policy share the original IPC and deadlines.
 #![deny(missing_docs)]
 mod io;
 mod machine;
+mod system;
 pub use machine::MachineDiagnostic;
 pub use machine::MachineInputs;
 pub use machine::MachineSource;
+pub use system::SystemDns;
+#[cfg(any(
+    all(target_os = "linux", not(target_env = "ohos")),
+    target_os = "freebsd"
+))]
+pub use system::{SYSTEM_DNS_WORKER_ARGUMENT, serve_system_dns_worker};
 pub mod startup;
 pub mod storage;
 use gnunet_client::resolver::{FamilyProfile, Request};
@@ -20,6 +26,7 @@ use gnunet_resolver_service_core::{
 };
 pub use gnunet_service_runtime::accepted::{AcceptError, SocketEvent};
 use gnunet_service_runtime::accepted::{AcceptState, AcceptedConnection};
+use gnunet_service_runtime::network::SocketPolicy;
 use gnunet_service_runtime::service::{Listener, PeerAddress, ServiceOptions, ShutdownMode};
 use gnunet_service_runtime::{
     clock::{ClockSubscription, RuntimeClock},
@@ -221,6 +228,10 @@ pub struct Report {
     pub stub_evictions: u64,
     /// Real stub admissions that failed before a token was adopted.
     pub unavailable_queries: u64,
+    /// Native lookups settled through the original system request generation.
+    pub system_results: u64,
+    /// Native lookups with an operational failure in at least one question.
+    pub system_failures: u64,
 }
 fn inc(n: &mut u64) {
     *n = n.saturating_add(1);
@@ -254,6 +265,97 @@ struct Receive {
     bytes: Vec<u8>,
     pulse: Option<Pulse>,
 }
+struct Datagrams<const R: usize, const N: usize, const S: usize> {
+    stub: DnsStub<R, N, S>,
+    association: Vec<Option<Association>>,
+    resume_lookups: bool,
+    receive: Receive,
+    parse_arena: Vec<u8>,
+}
+
+impl<const R: usize, const N: usize, const S: usize> Datagrams<R, N, S> {
+    fn new(sockets: usize, limits: Limits, socket_policy: SocketPolicy) -> Result<Self, HostError> {
+        let mut association = Vec::new();
+        association
+            .try_reserve_exact(R)
+            .map_err(|_| Error::Capacity)?;
+        association.resize_with(R, || None);
+        Ok(Self {
+            stub: DnsStub::start_with_socket_policy(
+                sockets,
+                limits.maximum_dns_bytes,
+                socket_policy,
+            )?,
+            association,
+            resume_lookups: false,
+            receive: Receive {
+                bytes: bytes(limits.maximum_dns_bytes, true)?,
+                pulse: None,
+            },
+            parse_arena: bytes(limits.dns_arena_bytes, true)?,
+        })
+    }
+
+    fn remove_association(&mut self, id: RequestId) {
+        for a in &mut self.association {
+            if a.is_some_and(|a| a.request == id) {
+                *a = None;
+            }
+        }
+    }
+}
+
+enum Upstream<const R: usize, const N: usize, const S: usize> {
+    Datagram(Box<Datagrams<R, N, S>>),
+    System(system::Queries),
+}
+
+impl<const R: usize, const N: usize, const S: usize> Upstream<R, N, S> {
+    fn datagrams(&mut self) -> Result<&mut Datagrams<R, N, S>, Error> {
+        match self {
+            Self::Datagram(dns) => Ok(dns),
+            Self::System(_) => Err(Error::Conflict),
+        }
+    }
+
+    async fn drive(
+        &mut self,
+        wake: Option<Instant>,
+        utc: fn() -> Result<AbsoluteTime, Error>,
+        source_clock: Option<&dyn RuntimeClock>,
+        blocked: bool,
+    ) -> Result<(), HostError> {
+        match self {
+            Self::Datagram(dns) if dns.receive.pulse.is_none() => {
+                let receive = &mut dns.receive;
+                dns.stub
+                    .drive(wake, |event, _| {
+                        receive.pulse = Some(match event {
+                            UdpEvent::Datagram(d) => {
+                                receive.bytes[..d.bytes.len()].copy_from_slice(d.bytes);
+                                Pulse::Datagram {
+                                    request: d.request,
+                                    len: d.bytes.len(),
+                                    utc: selected_utc(source_clock, utc),
+                                }
+                            }
+                            UdpEvent::Sent { result, .. } => Pulse::Sent(result.is_ok()),
+                            UdpEvent::SocketOpened { .. } => Pulse::Opened,
+                            UdpEvent::ReceiveFailed { .. } | UdpEvent::ReceiveRejected { .. } => {
+                                Pulse::ReadFailed
+                            }
+                            UdpEvent::Discarded { .. } => Pulse::Discarded,
+                        });
+                        Flow::Return
+                    })
+                    .await?;
+            }
+            Self::System(dns) => poll_fn(|cx| dns.poll(cx, !blocked)).await,
+            _ => std::future::pending::<()>().await,
+        }
+        Ok(())
+    }
+}
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum Settlement {
     Idle,
@@ -264,10 +366,10 @@ enum NetEvent {
     Accept(AcceptedConnection),
     AcceptFailure(AcceptError),
     Session(usize, Result<Step, HostError>),
-    Udp,
+    Upstream,
     Wake,
 }
-/// One host owns actual streams and UDP stub. Backing and IDNA scratch outlive it.
+/// One host owns actual streams and the selected DNS backend.
 /// All cursors, queues, token associations and pending datagrams live in this
 /// object, so dropping a drive future does not revoke or replay submitted work.
 pub struct Host<'a, 'i, I: Idna, const R: usize = 128, const N: usize = 271, const S: usize = 128> {
@@ -283,14 +385,11 @@ pub struct Host<'a, 'i, I: Idna, const R: usize = 128, const N: usize = 271, con
     options: ServiceOptions,
     sessions: Vec<Option<Session>>,
     cursor: usize,
-    stub: DnsStub<R, N, S>,
-    association: Vec<Option<Association>>,
-    receive: Receive,
+    upstream: Upstream<R, N, S>,
     output: Vec<u8>,
     native: Vec<u8>,
     work: Vec<u8>,
     wire_name: Vec<u8>,
-    parse_arena: Vec<u8>,
     report: Report,
     accepting: bool,
     accept_state: AcceptState,
@@ -313,6 +412,85 @@ impl<'a, 'i, I: Idna, const R: usize, const N: usize, const S: usize> Host<'a, '
         options: ServiceOptions,
         num_stub_sockets: usize,
     ) -> Result<Self, HostError> {
+        Self::new_with_socket_policy(
+            core,
+            stage,
+            idna,
+            ports,
+            profile,
+            limits,
+            options,
+            num_stub_sockets,
+            SocketPolicy::default(),
+        )
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "The application socket policy is independent of the Resolver clock, capacity and IPC ports"
+    )]
+    /// Construct with the application's original policy for every upstream UDP socket.
+    pub fn new_with_socket_policy(
+        core: Resolver<'a>,
+        stage: Scratch<'a>,
+        idna: &'i I,
+        ports: Ports,
+        profile: FamilyProfile,
+        limits: Limits,
+        options: ServiceOptions,
+        num_stub_sockets: usize,
+        socket_policy: SocketPolicy,
+    ) -> Result<Self, HostError> {
+        Self::new_with_upstream(core, stage, idna, ports, profile, limits, options, || {
+            Ok(Upstream::Datagram(Box::new(Datagrams::new(
+                num_stub_sockets,
+                limits,
+                socket_policy,
+            )?)))
+        })
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "System DNS retains the same independently owned IPC, clock and storage ports"
+    )]
+    fn new_system(
+        core: Resolver<'a>,
+        stage: Scratch<'a>,
+        idna: &'i I,
+        ports: Ports,
+        profile: FamilyProfile,
+        limits: Limits,
+        options: ServiceOptions,
+        system: SystemDns,
+        policy: &SocketPolicy,
+    ) -> Result<Self, HostError> {
+        if policy.is_protected() {
+            return Err(stdio::Error::new(
+                stdio::ErrorKind::InvalidInput,
+                "system DNS cannot apply the application's socket protection",
+            )
+            .into());
+        }
+        Self::new_with_upstream(core, stage, idna, ports, profile, limits, options, || {
+            Ok(Upstream::System(system::Queries::new(R, system)?))
+        })
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "The common constructor receives one original DNS backend and the shared Resolver ports"
+    )]
+    fn new_with_upstream(
+        core: Resolver<'a>,
+        stage: Scratch<'a>,
+        idna: &'i I,
+        ports: Ports,
+        profile: FamilyProfile,
+        limits: Limits,
+        options: ServiceOptions,
+        upstream: impl FnOnce() -> Result<Upstream<R, N, S>, HostError>,
+    ) -> Result<Self, HostError> {
         if limits.max_connections == 0
             || !(16..=65535).contains(&limits.max_frame_bytes)
             || limits.max_pending_bytes < 8
@@ -321,16 +499,13 @@ impl<'a, 'i, I: Idna, const R: usize, const N: usize, const S: usize> Host<'a, '
         {
             return Err(Error::InvalidInput.into());
         }
+        let upstream = upstream()?;
         let mut sessions = Vec::new();
         sessions
             .try_reserve_exact(limits.max_connections)
             .map_err(|_| Error::Capacity)?;
         sessions.resize_with(limits.max_connections, || None);
-        let mut association = Vec::new();
-        association
-            .try_reserve_exact(R)
-            .map_err(|_| Error::Capacity)?;
-        association.resize_with(R, || None);
+        let datagram = matches!(upstream, Upstream::Datagram(_));
         Ok(Self {
             core,
             stage,
@@ -344,17 +519,11 @@ impl<'a, 'i, I: Idna, const R: usize, const N: usize, const S: usize> Host<'a, '
             options,
             sessions,
             cursor: 0,
-            stub: DnsStub::start(num_stub_sockets, limits.maximum_dns_bytes)?,
-            association,
-            receive: Receive {
-                bytes: bytes(limits.maximum_dns_bytes, true)?,
-                pulse: None,
-            },
+            upstream,
             output: bytes(limits.max_frame_bytes, true)?,
-            native: bytes(65535, true)?,
-            work: bytes(65535, true)?,
-            wire_name: bytes(255, true)?,
-            parse_arena: bytes(limits.dns_arena_bytes, true)?,
+            native: bytes(if datagram { 65535 } else { 0 }, true)?,
+            work: bytes(if datagram { 65535 } else { 0 }, true)?,
+            wire_name: bytes(if datagram { 255 } else { 0 }, true)?,
             report: Report::default(),
             accepting: true,
             accept_state: AcceptState::default(),
@@ -396,14 +565,19 @@ impl<'a, 'i, I: Idna, const R: usize, const N: usize, const S: usize> Host<'a, '
     }
     fn stop_io(&mut self) {
         self.accepting = false;
-        let _stopped = self.stub.stop();
-        self.association.fill(None);
+        match &mut self.upstream {
+            Upstream::Datagram(dns) => {
+                let _stopped = dns.stub.stop();
+                dns.association.fill(None);
+                dns.receive.pulse = None;
+            }
+            Upstream::System(dns) => dns.stop(),
+        }
         for session in &mut self.sessions {
             if session.take().is_some() {
                 inc(&mut self.report.closed);
             }
         }
-        self.receive.pulse = None;
         if let Some(port) = &mut self.runtime_clock {
             port.listener = None;
         }
@@ -412,6 +586,7 @@ impl<'a, 'i, I: Idna, const R: usize, const N: usize, const S: usize> Host<'a, '
     /// Apply literal file bytes once at startup and add parsed port53 IPs in file
     /// order. Invalid literal addresses are counted, not normalized or resolved.
     pub fn load_machine_bytes(&mut self, hosts: &[u8], resolv: &[u8]) -> Result<usize, HostError> {
+        let dns = self.upstream.datagrams()?;
         self.source_started = true;
         self.core
             .load_machine_files(&mut self.stage, hosts, resolv)?;
@@ -422,7 +597,7 @@ impl<'a, 'i, I: Idna, const R: usize, const N: usize, const S: usize> Host<'a, '
                     rejected += 1;
                     continue;
                 };
-                match self.stub.add_dns_ip(ip) {
+                match dns.stub.add_dns_ip(ip) {
                     Ok(_) => {}
                     Err(Error::InvalidInput) => rejected += 1,
                     Err(error) => return Err(error.into()),
@@ -434,8 +609,34 @@ impl<'a, 'i, I: Idna, const R: usize, const N: usize, const S: usize> Host<'a, '
     /// Register a native DNS endpoint, preserving its actual port and IPv6 scope.
     /// This is an explicit host input, never a private resolver configuration key.
     pub fn add_dns_endpoint(&mut self, address: SocketAddr) -> Result<(), HostError> {
+        let dns = self.upstream.datagrams()?;
         self.source_started = true;
-        self.stub.add_dns_sa(address)?;
+        dns.stub.add_dns_sa(address)?;
+        Ok(())
+    }
+    /// Install one live network snapshot. An empty snapshot revokes all DNS
+    /// servers. Existing IPC clients and original lookup deadlines are kept.
+    pub fn replace_dns_upstreams(
+        &mut self,
+        upstreams: &startup::Upstreams,
+    ) -> Result<(), HostError> {
+        let endpoints = upstreams.as_slice();
+        if endpoints.len() > S {
+            return Err(Error::Capacity.into());
+        }
+        let dns = self.upstream.datagrams()?;
+        if self.stopped || dns.stub.is_stopped() {
+            return Err(Error::Closed.into());
+        }
+        let has_servers = !endpoints.is_empty();
+        self.core.replace_upstreams(&mut self.stage, has_servers)?;
+        // This host owns an unreserved DNSSTUB. Native replacement closes the
+        // old UDP sockets, then permits fresh request/socket generations.
+        dns.stub.replace_servers(endpoints)?;
+        dns.association.fill(None);
+        dns.receive.pulse = None;
+        dns.resume_lookups = has_servers;
+        self.source_started = true;
         Ok(())
     }
     /// Install an explicit single native/embedding search domain before client
@@ -446,7 +647,11 @@ impl<'a, 'i, I: Idna, const R: usize, const N: usize, const S: usize> Host<'a, '
     /// Refuses changes after any admission or with pending effects, and retains
     /// the original core staging/resource error without resetting existing state.
     pub fn set_search_domain(&mut self, domain: Option<&[u8]>) -> Result<(), HostError> {
-        if self.stopped || self.report.admitted != 0 || self.core.effect_count() != 0 {
+        if !matches!(self.upstream, Upstream::Datagram(_))
+            || self.stopped
+            || self.report.admitted != 0
+            || self.core.effect_count() != 0
+        {
             return Err(Error::Conflict.into());
         }
         self.source_started = true;
@@ -455,7 +660,7 @@ impl<'a, 'i, I: Idna, const R: usize, const N: usize, const S: usize> Host<'a, '
     }
     /// Change future stub retry periods without resetting an existing due retry.
     pub fn set_dns_retry(&mut self, d: gnunet_types::Duration) -> Result<(), HostError> {
-        self.stub.set_retry(d)?;
+        self.upstream.datagrams()?.stub.set_retry(d)?;
         Ok(())
     }
     /// Current saturated local I/O counters; no remote acknowledgement is inferred.
@@ -472,11 +677,14 @@ impl<'a, 'i, I: Idna, const R: usize, const N: usize, const S: usize> Host<'a, '
     }
     /// Whether an already consumed raw datagram remains owned for safe retry.
     pub fn has_pending_dns_datagram(&self) -> bool {
-        matches!(self.receive.pulse, Some(Pulse::Datagram { .. }))
+        matches!(&self.upstream, Upstream::Datagram(dns) if matches!(dns.receive.pulse, Some(Pulse::Datagram { .. })))
     }
     /// Number of actually admitted live DNSSTUB request tokens.
     pub fn pending_stub_requests(&self) -> usize {
-        self.stub.pending_requests()
+        match &self.upstream {
+            Upstream::Datagram(dns) => dns.stub.pending_requests(),
+            Upstream::System(_) => 0,
+        }
     }
     /// Number of currently owned actual client streams.
     pub fn connections(&self) -> usize {
@@ -492,7 +700,10 @@ impl<'a, 'i, I: Idna, const R: usize, const N: usize, const S: usize> Host<'a, '
         slot: usize,
         family: gnunet_dnsstub_host::Family,
     ) -> Option<SocketAddr> {
-        self.stub.cached_socket(slot, family).map(|(_, a)| a)
+        match &self.upstream {
+            Upstream::Datagram(dns) => dns.stub.cached_socket(slot, family).map(|(_, a)| a),
+            Upstream::System(_) => None,
+        }
     }
     /// Whether final Stop has closed all client streams and UDP socket owners.
     pub fn is_stopped(&self) -> bool {
@@ -518,13 +729,6 @@ impl<'a, 'i, I: Idna, const R: usize, const N: usize, const S: usize> Host<'a, '
         }
         result
     }
-    fn remove_association(&mut self, id: RequestId) {
-        for a in &mut self.association {
-            if a.is_some_and(|a| a.request == id) {
-                *a = None
-            }
-        }
-    }
     fn close_physical(&mut self, id: ClientId) -> Result<(), Error> {
         if let Some(i) = self
             .sessions
@@ -547,6 +751,25 @@ impl<'a, 'i, I: Idna, const R: usize, const N: usize, const S: usize> Host<'a, '
     fn settle(&mut self) -> Result<Settlement, HostError> {
         for _ in 0..64 {
             let Some(ticket) = self.core.take_effect()? else {
+                if let Upstream::Datagram(dns) = &mut self.upstream
+                    && dns.resume_lookups
+                {
+                    let mut random = self.ports.random_below;
+                    let mut text = TextScratch {
+                        native: &mut self.native,
+                        work: &mut self.work,
+                        wire_name: &mut self.wire_name,
+                    };
+                    if self.core.resume_upstream_lookup(
+                        self.ports.mono()?,
+                        self.idna,
+                        &mut random,
+                        &mut text,
+                    )? {
+                        continue;
+                    }
+                    dns.resume_lookups = false;
+                }
                 return Ok(Settlement::Idle);
             };
             match self.core.effect(ticket)? {
@@ -593,25 +816,25 @@ impl<'a, 'i, I: Idna, const R: usize, const N: usize, const S: usize> Host<'a, '
                         continue;
                     }
                     let lookup = q.lookup;
-                    let admitted = self.stub.resolve(q.bytes);
+                    let dns = self.upstream.datagrams()?;
+                    let admitted = dns.stub.resolve(q.bytes);
                     match admitted {
                         Ok(a) => {
                             if let Some(old) = a.evicted {
-                                self.remove_association(old);
+                                dns.remove_association(old);
                                 self.core.stub_evicted(old);
                                 inc(&mut self.report.stub_evictions);
                             }
                             if let Err(e) = self.core.query_admitted(&mut self.stage, lookup, a) {
-                                if self.stub.owns_request(a.request) {
-                                    self.stub.resolve_cancel(a.request)?;
+                                if dns.stub.owns_request(a.request) {
+                                    dns.stub.resolve_cancel(a.request)?;
                                 }
                                 self.core.query_unavailable(&mut self.stage, lookup)?;
                                 self.core.release_effect(ticket)?;
                                 return Err(e.into());
                             }
                             let index = a.request.resource_id().index as usize;
-                            *self
-                                .association
+                            *dns.association
                                 .get_mut(index)
                                 .ok_or(Error::StaleGeneration)? = Some(Association {
                                 request: a.request,
@@ -631,10 +854,45 @@ impl<'a, 'i, I: Idna, const R: usize, const N: usize, const S: usize> Host<'a, '
                     self.core.release_effect(ticket)?;
                 }
                 Effect::CancelQuery(id) => {
-                    self.remove_association(id);
-                    if self.stub.owns_request(id) {
-                        self.stub.resolve_cancel(id)?;
+                    let dns = self.upstream.datagrams()?;
+                    dns.remove_association(id);
+                    if dns.stub.owns_request(id) {
+                        dns.stub.resolve_cancel(id)?;
                     }
+                    self.core.release_effect(ticket)?;
+                }
+                Effect::CancelNativeDns(_) => return Err(Error::Conflict.into()),
+                Effect::StartSystemQuery(query) => {
+                    let Upstream::System(dns) = &mut self.upstream else {
+                        return Err(Error::Conflict.into());
+                    };
+                    let lookup = query.lookup;
+                    if query.deadline <= self.ports.mono()? {
+                        self.core.system_unavailable(&mut self.stage, lookup)?;
+                        continue;
+                    }
+                    if let Err(error) = dns.start(query, self.idna) {
+                        if !matches!(
+                            error.kind(),
+                            stdio::ErrorKind::WouldBlock | stdio::ErrorKind::InvalidInput
+                        ) {
+                            return Err(error.into());
+                        }
+                        inc(&mut self.report.unavailable_queries);
+                        self.core.system_unavailable(&mut self.stage, lookup)?;
+                        continue;
+                    }
+                    if let Err(error) = self.core.system_admitted(&mut self.stage, lookup) {
+                        dns.cancel(lookup);
+                        return Err(error.into());
+                    }
+                    self.core.release_effect(ticket)?;
+                }
+                Effect::CancelSystemQuery(lookup) => {
+                    let Upstream::System(dns) = &mut self.upstream else {
+                        return Err(Error::Conflict.into());
+                    };
+                    dns.cancel(lookup);
                     self.core.release_effect(ticket)?;
                 }
                 Effect::DropClient { client, .. } => {
@@ -648,11 +906,15 @@ impl<'a, 'i, I: Idna, const R: usize, const N: usize, const S: usize> Host<'a, '
                 }
             }
         }
-        Ok(if self.core.effect_count() != 0 {
-            Settlement::BudgetRemaining
-        } else {
-            Settlement::Idle
-        })
+        Ok(
+            if self.core.effect_count() != 0
+                || matches!(&self.upstream, Upstream::Datagram(dns) if dns.resume_lookups)
+            {
+                Settlement::BudgetRemaining
+            } else {
+                Settlement::Idle
+            },
+        )
     }
     /// Admit one canonically initialized accepted connection through the normal
     /// ACL, Unix credential and capacity gates. Rejection closes that connection
@@ -667,28 +929,21 @@ impl<'a, 'i, I: Idna, const R: usize, const N: usize, const S: usize> Host<'a, '
         for diagnostic in diagnostics {
             observe(SocketEvent::Diagnostic(diagnostic));
         }
-        self.admit_stream(stream, peer)
+        self.admit_stream(stream, peer, &mut observe)
     }
-    fn admit_stream(&mut self, stream: Stream, peer: PeerAddress) -> Result<bool, HostError> {
+    fn admit_stream(
+        &mut self,
+        stream: Stream,
+        peer: PeerAddress,
+        observe: &mut impl FnMut(SocketEvent),
+    ) -> Result<bool, HostError> {
         inc(&mut self.report.accepted);
         if !self.accepting
             || matches!(peer, PeerAddress::Tcp(p) if !self.options.access.allows(p.ip()))
+            || (stream.is_unix() && !self.unix_access.admits(&stream, observe))
         {
             inc(&mut self.report.rejected);
             return Ok(false);
-        }
-        if stream.is_unix() {
-            match self.unix_access.allows(&stream) {
-                Ok(true) => {}
-                Ok(false) => {
-                    inc(&mut self.report.rejected);
-                    return Ok(false);
-                }
-                Err(error) => {
-                    inc(&mut self.report.rejected);
-                    return Err(error.into());
-                }
-            }
         }
         let Some(i) = self.sessions.iter().position(Option::is_none) else {
             inc(&mut self.report.rejected);
@@ -739,19 +994,28 @@ impl<'a, 'i, I: Idna, const R: usize, const N: usize, const S: usize> Host<'a, '
                 return Ok(());
             }
         };
-        let mut random = self.ports.random_below;
-        let mut p = Evaluation {
-            mono: self.ports.mono()?,
-            utc: self.utc().map_err(HostError::Clock)?,
-            idna: self.idna,
-            random: &mut random,
-            text: TextScratch {
-                native: &mut self.native,
-                work: &mut self.work,
-                wire_name: &mut self.wire_name,
-            },
+        let mono = self.ports.mono()?;
+        let result = match &self.upstream {
+            Upstream::Datagram(_) => {
+                let mut random = self.ports.random_below;
+                let mut p = Evaluation {
+                    mono,
+                    utc: self.utc().map_err(HostError::Clock)?,
+                    idna: self.idna,
+                    random: &mut random,
+                    text: TextScratch {
+                        native: &mut self.native,
+                        work: &mut self.work,
+                        wire_name: &mut self.wire_name,
+                    },
+                };
+                self.core.request(&mut self.stage, client, request, &mut p)
+            }
+            Upstream::System(_) => self
+                .core
+                .request_system(&mut self.stage, client, request, mono),
         };
-        match self.core.request(&mut self.stage, client, request, &mut p) {
+        match result {
             Ok(_) => {
                 inc(&mut self.report.requests);
                 if let Some(s) = self.sessions[index].as_mut() {
@@ -767,14 +1031,27 @@ impl<'a, 'i, I: Idna, const R: usize, const N: usize, const S: usize> Host<'a, '
         }
     }
     fn pulse(&mut self) -> Result<(), HostError> {
-        let result = self.process_pulse();
+        if let Upstream::System(dns) = &mut self.upstream {
+            if let Some(result) = &dns.completed {
+                self.core
+                    .system_result(&mut self.stage, result.lookup(), result.answers())?;
+                if result.failed() {
+                    inc(&mut self.report.system_failures);
+                }
+                inc(&mut self.report.system_results);
+                dns.completed = None;
+            }
+            return Ok(());
+        }
+        let result = self.process_datagram();
         if result.is_ok() || matches!(result, Err(HostError::Clock(_))) {
-            self.receive.pulse = None;
+            self.upstream.datagrams()?.receive.pulse = None;
         }
         result
     }
-    fn process_pulse(&mut self) -> Result<(), HostError> {
-        let Some(pulse) = self.receive.pulse else {
+    fn process_datagram(&mut self) -> Result<(), HostError> {
+        let dns = self.upstream.datagrams()?;
+        let Some(pulse) = dns.receive.pulse else {
             return Ok(());
         };
         match pulse {
@@ -787,7 +1064,7 @@ impl<'a, 'i, I: Idna, const R: usize, const N: usize, const S: usize> Host<'a, '
             Pulse::ReadFailed => inc(&mut self.report.udp_receive_failures),
             Pulse::Opened | Pulse::Discarded => {}
             Pulse::Datagram { request, len, utc } => {
-                let Some(a) = self
+                let Some(a) = dns
                     .association
                     .get(request.resource_id().index as usize)
                     .copied()
@@ -800,8 +1077,12 @@ impl<'a, 'i, I: Idna, const R: usize, const N: usize, const S: usize> Host<'a, '
                 // One callback UTC fixes this datagram's absolute TTLs across
                 // resource retries. Business cache lookup uses current UTC.
                 let parsed_utc = utc.map_err(HostError::Clock)?;
-                let utc = self.utc().map_err(HostError::Clock)?;
-                let b = &self.receive.bytes[..len];
+                let utc = selected_utc(
+                    self.runtime_clock.as_ref().map(|port| port.source.as_ref()),
+                    self.ports.utc,
+                )
+                .map_err(HostError::Clock)?;
+                let b = &dns.receive.bytes[..len];
                 let header = match gnunet_dns::Header::decode(b) {
                     Ok(h) => h,
                     Err(_) => {
@@ -834,7 +1115,7 @@ impl<'a, 'i, I: Idna, const R: usize, const N: usize, const S: usize> Host<'a, '
                     .try_reserve_exact(count)
                     .map_err(|_| Error::Capacity)?;
                 records.resize_with(count, || Record::EMPTY);
-                let mut arena = Arena::new(&mut self.parse_arena);
+                let mut arena = Arena::new(&mut dns.parse_arena);
                 let parsed = Packet::parse(
                     b,
                     parsed_utc,
@@ -899,6 +1180,11 @@ impl<'a, 'i, I: Idna, const R: usize, const N: usize, const S: usize> Host<'a, '
     ) -> Result<Progress, HostError> {
         self.source_started = true;
         loop {
+            // Native queries can retire while an IPC writer holds a core
+            // output lease. The core emits its END once that queue can advance.
+            if let Upstream::System(dns) = &mut self.upstream {
+                dns.expire(self.ports.mono()?);
+            }
             let settlement = self.settle()?;
             if settlement == Settlement::BudgetRemaining {
                 if deadline.is_some_and(|at| Instant::now() >= at) {
@@ -944,6 +1230,12 @@ impl<'a, 'i, I: Idna, const R: usize, const N: usize, const S: usize> Host<'a, '
                 let at = self.ports.at(due)?;
                 wake = Some(wake.map_or(at, |w| w.min(at)));
             }
+            if let Upstream::System(dns) = &self.upstream
+                && let Some(due) = dns.next_deadline()
+            {
+                let at = self.ports.at(due)?;
+                wake = Some(wake.map_or(at, |w| w.min(at)));
+            }
             for s in self.sessions.iter().flatten() {
                 if let Some(at) = s.idle {
                     wake = Some(wake.map_or(at, |w| w.min(at)))
@@ -953,31 +1245,16 @@ impl<'a, 'i, I: Idna, const R: usize, const N: usize, const S: usize> Host<'a, '
             let limits = self.limits;
             let first = self.io_first;
             self.io_first = !first;
-            let skip_dns = self.receive.pulse.is_some();
             let utc = self.ports.utc;
             let source_clock = self.runtime_clock.as_ref().map(|port| port.source.clone());
             let runtime_clock = &mut self.runtime_clock;
             let event = {
-                let receive = &mut self.receive;
-                let mut dns = std::pin::pin!(self.stub.drive(wake, |event, _| {
-                    receive.pulse = Some(match event {
-                        UdpEvent::Datagram(d) => {
-                            receive.bytes[..d.bytes.len()].copy_from_slice(d.bytes);
-                            Pulse::Datagram {
-                                request: d.request,
-                                len: d.bytes.len(),
-                                utc: selected_utc(source_clock.as_deref(), utc),
-                            }
-                        }
-                        UdpEvent::Sent { result, .. } => Pulse::Sent(result.is_ok()),
-                        UdpEvent::SocketOpened { .. } => Pulse::Opened,
-                        UdpEvent::ReceiveFailed { .. } | UdpEvent::ReceiveRejected { .. } => {
-                            Pulse::ReadFailed
-                        }
-                        UdpEvent::Discarded { .. } => Pulse::Discarded,
-                    });
-                    Flow::Return
-                }));
+                let mut upstream = std::pin::pin!(self.upstream.drive(
+                    wake,
+                    utc,
+                    source_clock.as_deref(),
+                    blocked
+                ));
                 let sessions = &mut self.sessions;
                 let cursor = &mut self.cursor;
                 let mut timer = wake.map(|at| Box::pin(tokio::time::sleep_until(at)));
@@ -1005,12 +1282,11 @@ impl<'a, 'i, I: Idna, const R: usize, const N: usize, const S: usize> Host<'a, '
                     {
                         return Poll::Ready(e);
                     }
-                    if !skip_dns {
-                        match dns.as_mut().poll(cx) {
-                            Poll::Ready(Ok(_)) => return Poll::Ready(Ok(NetEvent::Udp)),
-                            Poll::Ready(Err(e)) => return Poll::Ready(Err(e.into())),
-                            Poll::Pending => {}
+                    match upstream.as_mut().poll(cx) {
+                        Poll::Ready(result) => {
+                            return Poll::Ready(result.map(|()| NetEvent::Upstream));
                         }
+                        Poll::Pending => {}
                     }
                     if !first
                         && let Poll::Ready(e) =
@@ -1047,7 +1323,7 @@ impl<'a, 'i, I: Idna, const R: usize, const N: usize, const S: usize> Host<'a, '
                         .client;
                     self.disconnect(id)?;
                 }
-                NetEvent::Session(_, Ok(Step::Activity)) | NetEvent::Udp | NetEvent::Wake => {}
+                NetEvent::Session(_, Ok(Step::Activity)) | NetEvent::Upstream | NetEvent::Wake => {}
             }
         }
     }

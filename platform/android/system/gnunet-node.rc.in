@@ -1,0 +1,11 @@
+service vendor.gnunet-node /vendor/bin/gnunet-node --state-directory /data/vendor/gnunet/state --ipc-directory /data/vendor/gnunet/ipc --outbound-tcp@NAT_HELPER_ARGUMENTS@
+    class late_start
+    user vendor_gnunet
+    group vendor_gnunet inet
+    gentle_kill
+    restart_period 30
+
+on post-fs-data
+    mkdir /data/vendor/gnunet 0711 root root
+    mkdir /data/vendor/gnunet/state 0700 vendor_gnunet vendor_gnunet
+    mkdir /data/vendor/gnunet/ipc 0700 vendor_gnunet vendor_gnunet

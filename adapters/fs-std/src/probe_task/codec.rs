@@ -347,6 +347,7 @@ pub(super) fn decode_manifest(raw: &[u8]) -> Result<Manifest, Cause> {
         target: r.array()?,
         local_only: r.bool()?,
         queries_per_connection: r.u32()?,
+        request_parallelism: std::num::NonZeroU32::MIN,
         io_slice_bytes: usize::try_from(r.u64()?).map_err(|_| ProtocolError::Overflow)?,
     };
     let options = probe::Options {

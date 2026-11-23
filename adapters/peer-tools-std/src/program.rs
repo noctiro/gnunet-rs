@@ -9,7 +9,7 @@ use gnunet_program_host::{
     getopt::Options,
     helpers::{self, Filename, Target},
     logging::Logger,
-    program::{self, Defaults, Invocation, NlsDisabled, Preparation, Prepared},
+    program::{self, Defaults, Invocation, Preparation, Prepared},
     reporting::Reporter,
     shared_clock::SharedClock,
 };
@@ -180,7 +180,7 @@ pub fn run(tool: Tool, startup: ClientStartup) -> Result<ExitCode, Failure> {
         b"gnunet-pils"
     };
     let mut logger = Logger::new(name, std::process::id(), false)?;
-    let prepared=program::prepare(config,Invocation{binary_name:name,help:Some(b"Current installed official HELLO/PILS public-peer tools. HELLO -e exports real public announcement; -b binary; -E uses original actual PILS purpose7 result; -i imports URL or binary stdin with scan/newer/REPLACE; -D lists HELLOs to real iterator END. PILS -1 prints one public identity; default finite continuous observation. No private-key path/file, generation, local signer, fake identity or peerinfo protocol."),select_default_filename:true,defaults:Defaults::Native},options,std::env::args_os(),&program::Environment::capture(),&mut NlsDisabled,&mut logger,&clock,&mut io::stdout().lock(),&mut io::stderr().lock());
+    let prepared=program::prepare_installed(config,Invocation{binary_name:name,help:Some(b"Current installed official HELLO/PILS public-peer tools. HELLO -e exports real public announcement; -b binary; -E uses original actual PILS purpose7 result; -i imports URL or binary stdin with scan/newer/REPLACE; -D lists HELLOs to real iterator END. PILS -1 prints one public identity; default finite continuous observation. No private-key path/file, generation, local signer, fake identity or peerinfo protocol."),select_default_filename:true,defaults:Defaults::Native},options,std::env::args_os(),&program::Environment::capture(),&mut logger,&clock,&mut io::stdout().lock(),&mut io::stderr().lock());
     let reports = Reporter::new(logger, clock.clone());
     #[cfg(unix)]
     if let Some(notice) = startup.notice {

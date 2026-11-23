@@ -5,6 +5,26 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+[features]
+default = []
+apple-dns-proxy = ["dep:gnunet-native", "gnunet-native/dns-proxy"]
+macos-dns-proxy = ["apple-dns-proxy"]
+macos-dns-control = ["macos-dns-proxy", "gnunet-native/dns-proxy-control"]
+
+[[bin]]
+name = "gnunet-service-dns"
+path = "src/main.rs"
+
+[[bin]]
+name = "gnunet-dns-proxy"
+path = "src/bin/gnunet-dns-proxy.rs"
+required-features = ["macos-dns-proxy"]
+
+[[bin]]
+name = "gnunet-dns-control"
+path = "src/bin/gnunet-dns-control.rs"
+required-features = ["macos-dns-control"]
+
 [dependencies]
 gnunet-types.workspace = true
 gnunet-client.workspace = true
@@ -23,6 +43,9 @@ tokio = { workspace = true, features = ["rt", "net", "time", "signal"] }
 [target.'cfg(windows)'.dependencies]
 gnunet-native.workspace = true
 gnunet-tun-host.workspace = true
+
+[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
+gnunet-native = { workspace = true, optional = true }
 
 [lints]
 workspace = true

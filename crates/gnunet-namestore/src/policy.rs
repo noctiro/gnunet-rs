@@ -5,9 +5,20 @@ use gnunet_types::Error;
 /// Official NAMESTORE client label limit, excluding its final NUL.
 pub const MAX_LABEL_BYTES: usize = 255;
 /// Maximum record headers fitting in one official 16-bit serialized field.
-pub const MAX_RECORDS: usize = 65535 / 16;
+pub const MAX_RECORDS: usize =
+    gnunet_wire::official::MAX_MESSAGE_SIZE / gnunet_gnsrecord::RECORD_HEADER_LEN;
 /// Official apex label. It is not an empty C string.
 pub const APEX: &[u8] = b"@";
+/// Critical types in the selected GNUnet built-in record plugins.
+/// Embedders using another registry can supply its predicate to the owner.
+#[must_use]
+pub fn critical_type(kind: Type) -> bool {
+    matches!(
+        kind,
+        Type::PKEY | Type::EDKEY | Type::GNS2DNS | Type::REDIRECT
+    )
+}
+
 /// Record query flags; unknown extension bits survive rather than being guessed.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Filter(u16);
@@ -146,7 +157,7 @@ fn expiration_selected(
     Ok(expiry.max(minimum))
 }
 
-fn visible(record: RecordData<'_>, now: u64) -> bool {
+pub(crate) fn visible(record: RecordData<'_>, now: u64) -> bool {
     record.flags.contains(Flags::RELATIVE_EXPIRATION) || record.expiration_time >= now
 }
 fn consistency(
@@ -197,6 +208,82 @@ pub fn normalize_records<'out, 'data>(
     filter: Filter,
     out: &'out mut [RecordData<'data>],
     indices: &mut [usize],
+    critical: impl FnMut(Type) -> bool,
+) -> Result<Normalized<'out, 'data>, Error> {
+    normalize_records_for_view(
+        label,
+        records,
+        now,
+        RecordView::Standard(filter),
+        out,
+        indices,
+        critical,
+    )
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum RecordView {
+    Standard(Filter),
+    Lookup(Filter),
+    Edit,
+}
+
+impl RecordView {
+    fn options(self) -> (Filter, bool) {
+        match self {
+            Self::Standard(filter) => (filter, false),
+            Self::Lookup(filter) => (filter, filter.0 & Filter::INCLUDE_MAINTENANCE.0 != 0),
+            Self::Edit => (Filter::NONE, true),
+        }
+    }
+
+    pub(crate) fn select<'data>(
+        self,
+        label: &[u8],
+        record: RecordData<'data>,
+        now: u64,
+        critical: &mut impl FnMut(Type) -> bool,
+    ) -> Option<RecordData<'data>> {
+        let (filter, include_apex_nickname) = self.options();
+        if !visible(record, now)
+            || (filter.0 & Filter::OMIT_PRIVATE.0 != 0 && record.flags.contains(Flags::PRIVATE))
+        {
+            return None;
+        }
+        if record.flags.contains(Flags::MAINTENANCE) {
+            return (filter.0 & Filter::INCLUDE_MAINTENANCE.0 != 0).then_some(record);
+        }
+        if label == APEX && record.record_type == Type::NICK {
+            return include_apex_nickname.then_some(record);
+        }
+        Some(mark_critical(record, critical))
+    }
+
+    pub(crate) fn contributes_expiry(self, label: &[u8], record: RecordData<'_>) -> bool {
+        !(self.options().1
+            && label == APEX
+            && record.record_type == Type::NICK
+            && !record.flags.contains(Flags::MAINTENANCE))
+    }
+}
+
+fn mark_critical<'data>(
+    mut record: RecordData<'data>,
+    critical: &mut impl FnMut(Type) -> bool,
+) -> RecordData<'data> {
+    if critical(record.record_type) {
+        record.flags = Flags::from_bits_preserve(record.flags.bits() | Flags::CRITICAL.bits());
+    }
+    record
+}
+
+pub(crate) fn normalize_records_for_view<'out, 'data>(
+    label: &[u8],
+    records: &[RecordData<'data>],
+    now: u64,
+    view: RecordView,
+    out: &'out mut [RecordData<'data>],
+    indices: &mut [usize],
     mut critical: impl FnMut(Type) -> bool,
 ) -> Result<Normalized<'out, 'data>, Error> {
     if records.len() > MAX_RECORDS || out.len() < records.len() || indices.len() < records.len() {
@@ -205,34 +292,16 @@ pub fn normalize_records<'out, 'data>(
     consistency(label, records, now, |_| true)?;
     let mut count = 0;
     let mut minimum = 0;
-    for record in records {
-        let mut r = *record;
-        if !visible(r, now) {
-            continue;
+    for &record in records {
+        minimum = tombstone_floor(record, now, minimum);
+        if let Some(record) = view.select(label, record, now, &mut critical) {
+            out[count] = record;
+            count += 1;
         }
-        if r.record_type == Type::TOMBSTONE {
-            minimum = minimum.max(absolute_expiry(r, now));
-        }
-        if filter.0 & 2 != 0 && r.flags.contains(Flags::PRIVATE) {
-            continue;
-        }
-        if r.flags.contains(Flags::MAINTENANCE) {
-            if filter.0 & 1 != 0 {
-                out[count] = r;
-                count += 1;
-            }
-            continue;
-        }
-        if label == APEX && r.record_type == Type::NICK {
-            continue;
-        }
-        if critical(r.record_type) {
-            r.flags = Flags::from_bits_preserve(r.flags.bits() | Flags::CRITICAL.bits());
-        }
-        out[count] = r;
-        count += 1;
     }
-    let expires = expiration_time(&out[..count], now, minimum, indices)?;
+    let expires = expiration_selected(&out[..count], now, minimum, indices, |r| {
+        view.contributes_expiry(label, r)
+    })?;
     Ok(Normalized {
         records: &out[..count],
         expires,
@@ -249,9 +318,7 @@ pub fn append_nickname<'out, 'data>(
     now: u64,
     out: &'out mut [RecordData<'data>],
 ) -> Result<&'out [RecordData<'data>], Error> {
-    let nick = nickname.filter(|n| {
-        label != APEX && n.record_type == Type::NICK && visible(*n, now) && !records.is_empty()
-    });
+    let nick = supplemental_nickname(label, records, nickname, now);
     let required = records
         .len()
         .checked_add(usize::from(nick.is_some()))
@@ -260,19 +327,73 @@ pub fn append_nickname<'out, 'data>(
         return Err(Error::Capacity);
     }
     out[..records.len()].copy_from_slice(records);
-    if let Some(mut nick) = nick {
-        nick.flags = Flags::from_bits_preserve(
-            (nick.flags.bits() & !Flags::PRIVATE.bits() & !Flags::RELATIVE_EXPIRATION.bits())
-                | Flags::SUPPLEMENTAL.bits(),
-        );
-        nick.expiration_time = records
-            .iter()
-            .map(|r| absolute_expiry(*r, now))
-            .max()
-            .unwrap_or(0);
+    if let Some(nick) = nick {
         out[records.len()] = nick;
     }
     Ok(&out[..required])
+}
+
+pub(crate) fn supplemental_nickname<'data>(
+    label: &[u8],
+    records: &[RecordData<'data>],
+    nickname: Option<RecordData<'data>>,
+    now: u64,
+) -> Option<RecordData<'data>> {
+    let expires = records.iter().map(|r| absolute_expiry(*r, now)).max();
+    supplemental_nickname_for_expiry(label, nickname, now, expires)
+}
+
+pub(crate) fn supplemental_nickname_for_expiry<'data>(
+    label: &[u8],
+    nickname: Option<RecordData<'data>>,
+    now: u64,
+    expires: Option<u64>,
+) -> Option<RecordData<'data>> {
+    let mut nick =
+        nickname.filter(|n| label != APEX && n.record_type == Type::NICK && visible(*n, now))?;
+    nick.flags = Flags::from_bits_preserve(
+        (nick.flags.bits() & !Flags::PRIVATE.bits() & !Flags::RELATIVE_EXPIRATION.bits())
+            | Flags::SUPPLEMENTAL.bits(),
+    );
+    nick.expiration_time = expires?;
+    Some(nick)
+}
+
+pub(crate) fn tombstone_floor(record: RecordData<'_>, now: u64, minimum: u64) -> u64 {
+    if record.record_type == Type::TOMBSTONE && visible(record, now) {
+        minimum.max(absolute_expiry(record, now))
+    } else {
+        minimum
+    }
+}
+
+pub(crate) const fn tombstone(expiration_time: u64) -> RecordData<'static> {
+    RecordData {
+        expiration_time,
+        record_type: Type::TOMBSTONE,
+        flags: Flags::from_bits_preserve(Flags::PRIVATE.bits() | Flags::MAINTENANCE.bits()),
+        data: &[],
+    }
+}
+
+pub(crate) fn retain_for_store(label: &[u8], record: RecordData<'_>, now: u64) -> bool {
+    visible(record, now) && (label == APEX || record.record_type != Type::NICK)
+}
+
+pub(crate) fn select_for_store<'data>(
+    label: &[u8],
+    record: RecordData<'data>,
+    now: u64,
+    critical: &mut impl FnMut(Type) -> bool,
+) -> Option<RecordData<'data>> {
+    (retain_for_store(label, record, now) && record.record_type != Type::TOMBSTONE)
+        .then(|| mark_critical(record, critical))
+}
+
+pub(crate) fn contributes_public_expiry(label: &[u8], record: RecordData<'_>) -> bool {
+    !record.flags.contains(Flags::PRIVATE)
+        && !record.flags.contains(Flags::MAINTENANCE)
+        && !(label == APEX && record.record_type == Type::NICK)
 }
 /// Prepare durable authoritative replacement records. Private/maintenance input
 /// is preserved, non-apex NICK is removed, apex NICK persists as source
@@ -294,45 +415,25 @@ pub fn prepare_store<'out, 'data>(
     // Non-apex NICK is discarded by store preparation, so it cannot make the
     // retained delegation/redirect set inconsistent. Ordinary normalization
     // still validates every record that its caller actually retains.
-    consistency(label, input, now, |r| {
-        label == APEX || r.record_type != Type::NICK
-    })?;
+    consistency(label, input, now, |r| retain_for_store(label, r, now))?;
     let mut count = 0;
     let mut minimum = if previous_public_expiry >= now {
         previous_public_expiry
     } else {
         0
     };
-    for record in input {
-        let mut r = *record;
-        if !visible(r, now) {
-            continue;
+    for &record in input {
+        minimum = tombstone_floor(record, now, minimum);
+        if let Some(record) = select_for_store(label, record, now, &mut critical) {
+            out[count] = record;
+            count += 1;
         }
-        if r.record_type == Type::NICK && label != APEX {
-            continue;
-        }
-        if r.record_type == Type::TOMBSTONE {
-            minimum = minimum.max(absolute_expiry(r, now));
-            continue;
-        }
-        if critical(r.record_type) {
-            r.flags = Flags::from_bits_preserve(r.flags.bits() | Flags::CRITICAL.bits());
-        }
-        out[count] = r;
-        count += 1;
     }
     let expires = expiration_selected(&out[..count], now, 0, indices, |r| {
-        !r.flags.contains(Flags::PRIVATE)
-            && !r.flags.contains(Flags::MAINTENANCE)
-            && !(label == APEX && r.record_type == Type::NICK)
+        contributes_public_expiry(label, r)
     })?;
     if minimum > expires && minimum >= now {
-        out[count] = RecordData {
-            expiration_time: minimum,
-            record_type: Type::TOMBSTONE,
-            flags: Flags::from_bits_preserve(Flags::PRIVATE.bits() | Flags::MAINTENANCE.bits()),
-            data: &[],
-        };
+        out[count] = tombstone(minimum);
         count += 1;
     }
     Ok(Normalized {

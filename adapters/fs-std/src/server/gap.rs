@@ -1,5 +1,7 @@
 //! Actual caller-driven CORE FS137/138/139 and shared-source GAP composition.
 //! No resolver, datastore worker/WAL, task, thread, private wire or peer ACK is created.
+mod respect;
+mod respect_store;
 pub mod storage;
 use super::{
     LocalDeliveryMetadata, PeerProgress, PeerRouter, ProviderFailure, RouteAdmission,
@@ -22,8 +24,11 @@ use gnunet_wire::official::{
     fs_gap::{Get, MigrationStop, Put},
     message_type as mt,
 };
+/// Single owner identity for native FS respect persistence.
+pub use respect_store::Instance as RespectInstance;
 use std::{
-    collections::VecDeque,
+    cmp::{Ordering, Reverse},
+    collections::{BinaryHeap, VecDeque},
     error::Error as StdError,
     fmt,
     future::Future,
@@ -35,6 +40,23 @@ use std::{
 type Failure = Box<dyn StdError + Send + Sync>;
 /// Exactly the official FS CORE subscriptions, without CADET or DHT messages.
 pub const MESSAGE_TYPES: [u16; 3] = [137, 138, 139];
+// The FS queue rank and the embedded GET respect are independent of CORE options.
+const CORE_QUEUE_OPTIONS: u32 = 0;
+const MAX_RETRY_STREAK: u8 = 3;
+
+/// Respect accounting selected before this router may admit any CORE traffic.
+pub enum Accounting<'id> {
+    /// Use the original PEERSTORE configuration and canonical CORE clock.
+    Peerstore {
+        /// Dedicated native PEERSTORE client instance for this router.
+        instance: &'id mut RespectInstance,
+        /// Original PEERSTORE endpoint with the same clock as the CORE endpoint.
+        endpoint: core::EndpointSource,
+    },
+    /// Run a caller-controlled topology without a PEERSTORE dependency.
+    Unmetered,
+}
+
 /// Actual local composition fault; original independent causes are preserved.
 #[derive(Debug)]
 pub enum Error {
@@ -51,6 +73,8 @@ pub enum Error {
     SourceUnavailable(source::Failure),
     /// Permanent explicit cache/replication port or original uncertain effect.
     Storage(Failure),
+    /// Original respect ledger or PEERSTORE lifecycle failure.
+    Respect(Failure),
     /// Actual fatal original source terminal after its channel/query retired.
     RetiredSource(Box<source::Retired>),
     /// Original rejected row carrying a producer-selected shared-source failure.
@@ -72,6 +96,8 @@ pub enum Error {
         policy: Option<Failure>,
         /// Independent explicit storage/control/source retirement refusal.
         storage: Option<Failure>,
+        /// Independent original respect persistence retirement refusal.
+        respect: Option<Failure>,
     },
 }
 impl Error {
@@ -93,12 +119,18 @@ impl Error {
     pub fn is_fatal(&self) -> bool {
         match self {
             Self::Source(cause) => cause.is_fatal(),
-            Self::SourceInitialization(_) | Self::SourceUnavailable(_) | Self::Storage(_) => true,
+            Self::SourceInitialization(_)
+            | Self::SourceUnavailable(_)
+            | Self::Storage(_)
+            | Self::Respect(_) => true,
             Self::RetiredSource(retired) => retired.cause().is_some_and(source::Failure::is_fatal),
             Self::RejectedSource(record) => record.cause().is_fatal(),
             Self::Retirement { cause, cleanup } => cause.is_fatal() || cleanup.is_fatal(),
             Self::Cleanup {
                 storage: Some(_), ..
+            }
+            | Self::Cleanup {
+                respect: Some(_), ..
             } => true,
             Self::Cleanup {
                 source: Some(cause),
@@ -129,7 +161,7 @@ impl StdError for Error {
             Self::Core(e) => Some(e),
             Self::Protocol(e) => Some(e),
             Self::Source(e) | Self::SourceInitialization(e) | Self::SourceUnavailable(e) => Some(e),
-            Self::Storage(e) => Some(e.as_ref()),
+            Self::Storage(e) | Self::Respect(e) => Some(e.as_ref()),
             Self::RetiredSource(e) => e.cause().map(|e| e as &(dyn StdError + 'static)),
             Self::RejectedSource(e) => Some(e.cause()),
             Self::Retirement { cause, .. } => Some(cause.as_ref()),
@@ -138,6 +170,7 @@ impl StdError for Error {
                 source,
                 policy,
                 storage,
+                respect,
             } => core
                 .as_ref()
                 .map(|e| e.as_ref() as &(dyn StdError + 'static))
@@ -149,6 +182,11 @@ impl StdError for Error {
                 })
                 .or_else(|| {
                     storage
+                        .as_ref()
+                        .map(|e| e.as_ref() as &(dyn StdError + 'static))
+                })
+                .or_else(|| {
+                    respect
                         .as_ref()
                         .map(|e| e.as_ref() as &(dyn StdError + 'static))
                 }),
@@ -285,6 +323,12 @@ pub struct Report<'c> {
     pub ingress_refused: u64,
     /// First original owned refused packet.
     pub first_ingress_refusal: Option<IngressRefusal<'c>>,
+    /// Authenticated GET frames declined against the current DATASTORE load.
+    pub get_load_refused: u64,
+    /// Actual debits applied to original transport peers.
+    pub respect_debited: u64,
+    /// Verified one-shot credit before the balance's saturation bound.
+    pub reply_credit: u64,
     /// Actual source rejections.
     pub records_rejected: u64,
     /// First raw source-row refusal, including original cause.
@@ -363,17 +407,20 @@ struct Local<'g> {
 #[derive(Clone, Copy)]
 struct DeferredInitial {
     serial: u64,
-    search: Search<'static>,
+    selection: pure::Selection,
+    options: u32,
+    anonymity: u32,
+    target: [u8; 32],
     ready: bool,
     end: bool,
 }
 impl DeferredInitial {
     fn matches(self, search: Search<'_>) -> bool {
-        self.search.options == search.options
-            && self.search.block_type == search.block_type
-            && self.search.anonymity == search.anonymity
-            && self.search.target == search.target
-            && self.search.query == search.query
+        self.options == search.options
+            && self.selection.kind() == search.block_type
+            && self.anonymity == search.anonymity
+            && self.target == search.target
+            && self.selection.query == search.query
     }
 }
 struct Plan<'g> {
@@ -394,6 +441,124 @@ impl<'g> Plan<'g> {
         }
     }
 }
+
+struct TimedRetry<'g>(pure::Retry<'g>);
+
+impl PartialEq for TimedRetry<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.ready_at() == other.0.ready_at()
+    }
+}
+
+impl Eq for TimedRetry<'_> {}
+
+impl PartialOrd for TimedRetry<'_> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for TimedRetry<'_> {
+    fn cmp(&self, other: &Self) -> Ordering {
+        other.0.ready_at().cmp(&self.0.ready_at())
+    }
+}
+
+struct RetryQueue<'g> {
+    // Waiting work needs only the earliest deadline. Eligible work is ranked
+    // separately so a higher-ranked request waiting for cover cannot block it.
+    waiting: BinaryHeap<TimedRetry<'g>>,
+    ready: Vec<pure::Retry<'g>>,
+    capacity: usize,
+    consecutive: u8,
+    last_clock_us: u64,
+}
+
+impl<'g> RetryQueue<'g> {
+    fn new(capacity: usize) -> Result<Self, ProtocolError> {
+        let mut waiting = BinaryHeap::new();
+        waiting
+            .try_reserve_exact(capacity)
+            .map_err(|_| ProtocolError::Capacity)?;
+        Ok(Self {
+            waiting,
+            ready: Vec::new(),
+            capacity,
+            consecutive: 0,
+            last_clock_us: 0,
+        })
+    }
+
+    fn full(&self) -> bool {
+        self.waiting.len() + self.ready.len() == self.capacity
+    }
+
+    fn push(&mut self, retry: pure::Retry<'g>) -> Result<(), ProtocolError> {
+        if self.full() {
+            return Err(ProtocolError::Capacity);
+        }
+        self.waiting.push(TimedRetry(retry));
+        Ok(())
+    }
+
+    fn next_deadline(&self) -> Option<u64> {
+        self.waiting.peek().map(|retry| retry.0.ready_at())
+    }
+
+    fn promote(&mut self, now: u64) -> Result<(), ProtocolError> {
+        if now < self.last_clock_us {
+            for retry in self.ready.extract_if(.., |retry| retry.ready_at() > now) {
+                self.waiting.push(TimedRetry(retry));
+            }
+        }
+        self.last_clock_us = now;
+        let previous = self.ready.len();
+        while self.next_deadline().is_some_and(|at| at <= now) {
+            if self.ready.try_reserve(1).is_err() {
+                self.order_ready();
+                return Err(ProtocolError::Capacity);
+            }
+            let Some(TimedRetry(retry)) = self.waiting.pop() else {
+                break;
+            };
+            self.ready.push(retry);
+        }
+        if self.ready.len() > previous {
+            self.order_ready();
+        }
+        Ok(())
+    }
+
+    fn order_ready(&mut self) {
+        self.ready.sort_unstable_by_key(|retry| {
+            (
+                Reverse(retry.weight()),
+                retry.ready_at(),
+                retry.route().value(),
+                retry.neighbor().value(),
+            )
+        });
+    }
+
+    fn retain(&mut self, mut keep: impl FnMut(&pure::Retry<'g>) -> bool) {
+        self.waiting.retain(|retry| keep(&retry.0));
+        self.ready.retain(keep);
+    }
+
+    fn clear(&mut self) {
+        self.waiting.clear();
+        self.ready.clear();
+        self.consecutive = 0;
+        self.last_clock_us = 0;
+    }
+}
+
+enum RetryRank {
+    Any,
+    Positive,
+    Zero,
+}
+
 struct Sending<'c, 'g> {
     tx: pure::Transmit<'g>,
     route: pure::Route<'g>,
@@ -403,12 +568,11 @@ struct Sending<'c, 'g> {
     send: Option<SendId<'c>>,
     message: Option<Message>,
     deadline: Option<Deadline>,
-    query: bool,
-    priority: u32,
+    queued_remote_us: Option<u64>,
+    offered_respect: Option<u32>,
     written: usize,
     total: usize,
     exposed: bool,
-    plan_recorded: bool,
     canceling: bool,
     permit: pure::privacy::Permit<'g>,
     privacy_retiring: bool,
@@ -416,6 +580,7 @@ struct Sending<'c, 'g> {
 struct SourceItem {
     block: source::Block,
     terminal: bool,
+    observed_us: u64,
 }
 /// Native FS GAP peer router and inbound serving owner. Supply the pure owner's
 /// caller buffers/brand and one real BlockSource created against the exact clock
@@ -438,6 +603,8 @@ pub struct Router<
     storage: Option<storage::Driver<'g, 'slots, 'bytes>>,
     storage_timer: Option<(u64, Deadline)>,
     storage_retirement_error: Option<Failure>,
+    respect: Option<respect::Book<'c>>,
+    datastore_load: pure::load::DatastoreLoad,
     control: Option<storage::Control<'c, 'g>>,
     control_turn: bool,
     source: S,
@@ -449,6 +616,7 @@ pub struct Router<
     initial: Vec<DeferredInitial>,
     initial_cursor: usize,
     plans: Vec<Plan<'g>>,
+    retries: Option<RetryQueue<'g>>,
     job: Option<pure::Lookup<'g>>,
     source_item: Option<SourceItem>,
     source_paused: bool,
@@ -483,7 +651,7 @@ impl<
     /// observation flags. Source factory receives the same native source clock.
     #[expect(
         clippy::too_many_arguments,
-        reason = "Explicit CORE source, pure caller storage, shared source factory and entropy are independent ports"
+        reason = "CORE, pure routing, peer accounting, source factory and entropy have independent owners"
     )]
     pub fn new(
         instance: &'c mut core::Instance,
@@ -492,6 +660,7 @@ impl<
         native_limits: core::Limits,
         gap: pure::Router<'g, 'slots, 'bytes>,
         privacy: pure::privacy::Policy<'g, 'slots>,
+        accounting: Accounting<'c>,
         source_factory: impl FnOnce(Arc<dyn RuntimeClock>) -> Result<S, source::Failure>,
         entropy: E,
         limits: Limits,
@@ -517,6 +686,27 @@ impl<
         }
         let native = Client::new(instance, endpoint, order, 0, &MESSAGE_TYPES, native_limits)?;
         let clock = native.clock();
+        let respect = match accounting {
+            Accounting::Peerstore { instance, endpoint } => {
+                if !Arc::ptr_eq(&clock, &endpoint.clock()) {
+                    return Err(ProtocolError::Conflict.into());
+                }
+                let store = respect_store::Store::new(
+                    instance,
+                    endpoint,
+                    respect_store::Limits {
+                        operations: 1,
+                        ..Default::default()
+                    },
+                )
+                .map_err(|error| Error::Respect(Box::new(error)))?;
+                Some(
+                    respect::Book::new(store, limits.peer_records)
+                        .map_err(|error| Error::Respect(Box::new(error)))?,
+                )
+            }
+            Accounting::Unmetered => None,
+        };
         // Construction cannot leave the configured provider partly available.
         // Retain the factory's original scope inside a distinct lifecycle fault;
         // ordinary source observations below do not receive this promotion.
@@ -541,6 +731,11 @@ impl<
         plans
             .try_reserve_exact(gap.route_capacity())
             .map_err(|_| ProtocolError::Capacity)?;
+        let retries = if respect.is_some() {
+            Some(RetryQueue::new(gap.retry_capacity()?)?)
+        } else {
+            None
+        };
         Ok(Self {
             native,
             gap,
@@ -549,6 +744,8 @@ impl<
             storage: None,
             storage_timer: None,
             storage_retirement_error: None,
+            respect,
+            datastore_load: pure::load::DatastoreLoad::new(),
             control: None,
             control_turn: true,
             source,
@@ -560,6 +757,7 @@ impl<
             initial,
             initial_cursor: 0,
             plans,
+            retries,
             job: None,
             source_item: None,
             source_paused: false,
@@ -591,6 +789,7 @@ impl<
     pub fn clock(&self) -> Arc<dyn RuntimeClock> {
         self.clock.clone()
     }
+
     /// Actual current remote peers; actual CORE self-loopback is excluded.
     #[must_use]
     pub fn connected_peers(&self) -> usize {
@@ -661,7 +860,7 @@ impl<
         // Only this exact unadmitted reservation authorizes its old serial.
         // last_route remains the original global high-water mark, even if a
         // newer query was admitted before this first activation.
-        match self.admit_ready(serial, search, seen)? {
+        match self.admit_ready(serial, original.selection, original.anonymity, seen)? {
             RouteAdmission::Queued => {
                 self.initial.swap_remove(index);
                 self.initial_cursor %= self.initial.len().max(1);
@@ -685,6 +884,16 @@ impl<
         self.plans.push(Plan::new(route));
         Ok(())
     }
+
+    fn prune_retries(&mut self, disconnected: Option<pure::Neighbor<'g>>) {
+        if let Some(retries) = &mut self.retries {
+            retries.retain(|retry| {
+                Some(retry.neighbor()) != disconnected
+                    && self.gap.retry_current(retry, self.last_now)
+            });
+        }
+    }
+
     fn end(&mut self, index: usize) -> Result<(), Error> {
         let l = &mut self.locals[index];
         if l.active {
@@ -694,6 +903,9 @@ impl<
             l.active = false;
             l.end = true;
             l.deadline = None;
+            if self.gap.retiring(l.route)? {
+                self.prune_retries(None);
+            }
         }
         Ok(())
     }
@@ -742,21 +954,32 @@ impl<
                     .send
                     .as_ref()
                     .is_some_and(|s| s.epoch == p.epoch && s.peer == p.peer)
+                && !self
+                    .control
+                    .as_ref()
+                    .is_some_and(|control| control.owns_peer(p.epoch, p.peer))
             {
                 if let Some(n) = p.neighbor {
                     self.privacy.retire_neighbor(n);
+                    if !p.local
+                        && let Some(book) = &mut self.respect
+                    {
+                        book.detach(p.peer.identity().0, self.last_now);
+                    }
                     if !p.local
                         && let Some(storage) = &mut self.storage
                     {
                         storage.disconnect(n)?;
                     }
                     let _actual_loss = self.gap.disconnect(n)?;
+                    self.prune_retries(Some(n));
                 }
                 self.peers.swap_remove(i);
                 changed = true;
                 continue;
             }
-            if p.live
+            if !self.stopping
+                && p.live
                 && p.neighbor.is_none()
                 && self.epoch == Some(p.epoch)
                 && self.native.peer(p.peer.identity()) == Some(p.peer)
@@ -765,6 +988,18 @@ impl<
                     .iter()
                     .any(|old| old.peer.identity() == p.peer.identity() && old.neighbor.is_some())
             {
+                if !p.local
+                    && let Some(book) = &mut self.respect
+                {
+                    match book.attach(p.peer.identity().0, self.last_now) {
+                        Ok(()) => {}
+                        Err(respect::Error::Protocol(ProtocolError::Capacity)) => {
+                            i += 1;
+                            continue;
+                        }
+                        Err(error) => return Err(Error::Respect(Box::new(error))),
+                    }
+                }
                 match self.gap.attach(p.peer.identity().0) {
                     Ok(n) => {
                         self.peers[i].neighbor = Some(n);
@@ -778,7 +1013,13 @@ impl<
                         }
                         changed = true;
                     }
-                    Err(ProtocolError::Capacity) => {}
+                    Err(ProtocolError::Capacity) => {
+                        if !p.local
+                            && let Some(book) = &mut self.respect
+                        {
+                            book.detach(p.peer.identity().0, self.last_now);
+                        }
+                    }
                     Err(e) => return Err(e.into()),
                 }
             }
@@ -824,13 +1065,39 @@ impl<
             let bytes = &bytes[..length];
             match frame.header().message_type() {
                 t if t == mt::FS_GET => {
-                    let admitted = self.gap.receive_get_from(
-                        neighbor,
-                        bytes,
-                        now,
-                        &mut self.entropy,
-                        current.local,
-                    )?;
+                    let admitted = if !current.local
+                        && let Some(book) = &mut self.respect
+                    {
+                        let peer = current.peer.identity().0;
+                        let mut account = book.account(&peer)?;
+                        let budget = account.budget(self.datastore_load.at(now)?);
+                        let Some(paid) = self.gap.receive_get_accounted(
+                            neighbor,
+                            bytes,
+                            now,
+                            &mut self.entropy,
+                            budget,
+                        )?
+                        else {
+                            self.report.get_load_refused =
+                                self.report.get_load_refused.saturating_add(1);
+                            return Ok(length);
+                        };
+                        account.debit(paid.debit)?;
+                        self.report.respect_debited = self
+                            .report
+                            .respect_debited
+                            .saturating_add(u64::from(paid.debit));
+                        paid.admission
+                    } else {
+                        self.gap.receive_get_from(
+                            neighbor,
+                            bytes,
+                            now,
+                            &mut self.entropy,
+                            current.local,
+                        )?
+                    };
                     self.ensure_plan(admitted.route).map_err(|e| match e {
                         Error::Protocol(e) => e,
                         _ => ProtocolError::Conflict,
@@ -839,8 +1106,29 @@ impl<
                 t if t == mt::FS_PUT => {
                     let checked = pure::CheckedPut::decode(bytes)?;
                     let interest = self.gap.cache_interest_checked(checked)?;
-                    self.gap
-                        .receive_put_checked(neighbor, checked, current.local)?;
+                    let mut account = if current.local {
+                        None
+                    } else {
+                        self.respect
+                            .as_mut()
+                            .map(|book| book.account(&current.peer.identity().0))
+                            .transpose()?
+                    };
+                    let result =
+                        self.gap
+                            .receive_put_accounted(neighbor, checked, current.local, now)?;
+                    if let Some(account) = &mut account {
+                        account.credit(result.credit);
+                        self.report.reply_credit = self
+                            .report
+                            .reply_credit
+                            .saturating_add(u64::from(result.credit));
+                    }
+                    if result.state == pure::ResultState::Retained
+                        && checked.put().block_type != BlockType::UBLOCK
+                    {
+                        self.prune_retries(None);
+                    }
                     if !current.local
                         && let Some(storage) = &mut self.storage
                     {
@@ -901,6 +1189,7 @@ impl<
         job: pure::Lookup<'g>,
         item: SourceItem,
     ) -> Result<bool, Error> {
+        let first = self.respect.is_some() && self.gap.awaiting_first_result(job.route)?;
         let result = (|| {
             let data = item.block.data()?;
             let put = Put {
@@ -915,8 +1204,12 @@ impl<
             wire.resize(size, 0);
             put.encode(&mut wire)?;
             if item.terminal {
-                self.gap
-                    .source_finished_local(job.route, Some(&wire), data.anonymity)
+                self.gap.source_finished_local(
+                    job.route,
+                    Some(&wire),
+                    data.anonymity,
+                    item.observed_us,
+                )
             } else {
                 self.gap
                     .source_result_local(job.route, &wire, data.anonymity)
@@ -941,11 +1234,16 @@ impl<
                     self.report.first_source_item_retired = Some(item.block);
                 }
             }
+            Ok(pure::ResultState::Retained) if first => {
+                self.datastore_load
+                    .record(job.started_us, item.observed_us)?;
+            }
             Ok(_) => {}
         }
         if item.terminal {
             self.job = None;
             self.source_paused = false;
+            self.prune_retries(None);
         } else {
             self.source_paused = true;
         }
@@ -961,7 +1259,13 @@ impl<
                 };
             }
             if self.source_paused {
-                if self.stopping || self.gap.retiring(job.route)? {
+                if self.stopping
+                    || self.gap.retiring(job.route)?
+                    || self.respect.is_some()
+                        && !self
+                            .gap
+                            .continue_source(job.route, self.datastore_load.at(self.last_now)?)?
+                {
                     self.source.request_retire();
                     self.source_paused = false;
                 } else if self.gap.positive_pending(job.route)? {
@@ -1002,7 +1306,7 @@ impl<
                 Ok(source::Progress::Activity) => return Poll::Ready(Ok(true)),
                 Ok(source::Progress::Skipped(record)) => {
                     if record.selection().query != job.selection.query
-                        || record.selection().block_type != job.selection.kind
+                        || record.selection().block_type != job.selection.kind()
                     {
                         return Poll::Ready(Err(ProtocolError::Authentication.into()));
                     }
@@ -1025,6 +1329,7 @@ impl<
                         SourceItem {
                             block,
                             terminal: false,
+                            observed_us: self.last_now,
                         },
                     )?;
                     return Poll::Ready(Ok(true));
@@ -1036,6 +1341,7 @@ impl<
                         SourceItem {
                             block,
                             terminal: true,
+                            observed_us: self.last_now,
                         },
                     )?;
                     return Poll::Ready(Ok(true));
@@ -1049,7 +1355,7 @@ impl<
                 }
                 Ok(source::Progress::Retired(retired)) => {
                     if retired.selection.query != job.selection.query
-                        || retired.selection.block_type != job.selection.kind
+                        || retired.selection.block_type != job.selection.kind()
                     {
                         return Poll::Ready(Err(ProtocolError::Authentication.into()));
                     }
@@ -1069,7 +1375,7 @@ impl<
                 }
                 Ok(source::Progress::Unavailable { selection, cause }) => {
                     if selection.query != job.selection.query
-                        || selection.block_type != job.selection.kind
+                        || selection.block_type != job.selection.kind()
                     {
                         return Poll::Ready(Err(ProtocolError::Authentication.into()));
                     }
@@ -1096,7 +1402,7 @@ impl<
             return Poll::Pending;
         };
         let selection = source::Selection {
-            block_type: job.selection.kind,
+            block_type: job.selection.kind(),
             query: job.selection.query,
         };
         match self.source.start_stream(selection) {
@@ -1116,7 +1422,7 @@ impl<
         Poll::Ready(Ok(true))
     }
     fn payload(&mut self, state: PayloadState<'c>, now: u64) -> Result<(), Error> {
-        if self.control_payload(state)? {
+        if self.control_payload(state, now)? {
             return Ok(());
         }
         let s = self.send.as_mut().ok_or(ProtocolError::StaleGeneration)?;
@@ -1133,17 +1439,23 @@ impl<
             self.privacy.exposed(s.permit)?;
             s.exposed = true;
         }
-        if state.complete() && s.query && !s.plan_recorded {
-            let plan = self
-                .plans
-                .iter_mut()
-                .find(|p| p.route == s.route)
-                .ok_or(ProtocolError::StaleGeneration)?;
-            plan.metadata.last_transmission = AbsoluteTime::from_micros(now);
-            plan.metadata.num_transmissions = plan.metadata.num_transmissions.saturating_add(1);
-            plan.metadata.respect_offered =
-                plan.metadata.respect_offered.saturating_add(s.priority);
-            s.plan_recorded = true;
+        if state.complete() && s.written < s.total {
+            if let Some(queued_us) = s.queued_remote_us {
+                self.gap.record_handoff(s.neighbor, queued_us, now)?;
+            }
+            if let Some(offered_respect) = s.offered_respect {
+                let plan = self
+                    .plans
+                    .iter_mut()
+                    .find(|p| p.route == s.route)
+                    .ok_or(ProtocolError::StaleGeneration)?;
+                plan.metadata.last_transmission = AbsoluteTime::from_micros(now);
+                plan.metadata.num_transmissions = plan.metadata.num_transmissions.saturating_add(1);
+                plan.metadata.respect_offered = plan
+                    .metadata
+                    .respect_offered
+                    .saturating_add(offered_respect);
+            }
         }
         s.written = state.written();
         Ok(())
@@ -1158,7 +1470,7 @@ impl<
         now: u64,
     ) -> Result<(), Error> {
         if self.control_matches(send) {
-            return self.finish_control(epoch, peer, send, payload, completion);
+            return self.finish_control(epoch, peer, send, payload, completion, now);
         }
         let outcome = completion.outcome;
         self.report.completions = self.report.completions.saturating_add(1);
@@ -1191,17 +1503,33 @@ impl<
             return Err(ProtocolError::Conflict.into());
         }
         let permit = s.permit;
-        let fact = if complete {
-            self.gap.written(s.tx)?
+        let confirmed = outcome == core::SendOutcome::Written && complete;
+        let may_retry = confirmed
+            && s.offered_respect.is_some()
+            && !s.canceling
+            && !self.stopping
+            && self.retries.is_some()
+            && self.current_remote(s.neighbor);
+        let (fact, retry) = if may_retry {
+            self.gap.written_for_forwarding(s.tx)?
+        } else if complete {
+            (self.gap.written(s.tx)?, None)
         } else {
-            self.gap.send_failed(s.tx)?
+            (self.gap.send_failed(s.tx)?, None)
         };
-        self.settle_privacy(
-            permit,
-            fact,
-            outcome == core::SendOutcome::Written && complete,
-        )?;
+        self.settle_privacy(permit, fact, confirmed)?;
         self.send = None;
+        if let Some(seed) = retry
+            && let Some(retry) = self.gap.schedule_retry(seed, now, &mut self.entropy)?
+        {
+            if self.retries.as_ref().is_some_and(RetryQueue::full) {
+                self.prune_retries(None);
+            }
+            self.retries
+                .as_mut()
+                .ok_or(ProtocolError::Conflict)?
+                .push(retry)?;
+        }
         Ok(())
     }
     fn native_event(&mut self, progress: Progress<'c>, now: u64) -> Result<(), Error> {
@@ -1230,6 +1558,7 @@ impl<
                         if let Some(n) = p.neighbor {
                             self.privacy.retire_neighbor(n);
                             self.gap.retire_neighbor_paths(n)?;
+                            self.prune_retries(Some(n));
                         }
                     }
                 }
@@ -1287,6 +1616,7 @@ impl<
                     if let Some(n) = p.neighbor {
                         self.privacy.retire_neighbor(n);
                         self.gap.retire_neighbor_paths(n)?;
+                        self.prune_retries(Some(n));
                     }
                 }
             }
@@ -1302,6 +1632,9 @@ impl<
                 }
                 if self.epoch == Some(epoch) {
                     self.epoch = None;
+                    if let Some(retries) = &mut self.retries {
+                        retries.clear();
+                    }
                 }
                 self.lose_local_routes()?;
                 self.report.losses = self.report.losses.saturating_add(1);
@@ -1327,6 +1660,9 @@ impl<
                     p.live = false;
                 }
                 self.epoch = None;
+                if let Some(retries) = &mut self.retries {
+                    retries.clear();
+                }
             }
         }
         Ok(())
@@ -1372,10 +1708,10 @@ impl<
         let total = SEND_PREFIX
             .checked_add(bytes.len())
             .ok_or(ProtocolError::Overflow)?;
-        let priority = if query {
-            Get::decode(bytes)?.priority
+        let offered_respect = if query {
+            Some(Get::decode(bytes)?.priority)
         } else {
-            0
+            None
         };
         let deadline = match Deadline::after(self.clock.clone(), self.limits.send_timeout) {
             Ok(d) => d,
@@ -1394,12 +1730,11 @@ impl<
             send: None,
             message: None,
             deadline: Some(deadline),
-            query,
-            priority,
+            queued_remote_us: (!actual.local).then_some(self.last_now),
+            offered_respect,
             written: 0,
             total,
             exposed: false,
-            plan_recorded: false,
             canceling: false,
             permit,
             privacy_retiring: false,
@@ -1459,6 +1794,111 @@ impl<
             self.prepare(tx, route, false, permit)?;
             return Ok(true);
         }
+        let prefer_retry = self
+            .retries
+            .as_ref()
+            .is_some_and(|queue| queue.consecutive < MAX_RETRY_STREAK);
+        if prefer_retry && self.offer_retry(RetryRank::Positive)? {
+            return Ok(true);
+        }
+        if self.offer_fresh_query()? {
+            if let Some(retries) = &mut self.retries {
+                retries.consecutive = 0;
+            }
+            return Ok(true);
+        }
+        self.offer_retry(if prefer_retry {
+            RetryRank::Zero
+        } else {
+            RetryRank::Any
+        })
+    }
+
+    fn offer_retry(&mut self, rank: RetryRank) -> Result<bool, Error> {
+        let Some(retries) = &mut self.retries else {
+            return Ok(false);
+        };
+        let mut index = if matches!(rank, RetryRank::Zero) {
+            retries
+                .ready
+                .partition_point(|retry| !retry.weight().is_zero())
+        } else {
+            0
+        };
+        while let Some(retry) = retries.ready.get(index) {
+            if matches!(rank, RetryRank::Positive) && retry.weight().is_zero() {
+                break;
+            }
+            let route = retry.route();
+            let neighbor = retry.neighbor();
+            let live = self.peers.iter().any(|p| {
+                p.live
+                    && !p.local
+                    && p.neighbor == Some(neighbor)
+                    && self.epoch == Some(p.epoch)
+                    && self.native.peer(p.peer.identity()) == Some(p.peer)
+            });
+            if !live || !self.gap.retry_current(retry, self.last_now) {
+                let _withdrawn = retries.ready.remove(index);
+                continue;
+            }
+            let requirement = match self.gap.retry_requirement(retry) {
+                Ok(requirement) => requirement,
+                Err(ProtocolError::NotReady) => {
+                    index += 1;
+                    continue;
+                }
+                Err(
+                    ProtocolError::PermissionDenied
+                    | ProtocolError::Closed
+                    | ProtocolError::StaleGeneration,
+                ) => {
+                    let _withdrawn = retries.ready.remove(index);
+                    continue;
+                }
+                Err(error) => return Err(error.into()),
+            };
+            let permit = match self
+                .privacy
+                .admit(requirement, self.last_now, &mut self.entropy)?
+            {
+                pure::privacy::Admission::Wait(_) => {
+                    index += 1;
+                    continue;
+                }
+                pure::privacy::Admission::Ready(permit) => permit,
+            };
+            let retry = retries.ready.remove(index);
+            let tx = match self.gap.prepare_retry_with_permit(
+                retry,
+                self.last_now,
+                &mut self.entropy,
+                permit,
+            ) {
+                Ok(tx) => tx,
+                Err(error) => {
+                    self.privacy
+                        .cancel_unprepared(permit, self.last_now, live)?;
+                    if matches!(
+                        error,
+                        ProtocolError::PermissionDenied
+                            | ProtocolError::NotReady
+                            | ProtocolError::Closed
+                            | ProtocolError::StaleGeneration
+                    ) {
+                        continue;
+                    }
+                    return Err(error.into());
+                }
+            };
+            retries.consecutive = retries.consecutive.saturating_add(1);
+            self.prepare(tx, route, true, permit)?;
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
+    fn offer_fresh_query(&mut self) -> Result<bool, Error> {
         let routes = self.gap.forwarding().count();
         for offset in 0..routes {
             let index = (self.route_cursor + offset) % routes;
@@ -1533,6 +1973,7 @@ impl<
         if !self.peers.iter().any(|p| {
             p.live && p.epoch == s.epoch && p.peer == s.peer && p.neighbor == Some(s.neighbor)
         }) || self.gap.retiring(s.route)?
+            || !self.gap.relay_origin_current(s.tx)?
             || self.stopping
         {
             let permit = s.permit;
@@ -1563,7 +2004,10 @@ impl<
             .last_now
             .checked_add(delay)
             .ok_or(ProtocolError::Overflow)?;
-        match self.native.send(s.peer, s.priority, target, message) {
+        match self
+            .native
+            .send(s.peer, CORE_QUEUE_OPTIONS, target, message)
+        {
             Ok(send) => {
                 s.send = Some(send);
                 self.gap.admitted(s.tx)?;
@@ -1580,19 +2024,26 @@ impl<
             }
         }
     }
-    fn retire_time_evidence(&mut self) -> Result<bool, Error> {
+    fn retire_invalid_send(&mut self) -> Result<bool, Error> {
         let Some(s) = self.send.as_mut() else {
             return Ok(false);
         };
-        if s.privacy_retiring || s.permit.cover_current() || s.permit.requirement().needed() == 0 {
+        let cover_expired = !s.privacy_retiring
+            && !s.permit.cover_current()
+            && s.permit.requirement().needed() != 0;
+        let origin_withdrawn = !s.canceling && !self.gap.relay_origin_current(s.tx)?;
+        if !cover_expired && !origin_withdrawn {
             return Ok(false);
         }
-        s.privacy_retiring = true;
-        self.report.policy_time_retirements = self.report.policy_time_retirements.saturating_add(1);
+        if cover_expired {
+            s.privacy_retiring = true;
+            self.report.policy_time_retirements =
+                self.report.policy_time_retirements.saturating_add(1);
+        }
         s.canceling = true;
         let original = (s.send, s.epoch, s.peer, s.tx, s.written, s.total, s.permit);
         if let Some(send) = original.0 {
-            if original.4 != 0 && original.4 < original.5 {
+            if cover_expired && original.4 != 0 && original.4 < original.5 {
                 let loss = self.native.reconnect()?;
                 self.native_event(loss, self.last_now)?;
             } else if let Some(completion) = self.native.cancel(send)? {
@@ -1616,7 +2067,8 @@ impl<
         let Some(s) = self.send.as_mut() else {
             return Ok(false);
         };
-        let retiring = self.gap.retiring(s.route)? || self.stopping;
+        let retiring =
+            self.gap.retiring(s.route)? || !self.gap.relay_origin_current(s.tx)? || self.stopping;
         let timed = if let Some(deadline) = &mut s.deadline {
             match Pin::new(deadline).poll(cx) {
                 Poll::Pending => false,
@@ -1730,18 +2182,18 @@ impl<
         }
         Ok((changed, next))
     }
-    fn deadlines(&mut self, cx: &mut Context<'_>) -> Result<bool, Error> {
-        let mut changed = self.storage_deadline(cx)?;
-        let (retired, hold_target) = self.privacy_holds()?;
-        changed |= retired;
-        self.privacy
-            .retain_intents(|r| self.gap.requirement_current(r));
+    fn privacy_deadline(
+        &mut self,
+        cx: &mut Context<'_>,
+        hold_target: Option<u64>,
+    ) -> Result<bool, Error> {
         let target = self
             .privacy
             .next_deadline(self.last_now)
             .into_iter()
             .chain(hold_target)
             .min();
+        let mut changed = false;
         if self.privacy_timer.as_ref().map(|(t, _)| *t) != target {
             self.privacy_timer = match target {
                 Some(t) => Some((
@@ -1759,6 +2211,15 @@ impl<
             self.privacy_timer = None;
             changed = true;
         }
+        Ok(changed)
+    }
+
+    fn deadlines(&mut self, cx: &mut Context<'_>) -> Result<(bool, Option<u64>), Error> {
+        let mut changed = self.storage_deadline(cx)?;
+        let (retired, hold_target) = self.privacy_holds()?;
+        changed |= retired;
+        self.privacy
+            .retain_intents(|r| self.gap.requirement_current(r));
         if let Some((_, deadline)) = &mut self.maintenance
             && let Poll::Ready(result) = Pin::new(deadline).poll(cx)
         {
@@ -1784,7 +2245,8 @@ impl<
                 changed = true;
             }
         }
-        if let Some(route) = self.gap.expire(self.last_now)? {
+        let expired = self.gap.expire(self.last_now)?;
+        if let Some(route) = expired {
             for i in 0..self.locals.len() {
                 if self.locals[i].route == route {
                     self.end(i)?;
@@ -1793,12 +2255,14 @@ impl<
             changed = true;
         }
         let count = self.gap.routes().count();
+        let mut collected = false;
         for index in (0..count).rev() {
             let route = { self.gap.routes().nth(index) };
             if let Some(route) = route {
                 match self.gap.collect(route, self.last_now) {
                     Ok(()) => {
                         self.wake_initial();
+                        collected = true;
                         changed = true;
                     }
                     Err(ProtocolError::WouldBlock) => {}
@@ -1807,10 +2271,20 @@ impl<
             }
         }
         self.plans.retain(|p| self.gap.selection(p.route).is_ok());
+        if retired || expired.is_some() || collected {
+            self.prune_retries(None);
+        }
+        if let Some(retries) = &mut self.retries {
+            retries.promote(self.last_now)?;
+        }
         let target = if self.stopping {
             None
         } else {
-            self.gap.next_deadline(self.last_now)
+            self.gap
+                .next_deadline(self.last_now)
+                .into_iter()
+                .chain(self.retries.as_ref().and_then(RetryQueue::next_deadline))
+                .min()
         };
         if self.maintenance.as_ref().map(|(t, _)| *t) != target {
             self.maintenance = match target {
@@ -1822,7 +2296,7 @@ impl<
             };
             changed = true;
         }
-        Ok(changed)
+        Ok((changed, hold_target))
     }
     fn delivery(&mut self, deliver: bool) -> Result<Option<PeerProgress>, Error> {
         if deliver {
@@ -1887,12 +2361,18 @@ impl<
     /// still drains through poll; no network END/negative is synthesized.
     pub fn request_shutdown(&mut self) {
         self.stopping = true;
+        if let Some(book) = &mut self.respect {
+            book.request_stop(self.last_now);
+        }
         for original in &mut self.initial {
             original.end = true;
             original.ready = false;
         }
         self.storage_stop();
         self.maintenance = None;
+        if let Some(retries) = &mut self.retries {
+            retries.clear();
+        }
         self.gap.request_shutdown();
         self.privacy.request_shutdown();
         self.privacy_timer = None;
@@ -1920,6 +2400,7 @@ impl<
             && self.gap.quiesced()
             && self.privacy.quiesced()
             && self.storage_quiesced()
+            && self.respect.as_ref().is_none_or(respect::Book::quiesced)
     }
     fn poll_inner(
         &mut self,
@@ -1931,7 +2412,7 @@ impl<
         }
         self.last_now = self.clock.sample()?.now.as_micros();
         self.privacy.advance(self.last_now)?;
-        let mut ready = self.retire_time_evidence()?;
+        let mut ready = self.retire_invalid_send()?;
         for offset in 0..4 {
             match (self.round + offset) % 4 {
                 0 => match self.native.poll(cx, None) {
@@ -1948,14 +2429,21 @@ impl<
                 },
                 2 => {
                     ready |= self.storage_poll(cx)?;
+                    if let Some(book) = &mut self.respect {
+                        ready |= book
+                            .poll(cx, self.last_now)
+                            .map_err(|error| Error::Respect(Box::new(error)))?;
+                    }
                 }
                 _ => {
                     ready |= self.peer_maintenance()?;
                     ready |= self.input(self.last_now)?;
-                    ready |= self.deadlines(cx)?;
+                    let (deadline_work, hold_target) = self.deadlines(cx)?;
+                    ready |= deadline_work;
                     ready |= self.sending_poll(cx)?;
                     ready |= self.storage_control(cx)?;
                     ready |= self.offer()?;
+                    ready |= self.privacy_deadline(cx, hold_target)?;
                     ready |= self.submit()?;
                 }
             }
@@ -1982,19 +2470,10 @@ impl<
         if search.options & SEARCH_LOOPBACK_ONLY != 0 {
             return Ok(RouteAdmission::Idle);
         }
-        if (search.anonymity == 0
-            && !matches!(
-                search.block_type,
-                BlockType::DBLOCK | BlockType::IBLOCK | BlockType::UBLOCK
-            ))
-            || !matches!(
-                search.block_type,
-                BlockType::ANY | BlockType::DBLOCK | BlockType::IBLOCK | BlockType::UBLOCK
-            )
-        {
+        let Ok(selection) = pure::Selection::new(search.block_type, search.query) else {
             self.report.unsupported = self.report.unsupported.saturating_add(1);
             return Ok(RouteAdmission::Idle);
-        }
+        };
         search.validate()?;
         if matches!(search.block_type, BlockType::DBLOCK | BlockType::IBLOCK)
             && seen.contains(&search.query)
@@ -2016,14 +2495,10 @@ impl<
         if self.connected_peers() == 0 {
             self.initial.push(DeferredInitial {
                 serial,
-                search: Search {
-                    options: search.options,
-                    block_type: search.block_type,
-                    anonymity: search.anonymity,
-                    target: search.target,
-                    query: search.query,
-                    seen: &[],
-                },
+                selection,
+                options: search.options,
+                anonymity: search.anonymity,
+                target: search.target,
                 ready: false,
                 end: false,
             });
@@ -2031,7 +2506,7 @@ impl<
             self.report.initial_deferred = self.report.initial_deferred.saturating_add(1);
             return Ok(RouteAdmission::Queued);
         }
-        let admission = self.admit_ready(serial, search, seen)?;
+        let admission = self.admit_ready(serial, selection, search.anonymity, seen)?;
         if admission == RouteAdmission::Queued {
             self.last_route = serial;
         }
@@ -2040,18 +2515,16 @@ impl<
     fn admit_ready(
         &mut self,
         serial: u64,
-        search: Search<'_>,
+        selection: pure::Selection,
+        anonymity: u32,
         seen: &[[u8; 64]],
     ) -> Result<RouteAdmission, Error> {
         let deadline = Deadline::after(self.clock.clone(), self.limits.query_timeout)?;
         let now = self.clock.sample()?.now.as_micros();
         let admission = match self.gap.start_with_seen(
-            pure::Selection {
-                kind: search.block_type,
-                query: search.query,
-            },
+            selection,
             serial,
-            search.anonymity,
+            anonymity,
             self.limits.priority,
             0,
             now,
@@ -2147,6 +2620,10 @@ impl<
             policy_error = Some(Box::new(e) as Failure);
         }
         self.send = None;
+        let mut storage_error = self.storage_retirement_error.take();
+        if let Err(error) = self.storage_forced_control() {
+            Self::retain_storage_failure(&mut storage_error, Box::new(error) as Failure);
+        }
         for p in &mut self.peers {
             p.live = false;
         }
@@ -2159,7 +2636,7 @@ impl<
             .job
             .filter(|_| !self.source_terminal_observed)
             .map(|j| source::Selection {
-                block_type: j.selection.kind,
+                block_type: j.selection.kind(),
                 query: j.selection.query,
             });
         if let Some(item) = self.source_item.take() {
@@ -2170,10 +2647,6 @@ impl<
         }
         self.source_paused = false;
         let source_error = self.source.close().err();
-        let mut storage_error = self.storage_retirement_error.take();
-        if let Err(error) = self.storage_forced_control() {
-            Self::retain_storage_failure(&mut storage_error, Box::new(error) as Failure);
-        }
         if let Some(storage) = &mut self.storage {
             if let Err(error) = storage.sweep(&mut self.gap, self.last_now) {
                 Self::retain_storage_failure(&mut storage_error, Box::new(error) as Failure);
@@ -2183,17 +2656,24 @@ impl<
             }
         }
         self.initial.clear();
+        let respect_error = self
+            .respect
+            .as_mut()
+            .and_then(|book| book.close().err())
+            .map(|error| Box::new(error) as Failure);
         self.closed = true;
         if native_error.is_some()
             || source_error.is_some()
             || policy_error.is_some()
             || storage_error.is_some()
+            || respect_error.is_some()
         {
             Err(Error::Cleanup {
                 core: native_error,
                 source: source_error,
                 policy: policy_error,
                 storage: storage_error,
+                respect: respect_error,
             })
         } else {
             Ok(())

@@ -7,7 +7,7 @@ license.workspace = true
 
 [features]
 default = []
-service = ["dep:gnunet-config", "dep:gnunet-service-runtime", "dep:gnunet-service-startup", "dep:socket2", "dep:tokio", "tokio/net"]
+service = ["gnunet-pils/alloc", "dep:gnunet-config", "dep:gnunet-service-runtime", "dep:gnunet-service-startup", "dep:socket2", "dep:tokio", "tokio/net"]
 client = ["gnunet-pils/alloc", "dep:gnunet-hello", "dep:gnunet-client-host", "dep:gnunet-service-runtime", "dep:tokio"]
 
 [dependencies]

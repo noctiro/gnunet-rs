@@ -68,7 +68,8 @@ pub trait Random {
 pub struct Config {
     /// All peers use the same round interval; normal GNUnet uses one hour.
     pub interval_micros: u64,
-    /// Logical delay between bounded proof-search calls, normally5000 microseconds.
+    /// Raw-file profile's logical delay between bounded proof-search calls,
+    /// normally 5000 microseconds. Durable hosts pace work with elapsed time.
     pub work_delay_micros: u64,
     /// Default15; zero explicitly disables crypto authentication.
     pub work_bits: WorkBits,
@@ -199,26 +200,66 @@ pub struct WorkRequest<'i> {
 /// Result of at most the requested number of real hashes.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WorkProgress {
-    /// Valid raw proof found for this exact identity/work requirement.
+    /// Valid raw proof found for this exact identity/work requirement. A
+    /// durable owner still needs its exact commit before using the proof.
     Found([u8; 8]),
     /// Bounded work exhausted; a new owned delay is pending.
     More,
     /// Remaining counter range exhausted; no wrap or implicit retry of earlier values occurs.
     Exhausted,
 }
-/// Original proof-file write request. Emission is not durability.
+
+/// Recovery from a board store bound to the exact identity and proof policy.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProofRecovery {
+    /// No committed proof state exists. Start at candidate zero.
+    Missing,
+    /// The first untested big-endian search counter.
+    Checkpoint(u64),
+    /// Original confirmed proof bytes, which startup still authenticates.
+    Confirmed([u8; 8]),
+    /// The final candidate failed and no counter remains.
+    Exhausted,
+}
+
+/// Exact durable update intended for the original board proof record.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProofUpdate {
+    /// Every earlier counter was tested; this is the first untested one.
+    Checkpoint(u64),
+    /// The actual validated candidate. Acknowledgement makes it usable.
+    Candidate([u8; 8]),
+    /// The entire search space for this identity has been exhausted.
+    Exhausted,
+}
+
+/// Original typed board proof write. Issuing this value does not commit it.
 #[derive(Clone, Copy, Debug)]
-pub struct PersistRequest<'i> {
+pub struct DurablePersistRequest<'i> {
     id: EffectId<'i>,
     epoch: EffectId<'i>,
     revision: u64,
-    proof: [u8; 8],
+    update: ProofUpdate,
+}
+impl DurablePersistRequest<'_> {
+    /// Exact state, including the distinction between a counter and proof.
+    #[must_use]
+    pub const fn update(&self) -> ProofUpdate {
+        self.update
+    }
+}
+
+/// Original desktop raw8 proof-file write request. Emission is not durability.
+#[derive(Clone, Copy, Debug)]
+pub struct PersistRequest<'i> {
+    ticket: DurablePersistRequest<'i>,
+    bytes: [u8; 8],
 }
 impl PersistRequest<'_> {
     /// Exact raw8 file bytes, without a private wrapper or endian conversion.
     #[must_use]
     pub const fn bytes(&self) -> &[u8; 8] {
-        &self.proof
+        &self.bytes
     }
 }
 /// Round policy result; control cancellation does not authenticate an equal/lower claim.
@@ -248,7 +289,7 @@ pub enum AlarmProgress {
     Early,
     /// One round advanced. Large clock jumps require bounded repeated calls.
     Round,
-    /// One bounded work request is now eligible.
+    /// One raw-file profile work request is now eligible.
     Work,
     /// A peer effect was prepared, deferred behind an original output, or lacked history/proof.
     Peer,
@@ -264,7 +305,8 @@ impl Entry {
     // A score of zero remains a real candidate, not an absence sentinel.
     fn qualified(self, identity: Identity<'_>) -> bool {
         !self.local_unsigned
-            || (self.frame.origin == identity.key && identity.proof == Some(self.frame.proof))
+            || (self.frame.origin == identity.key
+                && identity.proof.confirmed() == Some(self.frame.proof))
     }
 }
 #[derive(Clone, Copy)]
@@ -294,17 +336,56 @@ struct Peer<'i> {
 struct Subscriber<'i> {
     id: SubscriberId<'i>,
     seen: u64,
+    refresh: bool,
     pending: Option<Notification<'i>>,
 }
 #[derive(Clone, Copy)]
 struct Identity<'i> {
     key: [u8; 32],
     epoch: EffectId<'i>,
-    proof: Option<[u8; 8]>,
+    proof: LocalProof<'i>,
+    activation: Activation,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum Activation {
+    Immediate,
+    Durable,
+}
+
+enum Recovery {
+    Raw(Option<[u8; 8]>),
+    Durable(ProofRecovery),
+}
+
+#[derive(Clone, Copy)]
+struct Search<'i> {
     counter: u64,
-    work_id: EffectId<'i>,
-    work_ready: bool,
-    exhausted: bool,
+    id: EffectId<'i>,
+    ready: bool,
+}
+
+#[derive(Clone, Copy)]
+enum LocalProof<'i> {
+    Searching(Search<'i>),
+    AwaitingCommit { raw: [u8; 8], revision: u64 },
+    Confirmed([u8; 8]),
+    Exhausted,
+}
+
+impl LocalProof<'_> {
+    const fn confirmed(self) -> Option<[u8; 8]> {
+        match self {
+            Self::Confirmed(raw) => Some(raw),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct Persistence<'i> {
+    request: DurablePersistRequest<'i>,
+    uncertain: bool,
 }
 
 /// Bounded pure NSE service. It owns no runtime, private key, allocator or Argon2 array.
@@ -333,8 +414,8 @@ pub struct Service<'i, const P: usize, const S: usize> {
     subscriber_cursor: usize,
     persist_revision: u64,
     persisted_revision: u64,
-    persist_pending: Option<PersistRequest<'i>>,
-    persist_latest: Option<[u8; 8]>,
+    persist_pending: Option<Persistence<'i>>,
+    persist_latest: Option<ProofUpdate>,
     metrics: crate::metrics::Metrics,
 }
 impl<'i, const P: usize, const S: usize> Service<'i, P, S> {
@@ -438,7 +519,7 @@ impl<'i, const P: usize, const S: usize> Service<'i, P, S> {
                     self.config.reference_endian,
                 ),
                 origin: identity.key,
-                proof: identity.proof.unwrap_or([0; 8]),
+                proof: identity.proof.confirmed().unwrap_or([0; 8]),
                 signature: [0; 64],
             },
             local_unsigned: true,
@@ -461,18 +542,25 @@ impl<'i, const P: usize, const S: usize> Service<'i, P, S> {
     fn current_or_previous(&self, time: u64) -> bool {
         time == self.current || self.current.checked_sub(self.config.interval_micros) == Some(time)
     }
-    fn notify_proof(&mut self, proof: [u8; 8]) -> Result<(), Error> {
+    fn publish_proof_update(&mut self, update: ProofUpdate) -> Result<u64, Error> {
         self.persist_revision = self
             .persist_revision
             .checked_add(1)
             .ok_or(Error::Overflow)?;
-        self.persist_latest = Some(proof);
-        Ok(())
+        self.persist_latest = Some(update);
+        Ok(self.persist_revision)
     }
     /// Original active identity epoch; no private key is held by this service.
     #[must_use]
     pub fn identity(&self) -> Option<[u8; 32]> {
         self.identity.map(|i| i.key)
+    }
+    /// Actual usable local proof; a durable candidate becomes visible here
+    /// only after its exact committed write is acknowledged.
+    #[must_use]
+    pub fn local_proof(&self) -> Option<[u8; 8]> {
+        self.identity
+            .and_then(|identity| identity.proof.confirmed())
     }
     /// Number of currently retained peer connections.
     #[must_use]
@@ -496,11 +584,20 @@ impl<'i, const P: usize, const S: usize> Service<'i, P, S> {
     }
     fn compute_summary(&self) -> Result<Summary, Error> {
         let mut values = [0; HISTORY_SIZE];
-        for (i, value) in values[..self.count].iter_mut().enumerate() {
-            *value = self.history[(self.index + HISTORY_SIZE - i) % HISTORY_SIZE]
-                .map_or(0, |e| e.frame.matching_bits);
+        let durable = self
+            .identity
+            .filter(|identity| identity.activation == Activation::Durable);
+        let mut count = 0;
+        for i in 0..self.count {
+            let entry = self.history[(self.index + HISTORY_SIZE - i) % HISTORY_SIZE];
+            if durable.is_some_and(|identity| entry.is_none_or(|entry| !entry.qualified(identity)))
+            {
+                continue;
+            }
+            values[count] = entry.map_or(0, |entry| entry.frame.matching_bits);
+            count += 1;
         }
-        history::summarize(&values[..self.count], self.peer_count())
+        history::summarize(&values[..count], self.peer_count())
     }
     /// Invalidate original effects before native retirement. The host must stop old physical owners
     /// before finish_identity_change; this token is not a proof-file lock or a durability guarantee.
@@ -541,6 +638,45 @@ impl<'i, const P: usize, const S: usize> Service<'i, P, S> {
         now: u64,
         memory: &mut [pow::Block],
     ) -> Result<(), Error> {
+        self.finish_identity_change_from_saved(barrier, key, Some(saved), now, memory)
+    }
+
+    /// Commit an identity with its explicitly present raw proof or search cursor.
+    /// An absent record starts at cursor zero without using the work arena.
+    /// A present all-zero record is checked just like any other raw proof.
+    pub fn finish_identity_change_from_saved(
+        &mut self,
+        barrier: &Retirement<'i>,
+        key: [u8; 32],
+        saved: Option<[u8; 8]>,
+        now: u64,
+        memory: &mut [pow::Block],
+    ) -> Result<(), Error> {
+        self.finish_identity_change_inner(barrier, key, Recovery::Raw(saved), now, memory)
+    }
+
+    /// Commit one identity with exact typed recovery from its board store.
+    /// Only confirmed raw bytes are authenticated during startup; a search
+    /// checkpoint remains the first untested value even if it would pass work.
+    pub fn finish_identity_change_durable(
+        &mut self,
+        barrier: &Retirement<'i>,
+        key: [u8; 32],
+        recovery: ProofRecovery,
+        now: u64,
+        memory: &mut [pow::Block],
+    ) -> Result<(), Error> {
+        self.finish_identity_change_inner(barrier, key, Recovery::Durable(recovery), now, memory)
+    }
+
+    fn finish_identity_change_inner(
+        &mut self,
+        barrier: &Retirement<'i>,
+        key: [u8; 32],
+        recovery: Recovery,
+        now: u64,
+        memory: &mut [pow::Block],
+    ) -> Result<(), Error> {
         self.live()?;
         if self.retirement != Some(barrier.id) {
             return Err(Error::Stale);
@@ -550,37 +686,54 @@ impl<'i, const P: usize, const S: usize> Service<'i, P, S> {
         let next = current
             .checked_add(self.config.interval_micros)
             .ok_or(Error::Overflow)?;
-        let proof =
-            crypto::valid_proof(self.config.work_bits, &key, &saved, memory)?.then_some(saved);
+        let (activation, recovered) = match recovery {
+            Recovery::Raw(Some(raw)) => {
+                let recovered = if crypto::valid_proof(self.config.work_bits, &key, &raw, memory)? {
+                    ProofRecovery::Confirmed(raw)
+                } else {
+                    ProofRecovery::Checkpoint(u64::from_be_bytes(raw))
+                };
+                (Activation::Immediate, recovered)
+            }
+            Recovery::Raw(None) => (Activation::Immediate, ProofRecovery::Missing),
+            Recovery::Durable(recovered) => {
+                if let ProofRecovery::Confirmed(raw) = recovered
+                    && !crypto::valid_proof(self.config.work_bits, &key, &raw, memory)?
+                {
+                    return Err(Error::Authentication);
+                }
+                (Activation::Durable, recovered)
+            }
+        };
         let epoch = self.fresh()?;
-        let work_id = self.fresh()?;
         let round_id = self.fresh()?;
-        let work_alarm = if proof.is_none() {
-            Some(Alarm {
-                id: self.fresh()?,
-                kind: AlarmKind::Work,
-                at: now,
-            })
-        } else {
-            None
+        let (proof, work_alarm) = match recovered {
+            ProofRecovery::Missing | ProofRecovery::Checkpoint(_) => {
+                let counter = match recovered {
+                    ProofRecovery::Checkpoint(counter) => counter,
+                    _ => 0,
+                };
+                let first_due = (activation == Activation::Immediate).then_some(now);
+                let (search, alarm) = self.issue_search(counter, first_due)?;
+                (LocalProof::Searching(search), alarm)
+            }
+            ProofRecovery::Confirmed(raw) => (LocalProof::Confirmed(raw), None),
+            ProofRecovery::Exhausted => (LocalProof::Exhausted, None),
         };
         let identity = Identity {
             key,
             epoch,
             proof,
-            counter: u64::from_be_bytes(saved),
-            work_id,
-            work_ready: false,
-            exhausted: false,
+            activation,
         };
         self.current = current;
         self.next = next;
         self.index = HISTORY_SIZE - 1;
-        self.count = usize::from(proof.is_some());
+        self.count = usize::from(proof.confirmed().is_some());
         self.identity = Some(identity);
         self.retirement = None;
         self.history[self.index] = Some(self.local(current, identity));
-        if proof.is_some()
+        if proof.confirmed().is_some()
             && let Some(previous) = current.checked_sub(self.config.interval_micros)
         {
             self.history[self.previous_index()] = Some(self.local(previous, identity));
@@ -646,16 +799,56 @@ impl<'i, const P: usize, const S: usize> Service<'i, P, S> {
         self.subscribers[index] = Some(Subscriber {
             id,
             seen: 0,
+            refresh: true,
             pending: None,
         });
         Ok(id)
     }
+
+    /// Apply another exact START321 on the same original subscribed stream.
+    /// An accepted request requires a fresh snapshot even at the same estimate
+    /// revision. The original subscription and any other clients are unchanged.
+    ///
+    /// # Errors
+    /// Refuses invalid framing or a stale subscriber. Returns WouldBlock while
+    /// a previous snapshot is requested or its original writer still owns it.
+    pub fn refresh_subscription(
+        &mut self,
+        id: SubscriberId<'i>,
+        start: &[u8],
+    ) -> Result<(), Error> {
+        let index = self.subscriber_index(id)?;
+        nse::decode_start(start)?;
+        let subscriber = self.subscribers[index].as_mut().ok_or(Error::Stale)?;
+        if subscriber.refresh || subscriber.pending.is_some() {
+            return Err(Error::WouldBlock);
+        }
+        subscriber.refresh = true;
+        Ok(())
+    }
+
     /// Retire the original subscriber connection, without acknowledging any other stream.
     pub fn unsubscribe(&mut self, id: SubscriberId<'i>) -> Result<(), Error> {
         let index = self.subscriber_index(id)?;
         self.subscribers[index] = None;
         Ok(())
     }
+
+    /// Lease the latest unseen or requested estimate for this subscriber only.
+    /// Its writer retains the returned token through any partial writes.
+    /// Later revisions wait until the same lease completes through [Self::notified].
+    ///
+    /// # Errors
+    /// Refuses a retired or foreign subscriber and reports exhausted effect IDs.
+    pub fn notification_for(
+        &mut self,
+        subscriber: SubscriberId<'i>,
+        now: u64,
+    ) -> Result<Option<Notification<'i>>, Error> {
+        let index = self.subscriber_index(subscriber)?;
+        self.lease_notification(index, now)
+    }
+
     /// Fairly lease one immutable notification; later revisions coalesce behind an in-flight copy.
     pub fn next_notification(&mut self, now: u64) -> Result<Option<Notification<'i>>, Error> {
         self.live()?;
@@ -664,34 +857,48 @@ impl<'i, const P: usize, const S: usize> Service<'i, P, S> {
         }
         for offset in 0..S {
             let i = (self.subscriber_cursor + offset) % S;
-            if let Some(sub) = self.subscribers[i]
-                && sub.pending.is_none()
-                && sub.seen < self.revision
-            {
-                let summary = self.summary()?;
-                let value = Notification {
-                    id: self.fresh()?,
-                    subscriber: sub.id,
-                    revision: self.revision,
-                    estimate: summary.estimate(now),
-                };
-                if let Some(s) = &mut self.subscribers[i] {
-                    s.pending = Some(value);
-                }
+            if let Some(value) = self.lease_notification(i, now)? {
                 self.subscriber_cursor = (i + 1) % S;
                 return Ok(Some(value));
             }
         }
         Ok(None)
     }
+
+    fn lease_notification(
+        &mut self,
+        index: usize,
+        now: u64,
+    ) -> Result<Option<Notification<'i>>, Error> {
+        let Some(subscriber) = self.subscribers[index] else {
+            return Ok(None);
+        };
+        if subscriber.pending.is_some() || (!subscriber.refresh && subscriber.seen >= self.revision)
+        {
+            return Ok(None);
+        }
+        let estimate = self.summary()?.estimate(now);
+        let value = Notification {
+            id: self.fresh()?,
+            subscriber: subscriber.id,
+            revision: self.revision,
+            estimate,
+        };
+        let slot = self.subscribers[index].as_mut().ok_or(Error::Stale)?;
+        slot.refresh = false;
+        slot.pending = Some(value);
+        Ok(Some(value))
+    }
+
     /// Actual full native completion returns only the original notification's capacity.
     pub fn notified(&mut self, value: &Notification<'i>) -> Result<(), Error> {
         let i = self.subscriber_index(value.subscriber)?;
         let sub = self.subscribers[i].as_mut().ok_or(Error::Stale)?;
-        if sub.pending.is_none_or(|p| p.id != value.id) {
-            return Err(Error::Stale);
-        }
-        sub.seen = value.revision;
+        let original = sub
+            .pending
+            .filter(|p| p.id == value.id)
+            .ok_or(Error::Stale)?;
+        sub.seen = original.revision;
         sub.pending = None;
         Ok(())
     }
@@ -843,9 +1050,12 @@ impl<'i, const P: usize, const S: usize> Service<'i, P, S> {
                 if now < alarm.at {
                     return Ok(AlarmProgress::Early);
                 }
-                self.work_alarm = None;
                 let identity = self.identity.as_mut().ok_or(Error::NotReady)?;
-                identity.work_ready = true;
+                let LocalProof::Searching(search) = &mut identity.proof else {
+                    return Err(Error::Stale);
+                };
+                search.ready = true;
+                self.work_alarm = None;
                 Ok(AlarmProgress::Work)
             }
             AlarmKind::Peer(peer) => {
@@ -869,12 +1079,16 @@ impl<'i, const P: usize, const S: usize> Service<'i, P, S> {
                             // As in the producer, an unfinished local proof
                             // precedes lack-of-history classification.
                             self.metrics
-                                .increment(if identity.proof.is_none() { 1 } else { 2 });
+                                .increment(if identity.proof.confirmed().is_none() {
+                                    1
+                                } else {
+                                    2
+                                });
                             None
                         }
                         Some(entry)
                             if entry.local_unsigned
-                                && (identity.proof != Some(entry.frame.proof)
+                                && (identity.proof.confirmed() != Some(entry.frame.proof)
                                     || entry.frame.origin != identity.key) =>
                         {
                             self.metrics.increment(1);
@@ -1104,6 +1318,15 @@ impl<'i, const P: usize, const S: usize> Service<'i, P, S> {
     }
     /// Report actual full original CORE submission; this is not remote delivery or processing.
     pub fn transmitted(&mut self, request: &Transmission<'i>) -> Result<(), Error> {
+        self.finish_transmission(request)
+    }
+    /// Retire an original issued CORE frame once its native owner has refused
+    /// or retired it. This releases the lease without claiming admission or
+    /// a whole write. A later schedule uses the actual current history.
+    pub fn transmission_abandoned(&mut self, request: &Transmission<'i>) -> Result<(), Error> {
+        self.finish_transmission(request)
+    }
+    fn finish_transmission(&mut self, request: &Transmission<'i>) -> Result<(), Error> {
         let i = self.peer_index(request.peer)?;
         if self.identity.is_none_or(|id| id.epoch != request.epoch) {
             return Err(Error::Stale);
@@ -1223,6 +1446,9 @@ impl<'i, const P: usize, const S: usize> Service<'i, P, S> {
             frame: accepted,
             local_unsigned: false,
         });
+        if identity.activation == Activation::Durable {
+            self.count = self.count.max(if current { 1 } else { 2 });
+        }
         if let Some(p) = &mut self.peers[i] {
             p.previous = false;
             if current {
@@ -1243,19 +1469,32 @@ impl<'i, const P: usize, const S: usize> Service<'i, P, S> {
         }
         Ok(Received::Better)
     }
-    /// Original bounded work request, available only after its actual logical timer.
+    /// Original bounded work request. A durable host controls elapsed cadence;
+    /// the raw-file profile waits for its actual logical work timer.
     #[must_use]
     pub fn work_request(&self) -> Option<WorkRequest<'i>> {
-        self.identity
-            .filter(|i| i.proof.is_none() && i.work_ready && !i.exhausted)
-            .map(|i| WorkRequest {
-                id: i.work_id,
-                epoch: i.epoch,
-                counter: i.counter,
-            })
+        let identity = self.identity?;
+        if identity.activation == Activation::Durable
+            && self
+                .persist_pending
+                .is_some_and(|persist| persist.uncertain)
+        {
+            return None;
+        }
+        let LocalProof::Searching(search) = identity.proof else {
+            return None;
+        };
+        search.ready.then_some(WorkRequest {
+            id: search.id,
+            epoch: identity.epoch,
+            counter: search.counter,
+        })
     }
-    /// Perform1..1024 actual caller-budgeted candidates; no hidden unbounded search or large buffer.
-    /// Big-endian enumeration is an internal solution traversal; the emitted proof stays raw8.
+
+    /// Perform 1..1024 actual caller-budgeted candidates. Big-endian enumeration
+    /// is an internal traversal; an accepted proof preserves its exact raw bytes.
+    /// The raw-file profile uses `now` to schedule a new logical work timer.
+    /// Durable hosts must pace each renewed request using their elapsed clock.
     pub fn work(
         &mut self,
         request: &WorkRequest<'i>,
@@ -1267,104 +1506,246 @@ impl<'i, const P: usize, const S: usize> Service<'i, P, S> {
         if budget == 0 || budget > 1024 {
             return Err(Error::InvalidInput);
         }
-        let mut identity = self.identity.ok_or(Error::Stale)?;
-        if self.work_request().is_none_or(|r| {
-            r.id != request.id || r.epoch != request.epoch || r.counter != request.counter
+        if self.work_request().is_none_or(|owned| {
+            owned.id != request.id
+                || owned.epoch != request.epoch
+                || owned.counter != request.counter
         }) {
             return Err(Error::Stale);
         }
+        let mut identity = self.identity.ok_or(Error::Stale)?;
+        let LocalProof::Searching(mut search) = identity.proof else {
+            return Err(Error::Stale);
+        };
         for _ in 0..budget {
-            let proof = identity.counter.to_be_bytes();
+            let proof = search.counter.to_be_bytes();
             if crypto::valid_proof(self.config.work_bits, &identity.key, &proof, memory)? {
-                let _next_persist = self
-                    .persist_revision
-                    .checked_add(1)
-                    .ok_or(Error::Overflow)?;
-                let _next_revision = self.revision.checked_add(1).ok_or(Error::Overflow)?;
-                identity.proof = Some(proof);
-                identity.work_ready = false;
-                self.identity = Some(identity);
-                // Proof authorizes this identity across rounds. Rebind every unsigned
-                // local history entry, never a verified remote signature or a leased frame.
-                for entry in self.history.iter_mut().flatten() {
-                    if entry.local_unsigned && entry.frame.origin == identity.key {
-                        entry.frame.proof = proof;
-                        entry.frame.signature = [0; 64];
+                if identity.activation == Activation::Immediate {
+                    let _revision = self.revision.checked_add(1).ok_or(Error::Overflow)?;
+                }
+                let revision = self.publish_proof_update(ProofUpdate::Candidate(proof))?;
+                match identity.activation {
+                    Activation::Immediate => self.activate_proof(identity, proof)?,
+                    Activation::Durable => {
+                        identity.proof = LocalProof::AwaitingCommit {
+                            raw: proof,
+                            revision,
+                        };
+                        self.identity = Some(identity);
                     }
                 }
-                let local = self.local(self.current, identity);
-                self.prefer_current_local(local, identity);
-                if self.count == 0 {
-                    self.count = 1;
-                }
-                self.notify_proof(proof)?;
-                for p in self.peers.iter_mut().flatten() {
-                    if p.alarm.is_none() {
-                        p.previous = false;
-                        p.needs_schedule = true;
-                    }
-                }
-                self.changed()?;
                 return Ok(WorkProgress::Found(proof));
             }
-            match identity.counter.checked_add(1) {
-                Some(next) => identity.counter = next,
-                None => {
-                    identity.exhausted = true;
-                    identity.work_ready = false;
-                    self.identity = Some(identity);
-                    return Ok(WorkProgress::Exhausted);
+            let Some(next) = search.counter.checked_add(1) else {
+                if identity.activation == Activation::Durable {
+                    let _revision = self.publish_proof_update(ProofUpdate::Exhausted)?;
                 }
-            }
+                identity.proof = LocalProof::Exhausted;
+                self.identity = Some(identity);
+                return Ok(WorkProgress::Exhausted);
+            };
+            search.counter = next;
         }
-        let at = now
-            .checked_add(self.config.work_delay_micros)
-            .ok_or(Error::Overflow)?;
-        let id = self.fresh()?;
-        identity.work_ready = false;
-        identity.work_id = self.fresh()?;
-        self.notify_proof(identity.counter.to_be_bytes())?;
+        let due = if identity.activation == Activation::Immediate {
+            Some(
+                now.checked_add(self.config.work_delay_micros)
+                    .ok_or(Error::Overflow)?,
+            )
+        } else {
+            None
+        };
+        let (next, alarm) = self.issue_search(search.counter, due)?;
+        let _revision = self.publish_proof_update(ProofUpdate::Checkpoint(next.counter))?;
+        identity.proof = LocalProof::Searching(next);
         self.identity = Some(identity);
-        self.work_alarm = Some(Alarm {
-            id,
-            kind: AlarmKind::Work,
-            at,
-        });
+        self.work_alarm = alarm;
         Ok(WorkProgress::More)
     }
-    /// Lease latest raw proof/progress for a native durable writer. An in-flight earlier write is
-    /// retained while new progress coalesces; no database or filesystem lock is implied.
+
+    fn issue_search(
+        &mut self,
+        counter: u64,
+        wall_deadline: Option<u64>,
+    ) -> Result<(Search<'i>, Option<Alarm<'i>>), Error> {
+        let search = Search {
+            counter,
+            id: self.fresh()?,
+            ready: wall_deadline.is_none(),
+        };
+        let alarm = wall_deadline
+            .map(|at| {
+                self.fresh().map(|id| Alarm {
+                    id,
+                    kind: AlarmKind::Work,
+                    at,
+                })
+            })
+            .transpose()?;
+        Ok((search, alarm))
+    }
+
+    fn activate_proof(&mut self, mut identity: Identity<'i>, proof: [u8; 8]) -> Result<(), Error> {
+        let _revision = self.revision.checked_add(1).ok_or(Error::Overflow)?;
+        identity.proof = LocalProof::Confirmed(proof);
+        self.identity = Some(identity);
+        // Rebind only original unsigned local history, keeping genuine remote
+        // records and every already issued transmission intact.
+        for entry in self.history.iter_mut().flatten() {
+            if entry.local_unsigned && entry.frame.origin == identity.key {
+                entry.frame.proof = proof;
+                entry.frame.signature = [0; 64];
+            }
+        }
+        let local = self.local(self.current, identity);
+        self.prefer_current_local(local, identity);
+        if self.count == 0 {
+            self.count = 1;
+        }
+        for peer in self.peers.iter_mut().flatten() {
+            if peer.alarm.is_none() {
+                peer.previous = false;
+                peer.needs_schedule = true;
+            }
+        }
+        self.changed()
+    }
+
+    /// Observe the latest board update without leasing a physical write.
+    /// New search checkpoints may coalesce while an older write is in flight.
+    #[must_use]
+    pub fn pending_proof_update(&self) -> Option<ProofUpdate> {
+        if self
+            .identity
+            .is_some_and(|identity| identity.activation == Activation::Durable)
+            && self.persisted_revision != self.persist_revision
+        {
+            self.persist_latest
+        } else {
+            None
+        }
+    }
+
+    /// Lease the latest typed board state to the original durable writer.
+    pub fn next_durable_persist(&mut self) -> Result<Option<DurablePersistRequest<'i>>, Error> {
+        self.next_persistence(Activation::Durable)
+    }
+
+    /// Lease a desktop raw8 write. The raw-file profile keeps its original
+    /// interpretation and never emits a typed exhaustion marker.
     pub fn next_persist(&mut self) -> Result<Option<PersistRequest<'i>>, Error> {
+        let Some(ticket) = self.next_persistence(Activation::Immediate)? else {
+            return Ok(None);
+        };
+        let bytes = match ticket.update {
+            ProofUpdate::Checkpoint(counter) => counter.to_be_bytes(),
+            ProofUpdate::Candidate(raw) => raw,
+            ProofUpdate::Exhausted => return Err(Error::Conflict),
+        };
+        Ok(Some(PersistRequest { ticket, bytes }))
+    }
+
+    fn next_persistence(
+        &mut self,
+        activation: Activation,
+    ) -> Result<Option<DurablePersistRequest<'i>>, Error> {
         self.live()?;
+        let Some(identity) = self.identity else {
+            return Ok(None);
+        };
+        if identity.activation != activation {
+            return Err(Error::Unsupported);
+        }
         if self.persist_pending.is_some() || self.persisted_revision == self.persist_revision {
             return Ok(None);
         }
-        let identity = self.identity.ok_or(Error::NotReady)?;
-        let proof = self.persist_latest.ok_or(Error::NotReady)?;
-        let value = PersistRequest {
+        let update = self.persist_latest.ok_or(Error::Conflict)?;
+        let request = DurablePersistRequest {
             id: self.fresh()?,
             epoch: identity.epoch,
             revision: self.persist_revision,
-            proof,
+            update,
         };
-        self.persist_pending = Some(value);
-        Ok(Some(value))
+        self.persist_pending = Some(Persistence {
+            request,
+            uncertain: false,
+        });
+        Ok(Some(request))
     }
-    /// Confirm actual durability only for the original write. Unknown outcomes stay explicit errors;
-    /// the host must settle its backend before retrying or creating another writer.
+
+    /// Confirm the exact typed board commit. A failed write retains its
+    /// original token. OutcomeUnknown prevents cancellation until the medium
+    /// is recovered and can confirm this same update.
+    pub fn durable_persisted(
+        &mut self,
+        request: &DurablePersistRequest<'i>,
+        outcome: Result<(), Error>,
+    ) -> Result<(), Error> {
+        self.finish_persistence(request, outcome, Activation::Durable)
+    }
+
+    /// Confirm actual durability only for the original desktop write.
     pub fn persisted(
         &mut self,
         request: &PersistRequest<'i>,
         outcome: Result<(), Error>,
     ) -> Result<(), Error> {
+        self.finish_persistence(&request.ticket, outcome, Activation::Immediate)
+    }
+
+    /// Retire a typed write which is known to have committed nothing. The
+    /// newest pending state may then receive a new original token.
+    pub fn cancel_durable_persist(
+        &mut self,
+        request: &DurablePersistRequest<'i>,
+    ) -> Result<(), Error> {
+        let (_, current) = self.persist_original(request, Activation::Durable)?;
+        if current.uncertain {
+            return Err(Error::OutcomeUnknown);
+        }
+        self.persist_pending = None;
+        Ok(())
+    }
+
+    fn persist_original(
+        &self,
+        request: &DurablePersistRequest<'i>,
+        activation: Activation,
+    ) -> Result<(Identity<'i>, Persistence<'i>), Error> {
         self.live()?;
-        if self.identity.is_none_or(|i| i.epoch != request.epoch)
-            || self.persist_pending.is_none_or(|p| p.id != request.id)
-        {
-            return Err(Error::Stale);
+        let identity = self
+            .identity
+            .filter(|identity| identity.epoch == request.epoch && identity.activation == activation)
+            .ok_or(Error::Stale)?;
+        let original = self
+            .persist_pending
+            .filter(|current| current.request.id == request.id)
+            .ok_or(Error::Stale)?;
+        Ok((identity, original))
+    }
+
+    fn finish_persistence(
+        &mut self,
+        request: &DurablePersistRequest<'i>,
+        outcome: Result<(), Error>,
+        activation: Activation,
+    ) -> Result<(), Error> {
+        let (identity, mut original) = self.persist_original(request, activation)?;
+        if outcome == Err(Error::OutcomeUnknown) {
+            original.uncertain = true;
+            self.persist_pending = Some(original);
         }
         outcome?;
-        self.persisted_revision = request.revision;
+        if activation == Activation::Durable
+            && let ProofUpdate::Candidate(proof) = original.request.update
+        {
+            if !matches!(identity.proof, LocalProof::AwaitingCommit { raw, revision }
+                if raw == proof && revision == original.request.revision)
+            {
+                return Err(Error::Conflict);
+            }
+            self.activate_proof(identity, proof)?;
+        }
+        self.persisted_revision = original.request.revision;
         self.persist_pending = None;
         Ok(())
     }
@@ -1378,6 +1759,7 @@ impl<'i, const P: usize, const S: usize> Service<'i, P, S> {
         self.work_alarm = None;
         self.carryover = None;
         self.persist_pending = None;
+        self.persist_latest = None;
         self.refresh_metrics();
         self.closed = true;
     }
@@ -1404,6 +1786,95 @@ mod resource_boundaries {
         })
     }
     #[test]
+    fn absent_proof_starts_at_zero_without_work_scratch() -> Result<(), Error> {
+        let mut instance = Instance::new();
+        let mut service = Service::<0, 0>::new(&mut instance, Config::default())?;
+        let original = service.begin_identity_change()?;
+        assert_eq!(
+            service.finish_identity_change_from_saved(&original, [1; 32], Some([0; 8]), 1, &mut []),
+            Err(Error::Capacity)
+        );
+        service.finish_identity_change_from_saved(&original, [1; 32], None, 1, &mut [])?;
+        assert!(service.work_request().is_none());
+        assert_eq!(service.count, 0);
+        let alarm = service
+            .next_alarm(1, &mut NoRandom)?
+            .ok_or(Error::NotReady)?;
+        assert_eq!(alarm.deadline(), 1);
+        assert_eq!(service.alarm_fired(&alarm, 1)?, AlarmProgress::Work);
+        assert_eq!(service.work_request().ok_or(Error::NotReady)?.counter, 0);
+        assert!(service.next_persist()?.is_none());
+        Ok(())
+    }
+    #[test]
+    fn durable_candidate_only_qualifies_after_exact_confirmed_write() -> Result<(), Error> {
+        let mut instance = Instance::new();
+        let mut service = Service::<0, 0>::new(&mut instance, zero()?)?;
+        let barrier = service.begin_identity_change()?;
+        service.finish_identity_change_durable(
+            &barrier,
+            [1; 32],
+            ProofRecovery::Checkpoint(0),
+            1,
+            &mut [],
+        )?;
+        assert_eq!(service.local_proof(), None);
+        let alarm = service
+            .next_alarm(1, &mut NoRandom)?
+            .ok_or(Error::NotReady)?;
+        assert_eq!(alarm.deadline(), 1000);
+        let search = service.work_request().ok_or(Error::NotReady)?;
+        assert_eq!(search.counter, 0);
+        assert_eq!(
+            service.work(&search, 1, 1, &mut [])?,
+            WorkProgress::Found([0; 8])
+        );
+        assert!(service.work_request().is_none());
+        let identity = service.identity.ok_or(Error::NotReady)?;
+        assert!(
+            !service.history[service.index]
+                .ok_or(Error::NotReady)?
+                .qualified(identity)
+        );
+        assert_eq!(
+            service.pending_proof_update(),
+            Some(ProofUpdate::Candidate([0; 8]))
+        );
+        let first = service.next_durable_persist()?.ok_or(Error::NotReady)?;
+        assert_eq!(
+            service.durable_persisted(&first, Err(Error::Io)),
+            Err(Error::Io)
+        );
+        assert!(service.next_durable_persist()?.is_none());
+        assert_eq!(service.local_proof(), None);
+        service.cancel_durable_persist(&first)?;
+        let second = service.next_durable_persist()?.ok_or(Error::NotReady)?;
+        assert_eq!(second.update(), ProofUpdate::Candidate([0; 8]));
+        assert_eq!(service.durable_persisted(&first, Ok(())), Err(Error::Stale));
+        assert_eq!(
+            service.durable_persisted(&second, Err(Error::OutcomeUnknown)),
+            Err(Error::OutcomeUnknown)
+        );
+        assert_eq!(
+            service.cancel_durable_persist(&second),
+            Err(Error::OutcomeUnknown)
+        );
+        assert_eq!(service.local_proof(), None);
+        service.durable_persisted(&second, Ok(()))?;
+        assert_eq!(service.local_proof(), Some([0; 8]));
+        assert!(
+            service.history[service.index]
+                .ok_or(Error::NotReady)?
+                .qualified(service.identity.ok_or(Error::NotReady)?)
+        );
+        assert_eq!(service.pending_proof_update(), None);
+        assert_eq!(
+            service.durable_persisted(&second, Ok(())),
+            Err(Error::Stale)
+        );
+        Ok(())
+    }
+    #[test]
     fn id_exhaustion_keeps_original_completions_and_does_not_reuse_slot() -> Result<(), Error> {
         let mut instance = Instance::new();
         let mut service = Service::<0, 2>::new(&mut instance, zero()?)?;
@@ -1417,6 +1888,96 @@ mod resource_boundaries {
         assert_eq!(service.subscribe(&[0, 4, 1, 65]), Err(Error::Overflow));
         Ok(())
     }
+    #[test]
+    fn targeted_notifications_coalesce_independently_and_retire_with_their_client()
+    -> Result<(), Error> {
+        let mut instance = Instance::new();
+        let mut service = Service::<0, 2>::new(&mut instance, zero()?)?;
+        let start = [0, 4, 1, 65];
+        let first = service.subscribe(&start)?;
+        let second = service.subscribe(&start)?;
+
+        let targeted = service
+            .notification_for(second, 10)?
+            .ok_or(Error::NotReady)?;
+        let global = service.next_notification(11)?.ok_or(Error::NotReady)?;
+        assert_eq!(targeted.subscriber(), second);
+        assert_eq!(global.subscriber(), first);
+        service.changed()?;
+        assert!(service.notification_for(first, 12)?.is_none());
+        assert!(service.notification_for(second, 12)?.is_none());
+        assert!(service.next_notification(12)?.is_none());
+        service.notified(&targeted)?;
+        let updated = service
+            .notification_for(second, 13)?
+            .ok_or(Error::NotReady)?;
+        assert_eq!(updated.estimate().timestamp.as_micros(), 13);
+        assert!(updated.revision > targeted.revision);
+        assert_eq!(global.estimate().timestamp.as_micros(), 11);
+
+        service.unsubscribe(first)?;
+        assert!(matches!(
+            service.notification_for(first, 14),
+            Err(Error::Stale)
+        ));
+        assert_eq!(service.notified(&global), Err(Error::Stale));
+        let replacement = service.subscribe(&start)?;
+        assert_ne!(replacement, first);
+        let new = service
+            .notification_for(replacement, 15)?
+            .ok_or(Error::NotReady)?;
+        service.notified(&updated)?;
+        assert!(service.notification_for(second, 16)?.is_none());
+        assert!(service.notification_for(replacement, 16)?.is_none());
+        service.notified(&new)?;
+        Ok(())
+    }
+
+    #[test]
+    fn repeated_start_keeps_subscriber_and_demands_a_fresh_snapshot() -> Result<(), Error> {
+        let mut instance = Instance::new();
+        let mut service = Service::<0, 1>::new(&mut instance, zero()?)?;
+        let start = [0, 4, 1, 65];
+        let subscriber = service.subscribe(&start)?;
+        assert_eq!(
+            service.refresh_subscription(subscriber, &start),
+            Err(Error::WouldBlock)
+        );
+        let first = service
+            .notification_for(subscriber, 20)?
+            .ok_or(Error::NotReady)?;
+        assert_eq!(
+            service.refresh_subscription(subscriber, &start),
+            Err(Error::WouldBlock)
+        );
+        service.notified(&first)?;
+        assert!(service.notification_for(subscriber, 21)?.is_none());
+
+        assert!(
+            service
+                .refresh_subscription(subscriber, &[0, 4, 1, 66])
+                .is_err()
+        );
+        assert!(service.notification_for(subscriber, 21)?.is_none());
+        service.refresh_subscription(subscriber, &start)?;
+        assert_eq!(
+            service.refresh_subscription(subscriber, &start),
+            Err(Error::WouldBlock)
+        );
+        let repeated = service
+            .notification_for(subscriber, 22)?
+            .ok_or(Error::NotReady)?;
+        assert_eq!(repeated.subscriber(), subscriber);
+        assert_eq!(repeated.revision, first.revision);
+        assert_ne!(repeated.id, first.id);
+        assert_eq!(repeated.estimate().timestamp.as_micros(), 22);
+        assert_eq!(service.notified(&first), Err(Error::Stale));
+        assert_eq!(service.subscribe(&start), Err(Error::Capacity));
+        service.notified(&repeated)?;
+        assert!(service.notification_for(subscriber, 23)?.is_none());
+        Ok(())
+    }
+
     #[test]
     fn effect_exhaustion_does_not_consume_an_original_timer() -> Result<(), Error> {
         let mut instance = Instance::new();
@@ -1468,6 +2029,71 @@ mod resource_boundaries {
             Err(Error::Stale)
         );
         assert!(service.next_persist()?.is_none());
+
+        let barrier = service.begin_identity_change()?;
+        service.finish_identity_change_durable(
+            &barrier,
+            [3; 32],
+            ProofRecovery::Checkpoint(u64::MAX - 1),
+            2001,
+            &mut [],
+        )?;
+        let alarm = service
+            .next_alarm(2001, &mut NoRandom)?
+            .ok_or(Error::NotReady)?;
+        assert_eq!(alarm.deadline(), 3000);
+        let original = service.work_request().ok_or(Error::NotReady)?;
+        assert_eq!(original.counter, u64::MAX - 1);
+        assert_eq!(
+            service.work(&original, 1, 2001, &mut memory)?,
+            WorkProgress::More
+        );
+        assert_eq!(
+            service.pending_proof_update(),
+            Some(ProofUpdate::Checkpoint(u64::MAX))
+        );
+        assert_eq!(
+            service.work(&original, 1, 2000, &mut memory),
+            Err(Error::Stale)
+        );
+        let request = service.work_request().ok_or(Error::NotReady)?;
+        assert_eq!(request.counter, u64::MAX);
+        let checkpoint = service.next_durable_persist()?.ok_or(Error::NotReady)?;
+        assert_eq!(
+            service.durable_persisted(&checkpoint, Err(Error::OutcomeUnknown)),
+            Err(Error::OutcomeUnknown)
+        );
+        assert!(service.work_request().is_none());
+        assert_eq!(
+            service.work(&request, 1, 2000, &mut memory),
+            Err(Error::Stale)
+        );
+        service.durable_persisted(&checkpoint, Ok(()))?;
+        assert_eq!(
+            service.work(&request, 1, 2000, &mut memory)?,
+            WorkProgress::Exhausted
+        );
+        assert!(service.work_request().is_none());
+        let saved = service.next_durable_persist()?.ok_or(Error::NotReady)?;
+        assert_eq!(saved.update(), ProofUpdate::Exhausted);
+        service.durable_persisted(&saved, Ok(()))?;
+        let barrier = service.begin_identity_change()?;
+        service.finish_identity_change_durable(
+            &barrier,
+            [3; 32],
+            ProofRecovery::Exhausted,
+            2000,
+            &mut [],
+        )?;
+        assert_eq!(
+            service
+                .next_alarm(2000, &mut NoRandom)?
+                .ok_or(Error::NotReady)?
+                .deadline(),
+            3000
+        );
+        assert!(service.work_request().is_none());
+        assert!(service.next_durable_persist()?.is_none());
         Ok(())
     }
 }

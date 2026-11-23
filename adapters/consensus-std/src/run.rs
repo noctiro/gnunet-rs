@@ -15,7 +15,9 @@ use std::{
     task::{Context, Poll},
     time::{Duration, Instant},
 };
+mod input;
 mod state;
+use input::Input;
 pub(crate) struct Control {
     reason: Cell<Option<Fault>>,
 }
@@ -271,6 +273,8 @@ async fn identity<'a>(
     sources: &Sources,
     origin: Bounds,
     control: &Control,
+    input: &mut Input,
+    partial_lifetime: Duration,
     report: &mut SessionReport,
 ) -> Result<gnunet_pils::client::Identity<'a>, Error> {
     let mut wait = Wait::new(sources.clock(), origin)?;
@@ -278,12 +282,30 @@ async fn identity<'a>(
         |cx| -> Poll<Result<gnunet_pils::client::Identity<'a>, Error>> {
             check(sources.clock.as_ref(), origin, control)?;
             wait.poll(cx)?;
+            input.poll_deadline(cx)?;
             if let Some(identity) = client.identity() {
                 return Poll::Ready(Ok(identity));
             }
-            if Instant::now() >= origin.hard {
-                return Poll::Ready(Err(Fault::Deadline.into()));
+            // Preserve at most the next original frame while waiting for PILS.
+            // Reading an available EOF here prevents a vanished client from
+            // keeping its admission slot until the original session deadline.
+            if input.framed.frame().is_none() {
+                match input.poll_read(cx, &sources.clock, origin, partial_lifetime) {
+                    Poll::Ready(Ok(ReadStep::Eof)) => {
+                        return Poll::Ready(Err(Fault::Closed.into()));
+                    }
+                    Poll::Ready(Err(error)) => return Poll::Ready(Err(error)),
+                    Poll::Ready(Ok(ReadStep::Progress { complete, .. })) => {
+                        if complete {
+                            input.poll_deadline(cx)?;
+                            input.partial = None;
+                        }
+                        cx.waker().wake_by_ref();
+                    }
+                    Poll::Pending => {}
+                }
             }
+            check(sources.clock.as_ref(), origin, control)?;
             match poll_pils(client, cx, origin.hard) {
                 Poll::Pending => Poll::Pending,
                 Poll::Ready(Err(e)) => Poll::Ready(Err(e.into())),
@@ -425,10 +447,22 @@ pub(crate) async fn session(
             return report;
         }
     };
-    let local = match identity(&mut pils, &sources, original, &control, &mut report).await {
+    let mut input = Input::new(io);
+    let local = match identity(
+        &mut pils,
+        &sources,
+        original,
+        &control,
+        &mut input,
+        limits.partial_input,
+        &mut report,
+    )
+    .await
+    {
         Ok(identity) => identity,
         Err(error) => {
-            io.retire();
+            input.framed.retire();
+            report.retired_input_bytes = report.retired_input_bytes.saturating_add(input.bytes);
             report.pils_pending = pils.close().iter().flatten().count();
             report.primary = Some(error);
             report.physical_closed = true;
@@ -452,7 +486,8 @@ pub(crate) async fn session(
     let mut bridge = match result {
         Ok(bridge) => bridge,
         Err(error) => {
-            io.retire();
+            input.framed.retire();
+            report.retired_input_bytes = report.retired_input_bytes.saturating_add(input.bytes);
             report.pils_pending = pils.close().iter().flatten().count();
             report.primary = Some(error);
             report.physical_closed = true;
@@ -470,7 +505,7 @@ pub(crate) async fn session(
         }
     };
     let mut state = state::State::new(
-        io,
+        input,
         bridge,
         &mut pils,
         state::Admission {
@@ -491,3 +526,6 @@ pub(crate) async fn session(
     }
     report
 }
+
+#[cfg(all(test, unix))]
+mod tests;

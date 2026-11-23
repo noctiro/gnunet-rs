@@ -15,6 +15,9 @@ from reactor_verify import REQUIRED as REACTOR_REQUIRED
 
 sys.dont_write_bytecode = True
 PACKAGE = Path(__file__).resolve().parents[1]
+TOOLS = PACKAGE.parents[1] / "tools"
+sys.path.insert(0, str(TOOLS))
+from rust_toolchain import rust_channel
 PACKAGES = ("gnunet-arm-service-host", "gnunet-service-runtime", "gnunet-native")
 REQUIRED = {
     "all_services_remain_registered_and_head_insertion_order_is_preserved",
@@ -119,6 +122,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ("repository", "source", "reference", "output"):
         parser.add_argument("--" + name, required=True, type=Path)
+    parser.add_argument("--toolchain")
     args = parser.parse_args()
     repo, source, reference, out = [getattr(args, key).resolve()
                                     for key in ("repository", "source", "reference", "output")]
@@ -144,7 +148,8 @@ def main():
             raise RuntimeError(label + " failed; see " + str(out / (label + ".stderr")))
         return result.stdout.decode(errors="replace")
 
-    cargo = ["cargo", "+1.99.1"]
+    channel = rust_channel(repo, args.toolchain)
+    cargo = ["cargo", "+" + channel]
     metadata = lambda path, locked=True: json.loads(run(
         "metadata-" + str(len(commands)), cargo + ["metadata", "--manifest-path", path,
         "--offline", "--format-version", "1"] + (["--locked"] if locked else [])))
@@ -186,6 +191,7 @@ def main():
         def discover():
             paths = files(PACKAGE) | {reference, repo / "Cargo.toml", repo / "Cargo.lock",
                     repo / "rust-toolchain.toml", repo / "rustfmt.toml",
+                    TOOLS / "rust_toolchain.py", TOOLS / "cargo_artifacts.py",
                     repo / "tools/reference/build_reference.py",
                     repo / "crates/gnunet-arm-service-core/source-inventory.json"}
             for package in [*isolated["packages"], *actual["packages"]]:
@@ -239,7 +245,7 @@ def main():
             raise ValueError("unexpected portable docs: " + repr(portable_docs))
         run("normal-c-listeners", [sys.executable, "-B", PACKAGE / "tools/normal_listeners.py",
             "--repository", repo, "--source", source, "--reference", reference,
-            "--manifest", generated / "Cargo.toml", "--output", out / "normal-c"])
+            "--manifest", generated / "Cargo.toml", "--output", out / "normal-c", "--toolchain", channel])
         paired = json.loads((out / "normal-c/result.json").read_text())
         if paired["status"] != "passed" or paired["case_count"] != 3 or not paired["inputs_unchanged"]:
             raise ValueError("normal C listener observation incomplete")

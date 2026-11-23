@@ -1,5 +1,8 @@
 //! Actual original handle/WID/epoch lifecycle, with one held output and no hidden task.
-use super::{Failure, output::Output};
+use super::{
+    Failure,
+    output::{Output, Style, WATCH_CAPACITY},
+};
 use crate::foreground::Signals;
 use gnunet_client::{
     statistics::{Selector, WatchValue},
@@ -44,13 +47,17 @@ impl Names {
 }
 pub(super) struct Inputs {
     pub selector: Names,
+    pub style: Style,
     pub parent: Option<ParentControl>,
+    pub connection: Connection,
+    pub resolver: gnunet_resolver_broker::Driver<4, 256>,
+}
+pub(super) struct Connection {
     pub live: LiveConfiguration,
     pub resolution: SharedResolution,
     pub source: Arc<dyn RuntimeClock>,
     pub reports: Reporter,
     pub stop: Rc<Cell<bool>>,
-    pub resolver: gnunet_resolver_broker::Driver<4, 256>,
 }
 #[derive(Default)]
 pub(super) struct Report {
@@ -567,12 +574,16 @@ pub(super) async fn retire<
 pub(super) async fn command(inputs: Inputs) -> Result<Report, Failure> {
     let Inputs {
         selector,
+        style,
         parent,
-        live,
-        resolution,
-        source,
-        reports,
-        stop: latch,
+        connection:
+            Connection {
+                live,
+                resolution,
+                source,
+                reports,
+                stop: latch,
+            },
         resolver,
     } = inputs;
     let cleanup = Rc::new(RefCell::new(None));
@@ -595,7 +606,7 @@ pub(super) async fn command(inputs: Inputs) -> Result<Report, Failure> {
             return Err("WATCH stopped before original native admission".into());
         }
         let mut signals = Signals::new(parent)?;
-        output = Some(Output::new()?);
+        output = Some(Output::new(style, WATCH_CAPACITY)?);
         let output = output.as_mut().ok_or("original stdout owner absent")?;
         let marker = gnunet_client_host::EndpointSource::live(
             live.clone(), b"statistics", resolution.clone(),
@@ -632,7 +643,7 @@ pub(super) async fn command(inputs: Inputs) -> Result<Report, Failure> {
             if let Some(notice) = events.notice.take() {
                 report.notifications = report.notifications.saturating_add(1);
                 let id = watch.ok_or("actual WATCH callback lost original logical id")?.resource_id();
-                output.stage(&selector, notice.epoch.value(), id.index, id.generation, notice.value)?;
+                output.stage(&selector, notice.epoch.value(), id.index, id.generation, notice.value, source.as_ref())?;
                 row_bound = Some(Bound::at(notice.hard)?);
             }
             enum Action {

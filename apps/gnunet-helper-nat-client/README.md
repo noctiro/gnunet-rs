@@ -16,8 +16,8 @@ remain failures and establish no remote receipt or connectivity.
 
 ## Platforms and privileges
 
-Linux, macOS, FreeBSD 12+ and Windows select native backends using the same
-packet algorithms. Unix opens raw resources before permanently dropping to the
+Linux, Android system images, OpenHarmony standard systems, macOS, FreeBSD 12+
+and Windows use the same packet algorithms. Unix opens raw resources before permanently dropping to the
 invoking IDs and applicable Linux capability policy. Windows uses the invoking
 token's existing raw-socket permission and performs no elevation. See the host
 for exact credential, lifetime and cleanup contracts.

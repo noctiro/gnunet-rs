@@ -3,7 +3,7 @@
 use crate::bounded_io::{Counted, Counters, IoLease};
 use crate::{Error, Fault};
 use gnunet_client_host::resolution::{AddressLookup, SharedResolution};
-use gnunet_service_runtime::connection::ConnectionLease;
+use gnunet_service_runtime::{connection::ConnectionLease, network::SocketPolicy};
 use std::{
     fmt,
     future::{Future, poll_fn},
@@ -200,7 +200,7 @@ impl Tls {
     }
     /// Explicit caller-supplied public roots; hostname and validity checks remain on.
     pub fn with_roots(roots: rustls::RootCertStore) -> Result<Self, Error> {
-        let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+        let provider = gnunet_tls_crypto_host::provider();
         let mut config = rustls::ClientConfig::builder_with_provider(provider)
             .with_safe_default_protocol_versions()?
             .with_root_certificates(roots)
@@ -365,6 +365,7 @@ async fn tcp(
     lease: Rc<IoLease>,
     counts: Arc<Counters>,
     limits: HttpLimits,
+    socket_policy: &SocketPolicy,
 ) -> Result<Socket, Error> {
     lease.check()?;
     let timeout = lease
@@ -395,9 +396,10 @@ async fn tcp(
             })
             .map_err(|_| Fault::Capacity)?;
         let attempt = async {
-            TcpStream::connect(SocketAddr::new(address, port))
-                .await
-                .map_err(Error::Io)
+            let endpoint = SocketAddr::new(address, port);
+            let socket = socket_policy.tcp_socket(endpoint)?;
+            lease.check()?;
+            socket.connect(endpoint).await.map_err(Error::Io)
         };
         match acknowledge(&mut *lookup, attempt).await {
             Ok(socket) => {
@@ -447,12 +449,22 @@ async fn proxy_socket(
     lease: Rc<IoLease>,
     counts: Arc<Counters>,
     limits: HttpLimits,
+    socket_policy: &SocketPolicy,
 ) -> Result<Socket, Error> {
     let endpoint =
         Url::parse(std::str::from_utf8(&proxy.endpoint).map_err(|_| Fault::InvalidInput)?)?;
     let host = hostname(&endpoint)?;
     let port = endpoint.port().unwrap_or(1080);
-    let socket = tcp(resolution, &host, port, lease, counts, limits).await?;
+    let socket = tcp(
+        resolution,
+        &host,
+        port,
+        lease,
+        counts,
+        limits,
+        socket_policy,
+    )
+    .await?;
     if endpoint.scheme() == "https" {
         encrypted(socket, &host, tls).await
     } else {
@@ -647,6 +659,10 @@ fn hostname(url: &Url) -> Result<std::borrow::Cow<'_, str>, Error> {
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "HTTP request target, proxy, Resolver, trust and native attempt ports are independent"
+)]
 pub(crate) async fn socket(
     url: &Url,
     proxy: Option<&Proxy>,
@@ -655,6 +671,7 @@ pub(crate) async fn socket(
     lease: Rc<IoLease>,
     counts: Arc<Counters>,
     limits: HttpLimits,
+    socket_policy: &SocketPolicy,
 ) -> Result<(Socket, bool), Error> {
     let host = hostname(url)?;
     let port = url.port_or_known_default().ok_or(Fault::InvalidInput)?;
@@ -667,6 +684,7 @@ pub(crate) async fn socket(
                 lease.clone(),
                 counts.clone(),
                 limits,
+                socket_policy,
             )
             .await?;
             if url.scheme() == "https" {
@@ -681,6 +699,7 @@ pub(crate) async fn socket(
                 lease.clone(),
                 counts.clone(),
                 limits,
+                socket_policy,
             )
             .await?;
             if proxy.kind == ProxyKind::Socks5Hostname {
@@ -704,6 +723,7 @@ pub(crate) async fn socket(
                 lease.clone(),
                 counts.clone(),
                 limits,
+                socket_policy,
             )
             .await?;
             let mut initial = Some(first_io);
@@ -728,6 +748,7 @@ pub(crate) async fn socket(
                             lease.clone(),
                             counts.clone(),
                             limits,
+                            socket_policy,
                         )
                         .await?
                     }
@@ -760,7 +781,16 @@ pub(crate) async fn socket(
             }
         }
     } else {
-        tcp(resolution, &host, port, lease, counts, limits).await?
+        tcp(
+            resolution,
+            &host,
+            port,
+            lease,
+            counts,
+            limits,
+            socket_policy,
+        )
+        .await?
     };
     if url.scheme() == "https" {
         socket = encrypted(socket, &host, tls).await?

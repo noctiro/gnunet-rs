@@ -2,15 +2,32 @@
 
 `Runtime::bind(&Instance, &mut pils::client::Instance, Sources, path, Limits)` composes the standard TRANSPORT communicator MQ, public PILS observer and original `native::OwnedDatagram`. `poll`/`drive` retain all connection/framing/datagram cursors across canceled futures. Caller supplies the process Resolver/clock through Sources, which are snapshotted together before admission. No task, hidden Resolver, private-key file, TCP/UDP session, hash/entropy provider or production C FFI is created by this layer. The PILS client actually validates the current public HELLO under its explicit profile; normal official metadata coverage does not authenticate addresses. The UNIX datagram's claimed sender is completely unauthenticated.
 
+## Embedded foreground
+
+`embedded::serve` runs one communicator on the application's Tokio reactor.
+With `embedded-config`, `Configured::read` and `serve_configured` use the
+standard UNIX section and resource bounds. The caller supplies original
+TRANSPORT and PILS selectors with the same clock. Configure this testing
+communicator only for a local deployment. Readiness follows whole TRANSPORT
+registration and address writes under the verified local PILS identity.
+Complete the stop future and await physical retirement.
+
 ## Wire format and platform constraints
 
-The source says ONLY INTENDED FOR TESTING and Meson installs it unconditionally. This is that testing communicator, with the standard IPC and packets. Canonical outgoing packet is header4(type0)+PILS peer32+one frame. Incoming accepts the C ignored type/trailing bytes, but rejects MSG_TRUNC/CTRUNC. Advertised/enforced complete-inner MTU is min(OS datagram cap−36,65535−36,65535−88); defaults65447 on Linux/FreeBSD and2012 on Darwin. Kernel buffer observations are not a delivery guarantee; EMSGSIZE stays an failed send. Linux abstract names retain the official full107-byte zero-padded namespace. Non-UTF8 path bytes remain literal in the native/pure/common IPC layer; an external service may impose its own address validation.
+Outgoing packets carry a four-byte header with type zero, a 32-byte PILS peer
+and one frame. The receiver ignores the type and trailing bytes as C does and
+rejects kernel truncation. The inner MTU defaults to 65,447 bytes on Linux,
+Android, OpenHarmony standard and FreeBSD, and 2,012 on macOS and iOS.
+Native `EMSGSIZE` remains a send error. Linux, Android and OpenHarmony standard
+support filesystem endpoints and 107-byte zero-padded abstract names. Darwin
+and FreeBSD use filesystem endpoints. The socket API retains native path bytes.
+Application deployments place filesystem endpoints in accessible private storage.
 
 ## Queue and callback ownership
 
-Each live native-address/claimed-peer queue has exactly one original SEND slot and one service credit. Whole `sendto` produces success status1; permanent negative result produces−1; a SEND already racing an expired queue gets official NO0 without a network write. After a result ACK is wholly written, its replenished-credit frame follows in the same MQ FIFO; the local gate opens at that credit whole-write. EAGAIN registers reactor readiness; ENOBUFS/interrupted retries use a finite timer and preserve the original packet/deadline. Positive short datagrams close the original source, retain OutcomeUnknown and never resend a suffix. The service's opaque message id is never regenerated.
+Each live native-address/claimed-peer queue has one original SEND slot and one service credit. Whole `sendto` produces success status 1. A permanent negative result produces −1, and a SEND racing an expired queue receives official NO (0) without a network write. The result ACK precedes its replenished-credit frame in the same MQ FIFO. The local gate opens when that credit frame is wholly written. EAGAIN, ENOBUFS and EINTR schedule a retry for the original destination and packet, at most once per fair turn. The delay starts at the configured `ENOBUFS_RETRY` and doubles up to 64 ms or the configured delay if larger. Every retry retains the original deadline. Positive short datagrams close the original source, retain OutcomeUnknown and never resend a suffix. The service's opaque message id is never regenerated.
 
-Incoming frames get original flow ids and bounded callback rows. Whole original INCOMING IPC write is recorded separately from the matching service callback. Incoming peer is the claim and neighbour is the official zero-filled field. Native reads stop at callback capacity while existing TX/callback RX drains. One held native input and one held complete/partial MQ input retain their original source and hard target; resource backpressure never transfers a partial frame. Queue metadata is bounded, queue ids never reused in this MQ, and duplicate CREATE does not renew idle time. Fair turn rotation covers PILS, connect, native send/receive and MQ read/write; ENOBUFS and idle queues have registered timers, with no permanent WouldBlock spin.
+Incoming frames get original flow ids and bounded callback rows. Whole original INCOMING IPC write is recorded separately from the matching service callback. Incoming peer is the claim and neighbour is the official zero-filled field. Native reads stop at callback capacity while existing TX/callback RX drains. One held native input and one held complete/partial MQ input retain their original source and hard target. Queue metadata is bounded, queue ids are never reused in this MQ, and duplicate CREATE does not renew idle time. Fair turn rotation covers PILS, connect, native send/receive and MQ read/write. The earliest retry, idle or operation deadline determines the next timer wake.
 
 ## Deadlines and public identity
 
@@ -62,8 +79,8 @@ until DOWN finishes. A duplicate CREATE or matching native input waits under its
 original bound for retirement; a stale SEND receives the ordinary unknown-queue
 result. The next attempt gets a fresh QID and never replays the failed packet. MQ loss during this retirement also removes the failed queue, while preserving
 the original send outcome and result exposure in SendRetired. Permanent send
-errors and queue expiry reach normal program diagnostics; transient ENOBUFS
-retries are not logged on every turn.
+errors and queue expiry reach normal program diagnostics. Transient send failures
+contribute to the native failure counter.
 
 Final close still physically stops all owners before retiring metadata. Actual fd/path cleanup errors are independent of the first cause; path cleanup checks the original observed dev/inode and leaves replacements alone. Shared Channel/PILS expose no separate close errno, so no fabricated errno receipt is claimed. Explicit cancellation calls close; there is no private CANCEL. The caller-owned Cell allocation domain permits bounded slot reuse without a hidden global/Atomic64 dependency.
 

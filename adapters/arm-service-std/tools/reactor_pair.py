@@ -6,14 +6,20 @@ no response peer, extracted service function or production libgnunet FFI is used
 import argparse,json,os,socket,subprocess,sys,time,hashlib
 from pathlib import Path
 PACKAGE=Path(__file__).resolve().parents[1]
+TOOLS=PACKAGE.parents[1]/"tools"
+sys.dont_write_bytecode=True
+sys.path.insert(0,str(TOOLS))
+from cargo_artifacts import CargoArtifacts
+from rust_toolchain import rust_channel
 def sha(path):return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 def overlap(a,b):a,b=Path(a).resolve(),Path(b).resolve();return a==b or a.is_relative_to(b) or b.is_relative_to(a)
 def main():
  global PACKAGE
  p=argparse.ArgumentParser(description=__doc__)
  for key in ['repository','upstream','reference','output']:p.add_argument('--'+key,type=Path,required=True)
- p.add_argument('--package',type=Path,default=PACKAGE)
+ p.add_argument('--package',type=Path,default=PACKAGE);p.add_argument('--toolchain')
  a=p.parse_args();PACKAGE=a.package.resolve();repo=a.repository.resolve();out=a.output.resolve();upstream=a.upstream.resolve();reference_path=a.reference.resolve()
+ cargo=['cargo','+'+rust_channel(repo,a.toolchain)]
  for protected in [repo,PACKAGE,upstream,reference_path.parent]:
   if overlap(out,protected):raise ValueError('output overlaps source/reference')
  out.mkdir(exist_ok=False);sys.path.insert(0,str(repo/'adapters/arm-std/tools'));import reference
@@ -26,18 +32,19 @@ def main():
   r,current=reference.load(reference_path,upstream,repo)
   if r!=ref or current!=normal:raise ValueError('normal reference changed')
   paths={Path(path).resolve() for path in normal}
-  paths.update([repo/'Cargo.toml',repo/'Cargo.lock',repo/'rust-toolchain.toml',repo/'adapters/arm-std/examples/daemon_owner.rs',repo/'adapters/arm-std/tools/daemon_fixture.c',repo/'adapters/arm-std/tools/reference.py'])
-  metadata=json.loads(subprocess.check_output(['cargo','+1.99.1','metadata','--offline','--locked','--manifest-path',str(PACKAGE/'Cargo.toml'),'--format-version=1'],cwd=repo))
+  paths.update([TOOLS/'cargo_artifacts.py',TOOLS/'rust_toolchain.py',repo/'Cargo.toml',repo/'Cargo.lock',repo/'rust-toolchain.toml',repo/'adapters/arm-std/examples/daemon_owner.rs',repo/'adapters/arm-std/tools/daemon_fixture.c',repo/'adapters/arm-std/tools/reference.py'])
+  metadata=json.loads(subprocess.check_output(cargo+['metadata','--offline','--locked','--manifest-path',str(PACKAGE/'Cargo.toml'),'--format-version=1'],cwd=repo))
   roots=[PACKAGE,repo/'adapters/arm-std']+[Path(item['manifest_path']).resolve().parent for item in metadata['packages'] if item['source']is None]
   for root in roots:
    for path in root.rglob('*'):
     if path.is_file()and not any(part in ['target','.git','__pycache__']for part in path.relative_to(root).parts) and (path.suffix in ['.rs','.md','.toml','.c','.py','.json','.in']or path.name=='Cargo.lock'):paths.add(path.resolve())
   return {str(path):sha(path)for path in sorted(paths)if path.is_file()}
  before=discover();(out/'inputs-before.json').write_text(json.dumps(before,indent=2)+'\n')
- run('candidate-fresh',['cargo','+1.99.1','build','--offline','--locked','--manifest-path',PACKAGE/'Cargo.toml','--target-dir',out/'candidate-target','--bins','-j','1'])
- run('helper-fresh',['cargo','+1.99.1','build','--offline','--locked','--manifest-path',repo/'Cargo.toml','--target-dir',out/'candidate-target','-p','gnunet-arm-host','--bin','gnunet-arm-spawn-helper','-j','1'])
- run('client-fresh',['cargo','+1.99.1','build','--offline','--locked','--manifest-path',repo/'Cargo.toml','--target-dir',out/'client-target','-p','gnunet-arm-host','--example','daemon_owner','-j','1'])
- rust_daemon=out/'candidate-target/debug/gnunet-arm-reactor-daemon-fixture';helper=out/'candidate-target/debug/gnunet-arm-spawn-helper';rust_client=out/'client-target/debug/examples/daemon_owner';c_client=out/'normal-public-client';compile_client=reference.compile_probe(PACKAGE/'tools/reactor_client.c',c_client,ref)
+ candidate=run('candidate-fresh',cargo+['build','--message-format=json','--offline','--locked','--manifest-path',PACKAGE/'Cargo.toml','--target-dir',out/'candidate-target','--bins','-j','1'])
+ helper_build=run('helper-fresh',cargo+['build','--message-format=json','--offline','--locked','--manifest-path',repo/'Cargo.toml','--target-dir',out/'candidate-target','-p','gnunet-arm-host','--bin','gnunet-arm-spawn-helper','-j','1'])
+ client_build=run('client-fresh',cargo+['build','--message-format=json','--offline','--locked','--manifest-path',repo/'Cargo.toml','--target-dir',out/'client-target','-p','gnunet-arm-host','--example','daemon_owner','-j','1'])
+ host_manifest=repo/'adapters/arm-std/Cargo.toml'
+ rust_daemon=CargoArtifacts(candidate.stdout).binary('gnunet-arm-reactor-daemon-fixture',PACKAGE/'Cargo.toml');helper=CargoArtifacts(helper_build.stdout).binary('gnunet-arm-spawn-helper',host_manifest);rust_client=CargoArtifacts(client_build.stdout).example('daemon_owner',host_manifest);c_client=out/'normal-public-client';compile_client=reference.compile_probe(PACKAGE/'tools/reactor_client.c',c_client,ref)
  child=out/'owned-managed-child';run('target-compile',['cc',PACKAGE/'tools/reactor_target.c','-Wall','-Wextra','-Werror','-o',child])
  normal_daemon=Path(ref['artifacts']['service']['path']);assert sha(normal_daemon)==ref['artifacts']['service']['sha256']
  artifacts={str(path):sha(path)for path in [rust_daemon,helper,rust_client,c_client,child,normal_daemon]};cases=[];base=out/'base';base.mkdir();home=out/'home';home.mkdir();xdg=out/'xdg';xdg.mkdir()

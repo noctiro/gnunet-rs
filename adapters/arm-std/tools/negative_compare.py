@@ -8,15 +8,19 @@ are retained per connection. No daemon/managed child or readiness is fabricated.
 import argparse,importlib.util,json,os,pathlib,socket,struct,subprocess,sys,time
 PROFILES=('wrong-list-result','wrong-result-list','malformed-short-rows','malformed-name-index','malformed-binary-index','malformed-name-nul','malformed-binary-nul','malformed-second-name-index','malformed-second-binary-index','malformed-prefix','malformed-result','malformed-size3','valid-list','unknown-id-and-type')
 
+sys.dont_write_bytecode=True
+sys.path.insert(0,str(pathlib.Path(__file__).resolve().parents[3]/"tools"))
+from rust_toolchain import rust_channel
+
 def main():
  p=argparse.ArgumentParser()
  for name in ['repo','source','reference','output']:p.add_argument('--'+name,type=pathlib.Path,required=True)
  p.add_argument('--package',type=pathlib.Path,default=pathlib.Path(__file__).resolve().parents[1])
  p.add_argument('--rust',type=pathlib.Path,required=True)
- a=p.parse_args();package=a.package.resolve();support=pathlib.Path(__file__).resolve().parent;sys.path.insert(0,str(support));from reference import load,compile_probe,sha
+ p.add_argument('--toolchain');a=p.parse_args();package=a.package.resolve();support=pathlib.Path(__file__).resolve().parent;sys.path.insert(0,str(support));from reference import load,compile_probe,sha
  from _common import local_snapshot,require_disjoint_output,require_lint_contract
  if len(PROFILES)!=14 or len(set(PROFILES))!=14:raise ValueError('exact nonempty 14 profile inventory required')
- ref,normal=load(a.reference,a.source,a.repo);cargo=['cargo','+1.99.1'];locked=['--offline','--locked','--manifest-path',str(package/'Cargo.toml')];environment=os.environ.copy();environment['CARGO_BUILD_JOBS']='2'
+ ref,normal=load(a.reference,a.source,a.repo);cargo=['cargo','+'+rust_channel(a.repo,a.toolchain)];locked=['--offline','--locked','--manifest-path',str(package/'Cargo.toml')];environment=os.environ.copy();environment['CARGO_BUILD_JOBS']='2'
  meta=subprocess.run(cargo+['metadata',*locked,'--format-version','1'],cwd=package,env=environment,capture_output=True,timeout=120)
  if meta.returncode:raise RuntimeError(meta.stderr.decode())
  metadata=json.loads(meta.stdout);protected=[package,a.repo,a.source,a.reference.resolve().parent,support,pathlib.Path(ref['build']),pathlib.Path(ref['prefix'])]+[pathlib.Path(row['manifest_path']).parent for row in metadata['packages']if row['source']is None];out=require_disjoint_output(a.output,protected);out.mkdir();(out/'metadata.stdout').write_bytes(meta.stdout);(out/'metadata.stderr').write_bytes(meta.stderr)

@@ -39,6 +39,74 @@ fn only_local_outbound_dns_original_keys_are_selected() -> io::Result<()> {
     }
     Ok(())
 }
+
+#[test]
+fn scoped_ipv6_endpoints_cannot_be_retired_without_capture_scope() -> io::Result<()> {
+    let local = [
+        "2001:db8::1".parse().map_err(io::Error::other)?,
+        "fe80::1".parse().map_err(io::Error::other)?,
+        "fec0::1".parse().map_err(io::Error::other)?,
+    ];
+    for endpoints in [
+        "fe80::1[53000] -> 2001:db8::53[53]",
+        "2001:db8::1[53000] -> fe80::53[53]",
+        "2001:db8::1[53000] -> febf:ffff::53[53]",
+        "fec0::1[53000] -> 2001:db8::53[53]",
+        "2001:db8::1[53000] -> fec0::53[53]",
+        "2001:db8::1[53000] -> feff:ffff::53[53]",
+    ] {
+        let snapshot = format!(
+            "all udp {endpoints} SINGLE:SINGLE\n   id: 0000000000000001 creatorid: 12345678\n"
+        );
+        if !dns(snapshot.as_bytes(), &local)?.is_empty() {
+            return Err(io::Error::other(format!(
+                "scoped IPv6 DNS flow selected without native zone: {endpoints}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn nonunicast_or_mapped_raw_reply_endpoints_are_not_selected_for_retirement() -> io::Result<()> {
+    use std::net::{Ipv4Addr, Ipv6Addr};
+    let destinations = [
+        IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+        IpAddr::V4(Ipv4Addr::BROADCAST),
+        IpAddr::V4(Ipv4Addr::new(224, 0, 0, 53)),
+        IpAddr::V6(Ipv6Addr::UNSPECIFIED),
+        IpAddr::V6(Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 53)),
+        IpAddr::V6(Ipv4Addr::new(192, 0, 2, 53).to_ipv6_mapped()),
+        IpAddr::V6(Ipv4Addr::new(224, 0, 0, 53).to_ipv6_mapped()),
+    ];
+    for destination in destinations {
+        let source: IpAddr = if destination.is_ipv4() {
+            "10.0.0.1"
+        } else {
+            "2001:db8::1"
+        }
+        .parse()
+        .map_err(io::Error::other)?;
+        let endpoint = |ip: IpAddr, port| match ip {
+            IpAddr::V4(ip) => format!("{ip}:{port}"),
+            IpAddr::V6(ip) => format!("{ip}[{port}]"),
+        };
+        for (left, right) in [(source, destination), (destination, source)] {
+            let snapshot = format!(
+                "all udp {} -> {} SINGLE:SINGLE\n   id: 0000000000000001 creatorid: 12345678\n",
+                endpoint(left, 53000),
+                endpoint(right, 53)
+            );
+            if !dns(snapshot.as_bytes(), &[left])?.is_empty() {
+                return Err(io::Error::other(
+                    "unsupported raw DNS endpoint selected for retirement",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 #[test]
 fn incomplete_or_unqualified_later_target_refuses_the_entire_snapshot() -> io::Result<()> {
     let local = ["10.0.0.1".parse().map_err(io::Error::other)?];

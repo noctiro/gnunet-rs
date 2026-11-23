@@ -1,6 +1,6 @@
 //! Explicit client plaintext and identifier provenance. Outer relay padding is
 //! deliberately separate from authenticated short-message plaintext padding.
-use crate::*;
+use crate::{Error, Hash, OriginalLayout, ShortHash, wire};
 /// Explicit original short-body and immutable short-padding encoders.
 pub use wire::message::ShortProfiles as ShortLayout;
 use wire::profile::{Endian, Profile};
@@ -52,23 +52,5 @@ pub struct EpochRecordTarget {
 impl core::fmt::Debug for EpochRecordTarget {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str("EpochRecordTarget([REDACTED])")
-    }
-}
-impl<'id> Core<'id> {
-    /// Exact attached source's original room generation. This read-only lookup
-    /// never grants a source, binding or membership to a caller.
-    pub fn source_room(&self, source: Source<'id>) -> Result<Room<'id>, Error> {
-        self.check_source(source)?;
-        Ok(self.event_room(source.room))
-    }
-
-    /// Retained actual raw identifier creator order, independent from any new
-    /// sender's profile. Absence is not a claim of a default host order.
-    pub fn group_identifier_order(
-        &self,
-        room: Room<'id>,
-        id: &ShortHash,
-    ) -> Result<Option<Endian>, Error> {
-        self.known_identifier_order(self.check_room(room)?, id)
     }
 }

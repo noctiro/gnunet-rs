@@ -4,10 +4,11 @@ use crate::{
     plugins::{Clock, KeyResult, RevocationConfig, be32, be64},
     pow,
 };
-use gnunet_crypto::{gns, hash512};
+use gnunet_crypto::{gns, hash512, hash512_parts};
 use gnunet_types::Error;
 /// Exact16-byte Argon2 salt; the C initializer fills its array with no NUL.
 pub const SALT: [u8; 16] = *b"GnsRevocationPow";
+const PROOF_BYTES: usize = 372;
 struct Proof<'a> {
     bytes: &'a [u8],
     kind: u32,
@@ -57,7 +58,7 @@ pub fn check(
     let Some(proof) = parse(block)? else {
         return Ok(ReturnValue::No);
     };
-    if proof.bytes.len() < 372 {
+    if proof.bytes.len() < PROOF_BYTES {
         return Ok(ReturnValue::No);
     }
     let result = verify(&proof, config, memory, clock)?;
@@ -98,11 +99,13 @@ pub fn signature_valid(bytes: &[u8]) -> Result<bool, Error> {
     let Some(proof) = parse_proof(bytes)? else {
         return Ok(false);
     };
-    if bytes.len() < 372 {
+    if bytes.len() < PROOF_BYTES {
         return Ok(false);
     }
     let public = proof.key[4..36].try_into().map_err(|_| Error::Truncated)?;
-    let signature = bytes[308..372].try_into().map_err(|_| Error::Truncated)?;
+    let signature = bytes[308..PROOF_BYTES]
+        .try_into()
+        .map_err(|_| Error::Truncated)?;
     let key = proof.key.try_into().map_err(|_| Error::Truncated)?;
     let region = signing_message(be64(bytes, 0)?, key);
     let parts = [&region[..]];
@@ -117,54 +120,42 @@ pub fn signature_valid(bytes: &[u8]) -> Result<bool, Error> {
 /// The immutable borrowed bytes cannot be replaced between signature and work.
 /// Caller owns the reusable1MiB scratch and scheduling; there is no hidden task.
 pub struct Verification<'a> {
-    proof: Proof<'a>,
+    original: &'a [u8; PROOF_BYTES],
     config: RevocationConfig,
+    progress: Progress,
+}
+#[derive(Default)]
+struct Progress {
     next: u8,
     sum: u32,
 }
-impl<'a> Verification<'a> {
-    /// Authenticate the original signature and ordered nonce set before work.
-    /// Invalid proofs return None; no PoW hash or clock call occurs here.
-    pub fn new(bytes: &'a [u8], config: RevocationConfig) -> Result<Option<Self>, Error> {
-        let Some(proof) = parse_proof(bytes)? else {
-            return Ok(None);
-        };
-        if bytes.len() < 372 || !signature_valid(bytes)? {
-            return Ok(None);
-        }
-        for i in 0..31 {
-            if be64(bytes, 16 + i * 8)? >= be64(bytes, 24 + i * 8)? {
-                return Ok(None);
-            }
-        }
-        Ok(Some(Self {
-            proof,
-            config,
-            next: 0,
-            sum: 0,
-        }))
+
+fn authenticate(original: &[u8; PROOF_BYTES]) -> Result<bool, Error> {
+    let nonces = original[16..272].as_chunks::<8>().0;
+    if nonces.windows(2).any(|pair| pair[0] >= pair[1]) {
+        return Ok(false);
     }
-    /// Whether all32 original nonce hashes have actually completed.
-    #[must_use]
-    pub const fn complete(&self) -> bool {
+    signature_valid(original)
+}
+
+impl Progress {
+    const fn complete(&self) -> bool {
         self.next == 32
     }
-    /// Actual completed hash count, independent of service admission or IO.
-    #[must_use]
-    pub const fn completed_hashes(&self) -> u8 {
-        self.next
-    }
-    /// Execute at most one real hash. Completed work cannot silently restart.
-    /// On scratch refusal/error, the original counter and score are unchanged.
-    pub fn step(&mut self, memory: &mut [pow::Block]) -> Result<bool, Error> {
+
+    fn step(
+        &mut self,
+        original: &[u8; PROOF_BYTES],
+        memory: &mut [pow::Block],
+    ) -> Result<bool, Error> {
         if self.complete() {
             return Err(Error::Replay);
         }
         let mut input = [0; 52];
         let offset = 16 + usize::from(self.next) * 8;
-        input[..8].copy_from_slice(&self.proof.bytes[offset..offset + 8]);
-        input[8..16].copy_from_slice(&self.proof.bytes[..8]);
-        input[16..].copy_from_slice(self.proof.key);
+        input[..8].copy_from_slice(&original[offset..offset + 8]);
+        input[8..16].copy_from_slice(&original[..8]);
+        input[16..].copy_from_slice(&original[272..308]);
         let mut output = [0; 64];
         pow::hash(&SALT, &input, &mut output, memory)?;
         let score = leading_zeros(&output);
@@ -172,10 +163,47 @@ impl<'a> Verification<'a> {
         self.next += 1;
         Ok(self.complete())
     }
+
+    fn score(&self) -> Option<u32> {
+        self.complete().then_some(self.sum / 32)
+    }
+}
+
+impl<'a> Verification<'a> {
+    /// Authenticate the original signature and ordered nonce set before work.
+    /// Invalid proofs return None; no PoW hash or clock call occurs here.
+    pub fn new(bytes: &'a [u8], config: RevocationConfig) -> Result<Option<Self>, Error> {
+        let Some(original) = bytes.first_chunk::<PROOF_BYTES>() else {
+            return Ok(None);
+        };
+        if !authenticate(original)? {
+            return Ok(None);
+        }
+        Ok(Some(Self {
+            original,
+            config,
+            progress: Progress::default(),
+        }))
+    }
+    /// Whether all32 original nonce hashes have actually completed.
+    #[must_use]
+    pub const fn complete(&self) -> bool {
+        self.progress.complete()
+    }
+    /// Actual completed hash count, independent of service admission or IO.
+    #[must_use]
+    pub const fn completed_hashes(&self) -> u8 {
+        self.progress.next
+    }
+    /// Execute at most one real hash. Completed work cannot silently restart.
+    /// On scratch refusal/error, the original counter and score are unchanged.
+    pub fn step(&mut self, memory: &mut [pow::Block]) -> Result<bool, Error> {
+        self.progress.step(self.original, memory)
+    }
     /// Actual average leading-zero score; absent while any work remains.
     #[must_use]
     pub fn score(&self) -> Option<u32> {
-        self.complete().then_some(self.sum / 32)
+        self.progress.score()
     }
     /// Check current official lifetime after all original work. Keeps the
     /// reference's clock/FOREVER behavior; informational TTL grants no validity.
@@ -184,11 +212,90 @@ impl<'a> Verification<'a> {
         Ok(valid_lifetime(
             score,
             self.config,
-            be64(self.proof.bytes, 0)?,
+            be64(self.original, 0)?,
             clock,
         ))
     }
 }
+/// Bounded certificate work whose original proof and progress remain owned
+/// between steps. Each step uses the same Argon2 operation as [Verification].
+pub struct OwnedVerification {
+    original: [u8; PROOF_BYTES],
+    config: RevocationConfig,
+    progress: Progress,
+}
+
+impl OwnedVerification {
+    /// Authenticate the same proof fields as [Verification::new] and retain
+    /// their original bytes without retaining the caller's input buffer.
+    pub fn new(bytes: &[u8], config: RevocationConfig) -> Result<Option<Self>, Error> {
+        let Some(original) = bytes.first_chunk::<PROOF_BYTES>() else {
+            return Ok(None);
+        };
+        Self::from_original(*original, config)
+    }
+
+    /// Take an exact fixed certificate. Structure and signature are checked
+    /// before its original work cursor becomes available.
+    pub fn from_original(
+        original: [u8; PROOF_BYTES],
+        config: RevocationConfig,
+    ) -> Result<Option<Self>, Error> {
+        if !authenticate(&original)? {
+            return Ok(None);
+        }
+        Ok(Some(Self {
+            original,
+            config,
+            progress: Progress::default(),
+        }))
+    }
+
+    /// The original signed issue time in UTC microseconds.
+    #[must_use]
+    pub const fn issued_at(&self) -> u64 {
+        u64::from_be_bytes(self.original.as_chunks::<8>().0[0])
+    }
+
+    /// The original signed issue time in UTC microseconds.
+    pub fn issue_time(&self) -> Result<u64, Error> {
+        Ok(self.issued_at())
+    }
+
+    /// Actual completed nonce hashes in this original work cursor.
+    #[must_use]
+    pub const fn completed_hashes(&self) -> u8 {
+        self.progress.next
+    }
+
+    /// Consume all completed work, retaining its exact original and policy.
+    /// The returned score grants no time validity until a clock check succeeds.
+    pub fn into_completed(self) -> Result<([u8; PROOF_BYTES], u32, RevocationConfig), Error> {
+        let score = self.progress.score().ok_or(Error::NotReady)?;
+        Ok((self.original, score, self.config))
+    }
+
+    /// Identify identical authenticated inputs to the work and lifetime checks.
+    /// The informational TTL cannot change those checks. A digest is not a
+    /// proof verdict and does not authenticate another original by itself.
+    #[must_use]
+    pub fn work_digest(&self) -> Hash {
+        hash512_parts(&[&self.original[..8], &self.original[16..]])
+    }
+
+    /// Execute at most one original nonce hash and return whether all work is complete.
+    pub fn step(&mut self, memory: &mut [pow::Block]) -> Result<bool, Error> {
+        self.progress.step(&self.original, memory)
+    }
+
+    /// The verified UTC deadline, or None if the completed score is insufficient.
+    /// The caller must still check the issue time and deadline against UTC.
+    pub fn expiration(&self) -> Result<Option<u64>, Error> {
+        let score = self.progress.score().ok_or(Error::NotReady)?;
+        Ok(expiration(score, self.config, self.issued_at()))
+    }
+}
+
 /// Count public work-hash leading zero bits, from0 through512.
 #[must_use]
 pub fn leading_zeros(bytes: &[u8; 64]) -> u32 {
@@ -222,31 +329,62 @@ fn verify(
 pub fn valid_at(score: u32, config: RevocationConfig, timestamp: u64, now: u64) -> ReturnValue {
     valid_lifetime(score, config, timestamp, &mut || now)
 }
-fn valid_lifetime(
+/// Deadline at one explicitly sampled time, when the given score and timestamp
+/// meet the lifetime policy. Inputs still require independent authentication.
+#[must_use]
+pub fn expiration_at(
     score: u32,
     config: RevocationConfig,
     timestamp: u64,
-    clock: &mut (impl Clock + ?Sized),
-) -> ReturnValue {
-    if score < config.matching_bits {
-        return ReturnValue::No;
+    now: u64,
+) -> Option<u64> {
+    checked_expiration(score, config, timestamp, &mut || now)
+}
+/// Deadline established by an already authenticated proof's score and issue
+/// time. The caller must still check the issue time and deadline against UTC.
+#[must_use]
+pub fn expiration(score: u32, config: RevocationConfig, timestamp: u64) -> Option<u64> {
+    if score < config.matching_bits || timestamp == u64::MAX {
+        return None;
     }
-    let epochs = u64::from(score - config.matching_bits + 1);
+    let epochs = u64::from(score - config.matching_bits) + 1;
     let ttl = config.epoch_duration.saturating_mul(epochs);
     let buffer = if config.epoch_duration == u64::MAX {
         u64::MAX
     } else {
         config.epoch_duration / 10
     };
-    let expiration = timestamp.saturating_add(ttl).saturating_add(buffer);
+    Some(timestamp.saturating_add(ttl).saturating_add(buffer))
+}
+
+fn valid_lifetime(
+    score: u32,
+    config: RevocationConfig,
+    timestamp: u64,
+    clock: &mut (impl Clock + ?Sized),
+) -> ReturnValue {
+    if checked_expiration(score, config, timestamp, clock).is_some() {
+        ReturnValue::Yes
+    } else {
+        ReturnValue::No
+    }
+}
+
+fn checked_expiration(
+    score: u32,
+    config: RevocationConfig,
+    timestamp: u64,
+    clock: &mut (impl Clock + ?Sized),
+) -> Option<u64> {
+    let expiration = expiration(score, config, timestamp)?;
     // get_remaining(NEVER) returns FOREVER without reading the clock, even atMAX.
-    if timestamp == u64::MAX || timestamp > clock.now() {
-        return ReturnValue::No;
+    if timestamp > clock.now() {
+        return None;
     }
     if expiration != u64::MAX && expiration <= clock.now() {
-        return ReturnValue::No;
+        return None;
     }
-    ReturnValue::Yes
+    Some(expiration)
 }
 
 /// Hash bytes are public; a successful key result does not verify revocation.
@@ -257,7 +395,50 @@ pub fn public_key_hash(serialized_key: &[u8; 36]) -> Hash {
 
 #[cfg(test)]
 mod boundaries {
+    extern crate std;
+
     use super::*;
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "assert exact proof work identity and its caller-driven nonce cursor"
+    )]
+    fn work_identity_requires_each_original_signature_and_ignores_only_ttl() -> Result<(), Error> {
+        let config = RevocationConfig {
+            matching_bits: 22,
+            epoch_duration: 100,
+        };
+        let signer = gnunet_crypto::EddsaPrivateKey::from_seed([9; 32]);
+        let mut original = [0; PROOF_BYTES];
+        original[..8].copy_from_slice(&10_u64.to_be_bytes());
+        for (index, nonce) in original[16..272].chunks_exact_mut(8).enumerate() {
+            nonce.copy_from_slice(&(index as u64).to_be_bytes());
+        }
+        let mut public = [0; 36];
+        public[..4].copy_from_slice(&65556_u32.to_be_bytes());
+        public[4..].copy_from_slice(signer.public_key().as_bytes());
+        original[272..308].copy_from_slice(&public);
+        original[308..].copy_from_slice(signer.sign(3, &signing_message(10, &public))?.as_bytes());
+        let mut first = OwnedVerification::new(&original, config)?.ok_or(Error::Authentication)?;
+        assert_eq!(first.issue_time()?, 10);
+        assert_eq!(first.expiration(), Err(Error::NotReady));
+        assert_eq!(first.step(&mut []), Err(Error::Capacity));
+        assert_eq!(first.completed_hashes(), 0);
+        assert!(!first.step(&mut std::vec![pow::Block::new(); pow::MEMORY_BLOCKS])?);
+        assert_eq!(first.completed_hashes(), 1);
+        original[8..16].copy_from_slice(&90_u64.to_be_bytes());
+        let repeated = OwnedVerification::new(&original, config)?.ok_or(Error::Authentication)?;
+        assert_eq!(first.work_digest(), repeated.work_digest());
+        original[264..272].copy_from_slice(&32_u64.to_be_bytes());
+        let changed = OwnedVerification::new(&original, config)?.ok_or(Error::Authentication)?;
+        assert_ne!(first.work_digest(), changed.work_digest());
+        original[308] ^= 1;
+        assert!(OwnedVerification::new(&original, config)?.is_none());
+        assert_eq!(first.into_completed(), Err(Error::NotReady));
+        Ok(())
+    }
+
     #[test]
     fn exact_lifetime_boundary_and_two_original_clock_reads() {
         let cfg = RevocationConfig {

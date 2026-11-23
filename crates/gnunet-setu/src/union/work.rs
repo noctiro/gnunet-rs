@@ -1,70 +1,6 @@
 //! Bounded incremental estimator/filter/full-set work and validated peer input.
 use super::*;
-/// Internal source cost alternatives; no new wire negotiation field.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Choice {
-    /// Actual delta protocol.
-    Differential,
-    /// Local full set goes first.
-    SendFull,
-    /// Request remote full set first.
-    RequestFull,
-}
-/// Source's byte/RTT mode model with checked finite Rust arithmetic. An undefined
-/// negative C float-to-u64 counter estimate conservatively selects valid delta.
-pub fn choose(
-    avg: u64,
-    local: u64,
-    remote: u64,
-    remote_diff: u64,
-    local_diff: u64,
-    options: Options,
-) -> Result<Choice, Error> {
-    super::validate_options(options)?;
-    if options.force_delta == 1 {
-        return Ok(Choice::Differential);
-    }
-    if local == 0 {
-        return Ok(Choice::RequestFull);
-    }
-    if remote == 0 {
-        return Ok(Choice::SendFull);
-    }
-    let diff = remote_diff.checked_add(local_diff).ok_or(Error::Overflow)?;
-    let full_local = (avg.checked_add(8).ok_or(Error::Overflow)? as f64)
-        * (remote_diff.checked_add(local).ok_or(Error::Overflow)? as f64)
-        + 8.0
-        + 2.0 * (options.bandwidth_latency_tradeoff as f64);
-    let full_remote = (avg.checked_add(8).ok_or(Error::Overflow)? as f64)
-        * (local_diff.checked_add(remote).ok_or(Error::Overflow)? as f64)
-        + 12.0
-        + 2.5 * (options.bandwidth_latency_tradeoff as f64);
-    let buckets = libm::fmax(37.0, (diff as f64) * (options.bucket_factor as f64));
-    let counter = libm::fmin(
-        2.0 * libm::log2((local as f64) / buckets),
-        libm::log2(local as f64),
-    );
-    if counter < 0.0 && options.force_full != 1 {
-        return Ok(Choice::Differential);
-    }
-    let ibf = (16.0 * libm::ceil(buckets / 3276.0)
-        + buckets * (12.0 + libm::ceil(libm::fmax(counter, 0.0)) / 8.0))
-        * 1.2;
-    let differential = ((avg + 8) as f64) * (diff as f64)
-        + 4.0
-        + 152.0 * (diff as f64)
-        + libm::ceil(ibf)
-        + 3.65145 * (options.bandwidth_latency_tradeoff as f64);
-    if options.force_full == 1 || libm::fmin(full_local, full_remote) < differential {
-        Ok(if full_local < full_remote {
-            Choice::SendFull
-        } else {
-            Choice::RequestFull
-        })
-    } else {
-        Ok(Choice::Differential)
-    }
-}
+pub use crate::mode::{Choice, choose};
 impl Union {
     pub(super) fn receive_inner(
         &mut self,
@@ -399,16 +335,11 @@ impl Union {
                     )?;
                     match choice {
                         Choice::Differential => {
-                            let diff = self
-                                .remote_diff
-                                .checked_add(self.local_diff)
-                                .ok_or(Error::Overflow)?;
-                            let size = diff
-                                .checked_mul(self.options.bucket_factor)
-                                .ok_or(Error::Overflow)?
-                                | 1;
-                            let size =
-                                usize::try_from(size.max(37)).map_err(|_| Error::Capacity)?;
+                            let size = crate::mode::initial_buckets(
+                                self.remote_diff,
+                                self.local_diff,
+                                self.options.bucket_factor,
+                            )?;
                             self.phase = Phase::Passive;
                             self.begin_ibf(size, None, 0)?;
                         }
@@ -611,18 +542,7 @@ impl Union {
         last: &mut Option<Key>,
         pending: &mut Option<(Key, i8)>,
     ) -> Result<bool, Error> {
-        let previous = storage.len();
-        let removed = usize::try_from(self.options.bucket_factor)
-            .map_err(|_| Error::Overflow)?
-            .checked_mul(*decoded)
-            .ok_or(Error::Overflow)?;
-        let next = previous
-            .checked_mul(2)
-            .ok_or(Error::Overflow)?
-            .saturating_sub(removed)
-            .max(previous.checked_add(2).ok_or(Error::Overflow)?)
-            .max(37)
-            | 1;
+        let next = crate::mode::retry_buckets(storage.len(), *decoded, self.options.bucket_factor)?;
         if next > self.limits.ibf_buckets {
             return Err(Error::Capacity);
         }

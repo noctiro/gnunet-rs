@@ -42,7 +42,7 @@ impl WriteId {
         self.serial
     }
 }
-/// Original cause observed before the one native close attempt.
+/// Original cause observed before packet-source retirement.
 #[derive(Debug)]
 pub enum LossCause {
     /// Original native read/write/registration error.
@@ -66,9 +66,9 @@ pub enum LossCause {
     /// explicit recovery. No queued packet moves to the replacement epoch.
     #[cfg(windows)]
     SessionRestart,
-    /// Windows: a complete native interface table no longer contains the
-    /// original LUID. This is not a kernel-route cleanup receipt.
-    #[cfg(windows)]
+    /// Native interface observation found the original selected scope missing.
+    /// Route cleanup requires its own confirmation.
+    #[cfg(any(windows, target_os = "freebsd"))]
     InterfaceMissing,
 }
 /// Actual source retirement, including any original uncompleted write id.
@@ -87,6 +87,10 @@ pub struct Loss {
     /// allocation-failure teardown do not produce a restart owner.
     #[cfg(windows)]
     pub recovery: Option<Box<crate::WintunRecovery>>,
+    /// FreeBSD: the original managed device, control socket and checkpoint
+    /// when the caller enabled recovery before unexpected packet-source loss.
+    #[cfg(target_os = "freebsd")]
+    pub freebsd_recovery: Option<Box<crate::FreeBsdRecovery>>,
 }
 impl Loss {
     /// Release the optional retained Windows adapter when the caller chooses
@@ -178,7 +182,7 @@ pub enum WriteEvent {
         /// Actual local retirement reason.
         reason: Unsent,
     },
-    /// Original FD physically closed; never retry its partial suffix.
+    /// Original packet epoch retired. Exceptional ownership may remain in Loss.
     Lost(Loss),
     /// No original packet is queued.
     Idle,
@@ -204,6 +208,8 @@ pub struct AsyncTun {
     maximum: usize,
     next: u64,
     pending: Option<Pending>,
+    #[cfg(target_os = "freebsd")]
+    pub(crate) freebsd_recovery_enabled: bool,
 }
 impl AsyncTun {
     /// Register a verified descriptor on the caller's current Tokio reactor.
@@ -251,12 +257,36 @@ impl AsyncTun {
             maximum,
             next: 0,
             pending: None,
+            #[cfg(target_os = "freebsd")]
+            freebsd_recovery_enabled: false,
         })
+    }
+    /// Retain the original managed FreeBSD device on unexpected packet loss.
+    /// Its pending packet and old epoch still retire before recovery is offered.
+    ///
+    /// # Errors
+    /// Returns Unsupported for an uncheckpointed or externally owned TUN.
+    #[cfg(target_os = "freebsd")]
+    pub fn enable_freebsd_recovery(&mut self) -> io::Result<()> {
+        let original = self.io.as_ref().ok_or(io::ErrorKind::NotConnected)?;
+        if !original.get_ref().has_freebsd_checkpoint() {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "FreeBSD packet recovery requires a managed TUN checkpoint",
+            ));
+        }
+        self.freebsd_recovery_enabled = true;
+        Ok(())
     }
     /// Exact original verified metadata.
     #[must_use]
     pub const fn info(&self) -> &Info {
         &self.info
+    }
+    /// Configured maximum raw IP bytes accepted by this original device queue.
+    #[must_use]
+    pub const fn packet_capacity(&self) -> usize {
+        self.maximum
     }
     /// Original physical device lifetime.
     #[must_use]
@@ -437,8 +467,19 @@ impl AsyncTun {
         self.epoch.0.alive.set(false);
         let pending = self.pending.take().map(|p| p.id);
         self.rx.fill(0);
-        #[cfg(unix)]
+        #[cfg(all(unix, not(target_os = "freebsd")))]
         let close_error = self.io.take().and_then(|io| io.into_inner().close().err());
+        #[cfg(target_os = "freebsd")]
+        let (close_error, freebsd_recovery) = match self.io.take() {
+            Some(io)
+                if self.freebsd_recovery_enabled
+                    && !matches!(cause, LossCause::Closed | LossCause::Capacity) =>
+            {
+                (None, Some(Box::new(io.into_inner().retain_freebsd())))
+            }
+            Some(io) => (io.into_inner().close().err(), None),
+            None => (None, None),
+        };
         #[cfg(windows)]
         let (close_error, recovery) = match self.io.take() {
             Some(io) if !matches!(cause, LossCause::Closed | LossCause::Capacity) => {
@@ -454,6 +495,8 @@ impl AsyncTun {
             close_error,
             #[cfg(windows)]
             recovery,
+            #[cfg(target_os = "freebsd")]
+            freebsd_recovery,
         }
     }
     /// Attempt native close before retiring the queued packet/epoch; close errno
@@ -494,6 +537,27 @@ impl AsyncTun {
                 io::ErrorKind::NotConnected,
                 "original Wintun LUID was reused",
             )),
+        }
+    }
+    /// Check the original FreeBSD checkpoint and retired interface index before
+    /// offering a packet owner for recovery. The caller still settles old routes.
+    #[cfg(target_os = "freebsd")]
+    pub fn retire_missing_freebsd(&mut self) -> io::Result<Option<Loss>> {
+        if !self.freebsd_recovery_enabled {
+            return Ok(None);
+        }
+        let Some(io) = self.io.as_mut() else {
+            return Ok(None);
+        };
+        let handle = io
+            .get_mut()
+            .handle
+            .as_mut()
+            .ok_or(io::ErrorKind::NotConnected)?;
+        if crate::platform::recovery::missing_index(handle, &self.info)? {
+            Ok(Some(self.retire(LossCause::InterfaceMissing)))
+        } else {
+            Ok(None)
         }
     }
     /// Defer persistent interface destruction during a surrounding destructor.

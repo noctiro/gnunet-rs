@@ -1,8 +1,6 @@
 //! Safe host account lookup for the official secret-file diagnostic text.
 use crate::Error;
 #[cfg(unix)]
-use crate::path_bytes;
-#[cfg(unix)]
 use std::fs;
 use std::path::Path;
 /// Host account-name lookup. Values remain opaque Unix bytes; no shell command
@@ -13,17 +11,18 @@ pub trait NssResolver {
     /// Group name for a numeric GID, or None for the C `<unknown>` result.
     fn group_name(&self, gid: u32) -> Option<Vec<u8>>;
 }
-/// Reentrant native Unix NSS lookup through the maintained safe uzers API.
+/// Reentrant native Unix account lookup.
 pub struct NativeNss;
 #[cfg(unix)]
 impl NssResolver for NativeNss {
     fn user_name(&self, uid: u32) -> Option<Vec<u8>> {
-        let user = uzers::get_user_by_uid(uid)?;
-        path_bytes(Path::new(user.name())).ok().map(<[u8]>::to_vec)
+        let user = gnunet_native::accounts::user_by_uid(uid).ok()??;
+        Some(user.name().to_bytes().to_vec())
     }
     fn group_name(&self, gid: u32) -> Option<Vec<u8>> {
-        let group = uzers::get_group_by_gid(gid)?;
-        path_bytes(Path::new(group.name())).ok().map(<[u8]>::to_vec)
+        gnunet_native::accounts::group_name(gid)
+            .ok()?
+            .map(std::ffi::CString::into_bytes)
     }
 }
 #[cfg(unix)]

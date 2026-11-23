@@ -9,6 +9,7 @@ use std::{
     ffi::{OsStr, OsString},
     fs::{self, File},
     io::{self, Read},
+    mem::DropGuard,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -167,8 +168,20 @@ impl Temporary {
                 Err(cause) if cause.kind() == io::ErrorKind::AlreadyExists => continue,
                 Err(cause) => return Err(JournalFailure::io("temporary-open", cause)),
             };
-            let inode = private_single_file_identity(&file)
-                .map_err(|cause| JournalFailure::io("temporary-metadata", cause))?;
+            let mut cleanup = None;
+            let pending = DropGuard::new(file, |file| {
+                cleanup = discard(&authority.directory, &name, &file).err();
+            });
+            let inode = match private_single_file_identity(&pending) {
+                Ok(inode) => inode,
+                Err(cause) => {
+                    drop(pending);
+                    let mut failure = JournalFailure::io("temporary-metadata", cause);
+                    failure.cleanup = cleanup;
+                    return Err(failure);
+                }
+            };
+            let file = DropGuard::dismiss(pending);
             return Ok(Self {
                 authority,
                 name,
@@ -195,10 +208,13 @@ impl Temporary {
     }
     pub(super) fn discard(&mut self) -> io::Result<()> {
         self.cleaned = true;
-        match self.authority.directory.remove_file(&self.name, &self.file) {
-            Err(cause) if cause.kind() == io::ErrorKind::NotFound => Ok(()),
-            result => result,
-        }
+        discard(&self.authority.directory, &self.name, &self.file)
+    }
+}
+fn discard(directory: &Directory, name: &OsStr, file: &File) -> io::Result<()> {
+    match directory.remove_file(name, file) {
+        Err(cause) if cause.kind() == io::ErrorKind::NotFound => Ok(()),
+        result => result,
     }
 }
 impl Drop for Temporary {

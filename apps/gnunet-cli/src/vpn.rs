@@ -16,11 +16,26 @@ use std::{
     time::Duration,
 };
 use tokio::time::Instant;
+pub(super) mod standalone;
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
 enum Target {
     Internet(Address),
     Service(Service),
+}
+impl Target {
+    fn submit<'id>(
+        self,
+        client: &mut Client<'id>,
+        desired: Option<Family>,
+        lease: u64,
+        response_until: u64,
+    ) -> Result<Operation<'id>> {
+        Ok(match self {
+            Self::Internet(target) => client.internet(target, desired, lease, response_until)?,
+            Self::Service(target) => client.service(target, desired, lease, response_until)?,
+        })
+    }
 }
 struct Command {
     socket: PathBuf,
@@ -86,18 +101,9 @@ fn parse(args: &[OsString]) -> Result<Command> {
                 }
             }
             "--af-profile" => {
-                command.profile = match value {
-                    "native" => AfProfile::native(),
-                    "linux" => AfProfile::LINUX,
-                    "darwin" => AfProfile::DARWIN,
-                    "freebsd" => AfProfile::FREEBSD,
-                    "windows" => AfProfile::WINDOWS,
-                    _ => {
-                        return Err(
-                            "AF profile must be native, linux, darwin, freebsd or windows".into(),
-                        );
-                    }
-                }
+                command.profile = value
+                    .parse()
+                    .map_err(|_| "AF profile must be native, linux, darwin, freebsd or windows")?;
             }
             "--lease-ms" => {
                 command.lease_millis = if value == "forever" {
@@ -115,11 +121,18 @@ fn parse(args: &[OsString]) -> Result<Command> {
     }
     Ok(command)
 }
-fn row(out: &mut impl Write, value: serde_json::Value) -> Result<()> {
-    serde_json::to_writer(&mut *out, &value)?;
-    writeln!(out)?;
-    out.flush()?;
-    Ok(())
+struct JsonOutput<'a> {
+    out: &'a mut dyn Write,
+    lease_until: u64,
+}
+
+impl JsonOutput<'_> {
+    fn row(&mut self, value: serde_json::Value) -> Result<()> {
+        serde_json::to_writer(&mut *self.out, &value)?;
+        writeln!(self.out)?;
+        self.out.flush()?;
+        Ok(())
+    }
 }
 async fn wait<'id>(
     client: &mut Client<'id>,
@@ -143,9 +156,8 @@ async fn observe<'id>(
     client: &mut Client<'id>,
     operation: Operation<'id>,
     deadline: Instant,
-    lease_until: u64,
-    out: &mut impl Write,
-) -> Result<()> {
+    mut output: Option<JsonOutput<'_>>,
+) -> Result<IpAddr> {
     let interrupt = tokio::signal::ctrl_c();
     let mut interrupt = std::pin::pin!(interrupt);
     let mut cancelling = false;
@@ -157,10 +169,9 @@ async fn observe<'id>(
         } else {
             cancelling = true;
             let local = client.cancel(operation)?;
-            row(
-                out,
-                serde_json::json!({"event":"vpn_cancel","local":format!("{local:?}")}),
-            )?;
+            if let Some(log) = &mut output {
+                log.row(serde_json::json!({"event":"vpn_cancel","local":format!("{local:?}")}))?;
+            }
             continue;
         };
         match progress {
@@ -175,16 +186,11 @@ async fn observe<'id>(
                             Address::V4(a) => IpAddr::from(a),
                             Address::V6(a) => IpAddr::from(a),
                         });
-                        row(
-                            out,
-                            serde_json::json!({"event":"vpn_allocation","allocated":ip.is_some(),
-                            "address":ip.map(|a|a.to_string()),"lease_until":lease_until}),
-                        )?;
-                        if ip.is_some() {
-                            Ok(())
-                        } else {
-                            Err("VPN service could not allocate an address".into())
+                        if let Some(log) = &mut output {
+                            log.row(serde_json::json!({"event":"vpn_allocation","allocated":ip.is_some(),
+                            "address":ip.map(|a|a.to_string()),"lease_until":log.lease_until}))?;
                         }
+                        ip.ok_or_else(|| "VPN service could not allocate an address".into())
                     }
                     Outcome::Local { reason, submission } => {
                         let reason = match reason {
@@ -197,10 +203,9 @@ async fn observe<'id>(
                             Submission::Unsent => "unsent",
                             Submission::Unknown => "unknown",
                         };
-                        row(
-                            out,
-                            serde_json::json!({"event":"vpn_local_end","reason":reason,"submission":exposure}),
-                        )?;
+                        if let Some(log) = &mut output {
+                            log.row(serde_json::json!({"event":"vpn_local_end","reason":reason,"submission":exposure}))?;
+                        }
                         Err(format!(
                             "VPN {reason}; allocation result was not observed ({exposure})"
                         )
@@ -213,11 +218,12 @@ async fn observe<'id>(
             }
             Progress::Unavailable(error) => return Err(error.into()),
             Progress::Closed => return Err("VPN client closed without an allocation result".into()),
-            Progress::ConnectRetry { error, retry_after } => row(
-                out,
-                serde_json::json!({
-                "event":"vpn_connect_retry","error":error.to_string(),"retry_after_micros":retry_after.as_micros()}),
-            )?,
+            Progress::ConnectRetry { error, retry_after } => {
+                if let Some(log) = &mut output {
+                    log.row(serde_json::json!({
+                    "event":"vpn_connect_retry","error":error.to_string(),"retry_after_micros":retry_after.as_micros()}))?;
+                }
+            }
             _ => {}
         }
     }
@@ -277,18 +283,22 @@ pub(super) fn run(args: &[OsString], out: &mut impl Write) -> Result<()> {
                     ..Limits::default()
                 },
             )?;
-            let operation = match command.target {
-                Target::Internet(destination) => {
-                    client.internet(destination, command.desired, lease, until)?
-                }
-                Target::Service(target) => client.service(target, command.desired, lease, until)?,
-            };
-            let result = observe(&mut client, operation, deadline, lease, out).await;
+            let operation = command
+                .target
+                .submit(&mut client, command.desired, lease, until)?;
+            let result = observe(
+                &mut client,
+                operation,
+                deadline,
+                Some(JsonOutput {
+                    out,
+                    lease_until: lease,
+                }),
+            )
+            .await;
             let cleanup = client.close();
-            match (result, cleanup) {
-                (Err(error), _) => Err(error),
-                (Ok(()), Err(error)) => Err(error.into()),
-                (Ok(()), Ok(_)) => Ok(()),
-            }
+            result?;
+            cleanup?;
+            Ok(())
         })
 }

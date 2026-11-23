@@ -1,4 +1,6 @@
 //! Incremental native KSK/SKS search; caller stop never means a search is complete.
+mod format;
+mod standalone;
 use super::{
     publication::hex,
     search_export,
@@ -10,9 +12,10 @@ use gnunet::{
         ipc,
         search::{self, QueryId, ResultId, Session, Step},
     },
-    types::Error as ProtocolError,
+    types::{AbsoluteTime, Error as ProtocolError},
 };
 use serde_json::{Value, json};
+pub(crate) use standalone::run as run_official;
 use std::{
     error::Error,
     ffi::OsStr,
@@ -451,6 +454,66 @@ pub(super) fn run(
         QueryInput::Text(raw) => Uri::Keywords(Keywords::from_user_text(raw, uri_limits)?),
         QueryInput::Args(raw) => Uri::Keywords(Keywords::from_user_args(raw, uri_limits)?),
     };
+    let limit = max_visible(
+        arguments.maximum.as_ref(),
+        search::Limits::default().results,
+    )?;
+    let source = ipc::EndpointSource::unix(Path::new(arguments.socket).to_path_buf());
+    let request = Request {
+        query,
+        interval: Some(interval),
+        limit,
+        output: arguments.output.map(Path::new),
+        local_only: arguments.local_only,
+        anonymity: arguments.anonymity,
+        style: Style::Json,
+    };
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?
+        .block_on(execute(request, source, out))
+}
+
+struct Request<'a> {
+    query: Uri<'a>,
+    interval: Option<u64>,
+    limit: Option<usize>,
+    output: Option<&'a Path>,
+    local_only: bool,
+    anonymity: u32,
+    style: Style<'a>,
+}
+
+#[derive(Clone, Copy)]
+enum Style<'a> {
+    Json,
+    Text(&'a format::Formats),
+    Silent,
+}
+
+fn canonical_uri(query: &Uri<'_>) -> Result<Vec<u8>, Box<dyn Error>> {
+    let length = query.encoded_len()?;
+    let mut bytes = Vec::new();
+    bytes.try_reserve_exact(length)?;
+    bytes.resize(length, 0);
+    query.encode(&mut bytes)?;
+    Ok(bytes)
+}
+
+async fn execute(
+    request: Request<'_>,
+    source: ipc::EndpointSource,
+    out: &mut super::Output<'_, impl Write>,
+) -> Result<(), Box<dyn Error>> {
+    let Request {
+        query,
+        interval,
+        limit,
+        output,
+        local_only,
+        anonymity,
+        style,
+    } = request;
     let (mandatory, optional) = match query {
         Uri::Keywords(keywords) => {
             let mandatory = keywords.iter().filter(|term| term.mandatory()).count();
@@ -460,23 +523,26 @@ pub(super) fn run(
         _ => return Err("fs search requires a KSK or SKS URI".into()),
     };
     let limits = search::Limits::default();
-    let limit = max_visible(arguments.maximum.as_ref(), limits.results)?;
-    let mut export = arguments
-        .output
-        .map(|path| search_export::Target::open(Path::new(path)))
-        .transpose()?;
-    let source = ipc::EndpointSource::unix(Path::new(arguments.socket).to_path_buf());
+    let mut export = output.map(search_export::Target::open).transpose()?;
     // Capture the immutable native bound before any canonical sample; callbacks,
     // local output and wait cancellation never renew this original operation.
-    let hard = Instant::now()
-        .checked_add(Duration::from_micros(interval))
-        .ok_or("search native deadline is too large")?;
-    out.deadline(hard);
-    out.interval(interval)?;
-    let deadline = target(&source, interval)?;
+    let hard = interval
+        .map(|interval| {
+            Instant::now()
+                .checked_add(Duration::from_micros(interval))
+                .ok_or("search native deadline is too large")
+        })
+        .transpose()?;
+    if let Some(hard) = hard {
+        out.deadline(hard);
+    }
+    let deadline = interval
+        .map(|interval| target(&source, interval))
+        .transpose()?
+        .unwrap_or(AbsoluteTime::NEVER);
     let options = search::Options {
-        anonymity: arguments.anonymity,
-        local_only: arguments.local_only,
+        anonymity,
+        local_only,
         deadline,
         limits,
         block: ublock::Limits::default(),
@@ -486,21 +552,23 @@ pub(super) fn run(
     // Some official user terms (optional empty/leading plus) cannot be encoded
     // as a KSK URI without changing meaning. Keep their actual query and report
     // the absence of a faithful URI, rather than refusing or rewriting the term.
-    let canonical = match query.encoded_len() {
-        Ok(length) => {
-            let mut bytes = Vec::new();
-            bytes.try_reserve_exact(length)?;
-            bytes.resize(length, 0);
-            query.encode(&mut bytes)?;
-            Some(bytes)
+    let canonical = if matches!(style, Style::Json) {
+        match canonical_uri(&query) {
+            Ok(bytes) => Some(bytes),
+            Err(error)
+                if error.downcast_ref::<ProtocolError>() == Some(&ProtocolError::InvalidInput) =>
+            {
+                None
+            }
+            Err(error) => return Err(error),
         }
-        Err(ProtocolError::InvalidInput) if !matches!(&arguments.query, QueryInput::Uri(_)) => None,
-        Err(error) => return Err(error.into()),
+    } else {
+        None
     };
-    tokio::runtime::Builder::new_current_thread().enable_all().build()?.block_on(async {
+    async {
         let mut signals=super::stop::StopEvents::new()?;
-        let mut native=Box::pin(tokio::time::sleep_until(hard));
-        if Instant::now()>=hard {return Err("search deadline elapsed during setup".into());}
+        let mut native=hard.map(|hard| Box::pin(tokio::time::sleep_until(hard)));
+        if hard.is_some_and(|hard| Instant::now()>=hard) {return Err("search deadline elapsed during setup".into());}
         let mut identities:[Instance;QUERIES]=std::array::from_fn(|_|Instance::new());
         let mut visible=vec![false;limits.results];
         let mut terminal=Vec::new();
@@ -512,19 +580,19 @@ pub(super) fn run(
         let mut ignored=0usize;
         let mut native_deadline=None;
         let stopped:Result<&str,Cause>=async {
-            row(out,&json!({"event":"fs_search_started","query_uri":canonical.as_deref().and_then(|bytes|std::str::from_utf8(bytes).ok()),"query_uri_bytes":canonical,
+            if matches!(style, Style::Json) { row(out,&json!({"event":"fs_search_started","query_uri":canonical.as_deref().and_then(|bytes|std::str::from_utf8(bytes).ok()),"query_uri_bytes":canonical,
                 "mandatory_total":mandatory,"optional_total":optional,"query_count":session.query_count(),
                 "deadline_micros":deadline.as_micros(),"max_visible_results":limit,"anonymity":options.anonymity,
                 "local_only":options.local_only,"result_capacity":limits.results,"query_capacity":QUERIES,"directory_requested":export.is_some()}))
-                .map_err(Cause::Output)?;
+                .map_err(Cause::Output)?; }
             loop {
                 // drive() explicitly retains the same partial MQs/advertisement
                 // when this wait is canceled by a signal or original hard bound.
                 let observation={
-                    let wait=Instant::now().checked_add(Duration::from_millis(50)).unwrap_or(hard).min(hard);
-                    let mut driving=std::pin::pin!(session.drive(Some(wait)));
+                    let wait=Instant::now().checked_add(Duration::from_millis(50)).map(|wait| hard.map_or(wait, |hard| wait.min(hard))).or(hard);
+                    let mut driving=std::pin::pin!(session.drive(wait));
                     poll_fn(|cx| {
-                        if Instant::now()>=hard || native.as_mut().poll(cx).is_ready() {return Poll::Ready(Observation::NativeDeadline);}
+                        if hard.is_some_and(|hard| Instant::now()>=hard) || native.as_mut().is_some_and(|wait| wait.as_mut().poll(cx).is_ready()) {return Poll::Ready(Observation::NativeDeadline);}
                         if signals.poll(cx) { return Poll::Ready(match signals.take_failure() {
                             Some(error)=>Observation::Signal(error), None=>Observation::Stop,
                         }); }
@@ -536,8 +604,8 @@ pub(super) fn run(
                     Observation::NativeDeadline=>return Ok("caller_deadline"),
                     Observation::Signal(error)=>return Err(Cause::Signal(error)),
                     Observation::Step(Ok(step))=>step,
-                    Observation::Step(Err(search::Error::Protocol(ProtocolError::Deadline)))=>return Ok("caller_deadline"),
-                    Observation::Step(Err(cause @ search::Error::Transport(ipc::Error::Protocol(ProtocolError::Deadline))))=>{
+                    Observation::Step(Err(search::Error::Protocol(ProtocolError::Deadline))) if hard.is_some()=>return Ok("caller_deadline"),
+                    Observation::Step(Err(cause @ search::Error::Transport(ipc::Error::Protocol(ProtocolError::Deadline)))) if hard.is_some()=>{
                         native_deadline=Some((None,cause));return Ok("caller_deadline");
                     },
                     Observation::Step(Err(cause))=>return Err(Cause::Search(cause)),
@@ -545,32 +613,40 @@ pub(super) fn run(
                 match step {
                     Step::Result{result}|Step::Update{result}|Step::Pending{result}=> {
                         let event=match step {Step::Result{..}=>"fs_search_result",Step::Update{..}=>"fs_search_update",_=>"fs_search_pending"};
-                        let value=result_value(&session,result,event,mandatory,optional)?;
-                        row(out,&value).map_err(Cause::Output)?;
+                        if matches!(style, Style::Json) {
+                            let value=result_value(&session,result,event,mandatory,optional)?;
+                            row(out,&value).map_err(Cause::Output)?;
+                        }
                         let record=session.result(result).ok_or(Cause::State("native search result disappeared"))?;
                         let counted=visible.get_mut(result.index()).ok_or(Cause::State("native search result exceeds retained table"))?;
-                        if record.visible() && !*counted { *counted=true;visible_count+=1; }
+                        if record.visible() && !*counted {
+                            *counted=true;
+                            visible_count+=1;
+                            if let Style::Text(formats) = style {
+                                formats.print(out, record, visible_count).map_err(Cause::Output)?;
+                            }
+                        }
                         if limit.is_some_and(|limit|visible_count>=limit) { return Ok("visible_result_limit"); }
                     }
                     Step::Ignored=>ignored=ignored.checked_add(1).ok_or(Cause::State("ignored-advertisement counter overflow"))?,
                     Step::Rejected{query,cause}=> {
                         rejected=rejected.checked_add(1).ok_or(Cause::State("rejected-advertisement counter overflow"))?;
-                        row(out,&json!({"event":"fs_search_rejected","query":query_value(&session,query),"cause":error_value(&cause)})).map_err(Cause::Output)?;
+                        if matches!(style, Style::Json) { row(out,&json!({"event":"fs_search_rejected","query":query_value(&session,query),"cause":error_value(&cause)})).map_err(Cause::Output)?; }
                     }
                     Step::Native{query,step}=> {
                         native_steps=native_steps.checked_add(1).ok_or(Cause::State("native-step counter overflow"))?;
-                        if matches!(step,ipc::Step::Retry{..}|ipc::Step::Unavailable(_)) {
+                        if matches!(style, Style::Json) && matches!(step,ipc::Step::Retry{..}|ipc::Step::Unavailable(_)) {
                             row(out,&json!({"event":"fs_search_unavailable","query":query_value(&session,query),"step":native_value(&step)})).map_err(Cause::Output)?;
                         }
                     }
                     Step::Failed{query,cause}=> {
-                        if matches!(&cause,ipc::Error::Protocol(ProtocolError::Deadline)) {
+                        if hard.is_some() && matches!(&cause,ipc::Error::Protocol(ProtocolError::Deadline)) {
                             native_deadline=Some((Some(query),search::Error::Transport(cause)));
                             return Ok("caller_deadline");
                         }
                         terminal.push((query,cause));
                         let (_,cause)=terminal.last().ok_or(Cause::State("original query failure disappeared"))?;
-                        row(out,&json!({"event":"fs_search_query_failed","query":query_value(&session,query),"cause":cause.to_string()})).map_err(Cause::Output)?;
+                        if matches!(style, Style::Json) { row(out,&json!({"event":"fs_search_query_failed","query":query_value(&session,query),"cause":cause.to_string()})).map_err(Cause::Output)?; }
                     }
                 }
             }
@@ -591,21 +667,20 @@ pub(super) fn run(
         let query_count=session.query_count();
         drop(session);
         let (reason,cause)=match stopped {Ok(reason)=>(reason,None),Err(cause)=>("error",Some(cause))};
-        let final_row=json!({"event":"fs_search_stopped","reason":reason,
+        out.cleanup()?;
+        let diagnostic = if matches!(style, Style::Json) { row(out,&json!({"event":"fs_search_stopped","reason":reason,
             "visible_results":visible_count,"retained_results":retained_results,"query_count":query_count,
             "native_steps":native_steps,"rejected_advertisements":rejected,"ignored_advertisements":ignored,
             "terminal_query_failures":terminal.iter().map(|(id,cause)|json!({"query_id":id.index(),"cause":cause.to_string()})).collect::<Vec<_>>(),
             "cause":cause.as_ref().map(ToString::to_string),"cleanup_error":cleanup.as_ref().map(error_value),
             "native_deadline":native_deadline.as_ref().map(|(id,cause)|json!({"query_id":id.map(|id|id.index()),"cause":error_value(cause)})),
             "directory":archive.as_ref().map(export_value),"directory_error":export_failure.as_ref().map(ToString::to_string),
-            "scope":"caller observation stopped; no whole-network completion or absence conclusion"});
-        out.cleanup()?;
-        let diagnostic=row(out,&final_row).err();
+            "scope":"caller observation stopped; no whole-network completion or absence conclusion"})).err() } else { None };
         if cause.is_some() || cleanup.is_some() || diagnostic.is_some() || !terminal.is_empty() || export_failure.is_some() {
             return Err(Box::new(Failure{cause,queries:terminal,cleanup,diagnostic,export:export_failure}) as Box<dyn Error>);
         }
         Ok(())
-    })
+    }.await
 }
 
 #[cfg(test)]

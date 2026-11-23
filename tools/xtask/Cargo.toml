@@ -12,3 +12,4 @@ workspace = true
 [dependencies]
 serde_json = { workspace = true, features = ["std"] }
 gnunet-crypto.workspace = true
+gnunet-native.workspace = true

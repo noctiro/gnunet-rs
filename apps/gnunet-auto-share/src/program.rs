@@ -9,7 +9,7 @@ use gnunet_program_host::{
     helpers::{self, Target},
     logging::Logger,
     policy::Level,
-    program::{self, Defaults, Invocation, NlsDisabled, Preparation, Prepared},
+    program::{self, Defaults, Invocation, Preparation, Prepared},
     shared_clock::SharedClock,
 };
 use gnunet_resolver_broker::Driver;
@@ -152,7 +152,7 @@ pub(super) fn run(parent: Option<ParentControl>) -> Result<(), Failure> {
         extractor_library.clone(),
     ));
     options.add(helpers::verbose(verbose.clone()));
-    let preparation=program::prepare(config,Invocation{binary_name:b"gnunet-auto-share",help:Some(b"Share changed files and directories using the standard FS publication API. Exactly one DIRECTORY is required."),select_default_filename:true,defaults:Defaults::Native},options,std::env::args_os(),&program::Environment::capture(),&mut NlsDisabled,&mut logger,&clock,&mut io::stdout().lock(),&mut io::stderr().lock());
+    let preparation=program::prepare_installed(config,Invocation{binary_name:b"gnunet-auto-share",help:Some(b"Share changed files and directories using the standard FS publication API. Exactly one DIRECTORY is required."),select_default_filename:true,defaults:Defaults::Native},options,std::env::args_os(),&program::Environment::capture(),&mut logger,&clock,&mut io::stdout().lock(),&mut io::stderr().lock());
     let stop = Stop::default();
     let reports = Rc::new(RefCell::new(Reports::new(
         logger,

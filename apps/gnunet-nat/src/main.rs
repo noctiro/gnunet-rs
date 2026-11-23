@@ -24,12 +24,12 @@ fn main() -> ExitCode {
     }
 }
 fn run(startup: gnunet_service_startup::ClientStartup) -> Result<ExitCode, Failure> {
-    use gnunet_nat_test_host::cli::{Action, NatOptions};
+    use gnunet_nat_test_host::cli::{Action, NatOptions, StunMode};
     use gnunet_program_host::{
         getopt::Options,
         helpers::{self, Target},
         logging::Logger,
-        program::{self, Defaults, Invocation, NlsDisabled, Preparation},
+        program::{self, Defaults, Invocation, Preparation},
         shared_clock::SharedClock,
     };
     use std::sync::Arc;
@@ -54,6 +54,7 @@ fn run(startup: gnunet_service_startup::ClientStartup) -> Result<ExitCode, Failu
     let local = Target::new(None);
     let remote = Target::new(None);
     let stun = Target::new(0i32);
+    let probe_stun = Target::new(0i32);
     let watch = Target::new(0i32);
     options.add(helpers::string(
         b'i',
@@ -72,8 +73,14 @@ fn run(startup: gnunet_service_startup::ClientStartup) -> Result<ExitCode, Failu
     options.add(helpers::flag(
         b's',
         b"stun",
-        b"bind actual UDP socket and process original STUN transactions",
+        b"receive and forward STUN packets on the bound UDP socket",
         stun.clone(),
+    ));
+    options.add(helpers::flag(
+        b'P',
+        b"probe-stun",
+        b"send STUN probes to the configured servers and match responses",
+        probe_stun.clone(),
     ));
     options.add(helpers::flag(
         b'W',
@@ -82,7 +89,7 @@ fn run(startup: gnunet_service_startup::ClientStartup) -> Result<ExitCode, Failu
         watch.clone(),
     ));
     let mut logger = Logger::new(b"gnunet-nat", std::process::id(), false)?;
-    let prepared=program::prepare(config,Invocation{binary_name:b"gnunet-nat",help:Some(b"Actual official NAT client/query/test. Address hints and local sends do not prove connectivity; a received original public challenge is an unauthenticated path observation. TCP/UDP tests require configured section PORT and an actual gnunet-nat-server."),select_default_filename:true,defaults:Defaults::Native},options,std::env::args_os(),&program::Environment::capture(),&mut NlsDisabled,&mut logger,&clock,&mut io::stdout().lock(),&mut io::stderr().lock())?;
+    let prepared=program::prepare_installed(config,Invocation{binary_name:b"gnunet-nat",help:Some(b"Actual official NAT client/query/test. Address hints and local sends do not prove connectivity; a received original public challenge is an unauthenticated path observation. TCP/UDP tests require configured section PORT and an actual gnunet-nat-server."),select_default_filename:true,defaults:Defaults::Native},options,std::env::args_os(),&program::Environment::capture(),&mut logger,&clock,&mut io::stdout().lock(),&mut io::stderr().lock())?;
     let prepared = match prepared {
         Preparation::Ready(p) => *p,
         Preparation::Stopped(stopped) => {
@@ -133,7 +140,11 @@ fn run(startup: gnunet_service_startup::ClientStartup) -> Result<ExitCode, Failu
             remote,
             section: section.get()?.unwrap_or_else(|| b"undefined".to_vec()),
             protocol,
-            stun: stun.get()? != 0,
+            stun: match (probe_stun.get()? != 0, stun.get()? != 0) {
+                (true, _) => StunMode::Probe,
+                (false, true) => StunMode::Receive,
+                (false, false) => StunMode::Disabled,
+            },
             watch: watch.get()? != 0,
         });
         tokio::runtime::Builder::new_current_thread()

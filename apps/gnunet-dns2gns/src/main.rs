@@ -73,7 +73,7 @@ fn execute(startup: gnunet_service_startup::ClientStartup) -> Result<u8, Cause> 
     use gnunet_program_host::{
         foreground,
         logging::Logger,
-        program::{self, Defaults, Invocation, NlsDisabled, Preparation},
+        program::{self, Defaults, Invocation, Preparation},
         reporting::Reporter,
         shared_clock::SharedClock,
     };
@@ -85,11 +85,11 @@ fn execute(startup: gnunet_service_startup::ClientStartup) -> Result<u8, Cause> 
     )?;
     let mut logger = Logger::new(b"gnunet-dns2gns", std::process::id(), false)?;
     let selection = options::Selection::new();
-    let preparation=program::prepare(config,Invocation {
+    let preparation=program::prepare_installed(config,Invocation {
         binary_name:b"gnunet-dns2gns",
         help:Some(b"Run the configured DNS2GNS UDP gateway. -d/--dns IP is the required numeric recursive DNS upstream, not a daemon flag. [DNS2GNS] BIND_TO and BIND_TO6 are required numeric listener addresses; PORT defaults to 53 only when absent (installed defaults may configure a different port). Each real query and VPN lease uses the gateway's original fixed bounds. Standard -c/-L/-l/-h/-v select actual configuration and diagnostics. Ctrl-C, TERM and parent control close and drain the same gateway/Resolver owners."),
         select_default_filename:true,defaults:Defaults::Native,
-    },selection.options(),std::env::args_os(),&program::Environment::capture(),&mut NlsDisabled,&mut logger,&clock,&mut io::stdout().lock(),&mut io::stderr().lock());
+    },selection.options(),std::env::args_os(),&program::Environment::capture(),&mut logger,&clock,&mut io::stdout().lock(),&mut io::stderr().lock());
     let reporter = Reporter::new(logger, clock.clone());
     #[cfg(unix)]
     if let Some(notice) = startup.notice {

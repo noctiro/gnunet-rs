@@ -7,6 +7,7 @@
 
 mod commit;
 mod error;
+mod namespace;
 mod store;
 
 pub use commit::{CommitBackend, DirectorySync, NativeCommit};

@@ -1,28 +1,44 @@
 //! Shared bounded descriptor metadata and automatic keyword extraction.
 //! No task, publication plan, service endpoint or native scheduler is required.
 mod error;
+mod formats;
 mod inspect;
 mod limits;
 mod manual;
 mod metadata;
+mod pdf_rc4;
+mod pdf_recipient;
+mod pdf_streams;
+mod trim;
 use crate::{Control, Progress, input_tree::InputDir};
 pub use error::Error;
 /// Actual optional native provider callback observation.
 pub use gnunet_extractor_host::Observation as MetadataObservation;
 use gnunet_fs::{Keyword, metadata as md};
+use gnunet_native::filesystem::FileReader;
 use gnunet_types::AbsoluteTime;
-pub use inspect::{ExtractedObject, InspectionFailure, InspectionReport, inspect_with_metadata};
+pub use inspect::{
+    ExtractedObject, InspectionEvent, InspectionFailure, InspectionReport, inspect_observed,
+    inspect_with_metadata,
+};
 pub use limits::Limits;
-pub use manual::{ManualLimits, ManualMetadata};
+pub use manual::{ManualLimits, ManualMetadata, metadata_type_name};
 pub use metadata::{
     MetadataSettings, NativeMetadataAuthorization, NativeMetadataConfiguration,
     NativeMetadataLimits,
 };
+pub use pdf_recipient::{
+    PdfCertificateRecipient, PdfKekRecipient, PdfPasswordRecipient, PdfRecipientAuthorization,
+    PdfRecipientContent,
+};
+pub(crate) use pdf_streams::VerifiedSource;
+pub use pdf_streams::{PdfExternalName, PdfExternalStreams};
 use std::{
     cell::{Cell, RefCell},
     fs::File,
     path::{Path, PathBuf},
 };
+pub use trim::inspect_trimmed;
 use unicode_normalization::UnicodeNormalization;
 
 /// Explicit extraction and workspace policy. UTC is supplied by the same actual
@@ -33,7 +49,7 @@ pub struct Policy {
     pub extract: bool,
     /// Publication date of this admitted version; None really disables it (-d).
     pub creation_time: Option<AbsoluteTime>,
-    /// Maximum prefix bytes inspected per file (ID3v1 adds one fixed 128-byte read).
+    /// Built-in probe I/O budget per file. ID3v1 adds one fixed 128-byte read.
     pub max_probe_bytes: usize,
     /// Maximum official metadata entries per object.
     pub max_metadata_items: usize,
@@ -112,6 +128,27 @@ impl<C: FnMut(Progress) -> Control> Context<C> {
         }
         Ok(())
     }
+
+    fn read_original(
+        &self,
+        reader: &FileReader,
+        offset: u64,
+        output: &mut [u8],
+    ) -> Result<(), Error> {
+        let mut got = 0;
+        while got < output.len() {
+            self.check()?;
+            let position = offset.checked_add(got as u64).ok_or(Error::Limit)?;
+            match reader.read_at(&mut output[got..], position) {
+                Ok(0) => return Err(Error::SourceChanged),
+                Ok(n) => got += n,
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Ok(())
+    }
+
     #[cfg(feature = "network")]
     pub(crate) fn report(&self, progress: Progress) -> Control {
         self.progress.set(progress);
@@ -226,6 +263,126 @@ struct Value {
     plugin: Option<Vec<u8>>,
     mime: Option<Vec<u8>>,
 }
+
+const AUTO_PLUGIN: &[u8] = b"<gnunet-rs-auto>\0";
+const TEXT_OVERHEAD: usize = md::ENTRY_BYTES + AUTO_PLUGIN.len() + 1;
+const ICC_OVERHEAD: usize = md::ENTRY_BYTES + AUTO_PLUGIN.len() + formats::icc::MIME.len();
+
+fn add_text(values: &mut Vec<Value>, kind: u32, text: &[u8], policy: Policy) -> Result<(), Error> {
+    let visible = md::c_prefix(text);
+    if visible.is_empty() {
+        return Ok(());
+    }
+    let format = if std::str::from_utf8(visible).is_ok() {
+        md::Format::Utf8
+    } else {
+        md::Format::CString
+    };
+    if values.iter().any(|value| {
+        value.kind == kind
+            && value.format == format
+            && value.data.strip_suffix(&[0]) == Some(visible)
+    }) {
+        return Ok(());
+    }
+    let n = visible.len().checked_add(1).ok_or(Error::Limit)?;
+    if values.len() >= policy.max_metadata_items || n > policy.max_metadata_bytes {
+        return Err(Error::Limit);
+    }
+    let mut terminated = zeros(n)?;
+    terminated[..visible.len()].copy_from_slice(visible);
+    values.try_reserve(1).map_err(|_| Error::Limit)?;
+    values.push(Value {
+        kind,
+        format,
+        data: terminated,
+        plugin: Some(copy(AUTO_PLUGIN)?),
+        mime: None,
+    });
+    Ok(())
+}
+
+struct ContentFields<'a> {
+    values: &'a mut Vec<Value>,
+    policy: Policy,
+    remaining: usize,
+}
+
+impl<'a> ContentFields<'a> {
+    fn new(values: &'a mut Vec<Value>, policy: Policy, max_bytes: usize) -> Self {
+        let occupied = values.iter().fold(md::HEADER_BYTES, |total, entry| {
+            total
+                .saturating_add(md::ENTRY_BYTES)
+                .saturating_add(entry.data.len())
+                .saturating_add(entry.plugin.as_ref().map_or(0, Vec::len))
+                .saturating_add(entry.mime.as_ref().map_or(0, Vec::len))
+        });
+        Self {
+            values,
+            policy,
+            remaining: max_bytes
+                .min(policy.max_metadata_bytes)
+                .saturating_sub(occupied),
+        }
+    }
+
+    fn max_text(&self) -> usize {
+        self.capacity(TEXT_OVERHEAD)
+    }
+
+    fn capacity(&self, overhead: usize) -> usize {
+        if self.values.len() == self.policy.max_metadata_items {
+            0
+        } else {
+            self.remaining.saturating_sub(overhead)
+        }
+    }
+
+    fn add(&mut self, field: formats::Field<'_>) -> Result<(), Error> {
+        match field {
+            formats::Field::Text(kind, bytes) => self.text(kind, bytes),
+            formats::Field::ColorProfile(profile) => {
+                let bytes = profile.bytes();
+                if bytes.len() > self.capacity(ICC_OVERHEAD) {
+                    return Ok(());
+                }
+                let count = self.values.len();
+                add_named(
+                    self.values,
+                    formats::icc::KIND,
+                    md::Format::Binary,
+                    bytes,
+                    Some(AUTO_PLUGIN),
+                    Some(formats::icc::MIME),
+                    self.policy,
+                )?;
+                if self.values.len() > count {
+                    self.remaining -= ICC_OVERHEAD + bytes.len();
+                }
+                Ok(())
+            }
+        }
+    }
+
+    fn text(&mut self, kind: u32, bytes: &[u8]) -> Result<(), Error> {
+        let text = md::c_prefix(bytes);
+        if text.is_empty() || text.len() > self.max_text() {
+            return Ok(());
+        }
+        let count = self.values.len();
+        add_text(self.values, kind, text, self.policy)?;
+        if self.values.len() > count {
+            self.remaining -= TEXT_OVERHEAD + text.len();
+        }
+        Ok(())
+    }
+}
+
+enum ProbeEnd {
+    Capacity,
+    Error(Error),
+}
+
 pub(crate) struct Object {
     pub(crate) wire: Vec<u8>,
     pub(crate) provider: Option<gnunet_extractor_host::Observation>,
@@ -254,6 +411,9 @@ pub(crate) struct Extractor<'a, C> {
     formats_enabled: bool,
     pub(crate) content_file_bytes: u64,
     pub(crate) manual: Option<std::sync::Arc<ManualMetadata>>,
+    pdf_streams: Option<&'a PdfExternalStreams>,
+    pdf_recipient: Option<&'a PdfRecipientAuthorization>,
+    verified_source: Option<VerifiedSource>,
 }
 impl<'a, C: FnMut(Progress) -> Control> Extractor<'a, C> {
     pub(crate) fn new(
@@ -261,8 +421,14 @@ impl<'a, C: FnMut(Progress) -> Control> Extractor<'a, C> {
         policy: Policy,
         limits: Limits,
         context: &'a Context<C>,
-        formats_enabled: bool,
+        metadata: &'a MetadataSettings,
     ) -> Result<Self, Error> {
+        let formats_enabled = metadata.format_extraction_enabled();
+        let pdf_recipient = if policy.extract && formats_enabled {
+            metadata.pdf_recipient()?
+        } else {
+            None
+        };
         let basename = input
             .file_name()
             .map(crate::input_tree::protocol_name)
@@ -281,46 +447,11 @@ impl<'a, C: FnMut(Progress) -> Control> Extractor<'a, C> {
             formats_enabled,
             content_file_bytes: limits.max_file_bytes,
             manual: None,
+            pdf_streams: metadata.pdf_streams(),
+            pdf_recipient,
+            verified_source: None,
         })
     }
-    fn add(
-        values: &mut Vec<Value>,
-        kind: u32,
-        format: md::Format,
-        data: &[u8],
-        policy: Policy,
-    ) -> Result<(), Error> {
-        add_named(
-            values,
-            kind,
-            format,
-            data,
-            Some(b"<gnunet-rs-auto>\0"),
-            None,
-            policy,
-        )
-    }
-    fn text(values: &mut Vec<Value>, kind: u32, text: &[u8], policy: Policy) -> Result<(), Error> {
-        if text.is_empty() {
-            return Ok(());
-        }
-        let visible = md::c_prefix(text);
-        let n = visible.len().checked_add(1).ok_or(Error::Limit)?;
-        let mut terminated = zeros(n)?;
-        terminated[..visible.len()].copy_from_slice(visible);
-        Self::add(
-            values,
-            kind,
-            if std::str::from_utf8(visible).is_ok() {
-                md::Format::Utf8
-            } else {
-                md::Format::CString
-            },
-            &terminated,
-            policy,
-        )
-    }
-
     pub(crate) fn extract_one(
         &mut self,
         file: &File,
@@ -385,34 +516,45 @@ impl<'a, C: FnMut(Progress) -> Control> Extractor<'a, C> {
                 .map(crate::input_tree::protocol_name)
                 .transpose()?
                 .unwrap_or(&self.root_name);
-            Self::text(&mut values, 180, name, p)?;
+            add_text(&mut values, 180, name, p)?;
         }
         if directory {
-            Self::text(&mut values, 1, b"application/gnunet-directory", p)?;
+            add_text(&mut values, 1, b"application/gnunet-directory", p)?;
         }
         if let Some(date) = p.creation_time {
             let mut text = [0u8; 21];
             utc_date(date, &mut text)?;
             values.retain(|v| v.kind != 24);
-            Self::text(&mut values, 24, &text[..20], p)?;
+            add_text(&mut values, 24, &text[..20], p)?;
         }
         let mut provider_observation = None;
         if p.extract && self.formats_enabled && !directory {
             if before.bytes > self.content_file_bytes {
                 return Err(Error::Limit);
             }
-            let reader = gnunet_native::filesystem::FileReader::from_file(file)?;
+            let pdf_streams = if let Some(streams) = self.pdf_streams {
+                streams.for_document(file, before, self.verified_source, || self.context.check())?
+            } else {
+                None
+            };
+            let reader = FileReader::from_file(file)?;
             let want = usize::try_from(before.bytes.min(p.max_probe_bytes as u64))
                 .map_err(|_| Error::Limit)?;
-            let mut got = 0;
-            while got < want {
-                self.context.check()?;
-                match reader.read_at(&mut self.probe[got..want], got as u64) {
-                    Ok(0) => return Err(Error::SourceChanged),
-                    Ok(n) => got += n,
-                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
-                    Err(e) => return Err(e.into()),
+            let mut got = if want <= 4096 && want as u64 == before.bytes {
+                want
+            } else {
+                want.min(8)
+            };
+            self.context
+                .read_original(&reader, 0, &mut self.probe[..got])?;
+            loop {
+                let needed = formats::Format::identification_len(&self.probe[..got], want);
+                if needed <= got {
+                    break;
                 }
+                self.context
+                    .read_original(&reader, got as u64, &mut self.probe[got..needed])?;
+                got = needed;
             }
             if let Some(provider) = &mut self.provider {
                 let extracted = provider.extract_file(file, || self.context.check())?;
@@ -431,7 +573,7 @@ impl<'a, C: FnMut(Progress) -> Control> Extractor<'a, C> {
                         .iter_mut()
                         .find(|v| v.kind == item.kind && v.format == format && v.data == item.data)
                     {
-                        if existing.plugin.as_deref() == Some(b"<gnunet-rs-auto>\0".as_slice()) {
+                        if existing.plugin.as_deref() == Some(AUTO_PLUGIN) {
                             existing.plugin = item.plugin;
                             existing.mime = item.mime;
                         }
@@ -450,16 +592,41 @@ impl<'a, C: FnMut(Progress) -> Control> Extractor<'a, C> {
                 }
             }
             self.context.check()?;
-            let data = &self.probe[..got];
-            if let Some(mime) = mime(data) {
-                Self::text(&mut values, 1, mime, p)?;
+            let (data, scratch) = self.probe.split_at_mut(got);
+            let format = formats::Format::detect(data);
+            let fallback = format.is_none().then(|| fallback_mime(data)).flatten();
+            let mut fields = ContentFields::new(&mut values, p, max_bytes);
+            if let Some(mime) = fallback {
+                fields.text(1, mime)?;
             }
-            if let Ok(text) = std::str::from_utf8(data)
-                && (ascii_contains(text.as_bytes(), b"<html")
-                    || ascii_contains(text.as_bytes(), b"<!doctype html"))
+            if let Some(format) = format.filter(|_| fields.max_text() != 0) {
+                let pdf_streams = pdf_streams.filter(|_| matches!(format, formats::Format::Pdf));
+                let input = formats::Input::new(data, before.bytes, scratch, |offset, output| {
+                    self.context
+                        .read_original(&reader, offset, output)
+                        .map_err(ProbeEnd::Error)
+                })
+                .with_pdf_authorization(pdf_streams, self.pdf_recipient);
+                let limits = formats::FieldLimits {
+                    text: fields.max_text(),
+                    icc: fields.capacity(ICC_OVERHEAD),
+                };
+                let result = format.visit(input, limits, &mut |field| {
+                    self.context.check().map_err(ProbeEnd::Error)?;
+                    fields.add(field).map_err(ProbeEnd::Error)?;
+                    if fields.max_text() == 0 {
+                        return Err(ProbeEnd::Capacity);
+                    }
+                    Ok(())
+                });
+                if let Err(ProbeEnd::Error(error)) = result {
+                    return Err(error);
+                }
+            } else if fallback == Some(b"text/html")
+                && let Ok(text) = std::str::from_utf8(data)
             {
                 if let Some(title) = html_title(text) {
-                    Self::text(&mut values, 4, title.trim().as_bytes(), p)?;
+                    fields.text(4, title.trim().as_bytes())?;
                 }
                 for (name, kind) in [
                     ("author", 13),
@@ -468,23 +635,20 @@ impl<'a, C: FnMut(Progress) -> Control> Extractor<'a, C> {
                     ("subject", 52),
                 ] {
                     if let Some(value) = html_meta(text, name) {
-                        Self::text(&mut values, kind, value.as_bytes(), p)?;
+                        fields.text(kind, value.as_bytes())?;
                     }
                 }
             }
-            if before.bytes >= 128 {
-                self.context.check()?;
+            if before.bytes >= 128
+                && fields.max_text() != 0
+                && format
+                    .map(formats::Format::mime)
+                    .or(fallback)
+                    .is_none_or(|m| m == b"audio/mpeg")
+            {
                 let mut tag = [0u8; 128];
-                let mut n = 0;
-                while n < tag.len() {
-                    self.context.check()?;
-                    match reader.read_at(&mut tag[n..], before.bytes - 128 + n as u64) {
-                        Ok(0) => return Err(Error::SourceChanged),
-                        Ok(k) => n += k,
-                        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
-                        Err(e) => return Err(e.into()),
-                    }
-                }
+                self.context
+                    .read_original(&reader, before.bytes - 128, &mut tag)?;
                 if &tag[..3] == b"TAG" {
                     for (range, kind) in [(3..33, 4), (33..63, 130), (63..93, 129)] {
                         let field = &tag[range];
@@ -492,7 +656,9 @@ impl<'a, C: FnMut(Progress) -> Control> Extractor<'a, C> {
                             .iter()
                             .rposition(|b| *b != 0 && *b != b' ')
                             .map_or(0, |i| i + 1);
-                        Self::text(&mut values, kind, &field[..end], p)?;
+                        if !fields.values.iter().any(|entry| entry.kind == kind) {
+                            fields.text(kind, &field[..end])?;
+                        }
                     }
                 }
             }
@@ -536,21 +702,11 @@ fn ascii_find(data: &[u8], needle: &[u8]) -> Option<usize> {
 fn ascii_contains(data: &[u8], needle: &[u8]) -> bool {
     ascii_find(data, needle).is_some()
 }
-fn mime(data: &[u8]) -> Option<&'static [u8]> {
-    if data.starts_with(b"\x89PNG\r\n\x1a\n") {
-        Some(b"image/png")
-    } else if data.starts_with(b"\xff\xd8\xff") {
-        Some(b"image/jpeg")
-    } else if data.starts_with(b"GIF87a") || data.starts_with(b"GIF89a") {
-        Some(b"image/gif")
-    } else if data.starts_with(b"%PDF-") {
-        Some(b"application/pdf")
-    } else if data.starts_with(b"OggS") {
+fn fallback_mime(data: &[u8]) -> Option<&'static [u8]> {
+    if data.starts_with(b"OggS") {
         Some(b"application/ogg")
     } else if data.starts_with(b"fLaC") {
         Some(b"audio/flac")
-    } else if data.starts_with(b"ID3") {
-        Some(b"audio/mpeg")
     } else if data.starts_with(b"PK\x03\x04") {
         Some(b"application/zip")
     } else if data.starts_with(b"\x1f\x8b") {
@@ -825,6 +981,35 @@ pub fn file_keywords_with_metadata(
     metadata: MetadataSettings,
     control: impl FnMut(Progress) -> Control,
 ) -> Result<Vec<Vec<u8>>, Error> {
+    file_keywords_inner(file, filename, policy, metadata, None, control)
+}
+
+#[cfg(feature = "network")]
+pub(crate) fn file_keywords_for_verified_source(
+    file: &File,
+    filename: &Path,
+    metadata: MetadataSettings,
+    verified: VerifiedSource,
+    control: impl FnMut(Progress) -> Control,
+) -> Result<Vec<Vec<u8>>, Error> {
+    file_keywords_inner(
+        file,
+        filename,
+        Policy::default(),
+        metadata,
+        Some(verified),
+        control,
+    )
+}
+
+fn file_keywords_inner(
+    file: &File,
+    filename: &Path,
+    policy: Policy,
+    metadata: MetadataSettings,
+    verified: Option<VerifiedSource>,
+    control: impl FnMut(Progress) -> Control,
+) -> Result<Vec<Vec<u8>>, Error> {
     let mut policy = policy;
     policy.extract &= metadata.automatic_keywords_enabled();
     let limits = Limits::default();
@@ -842,18 +1027,13 @@ pub fn file_keywords_with_metadata(
         }),
     };
     context.check()?;
+    let mut extractor = Extractor::new(filename, policy, limits, &context, &metadata)?;
     if !file.metadata()?.is_file() {
         return Err(Error::Policy);
     }
     context.check()?;
     let original = descriptor_info(file)?;
-    let mut extractor = Extractor::new(
-        filename,
-        policy,
-        limits,
-        &context,
-        metadata.format_extraction_enabled(),
-    )?;
+    extractor.verified_source = verified;
     extractor.provider = metadata.open(&context, policy, limits.max_file_bytes)?;
     let result = (|| -> Result<Vec<Vec<u8>>, Error> {
         let object =

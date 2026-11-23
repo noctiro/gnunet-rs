@@ -88,7 +88,7 @@ fn run() -> Result<(), Cause> {
     use gnunet_program_host::{
         getopt::Options,
         logging::Logger,
-        program::{self, Defaults, Invocation, NlsDisabled, Preparation},
+        program::{self, Defaults, Invocation, Preparation},
         reporting::Reporter,
         shared_clock::SharedClock,
     };
@@ -103,7 +103,7 @@ fn run() -> Result<(), Cause> {
     )?;
     let mut logger = Logger::new(b"gnunet-uri", std::process::id(), false)?;
     let help: &[u8] = b"Perform the configured default action for one gnunet:// URI. [uri] SUBSYSTEM selects executable and arguments with the shared configured-command tokenizer, without a shell. The complete original URI is appended as one argument; no automatic -- is inserted. Standard -c/-L/-l/-h/-v options select actual configuration and diagnostics.";
-    let prepared = program::prepare(
+    let prepared = program::prepare_installed(
         config,
         Invocation {
             binary_name: b"gnunet-uri",
@@ -114,7 +114,6 @@ fn run() -> Result<(), Cause> {
         Options::new(),
         std::env::args_os(),
         &program::Environment::capture(),
-        &mut NlsDisabled,
         &mut logger,
         &clock,
         &mut io::stdout().lock(),

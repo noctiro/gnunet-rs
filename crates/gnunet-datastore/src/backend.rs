@@ -155,13 +155,22 @@ pub struct PutReport {
     /// Reclamation committed atomically with this PUT.
     pub maintenance: Maintenance,
 }
-/// Full semantic backend port. Every method returning BeforeCommit must preserve
-/// the complete logical state; Unknown must retain/fence its original candidate.
-pub trait Backend {
+/// Dataset accounting, maintenance and shutdown shared by both synchronous
+/// and cooperatively scheduled backends.
+pub trait Lifecycle {
     /// Original caller-owned error, including native cause and commit stage.
     type Error: BackendError;
     /// Latest authoritative logical usage; no IO or guessed filesystem page count.
     fn usage(&self) -> Usage;
+    /// Explicit bounded expiry/space maintenance.
+    fn maintain(&mut self, policy: MaintenancePolicy) -> Result<Maintenance, Self::Error>;
+    /// Physically/logically clear the complete dataset on service shutdown after DROP.
+    fn drop_all(&mut self) -> Result<(), Self::Error>;
+}
+
+/// Synchronous request execution. A definite failure preserves the complete
+/// logical state; Unknown retains/fences its original candidate.
+pub trait Backend: Lifecycle {
     /// Merge key+exact value while retaining original UID/type/anonymity, or
     /// insert a stable new UID. Saturate priority/replication, max expiration.
     /// Quota eviction is one atomic commit; insufficient bounded work refuses
@@ -176,8 +185,4 @@ pub trait Backend {
     ) -> Result<Option<Record<'_>>, Self::Error>;
     /// Remove the exact key/value, ignoring type; false means no matching identity.
     fn remove(&mut self, key: &[u8; 64], value: &[u8]) -> Result<bool, Self::Error>;
-    /// Explicit bounded expiry/space maintenance. No implicit socket/task runs it.
-    fn maintain(&mut self, policy: MaintenancePolicy) -> Result<Maintenance, Self::Error>;
-    /// Physically/logically clear the complete dataset on service shutdown after DROP.
-    fn drop_all(&mut self) -> Result<(), Self::Error>;
 }

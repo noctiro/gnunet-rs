@@ -315,6 +315,37 @@ fn program_log(
     )?;
     Ok(())
 }
+/// Prepare the standard installed command with the selected GNU catalogs.
+/// Embedders can call [prepare] with their own explicit locale owner.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Use the same explicit PROGRAM option, environment and output owners"
+)]
+pub fn prepare_installed<'a>(
+    config: Configuration,
+    invocation: Invocation<'a>,
+    options: Options<'a>,
+    arguments: impl IntoIterator<Item = OsString>,
+    environment: &Environment,
+    logger: &mut Logger<'_>,
+    clock: &SharedClock,
+    stdout: &mut impl Write,
+    stderr: &mut impl Write,
+) -> Result<Preparation, Failure> {
+    prepare(
+        config,
+        invocation,
+        options,
+        arguments,
+        environment,
+        &mut crate::locale::InstalledLocale::default(),
+        logger,
+        clock,
+        stdout,
+        stderr,
+    )
+}
+
 /// Prepare an already-created configuration. This makes configuration creation,
 /// locale installation and option callbacks separately reviewable while retaining
 /// their source order. No main, scheduler task, DNS or resolver socket is started.
@@ -615,6 +646,7 @@ pub fn conf_and_options(
     stderr: &mut impl Write,
 ) -> Result<ConfigurationPreparation, Failure> {
     logger.bind_clock(clock.clone());
+    logger.bind_installed_translations(&project)?;
     let cfgfile = filename_target();
     let logfile = filename_target();
     let loglevel = Target::new(None);

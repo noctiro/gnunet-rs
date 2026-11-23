@@ -5,7 +5,9 @@
 `OwnedTun::open_freebsd_recoverable(name, checkpoint, limits)` combines a private
 checkpoint with exclusive native provisioning. It retires the saved native owner
 before admitting a new allocation, commits allocation intent before creation,
-and commits the complete identity before returning packet ownership.
+and commits the complete identity before returning packet ownership. The managed
+interface uses manual lifetime, so closing its packet descriptor leaves the
+checkpoint responsible for native destruction.
 `Device::open_freebsd_recoverable` exposes the same lifecycle to VPN coordinators.
 
 Persistent interfaces and recoverable transient interfaces carry a versioned
@@ -27,7 +29,44 @@ secret or an immutable kernel birth ID.
 
 ## Reacquisition and cleanup
 
-On FreeBSD, consuming `Record::recover` resolves the original interface index
+`AsyncTun::enable_freebsd_recovery` lets an unexpected packet failure retain the
+original managed packet descriptor, control socket and checkpoint in
+`Loss::freebsd_recovery`. The old packet epoch and queued packet retire first.
+`FreeBsdRecovery::restart` verifies the original marker, device, framing and FIB
+before registering a new packet epoch on the same descriptor. A manual persistent
+TUN can use `FreeBsdRecovery::begin_reopen` to qualify and close its original
+descriptor once. The result distinguishes a refused preflight, a verified
+transient lifetime with the original descriptor intact, and an unconfirmed
+close that retains the close error and checkpoint for cleanup.
+After a confirmed close, `FreeBsdReopen::open` opens the same devfs unit. A failed
+qualification or registration keeps any opened candidate for the next attempt.
+Both phases keep the original absolute recovery deadline.
+
+The physical candidate includes the retired epoch and requires fresh link,
+address, route and IPv6 readiness before packet admission. FreeBSD can clear
+addresses and routes on close, so a closed FD alone cannot settle route debt.
+A transient TUN can use `restart` while its original descriptor remains live.
+Its final close can destroy the interface.
+
+### Recreating a missing interface
+
+`begin_recreate` checks the active checkpoint, the old interface index and the
+canonical devfs node. Once both native selections are vacant, it retires any
+remaining packet descriptor. The caller supplies the complete owned route-key
+set. Each key needs an absent result from a complete, correlated dump of the
+old FIB. A conflicting row, interrupted dump or uncertain close preserves the
+old cleanup obligation. Callers serialize native route and interface operations
+through the entire workflow.
+
+`FreeBsdVacancy::create` rechecks vacancy and keeps the original checkpoint
+lock while advancing from the old record through a new allocation intent to
+the fresh native identity. It provisions in the original FIB and keeps the
+original outage deadline. VPN and EXIT resume packet traffic after configuring
+and verifying the replacement under its own identity.
+
+## Checkpoint recovery
+
+Consuming `Record::recover` resolves the original interface index
 and checks the complete marker identity. A renamed interface can be located
 without treating a newly reused old name as its owner. Absence of that index
 returns `Observation::Absent` with the unchanged selector; this is a current-scope
@@ -35,8 +74,9 @@ observation rather than a destroy acknowledgement. Name changes do not change
 the index, nonce, canonical device unit or saved file identity required by the
 marker check.
 
-Recovery inspects the canonical devfs character node and checks the opened
-original device identity, L3 TUN type, actual name/index and full marker. Cleanup
+Recovery inventories the devfs directory before looking up the canonical
+character node. It checks the opened original device identity, L3 TUN type,
+actual name/index and full marker. Cleanup
 can qualify an unconfigured L3 TUN whose framing flag is still zero. Packet
 publication remains separately gated on verified `TUN_IFHEAD`; recovery never
 resumes incomplete packet configuration or changes its framing. Canonical device
@@ -48,6 +88,14 @@ then use native destruction; tracked transient interfaces require observed
 kernel removal and return a retained WouldBlock error while other users remain. The original interface owner rechecks its index and
 marker before destruction. Independent close/destruction failures remain in
 `DeviceCleanupError`; destruction can wait for other open device users.
+
+If clone creation fails before a marker is verified, explicit cleanup still
+requires an observed original index. The native index lookup must see absence or
+the original name. An unqualified index or a changed name retains cleanup debt.
+
+Successful transient configuration assigns removal to the driver before
+readback qualifies the device for use. Failed readback preserves that cleanup
+responsibility and the original error.
 
 A failed qualification retains the selector, original error and any descriptor
 already opened. `Failure::take_opened` transfers that descriptor for explicit

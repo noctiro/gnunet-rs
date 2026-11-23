@@ -160,6 +160,8 @@ pub enum IoAction {
     LocalAddress,
     /// Inspect whether the default socket was already connected.
     PeerAddress,
+    /// Apply the required caller egress policy before a fresh socket's bind.
+    Prepare,
     /// Bind a fresh scan socket without address/port reuse.
     Bind,
     /// Configure asynchronous receive-error behavior on the original socket.

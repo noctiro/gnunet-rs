@@ -4,6 +4,7 @@
     reason = "Exact operation and resource invariants are asserted while setup failures propagate."
 )]
 use gnunet_crypto::{EddsaPrivateKey, Entropy};
+use gnunet_hello::SignatureProfile;
 use gnunet_transport::own_hello::HelloCandidate;
 use gnunet_transport::{
     ClientId, Engine, Limits, PeerId, Signer,
@@ -338,8 +339,14 @@ fn aggregate_uses_original_set_common_encoder_and_actual_metadata_coverage() -> 
     let key = EddsaPrivateKey::from_seed([17; 32]);
     let authority = Authority::from_verified_peer(key.public_key());
     let bounds = own::PublicationBounds::checked(8, 4096, 65535, 65535)?;
-    let mut candidate =
-        HelloCandidate::prepare(engine.address_snapshot()?, authority.clone(), 10, bounds, 8)?;
+    let mut candidate = HelloCandidate::prepare(
+        engine.address_snapshot()?,
+        authority.clone(),
+        10,
+        bounds,
+        8,
+        SignatureProfile::Gnunet029,
+    )?;
     let id = candidate.id().clone();
     let mut scratch = [0; 4096];
     let signature = candidate.with_builder(&mut scratch, |builder| {
@@ -396,12 +403,24 @@ fn empty_set_is_managed_withdrawal_and_original_unknown_survives_retirement() ->
     let key = EddsaPrivateKey::from_seed([17; 32]);
     let authority = Authority::from_verified_peer(key.public_key());
     let bounds = own::PublicationBounds::checked(8, 4096, 65535, 65535)?;
-    let mut empty =
-        HelloCandidate::prepare(engine.address_snapshot()?, authority.clone(), 10, bounds, 8)?;
+    let mut empty = HelloCandidate::prepare(
+        engine.address_snapshot()?,
+        authority.clone(),
+        10,
+        bounds,
+        8,
+        SignatureProfile::Gnunet029,
+    )?;
     assert!(!empty.needs_signature());
     assert_eq!(empty.projection(), Some(None));
-    let other =
-        HelloCandidate::prepare(engine.address_snapshot()?, authority.clone(), 10, bounds, 8)?;
+    let other = HelloCandidate::prepare(
+        engine.address_snapshot()?,
+        authority.clone(),
+        10,
+        bounds,
+        8,
+        SignatureProfile::Gnunet029,
+    )?;
     assert_ne!(empty.id(), other.id());
     assert_eq!(empty.commit_started(other.id()), Err(Error::Stale));
     let id = empty.id().clone();
@@ -438,7 +457,8 @@ fn empty_set_is_managed_withdrawal_and_original_unknown_survives_retirement() ->
             authority,
             u64::MAX - own::HELLO_TTL,
             bounds,
-            8
+            8,
+            SignatureProfile::Gnunet029,
         )
         .is_err()
     );
@@ -452,8 +472,14 @@ fn aggregate_refresh_is_finite_only_after_known_commit_and_forever_hint_cannot_d
     let key = EddsaPrivateKey::from_seed([17; 32]);
     let authority = Authority::from_verified_peer(key.public_key());
     let bounds = own::PublicationBounds::checked(8, 4096, 65535, 65535)?;
-    let mut candidate =
-        HelloCandidate::prepare(engine.address_snapshot()?, authority.clone(), 10, bounds, 8)?;
+    let mut candidate = HelloCandidate::prepare(
+        engine.address_snapshot()?,
+        authority.clone(),
+        10,
+        bounds,
+        8,
+        SignatureProfile::Gnunet029,
+    )?;
     let id = candidate.id().clone();
     assert_eq!(candidate.refresh_deadline(), None);
     let signature = key.sign(7, candidate.signed_region())?;
@@ -469,8 +495,14 @@ fn aggregate_refresh_is_finite_only_after_known_commit_and_forever_hint_cannot_d
     candidate.retire();
     assert_eq!(candidate.refresh_deadline(), None);
     let empty = Engine::new(PeerId([1; 32]), Limits::default())?;
-    let mut withdrawal =
-        HelloCandidate::prepare(empty.address_snapshot()?, authority, 10, bounds, 8)?;
+    let mut withdrawal = HelloCandidate::prepare(
+        empty.address_snapshot()?,
+        authority,
+        10,
+        bounds,
+        8,
+        SignatureProfile::Gnunet029,
+    )?;
     let id = withdrawal.id().clone();
     withdrawal.commit_started(&id)?;
     withdrawal.commit_finished(&id, CommitOutcome::Committed)?;

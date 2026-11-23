@@ -47,8 +47,8 @@ pub struct Ports {
     pub core: EndpointSource,
     /// Actual PILS selector; only public announcement/sign operations are used.
     pub pils: EndpointSource,
-    /// Actual NSE statistical subscription selector.
-    pub nse: EndpointSource,
+    /// Actual NSE statistical subscription selector when that service is owned.
+    pub nse: Option<EndpointSource>,
     /// Actual PEERSTORE HELLO monitor selector.
     pub peerstore: EndpointSource,
     /// Actual TRANSPORT application hint/suggestion selector.

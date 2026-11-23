@@ -814,6 +814,15 @@ impl<'id, 'store, 'bytes> Service<'id, 'store, 'bytes> {
     }
     /// Original channels requiring actual close, never a synthetic close receipt.
     pub fn close_required(&self) -> Option<PeerSource<'id>> {
+        self.close_required_where(|_| true)
+    }
+
+    /// The first original close obligation matching a caller-owned endpoint.
+    /// A draining or unavailable physical lane cannot block another original.
+    pub fn close_required_where(
+        &self,
+        mut eligible: impl FnMut(PeerSource<'id>) -> bool,
+    ) -> Option<PeerSource<'id>> {
         self.operations.iter().enumerate().find_map(|(index, s)| {
             s.state.filter(|s| s.close && !s.peer_dead).and_then(|s| {
                 self.source(
@@ -824,6 +833,7 @@ impl<'id, 'store, 'bytes> Service<'id, 'store, 'bytes> {
                     s,
                 )
                 .ok()
+                .filter(|source| eligible(*source))
             })
         })
     }

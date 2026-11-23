@@ -155,6 +155,15 @@ pub struct Cell {
     /// XOR of reference CRC32 key checksums.
     pub hash_xor: u32,
 }
+
+impl Cell {
+    /// Empty cell for caller-owned static estimator and peel arenas.
+    pub const EMPTY: Self = Self {
+        count: 0,
+        key_xor: 0,
+        hash_xor: 0,
+    };
+}
 /// One actual peel result; `Stalled` authorizes retry/full fallback, not success.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Decode {

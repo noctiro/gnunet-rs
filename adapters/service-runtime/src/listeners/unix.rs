@@ -22,8 +22,8 @@ impl BoundListeners {
     /// provided separately by [`service_options`](super::service_options) for application by the driver.
     /// BINDTO uses native synchronous resolution as official service startup does;
     /// callers wanting local-only startup should supply a numeric loopback address.
-    /// Call in a startup section without unrelated file creators: private Unix bind
-    /// temporarily changes the process umask synchronously, never across an await.
+    /// Unix node permissions are committed before first listen; process umask
+    /// is unchanged. Exclude concurrent namespace and ACL mutation during bind.
     /// No listener exists when all endpoints fail. Partial success retains failures.
     pub async fn bind(
         config: &Configuration,
@@ -120,8 +120,7 @@ impl ListenerPreparation {
     /// Owner, group and everyone select socket / parent modes 0700/0700,
     /// 0770/0750 and 0777/0755 respectively. Existing
     /// parents, inherited sockets and foreign paths keep their ownership/modes.
-    /// This startup-only operation requires the same exclusion of hostile path
-    /// replacement and unrelated file creators as the private bind. It does not
+    /// Exclude concurrent namespace and ACL mutation while binding. It does not
     /// authenticate peers; the accepting driver must check kernel credentials.
     pub async fn finish_with_access(
         mut self,

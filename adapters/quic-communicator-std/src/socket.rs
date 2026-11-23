@@ -7,11 +7,16 @@ use std::{
     pin::Pin,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering},
     },
     task::{Context, Poll},
 };
 use tokio::time::Instant;
+
+mod reactor;
+#[cfg(test)]
+mod tests;
+
 /// Actual aggregate socket observations, independent of per-message provider IO.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Statistics {
@@ -19,6 +24,12 @@ pub struct Statistics {
     pub sent: u64,
     /// Actual UDP payload bytes returned by socket adapter.
     pub received: u64,
+    /// Recoverable send errors treated as loss by the QUIC packet engine.
+    pub isolated_sends: u64,
+    /// Receive notifications that were isolated without closing the socket.
+    pub isolated_receives: u64,
+    /// Most recent native error code among isolated receive notifications.
+    pub last_isolated_receive_os_error: Option<i32>,
 }
 #[derive(Debug)]
 pub(crate) struct Gate {
@@ -26,6 +37,9 @@ pub(crate) struct Gate {
     closed: AtomicBool,
     sent: AtomicU64,
     received: AtomicU64,
+    isolated_sends: AtomicU64,
+    isolated_receives: AtomicU64,
+    last_isolated_receive_os_error: AtomicI32,
     first: Mutex<Option<io::Error>>,
 }
 impl Gate {
@@ -35,6 +49,9 @@ impl Gate {
             closed: AtomicBool::new(false),
             sent: AtomicU64::new(0),
             received: AtomicU64::new(0),
+            isolated_sends: AtomicU64::new(0),
+            isolated_receives: AtomicU64::new(0),
+            last_isolated_receive_os_error: AtomicI32::new(0),
             first: Mutex::new(None),
         })
     }
@@ -62,13 +79,24 @@ impl Gate {
             })
         }
     }
+    fn record_isolated_receive(&self, error: &io::Error) {
+        if let Some(code) = error.raw_os_error() {
+            self.last_isolated_receive_os_error
+                .store(code, Ordering::Relaxed);
+        }
+        self.isolated_receives.fetch_add(1, Ordering::Relaxed);
+    }
     pub(crate) fn close(&self) {
         self.closed.store(true, Ordering::Release)
     }
     pub(crate) fn statistics(&self) -> Statistics {
+        let code = self.last_isolated_receive_os_error.load(Ordering::Relaxed);
         Statistics {
             sent: self.sent.load(Ordering::Relaxed),
             received: self.received.load(Ordering::Relaxed),
+            isolated_sends: self.isolated_sends.load(Ordering::Relaxed),
+            isolated_receives: self.isolated_receives.load(Ordering::Relaxed),
+            last_isolated_receive_os_error: (code != 0).then_some(code),
         }
     }
     pub(crate) fn take_error(&self) -> Option<io::Error> {
@@ -78,13 +106,25 @@ impl Gate {
         }
     }
 }
+
+fn isolated_receive_error(error: &io::Error) -> bool {
+    error.kind() == io::ErrorKind::ConnectionReset
+        || gnunet_native::network::isolated_datagram_receive_error(error)
+}
+
 #[derive(Debug)]
 pub(crate) struct Socket {
     inner: Arc<dyn AsyncUdpSocket>,
     gate: Arc<Gate>,
 }
 impl Socket {
-    pub(crate) fn new(inner: Arc<dyn AsyncUdpSocket>, gate: Arc<Gate>) -> Self {
+    pub(crate) fn from_std(socket: std::net::UdpSocket, gate: Arc<Gate>) -> io::Result<Self> {
+        Ok(Self::new(
+            Arc::new(reactor::ReactorSocket::new(socket)?),
+            gate,
+        ))
+    }
+    fn new(inner: Arc<dyn AsyncUdpSocket>, gate: Arc<Gate>) -> Self {
         Self { inner, gate }
     }
 }
@@ -103,6 +143,12 @@ impl AsyncUdpSocket for Socket {
                 self.gate
                     .sent
                     .fetch_add(packet.contents.len() as u64, Ordering::Relaxed);
+            }
+            Err(e) if gnunet_native::network::isolated_datagram_send_error(e) => {
+                self.gate.isolated_sends.fetch_add(1, Ordering::Relaxed);
+                // Quinn recovers from datagram loss by timeout. Returning a
+                // peer-scoped native error here would kill its connection.
+                return Ok(());
             }
             Err(e) => self.gate.record(e),
         }
@@ -128,6 +174,13 @@ impl AsyncUdpSocket for Socket {
             Poll::Ready(Ok(n)) => {
                 let bytes = meta.iter().take(*n).map(|m| m.len as u64).sum::<u64>();
                 self.gate.received.fetch_add(bytes, Ordering::Relaxed);
+            }
+            Poll::Ready(Err(e)) if isolated_receive_error(e) => {
+                self.gate.record_isolated_receive(e);
+                // Yield after one notification to preserve the caller's driver
+                // budget. The next poll rechecks the original deadline.
+                cx.waker().wake_by_ref();
+                return Poll::Pending;
             }
             Poll::Ready(Err(e)) => self.gate.record(e),
             _ => {}

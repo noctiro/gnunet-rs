@@ -1,5 +1,5 @@
 //! Explicit original producer layout, independent from the current relay.
-use crate::*;
+use crate::{Error, PublicKey, wire};
 use gnunet_types::Error as Fault;
 use wire::profile::Profile;
 /// Actual configured original signing principal. The declaration is checked
@@ -91,36 +91,6 @@ impl OriginalLayout {
             }
             Some(OriginalSigner::Peer(expected)) if peer == Some(expected) => Ok(()),
             _ => Err(Fault::Authentication.into()),
-        }
-    }
-}
-impl<'id> Core<'id> {
-    /// Actual SERVICE ingress with explicitly selected original layout. The
-    /// caller must bind this policy to the original signer/hash, not just a relay.
-    /// Signature/header/hash checks remain mandatory. Wrong/foreign declarations
-    /// return the original owned frame and grant no authentication or membership.
-    pub fn receive_profiled(
-        &mut self,
-        source: Source<'id>,
-        meta: ReceiveMeta,
-        layout: OriginalLayout,
-        input: OwnedBytes,
-    ) -> Result<Hash, RejectedInput> {
-        let checked = (|| {
-            self.check_source(source)?;
-            if self.mode != Mode::Service
-                || matches!(
-                    self.rooms.get(source.room)?.sources.get(source.slot)?.role,
-                    SourceRole::ServiceSigner(_)
-                )
-            {
-                return Err(Error::Permission);
-            }
-            self.receive_check_profiled(source, meta, &input, layout)
-        })();
-        match checked {
-            Ok(admission) => self.receive_commit(source, meta, input, admission),
-            Err(error) => Err(RejectedInput { error, input }),
         }
     }
 }

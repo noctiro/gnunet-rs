@@ -1,12 +1,101 @@
 //! Bounded postorder object plans and authenticated complete parent membership.
+mod inline;
 mod prepare;
 #[cfg(test)]
 mod tests;
 use super::{Error, Limits, Put, file, indexed};
 use crate::{Buffers, Control, Progress, ReadFile, Repository};
 use gnunet_fs::{Content, Uri, content::Layout, directory as dir, metadata};
+pub(crate) use prepare::measure_tree_observed;
+pub(in crate::publication) use prepare::{Locations, prepare_tree_observed};
 pub use prepare::{prepare_tree, prepare_tree_with_metadata};
 use std::{collections::HashMap, mem::size_of};
+
+/// Real scanner, extractor and plaintext encoder events for publication commands.
+pub enum Event<'a> {
+    /// A named original source entry was visited during counting.
+    Scanning {
+        /// Source-relative path.
+        relative: &'a std::path::Path,
+        /// Whether this entry is a directory.
+        directory: bool,
+    },
+    /// The bounded original-source prepass completed.
+    ScanComplete,
+    /// A regular file's selected metadata extraction completed.
+    Extracted(&'a std::path::Path),
+    /// All selected metadata was processed.
+    MetadataComplete,
+    /// Plaintext encoded during this invocation, never DATASTORE acceptance bytes.
+    Encoding {
+        /// Source-relative path.
+        relative: &'a std::path::Path,
+        /// Plaintext bytes actually consumed.
+        completed: u64,
+        /// Directory artifact length, file length, or descendant file total.
+        total: u64,
+        /// Elapsed time from this object or directory's start.
+        elapsed: std::time::Duration,
+    },
+}
+
+/// Optional synchronous observer owned by this publication invocation.
+pub type Observer<'a> = Option<&'a mut dyn FnMut(Event<'_>) -> Control>;
+
+pub(crate) fn emit(observer: &mut Observer<'_>, event: Event<'_>) -> Result<(), Error> {
+    if observer
+        .as_deref_mut()
+        .is_some_and(|observe| observe(event) == Control::Cancel)
+    {
+        return Err(crate::Error::Cancelled.into());
+    }
+    Ok(())
+}
+
+pub(crate) fn root_file_progress<'a>(
+    observer: &'a mut Observer<'_>,
+    total: u64,
+    mut control: impl FnMut(Progress) -> Control + 'a,
+) -> impl FnMut(Progress) -> Control + 'a {
+    use std::time::{Duration, Instant};
+    let start = Instant::now();
+    let mut last = None;
+    move |progress| {
+        if observer.is_some() {
+            let now = Instant::now();
+            let completed = progress.plaintext_bytes;
+            let already_reported = last.is_some_and(|(before, when)| {
+                before == completed
+                    || (completed != total && now.duration_since(when) < Duration::from_millis(200))
+            });
+            if !already_reported {
+                last = Some((completed, now));
+                if emit(
+                    observer,
+                    Event::Encoding {
+                        relative: std::path::Path::new(""),
+                        completed,
+                        total,
+                        elapsed: now.duration_since(start),
+                    },
+                )
+                .is_err()
+                {
+                    return Control::Cancel;
+                }
+            }
+        }
+        control(progress)
+    }
+}
+
+/// Computed content of a descriptor-stable source object, without storage.
+pub struct MeasuredObject {
+    /// Source-root-relative path, empty for the selected root.
+    pub relative: std::path::PathBuf,
+    /// Exact CHK and size of the encoded source object.
+    pub content: Content,
+}
 
 /// Explicit transformation of standard directory metadata from the original
 /// opened descriptor. Returning bytes grants no publication or source receipt.
@@ -342,9 +431,14 @@ pub(super) fn verify(
                     return Err(crate::Error::Corrupt);
                 };
                 let expected = &tree.objects[child];
+                let content = match entry.uri()? {
+                    Uri::Content(content) => Some(content),
+                    Uri::Location(location) => Some(location.content()),
+                    _ => None,
+                };
                 if child >= index
                     || members[child]
-                    || !matches!(entry.uri()?, Uri::Content(found) if found == expected.content)
+                    || content != Some(expected.content)
                     || (dir::claims_directory(entry.metadata.items()) == Some(true))
                         != expected.directory
                 {

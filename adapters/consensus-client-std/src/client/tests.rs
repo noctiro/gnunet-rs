@@ -103,6 +103,91 @@ async fn loss(client: &mut Client) -> Result<Loss, Failure> {
     })
     .await?
 }
+#[test]
+fn a_whole_native_insert_past_its_fence_remains_in_the_loss() -> Result<(), Failure> {
+    use gnunet_service_runtime::clock::{
+        AbsoluteTime, ClockSample, ClockSubscription, RuntimeClock, SystemClock,
+    };
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[derive(Default)]
+    struct CrossingClock(AtomicUsize);
+    impl RuntimeClock for CrossingClock {
+        fn sample(&self) -> Result<ClockSample, Fault> {
+            let mut sample = SystemClock.sample()?;
+            if self
+                .0
+                .try_update(Ordering::Relaxed, Ordering::Relaxed, |left| {
+                    left.checked_sub(1)
+                })
+                == Ok(1)
+            {
+                sample.now = AbsoluteTime::from_micros(sample.now.as_micros() + 60_000_000);
+            }
+            Ok(sample)
+        }
+
+        fn subscribe(&self) -> Result<Box<dyn ClockSubscription>, Fault> {
+            SystemClock.subscribe()
+        }
+    }
+
+    runtime()?.block_on(async {
+        let directory = Directory::new()?;
+        let path = directory.0.join("consensus.sock");
+        let listener = UnixListener::bind(&path)?;
+        let clock = Arc::new(CrossingClock::default());
+        let source = EndpointSource::unix_with_clock(path, clock.clone());
+        let bounds = Bounds::after(clock.as_ref(), Duration::from_secs(30))?;
+        let join = Join {
+            session: [7; 64],
+            start: bounds.expires() - 1_000_000,
+            deadline: bounds.expires(),
+            peers: &[],
+        };
+        let mut client = Client::new(source, join, Limits::default(), bounds)?;
+        let mut peer = joined(&mut client, &listener).await?;
+        let request = client.insert(0, b"whole-but-late")?;
+        let observed = tokio::time::timeout(
+            Duration::from_secs(2),
+            poll_fn(|cx| {
+                // The pre-write sample passes. The first sample after the actual
+                // native write crosses the original absolute fence.
+                clock.0.store(2, Ordering::Relaxed);
+                client.poll_output(cx)
+            }),
+        )
+        .await?;
+        let Err(error @ Error::Protocol(Fault::Deadline)) = observed else {
+            return Err("late original INSERT reported timely progress".into());
+        };
+        let lost = client.retire(Cause::Failure(error));
+        let actual = frame(&mut peer).await?;
+        if !matches!(
+            ClientRequest::decode(&actual)?,
+            ClientRequest::Insert {
+                element_type: 0,
+                data: b"whole-but-late"
+            }
+        ) {
+            return Err("the original native INSERT was not written".into());
+        }
+        let Some(pending) = lost.pending.front() else {
+            return Err("the late original request was lost".into());
+        };
+        if lost.inserts_written != 1
+            || lost.pending.len() != 1
+            || pending.kind != Kind::Insert(request)
+            || !pending.whole
+            || pending.written != actual.len()
+            || pending.length != actual.len()
+        {
+            return Err("loss erased or changed the original whole write".into());
+        }
+        check_closed(&mut client, &lost)
+    })
+}
+
 fn check_closed(client: &mut Client, lost: &Loss) -> Result<(), Failure> {
     if !lost.joined
         || lost.concluded

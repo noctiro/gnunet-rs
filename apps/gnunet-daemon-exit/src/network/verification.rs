@@ -19,6 +19,30 @@ pub(super) struct Plan {
     pub routes: Vec<RouteKey>,
 }
 impl Plan {
+    #[cfg(target_os = "freebsd")]
+    pub fn restoration_actions(
+        &self,
+        snapshot: &NativeSnapshot,
+    ) -> Result<[Option<Action>; 4], Failure> {
+        let mut actions = [
+            (snapshot.link_mtu() != self.mtu).then_some(Action::Mtu(self.mtu)),
+            None,
+            None,
+            (!snapshot.up()).then_some(Action::LinkUp(true)),
+        ];
+        if let Some((expected, mask, _)) = self.ipv4
+            && restore_ipv4(
+                expected,
+                mask,
+                snapshot.ipv4_address(),
+                snapshot.ipv4_netmask(),
+            )?
+        {
+            actions[1] = Some(Action::Ipv4Address(expected));
+            actions[2] = Some(Action::Ipv4Netmask(mask));
+        }
+        Ok(actions)
+    }
     #[cfg(windows)]
     pub fn creation_action(&self, index: usize) -> Option<Action> {
         match index {
@@ -126,6 +150,54 @@ impl Plan {
             return Err(Box::new(SnapshotFailure(snapshot)));
         }
         Ok(snapshot)
+    }
+}
+
+#[cfg(target_os = "freebsd")]
+fn restore_ipv4(
+    expected: Ipv4Addr,
+    mask: Ipv4Addr,
+    address: Ipv4Observation,
+    actual_mask: Ipv4Observation,
+) -> Result<bool, Failure> {
+    match (address, actual_mask) {
+        (Ipv4Observation::Present(a), Ipv4Observation::Present(m))
+            if a == expected && m == mask =>
+        {
+            Ok(false)
+        }
+        (Ipv4Observation::Absent { .. }, Ipv4Observation::Absent { .. }) => Ok(true),
+        _ => Err("EXIT retained FreeBSD IPv4 address or mask conflicts".into()),
+    }
+}
+
+#[cfg(all(test, target_os = "freebsd"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_complete_ipv4_absence_allows_reinstall() -> Result<(), Failure> {
+        let address = Ipv4Addr::new(192, 0, 2, 1);
+        let mask = Ipv4Addr::new(255, 255, 255, 0);
+        let absent = Ipv4Observation::Absent {
+            errno: libc::EADDRNOTAVAIL,
+        };
+        let present = Ipv4Observation::Present(address);
+        let actual_mask = Ipv4Observation::Present(mask);
+        if !restore_ipv4(address, mask, absent, absent)?
+            || restore_ipv4(address, mask, present, actual_mask)?
+            || restore_ipv4(address, mask, absent, actual_mask).is_ok()
+            || restore_ipv4(
+                address,
+                mask,
+                present,
+                Ipv4Observation::Present(Ipv4Addr::BROADCAST),
+            )
+            .is_ok()
+        {
+            return Err("FreeBSD IPv4 recovery acquired an unwarranted address mutation".into());
+        }
+        Ok(())
     }
 }
 pub(super) fn route(

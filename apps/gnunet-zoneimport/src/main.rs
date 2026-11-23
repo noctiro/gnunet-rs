@@ -45,7 +45,7 @@ fn execute() -> Result<(), Cause> {
     use gnunet_program_host::{
         foreground,
         logging::Logger,
-        program::{self, Defaults, Invocation, NlsDisabled, Preparation},
+        program::{self, Defaults, Invocation, Preparation},
         reporting::Reporter,
         shared_clock::SharedClock,
     };
@@ -59,11 +59,11 @@ fn execute() -> Result<(), Cause> {
     )?;
     let mut logger = Logger::new(b"gnunet-zoneimport", std::process::id(), false)?;
     let selection = settings::Selection::new();
-    let preparation=program::prepare(config,Invocation {
+    let preparation=program::prepare_installed(config,Invocation {
         binary_name:b"gnunet-zoneimport",
         help:Some(b"Import newline-separated FQDNs from stdin through existing IDENTITY zones and NAMESTORE; continuously refresh from DNS after EOF. Arguments: DNS-IP... (numeric IPv4/IPv6, port53). -s/--size is an initial Rust name-table hint; -m/--minimum-expiration selects the DNS record minimum lifetime. Standard -c/-L/-l/-h/-v apply to the actual PROGRAM."),
         select_default_filename:true,defaults:Defaults::Native,
-    },selection.descriptors(),std::env::args_os(),&program::Environment::capture(),&mut NlsDisabled,&mut logger,&clock,&mut io::stdout().lock(),&mut io::stderr().lock());
+    },selection.descriptors(),std::env::args_os(),&program::Environment::capture(),&mut logger,&clock,&mut io::stdout().lock(),&mut io::stderr().lock());
     let reporter = Reporter::new(logger, clock.clone());
     #[cfg(unix)]
     if let Some(notice) = early.notice {

@@ -11,6 +11,9 @@ extern crate alloc;
 
 use core::net::{IpAddr, SocketAddr};
 use gnunet_types::{Duration, Error, GenerationalId, MonoInstant};
+mod storage;
+pub use storage::QueryStorage;
+use storage::Table;
 
 /// Actual `DNS_RETRANSMIT_DELAY`, in microseconds.
 pub const DEFAULT_RETRY: Duration = Duration(250_000);
@@ -18,6 +21,24 @@ pub const DEFAULT_RETRY: Duration = Duration(250_000);
 pub const SELECTION_ATTEMPTS: usize = 256;
 /// DNS header length required by the original raw receive handler.
 pub const MINIMUM_RESPONSE_LEN: usize = 12;
+
+fn matches_configured_peer(expected: SocketAddr, received: SocketAddr) -> bool {
+    match (expected, received) {
+        (SocketAddr::V4(expected), SocketAddr::V4(received)) => expected == received,
+        (SocketAddr::V6(expected), SocketAddr::V6(received)) => {
+            let ip = expected.ip();
+            let prefix = ip.segments()[0];
+            let scoped = ip.is_unicast_link_local()
+                || prefix & 0xffc0 == 0xfec0
+                || (ip.is_multicast() && prefix & 0x0f != 0x0e);
+            // Flow labels and scope bits on unscoped addresses are not peer identity.
+            expected.ip() == received.ip()
+                && expected.port() == received.port()
+                && (!scoped || expected.scope_id() == received.scope_id())
+        }
+        _ => false,
+    }
+}
 
 /// Request identity scoped to its original stub owner; never serialized.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
@@ -220,21 +241,20 @@ impl<Q> Slot<Q> {
 }
 /// All seven DNSSTUB operations with explicit request, byte and server bounds.
 /// R limits request-pool slots (up to two cached sockets each), N copied query
-/// bytes and S configured server entries. The default query storage is inline;
-/// the optional heap profile changes storage without changing protocol behavior.
+/// bytes and S configured server entries. The default keeps bytes and tables
+/// inline. The optional heap profile shares the same protocol behavior.
 /// No global RNG or clock is consulted.
-pub struct DnsStub<const R: usize, const N: usize, const S: usize, Q = [u8; N]> {
-    slots: [Slot<Q>; R],
+pub struct DnsStub<const R: usize, const N: usize, const S: usize, Q: QueryStorage = [u8; N]> {
+    slots: Table<Q, Slot<Q>, R>,
     count: usize,
-    servers: [Option<Server>; S],
+    servers: Table<Q, Option<Server>, S>,
     head: Option<usize>,
     retry: Duration,
     order: u64,
     closed: bool,
 }
-/// Heap-backed query buffers with the same bounded DNSSTUB state machine.
-/// Allocations are per slot; constructing a maximum-packet profile does not put
-/// its entire query pool on the native thread stack.
+/// Heap-backed request slots, query buffers and server entries. Allocates
+/// request storage for the configured slot count.
 #[cfg(feature = "alloc")]
 pub type HeapDnsStub<const R: usize, const N: usize, const S: usize> =
     DnsStub<R, N, S, alloc::boxed::Box<[u8]>>;
@@ -246,9 +266,10 @@ impl<const R: usize, const N: usize, const S: usize> DnsStub<R, N, S> {
     /// Start an inline, allocation-free request and query pool.
     pub fn start(num_sockets: usize) -> Result<Self, Error> {
         Self::validate_count(num_sockets)?;
-        Ok(Self::with_slots(
+        Ok(Self::with_tables(
             num_sockets,
             core::array::from_fn(|_| Slot::new([0; N])),
+            [None; S],
         ))
     }
 }
@@ -258,22 +279,23 @@ impl<const R: usize, const N: usize, const S: usize> DnsStub<R, N, S> {
     pub fn start_heap(num_sockets: usize) -> Result<HeapDnsStub<R, N, S>, Error> {
         Self::validate_count(num_sockets)?;
         let mut slots = alloc::vec::Vec::new();
-        slots.try_reserve_exact(R).map_err(|_| Error::Capacity)?;
-        for slot in 0..R {
+        slots
+            .try_reserve_exact(num_sockets)
+            .map_err(|_| Error::Capacity)?;
+        let mut servers = alloc::vec::Vec::new();
+        servers.try_reserve_exact(S).map_err(|_| Error::Capacity)?;
+        servers.resize(S, None);
+        for _ in 0..num_sockets {
             let mut query = alloc::vec::Vec::new();
-            if slot < num_sockets {
-                query.try_reserve_exact(N).map_err(|_| Error::Capacity)?;
-                query.resize(N, 0);
-            }
+            query.try_reserve_exact(N).map_err(|_| Error::Capacity)?;
+            // Fill the original allocation so boxing does not reallocate.
+            query.resize(query.capacity(), 0);
             slots.push(Slot::new(query.into_boxed_slice()));
         }
-        let slots = slots.try_into().map_err(|_| Error::Capacity)?;
-        Ok(HeapDnsStub::with_slots(num_sockets, slots))
+        Ok(HeapDnsStub::with_tables(num_sockets, slots, servers))
     }
 }
-impl<const R: usize, const N: usize, const S: usize, Q: AsRef<[u8]> + AsMut<[u8]>>
-    DnsStub<R, N, S, Q>
-{
+impl<const R: usize, const N: usize, const S: usize, Q: QueryStorage> DnsStub<R, N, S, Q> {
     fn validate_count(num_sockets: usize) -> Result<(), Error> {
         if num_sockets == 0 || num_sockets > R {
             return Err(Error::Capacity);
@@ -283,11 +305,15 @@ impl<const R: usize, const N: usize, const S: usize, Q: AsRef<[u8]> + AsMut<[u8]
         }
         Ok(())
     }
-    fn with_slots(count: usize, slots: [Slot<Q>; R]) -> Self {
+    fn with_tables(
+        count: usize,
+        slots: Q::Table<Slot<Q>, R>,
+        servers: Q::Table<Option<Server>, S>,
+    ) -> Self {
         Self {
-            slots,
+            slots: Table::new(slots),
             count,
-            servers: [None; S],
+            servers: Table::new(servers),
             head: None,
             retry: DEFAULT_RETRY,
             order: 0,
@@ -323,6 +349,27 @@ impl<const R: usize, const N: usize, const S: usize, Q: AsRef<[u8]> + AsMut<[u8]
         });
         self.head = Some(index);
         Ok(ServerId(index as u32))
+    }
+    /// Replace all upstreams in the supplied preference order. An empty list
+    /// disables new admission until a server is configured. Success invalidates
+    /// every original request, socket and send effect without emitting callbacks.
+    /// Capacity refusal leaves the previous configuration and work intact.
+    pub fn replace_servers(&mut self, endpoints: &[SocketAddr]) -> Result<(), Error> {
+        self.open()?;
+        if endpoints.len() > S {
+            return Err(Error::Capacity);
+        }
+        self.retire_requests_and_sockets();
+        self.servers.fill(None);
+        for (index, (entry, &address)) in self.servers.iter_mut().zip(endpoints).enumerate() {
+            let next = index + 1;
+            *entry = Some(Server {
+                address,
+                next: (next < endpoints.len()).then_some(next),
+            });
+        }
+        self.head = (!endpoints.is_empty()).then_some(0);
+        Ok(())
     }
     /// Change subsequent retry periods, including for existing requests. A
     /// previously scheduled wakeup is not moved. FOREVER stops later retries.
@@ -438,6 +485,23 @@ impl<const R: usize, const N: usize, const S: usize, Q: AsRef<[u8]> + AsMut<[u8]
     pub fn owns_socket(&self, socket: SocketId) -> bool {
         self.socket_index(socket)
             .is_ok_and(|(slot, family)| self.slots[slot].sockets[family].state == SocketState::Open)
+    }
+    /// Exact pending destination for this original opening cache generation.
+    /// This is a read-only scheduling observation, not a socket-open receipt.
+    ///
+    /// # Errors
+    /// Refuses stale cache generations and caches without an active original
+    /// send awaiting opening, including separately prepared startup sockets.
+    pub fn pending_destination(&self, socket: SocketId) -> Result<SocketAddr, Error> {
+        let (index, _) = self.socket_index(socket)?;
+        let pending = self.slots[index].pending.ok_or(Error::NotReady)?;
+        if pending.socket != socket
+            || pending.phase != Phase::AwaitSocket
+            || !self.owns_request(pending.request)
+        {
+            return Err(Error::NotReady);
+        }
+        Ok(pending.destination)
     }
     /// Reserve a cache generation during startup without inventing a query or
     /// datagram send. The host must report its actual bind through socket_opened.
@@ -613,9 +677,8 @@ impl<const R: usize, const N: usize, const S: usize, Q: AsRef<[u8]> + AsMut<[u8]
         }
         Ok(())
     }
-    /// Check only actual raw-stub receive conditions. DNS ID, QR, source scope
-    /// and payload content are not validated by C's handler. IPv4 native padding
-    /// is replaced with its intended IP/port comparison; no padding is read.
+    /// Check the original socket and a configured source address, port and
+    /// IPv6 scope. DNS ID, QR and payload validation belong to the caller.
     pub fn receive<'a>(
         &self,
         socket: SocketId,
@@ -639,7 +702,7 @@ impl<const R: usize, const N: usize, const S: usize, Q: AsRef<[u8]> + AsMut<[u8]
             .servers
             .iter()
             .flatten()
-            .any(|s| s.address.ip() == source.ip() && s.address.port() == source.port())
+            .any(|server| matches_configured_peer(server.address, source))
         {
             return Err(DropReason::UnknownPeer);
         }
@@ -697,25 +760,28 @@ impl<const R: usize, const N: usize, const S: usize, Q: AsRef<[u8]> + AsMut<[u8]
     /// Stop logically, invalidate every token and emit no response callbacks.
     /// Host owners must close all cached sockets, including canceled slots.
     pub fn stop(&mut self) -> Stopped {
-        let requests = self.slots.iter().filter(|s| s.active).count();
-        let socket_tokens = self
-            .slots
-            .iter()
-            .flat_map(|s| s.sockets)
-            .filter(|s| s.state != SocketState::Closed)
-            .count();
-        for s in &mut self.slots {
-            s.active = false;
-            s.pending = None;
-            s.retry_at = None;
-            s.reading = [false; 2];
-            for c in &mut s.sockets {
-                c.state = SocketState::Closed;
-            }
-        }
+        let retired = self.retire_requests_and_sockets();
         self.servers.fill(None);
         self.head = None;
         self.closed = true;
+        retired
+    }
+    fn retire_requests_and_sockets(&mut self) -> Stopped {
+        let mut requests = 0;
+        let mut socket_tokens = 0;
+        for s in self.slots.iter_mut() {
+            requests += usize::from(s.active);
+            s.active = false;
+            s.pending = None;
+            s.retry_at = None;
+            s.next_server = None;
+            s.reading = [false; 2];
+            s.len = 0;
+            for c in &mut s.sockets {
+                socket_tokens += usize::from(c.state != SocketState::Closed);
+                c.state = SocketState::Closed;
+            }
+        }
         Stopped {
             requests,
             socket_tokens,

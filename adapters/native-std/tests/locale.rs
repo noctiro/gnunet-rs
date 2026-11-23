@@ -1,5 +1,19 @@
 //! Native locale ownership and exact bounded readers; no process locale mutation.
 use gnunet_native::locale::{CaseContext, CaseSnapshot, LocaleSnapshot};
+
+#[cfg(unix)]
+fn selected_locale() -> std::io::Result<usize> {
+    #[expect(
+        unsafe_code,
+        reason = "A null uselocale argument only observes this thread's selection; its address is compared without dereferencing or retaining ownership"
+    )]
+    // SAFETY: this is a read-only POSIX locale query; no handle escapes the test.
+    let selected = unsafe { libc::uselocale(std::ptr::null_mut()) };
+    if selected.is_null() {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(selected as usize)
+}
 #[test]
 #[expect(
     clippy::panic_in_result_fn,
@@ -75,16 +89,16 @@ fn context_replacement_is_atomic_and_retained_selection_outlives_context() -> st
 #[test]
 #[expect(
     clippy::panic_in_result_fn,
-    reason = "Actual thread-local native effect plus duplicate ownership is verified after the original thread exits"
+    reason = "Native selection identity is checked on every result path and a duplicated snapshot survives thread exit"
 )]
-fn current_thread_failure_keeps_owned_locale_and_snapshot_outlives_thread_exit()
+fn current_thread_conversion_restores_selection_and_snapshot_outlives_thread_exit()
 -> std::io::Result<()> {
     fn require<T: Send + Sync>() {}
     require::<gnunet_native::locale::ThreadLocale>();
     require::<CaseContext>();
     // SAFETY: this test never mutates global locale. The other native tests use
-    // immutable *_l readers only, and this thread owns all installed private
-    // locale effects without exposing native pointers to foreign code.
+    // immutable *_l readers only. Scoped numeric conversions restore this
+    // thread's selection without exposing native pointers to foreign code.
     #[expect(
         unsafe_code,
         reason = "Finite test certifies no native global mutation and no raw locale pointer escape"
@@ -92,20 +106,28 @@ fn current_thread_failure_keeps_owned_locale_and_snapshot_outlives_thread_exit()
     // SAFETY: no global locale is mutated and no native private pointer escapes.
     let token = unsafe { gnunet_native::locale::ThreadLocale::acquire()? };
     let worker = std::thread::spawn(move || -> std::io::Result<_> {
-        let failed = token.configuration_float(b"owned-not-a-float")?;
-        if failed.matched || failed.range_error {
-            return Err(std::io::Error::other(
-                "defined lexical failure was not preserved",
-            ));
-        }
+        #[cfg(unix)]
+        let before = selected_locale()?;
         let retained = token.snapshot()?;
-        // Repeated failed operations replace/free their old private TLS owner;
-        // the independent duplicate remains a valid native reader.
-        for _ in 0..64 {
-            let result = token.configuration_float(b"owned-failure")?;
-            if result.matched {
-                return Err(std::io::Error::other("lexical failure accepted"));
+        for (input, matched, range_error) in [
+            (b"1.25".as_slice(), true, false),
+            (b"1.5 trailing", false, false),
+            (b"owned-not-a-float", false, false),
+            (b"1e10000", false, true),
+        ] {
+            let result = token.configuration_float(input)?;
+            if (result.matched, result.range_error) != (matched, range_error) {
+                return Err(std::io::Error::other("unexpected conversion result"));
             }
+            #[cfg(unix)]
+            if selected_locale()? != before {
+                return Err(std::io::Error::other("numeric conversion changed locale"));
+            }
+        }
+        token.format_configuration_float(1.25)?;
+        #[cfg(unix)]
+        if selected_locale()? != before {
+            return Err(std::io::Error::other("numeric formatting changed locale"));
         }
         Ok(retained)
     });
@@ -120,9 +142,9 @@ fn current_thread_failure_keeps_owned_locale_and_snapshot_outlives_thread_exit()
 #[test]
 #[expect(
     clippy::panic_in_result_fn,
-    reason = "A late destructor cannot install an owner into destroyed TLS or leave a freed locale selected"
+    reason = "Scoped conversion remains available during TLS destruction without retaining any selected locale"
 )]
-fn float_failure_during_late_tls_destructor_obeys_platform_ownership() -> std::io::Result<()> {
+fn float_failure_during_tls_destructor_has_no_retained_locale_owner() -> std::io::Result<()> {
     use std::sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -150,7 +172,6 @@ fn float_failure_during_late_tls_destructor_obeys_platform_ownership() -> std::i
         )]
         // SAFETY: no global locale is mutated and no native private pointer escapes.
         let token = unsafe { gnunet_native::locale::ThreadLocale::acquire()? };
-        // Initialized first, so this runs after the installed-locale TLS owner.
         LATE.with(|slot| {
             *slot.borrow_mut() = Some(Late {
                 token: token.clone(),
@@ -166,11 +187,6 @@ fn float_failure_during_late_tls_destructor_obeys_platform_ownership() -> std::i
     worker
         .join()
         .map_err(|_| std::io::Error::other("destructor worker panicked"))??;
-    #[cfg(not(windows))]
-    assert_eq!(observed.load(Ordering::SeqCst), 1);
-    // UCRT uses explicit-locale reads without installing a TLS-owned pointer,
-    // so conversion remains valid even during an unrelated late destructor.
-    #[cfg(windows)]
     assert_eq!(observed.load(Ordering::SeqCst), 2);
     Ok(())
 }

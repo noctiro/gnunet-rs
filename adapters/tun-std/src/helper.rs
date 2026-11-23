@@ -622,6 +622,8 @@ impl Link {
             pending: pending.map(|p| p.id),
             cause,
             close_error: None,
+            #[cfg(target_os = "freebsd")]
+            freebsd_recovery: None,
         }
     }
     /// Close original pipes and request the original child stop. EXIT sends

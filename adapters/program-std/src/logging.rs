@@ -237,6 +237,7 @@ pub struct Logger<'a> {
     source_sites: BTreeMap<&'static str, CallSiteCache>,
     logical_clock: Option<crate::shared_clock::SharedClock>,
     translations: Rc<dyn crate::locale::Translations>,
+    locale_selected: bool,
 }
 impl<'a> Logger<'a> {
     /// Create policy/state only; no file, clock, entropy or environment IO.
@@ -271,6 +272,7 @@ impl<'a> Logger<'a> {
             source_sites: BTreeMap::new(),
             logical_clock: None,
             translations: crate::locale::disabled(),
+            locale_selected: false,
         })
     }
     /// Refresh only this single-thread fork child's logging identity. No file
@@ -368,6 +370,16 @@ impl<'a> Logger<'a> {
     /// Select the actual shared NLS backend, retaining its handle/capability.
     pub fn set_translations(&mut self, translations: Rc<dyn crate::locale::Translations>) {
         self.translations = translations;
+        self.locale_selected = true;
+    }
+    pub(crate) fn bind_installed_translations(
+        &mut self,
+        project: &gnunet_config::ProjectData,
+    ) -> Result<(), crate::program::Failure> {
+        if !self.locale_selected {
+            self.set_translations(crate::locale::installed_translations(project)?);
+        }
+        Ok(())
     }
     /// Retain the same selected backend for helper callbacks and startup parsing.
     #[must_use]
@@ -857,7 +869,7 @@ pub fn base32(input: &[u8]) -> Vec<u8> {
 #[cfg(unix)]
 fn native_micros(value: i64) -> i64 {
     let narrowed = value as libc::suseconds_t;
-    crate::native::wide_micros(narrowed)
+    crate::native::widen_time_component(narrowed)
 }
 #[cfg(windows)]
 fn native_micros(value: i64) -> i64 {

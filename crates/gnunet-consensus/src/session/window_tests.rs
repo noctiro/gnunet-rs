@@ -210,3 +210,45 @@ fn expired_preface_and_offers_keep_original_phase_bound() -> Result<(), Error> {
     }
     Ok(())
 }
+
+#[test]
+fn waiting_for_conclude_retires_expired_offers_without_using_their_slots_early() -> Result<(), Error>
+{
+    let domain = Instance::new();
+    let peers = [[1; 32], [2; 32]];
+    let mut session = Session::new(
+        &domain,
+        peers[1],
+        join(&peers),
+        Limits {
+            offers: 1,
+            ..Limits::default()
+        },
+        Abi::native(),
+        10_000,
+    )?;
+    receipt(&mut session)?;
+    let union = RoundContext {
+        kind: 0,
+        peer1: 0,
+        peer2: 1,
+        repetition: -1,
+        leader: -1,
+        contested: 0,
+    };
+    let inventory = RoundContext { kind: 1, ..union };
+    let offer = session.offer(peers[0], union, 10_000)?;
+    let deadline = session.window_deadline(Round::Union, 0);
+    check(session.stage == Stage::Collect && session.next_deadline() == Some(deadline))?;
+    check(!session.step(deadline - 1, 1)? && session.offer_live(offer))?;
+    check(session.step(deadline, 1)? && !session.offer_live(offer))?;
+    check(session.effect().is_some_and(
+        |effect| matches!(effect.action, Action::RejectOffer { offer: original } if original == offer),
+    ))?;
+    check(session.next_deadline() == Some(session.schedule.deadline()))?;
+    check(session.offer(peers[0], inventory, deadline) == Err(Error::Capacity))?;
+    receipt(&mut session)?;
+    check(session.offer(peers[0], union, deadline - 1) == Err(Error::Deadline))?;
+    let next = session.offer(peers[0], inventory, deadline)?;
+    check(next != offer && session.offer_live(next) && session.stage == Stage::Collect)
+}

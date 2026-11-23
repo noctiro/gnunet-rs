@@ -111,7 +111,10 @@ impl<'id> Communicator<'id> {
         // passed. A refusal drops it without publishing an endpoint or frame.
         let staged_scan = match selection.socket {
             SelectedSocket::Default(_clone) => None,
-            SelectedSocket::Scan(actual) => match DatagramSocket::adopt(actual) {
+            SelectedSocket::Scan(actual) => match DatagramSocket::adopt(
+                actual,
+                self.sockets[command.default].socket_policy().clone(),
+            ) {
                 Ok(socket) => Some(socket),
                 Err(error) => {
                     return self.reject_burst_candidate(command, scan, Refusal::Socket(error));

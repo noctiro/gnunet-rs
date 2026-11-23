@@ -119,7 +119,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "cca3f30f9675d314c1112326ae06df8a950a841303d3cb4690df1d21476ed21c",
         "preprocessed_sha256": "e3a5aa5d8e6ba6a9422ae5d9fe7514fc644f112b852c6bf26809ea6c941de7d6",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnu_name_system_protocols.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "e614a8474e11d0cdf871f2f9064cdba5b5455b560ab745ba55f63850795278c7"
       },
       "conditional_directives": [
@@ -215,7 +214,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "cd12c3aa866dbe99314fedd9825de76864f3ead33c0da87851981b3932b5cae0",
         "preprocessed_sha256": "d0a15da0e9f71c5461ed98d5203e3891d6069051fb1d113784a74e817eb76f0e",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnu_name_system_record_types.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "d90ace41325bfac6972bdada4cc6b1ba22bfd53ae151138f471738ea03813aa0"
       },
       "conditional_directives": [
@@ -542,7 +540,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "339f8f4ec409e4090facc538068f6f5f591258b135d0d41272c4be2746ac0fd1",
         "preprocessed_sha256": "eba93f65417f88b5a36fa8f6f0f0654ce48877f4d7467be9235c762353c719ca",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnu_name_system_service_ports.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "1b3755d8c634c2a7960628e177317d011b2769ac8ea0df621190c92c5cad635c"
       },
       "conditional_directives": [
@@ -658,7 +655,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "e73709ab47b2da955dcc3c50336337b2aaf12f357160e3070aa5678624707c21",
         "preprocessed_sha256": "6c30e2394b0a7588f246c82185777b8215f1b64036d3431b7a3ae16880f9ea4e",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_abd_service.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "2f42d8252b13322bfa1df3bf8058b357ab30ea6e739af0f6b978aa2a39088b84"
       },
       "conditional_directives": [
@@ -754,7 +750,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "e563faa59e18f95ae5f6cd6f4c27fa3bed1301fb3776620fd78f9a12f61f4aee",
         "preprocessed_sha256": "33aa06d1592287fc62dc3d40826a7b56d8c0c7921f70f614301eb99219cf9386",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_applications.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "f37b7643c4c1b48476c4248fd9571ded81d35a7c01af1ed83b187aa678e7c12d"
       },
       "conditional_directives": [
@@ -983,7 +978,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "ca46b86032e31fd6a007f2adcc1c3ff9817a5f54b828185f99a3477d1cf650d6",
         "preprocessed_sha256": "34b69c86a4d9057a14eabf7a0f2f1237ffd42184b7ea7c7997f68adb7d5bdb69",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_arm_service.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "84a6c38962ddb9d10550a570c0fe4482b3d856645a645e459fc49c08fa632da3"
       },
       "conditional_directives": [
@@ -1105,7 +1099,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "be85a4b1a71beeb0f43d38e51b005ac0f765fed6db5a7cf6b6ce14be65df6d03",
         "preprocessed_sha256": "25dc49d4151d73002b5dbbbe3ba6ae3f9599b964315d2a93dba0abcffab078b5",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_bandwidth_lib.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "ec5b02f1dc881b22b922bba80f143e39c16512f578d30aec9034642f072075da"
       },
       "conditional_directives": [
@@ -1271,7 +1264,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "f03b40e37650f7822c915e1cd268e231dc5fe60736820a7da9d46f2096f7dec9",
         "preprocessed_sha256": "62846a743afd193e1124f1a305f26e50d6b187c604913e6ce3e02c83bb0caa95",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_bio_lib.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "d580f922f429ad255d6e1bbe96d385cd5d6bccde369de5486c9285c288850162"
       },
       "conditional_directives": [
@@ -1399,7 +1391,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "e10bb653b91e177ab90f6c257cdf6bb8ab35a4c1a49830bc0271ff07a73fe7d0",
         "preprocessed_sha256": "6139578fe685f666ff1425eecf009d0feb71a72aa5977244b1eceb8db9685769",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_block_group_lib.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "ac85e29565a5809be989cfbba67a415b04004ce27aa2e2031113568ae8c78f97"
       },
       "conditional_directives": [
@@ -1513,7 +1504,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "60d76587309fc496bef69bb9aebd5590ef799fbabd6ce8e474317a3bc4ce018f",
         "preprocessed_sha256": "242907c6243e11f16d13fec1ea0770c1c85d50c8e06ba351e5cee75d82e24838",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_block_lib.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "e20a6f07883093e47a77de7c096e7513003ca9146c75be270c9b91b55eeae502"
       },
       "conditional_directives": [
@@ -1623,7 +1613,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "29be2b5056232c56a2a29ad34098617c91365d4b674f09bee5f3f6e04a38b4bf",
         "preprocessed_sha256": "809a5c288e0c58b7bda3489d21d35c2e351dd725ac34a79c3086b2792413ed1f",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_block_plugin.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "496a52dcdfb74fbe3d12fb18002f615ae7712b84c446cb42822b39f54993fe32"
       },
       "conditional_directives": [
@@ -1684,7 +1673,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "f161dfc5bf85d09cc00239d3a0fefbe93aebdfbab847fa1ec8190dd481780914",
         "preprocessed_sha256": "2132444dfb559ac62677129c4e7fb197615237a47299c402fa73852dfb32074b",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_buffer_lib.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "01cd0ccb8e584617e21e748df70299937423e4fb330f51b8226f80da47bf4fba"
       },
       "conditional_directives": [
@@ -1790,7 +1778,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "04cb87cb96db215ef4235c3bf109e8c876a254d11a9a363b3ade3ade76fd211d",
         "preprocessed_sha256": "9c42688faf0985199e466365258162ba5fe2703a51d386841355463f3cbe38e4",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_cadet_service.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "9e62c815c073d599568c2a7b275e7e3db83df2941f783671bc7a6cf1bece2e35"
       },
       "conditional_directives": [
@@ -1899,7 +1886,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "87bac7e831c3a241b2614035e0c797426f80464dc9d159edacf3ea4650d52158",
         "preprocessed_sha256": "7ae3fe4787332884f37908ea502059caa6a6a28fbb23cea6e0ce0eeab904777c",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_child_management_lib.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "52105cd3abe9acc0456b87267b7b5108679de57068f8ed6172145344cd83da7f"
       },
       "conditional_directives": [
@@ -1970,7 +1956,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "de81c7ecb842751dd36d1aaf803e467d4032f3ca3e0dcbd8a6525a8da25ae60b",
         "preprocessed_sha256": "ae7c1a9f33ae13fb9d5da77b6d29048285b2294f7bc5815967e0d82fb975bd7f",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_client_lib.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "1f81fed57400fa7d8def241aaa6d35aacfe5db10bbc2e3423137dfdc86cb5128"
       },
       "conditional_directives": [
@@ -2142,7 +2127,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "19c70ee9d6a2a04c78d975088d24289bc2f8ffc966f928b276a0ffa32c5ab317",
         "preprocessed_sha256": "ba4b9484529d88911fc5a36c5dfbb1259d4dce96974cbefc15b2e57912086dc4",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_common.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "57ad1d73fb711edd0b468b2ba384e228929c6269dbcae1cc4f7d114a9e0edd5b"
       },
       "conditional_directives": [
@@ -3051,7 +3035,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "bac04fa6d921a2c59472f7c4cc91063b4f128de77bdfdd3b98bb6f9004ef869c",
         "preprocessed_sha256": "92aa62b4f6ac4ba5518051755d4ffbecb5ec613e20c5678ae033a2c618c93bd4",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-c-reference-build-submodules-20261026/build/src/include/gnunet_config.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "c90afd1f4194defb525919da200c2b1ea23bf70fc7e0f3f77730f0f12d3c01dc"
       },
       "conditional_directives": [
@@ -3215,7 +3198,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "079e64857639e28e2707c0ece149c78939c5506a44b754eda3acb8e6b80195c3",
         "preprocessed_sha256": "ef2a62cf7910d5f378cd6ea496835cfde85603936c77b5371e56041bf6b1fa33",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_configuration_lib.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "9a1c39ca4198db13243e4775c5b61899fc6f0edb67de194724914ee70905accf"
       },
       "conditional_directives": [
@@ -3326,7 +3308,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "fedc337554ace9a8abf078de35a15f67a189ba5c2a0ea9fcdbf2013a8f95473e",
         "preprocessed_sha256": "2533376962edceab33300bf0c0a3de5f8ed68bd22d3a3309338951dacd125852",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_consensus_service.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "eee75e6b06e5a7c7a56b9eaa410a9bf3ba948a8d4a76c012e5186e40826ca525"
       },
       "conditional_directives": [
@@ -3430,7 +3411,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "1fe283223104cf26008dc707378cd9e943bd16d28b46700ba0993f0b50cdc39d",
         "preprocessed_sha256": "96bed35a34770c6b6bfab6289b13b20f11cfbacfae68193b61428c43dcf30a5a",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_constants.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "a92e9eab5609e5c876a48b4e6a7caaa029d694ba9b9a9524cc0f92c3253fa8ba"
       },
       "conditional_directives": [
@@ -3781,7 +3761,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "ebd82fecb4ae8fed1abee5f4868d8329cffe5abf8239698de97ec7b76d0b214e",
         "preprocessed_sha256": "2b741ef8eb3beaee42b90467497e79201d45485fc4216bed619dd75975b87b8e",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_container_lib.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "7d98cfa8b1da98773779760c15dc66bd16626e15df03a15b96a4092771734f39"
       },
       "conditional_directives": [
@@ -3995,7 +3974,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "07a36a707a3f62d6254dc87a099f1650eb07aa74a2b1ac04e69a2d9c15fbb003",
         "preprocessed_sha256": "d299f504673fc7ded7e13f678ae2b1a296f8c6d10066b443617a2016a894bee7",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_conversation_service.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "6ef15d66fa339061e3b1f4a49dfaae36a7b6a008036cb464cc1c40be43ba72b7"
       },
       "conditional_directives": [
@@ -4117,7 +4095,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "5c34b1a8939e3e93d90cd457acc68cb94a5a9e7cc30536a647133282e6ef15e4",
         "preprocessed_sha256": "e65ba0dd377b97fdeb6420c40f80197a7603fdb99fbd6df50fb6087a5a964cd8",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_core_service.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "2b885679489ef8fb9ac864ca612aed47460658b860222b0cdedc8db1425be837"
       },
       "conditional_directives": [
@@ -4556,7 +4533,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "b285872e4c3dfb4992531566a70301eae3810a88768deed35c836a1b20a43b76",
         "preprocessed_sha256": "5742d80e0c1ba7c87c84bdd944e04c885fba56496d618739b8cd111e9dd1ec30",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_crypto_lib.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "0a89900ec71a78166e3908a74e355c3a4b76312075011109295cc532b48744cc"
       },
       "conditional_directives": [
@@ -4905,7 +4881,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "5438359aa134243616afacb2ef566663fef3ff85e5d3eff3354dfcb76d52d868",
         "preprocessed_sha256": "03baa158d2981364a8fe6960bb43193ae103142c1a5462d23c25bda4336741dc",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_curl_lib.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "a1b381d09e22e4b65930c4bcc00e3c72789b7085224599e6fa459006b04c96b2"
       },
       "conditional_directives": [
@@ -4978,7 +4953,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "78fda9062002356e64e5392fdd5fec1817c39490cec8633a7c361bbe6aaa659a",
         "preprocessed_sha256": "a0aeb8d4798a96f5cf31a0df7259229879671e1b54532de2fbe1607c934b8c5d",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_datacache_lib.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "2a1c61862f27b9e2fd748d55696560a2978c663f24d1cd87982a6b69f7e68d34"
       },
       "conditional_directives": [
@@ -5078,7 +5052,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "6345f9b8bf0a7b2a53c77b7bb3b2a82148d755e2f80d4ac5f8201ad387fc5159",
         "preprocessed_sha256": "39bf0c5ea0b57ec6fe0bf72f1d10cab55a35dfa1451da90b91548e464384c2a8",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_datacache_plugin.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "97c43e54c16a44d562541f9707b6717339084d3193678fece8a832879fde9a4a"
       },
       "conditional_directives": [
@@ -5169,7 +5142,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "fc6ad25f6e489303281824dcc16bbc354c6f7bfd14ebc490b0c753e29e9c0150",
         "preprocessed_sha256": "94ad7ede486fa9f6682378b85b2b56851d3d024cfd73fdbd168ffde09baeb955",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_datastore_plugin.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "59aa2a9b438013f5e9975ea64fc14de0271a0c8ef07c9992f284b16dc88cd9ff"
       },
       "conditional_directives": [
@@ -5240,7 +5212,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "b70db1bf0435f952727d91e5e65e4570d6f426625d07f25e08b6df1a32ad3aad",
         "preprocessed_sha256": "1b2f7571a8a1cf91a121fdeeaed7da9c7945ef7178416ce2c2e5448f1a120a81",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_datastore_service.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "64b89e1e54d952364bed92706539634ceb9b37309bd365e4a45695afe4c26f28"
       },
       "conditional_directives": [
@@ -5349,7 +5320,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "f085667bd3e2877c8c7b0e9d3971bbf585de3d507bc740dff95c4d97488a183b",
         "preprocessed_sha256": "145d1a8d1e37f097974833d2f2ca5192ca13380d21e69606ef6b265aa8a491ad",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_db_lib.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "ce6d731e6ac095ad0daf639e6d8e1dd0efe1a1f7bb7ccbfbf6d1402d47582730"
       },
       "conditional_directives": [
@@ -5407,7 +5377,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "00b3cee1b37730f785851fee25a0205966db9316ab9c14dc32909706f59c5ce6",
         "preprocessed_sha256": "88f3f08d780ffd53e3824b8751c5c68b58a41e0232928cdf7a0b7f3eaf9bb23b",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_dht_block_types.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "b2da01f688e9a3f864eebc64986c4f082850ac6eeca3a31793a0abf2d11a2de2"
       },
       "conditional_directives": [
@@ -5532,7 +5501,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "2631897ef08765d66388e34ea8f9e043432cb0fabfb6fd0b5ce52bb34abc00f1",
         "preprocessed_sha256": "ebf4e4bfb57c30aa828f27ca14c6842d8318597f481aeee94b02978274c54e81",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_dht_service.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "768958c796b464112ead05f02c1f865013b94a9db4e6587dee5def21b5ba21e2"
       },
       "conditional_directives": [
@@ -5650,7 +5618,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "e7112f352c9d18b52a9d9bdb5d60ef9835183dcd98ef167ae8b462adf09a14c1",
         "preprocessed_sha256": "2d8c73925e70d548acbdaa35a4165ae342048e19327d7e21d7e2bfec069d48c6",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_dhtu_plugin.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "ce56879a95b83d89a561d6e3c5846785f611ee328a2211c87c43d1d255b88aa1"
       },
       "conditional_directives": [
@@ -5790,7 +5757,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "a533b0df2deb3141c6520850bdec3d96a16fa4d50712a6dbb45c3d3863992063",
         "preprocessed_sha256": "973d03268cc68569806b1adafea12f8cb6f46d9f61f55c9b74b497da6966679a",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_disk_lib.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "b4b155554531d9d767ad3b2eef469846dea43a0a382421d4bfb10ce677382a81"
       },
       "conditional_directives": [
@@ -5906,7 +5872,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "a80a6ee0837a9f4e5a2a2bc56c7a790a0e1bc94ef7bbb9ac5fd985433ae17acb",
         "preprocessed_sha256": "f352049eff220a690475d6a46f6ee9c2dcd3703f3e4cbbe309a15c6ab296ea25",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_dns_service.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "1edbe556cff92a11f7c469a481828b1e2c0e531aef9aed9895ec345626ab9928"
       },
       "conditional_directives": [
@@ -6009,7 +5974,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "4f17001bd61ea0af64c478a220dc0f8e98bb18952d913d08ce84dd94cda6dc49",
         "preprocessed_sha256": "a7edadb2721b99d7a33d15658142d4a775d06834d99bb5a2fb4f56d98e110cf6",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_dnsparser_lib.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "e71ac98f8767c2f1324aa8a664be300643597fe2660753497ef546bf33f3c7e3"
       },
       "conditional_directives": [
@@ -6430,7 +6394,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "1f78e540aed52d30dcc86374afcadedaa106ed1b04753a4ea7a89667960f5fa3",
         "preprocessed_sha256": "7256a8f89e253912f64e1d76ffa716e424c81530524f42b103c7b8945243953c",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_dnsstub_lib.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "b5cec44ef981c919c9d831f5fed95855d3fcfff7eb8b595411063de90ff64cf3"
       },
       "conditional_directives": [
@@ -6501,7 +6464,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "ce083aa83db5d8d15c3ba74995991d334f7d882dccf2058c55a2a48957d219cc",
         "preprocessed_sha256": "5021e9c4c01baf553f47277b361415db7e2fbd902b41975c5189c2b86a157b99",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_error_codes.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "d47596b8552b473e50c48ed7ab44038a11061f820ec156fd4041198435e03dd5"
       },
       "conditional_directives": [
@@ -6731,7 +6693,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "1cb938e706d92f22185563493474b122237e425a5098da9d4662d6a0b76b32dd",
         "preprocessed_sha256": "96c8d21673f43dec16e4f3a776c3ff741c54e0aab009597b007c8f9e3f9999fe",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_fs_service.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "c6e9d74c77cebb324e21f29771ecee16b638026475510f7bd22cfd1d03c23612"
       },
       "conditional_directives": [
@@ -6957,7 +6918,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "fb341e4f2aae13c395979748c4af0f455e3db3ed1343cb70b2e636655e7c5d0b",
         "preprocessed_sha256": "c203a62336bbad08d7d727c1f5baef9bc7f35df832791b4a59656946136ee1a3",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_getopt_lib.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "1a63590ff487dcef775245c5b43866a2f98a50661b34e9a1f300c8254e46a7e5"
       },
       "conditional_directives": [
@@ -7094,7 +7054,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "16bc8319fe5f6def91afd583c59ef8c51a792d92ff7fcc2503b15b5dc4cf6383",
         "preprocessed_sha256": "9eca37355da1dddbccc84ba02fcb74d8f1021f089680953d2735db56dcd72a76",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_gns_service.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "90c4a8afd664ef7bf2bfa705e3678a9f3df0a4a54b7a874f9c850a10a62ac25d"
       },
       "conditional_directives": [
@@ -7195,7 +7154,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "e8c6617c47c6a5dee8259cae6a565a58d7597e6b7eeb577999052934349120f0",
         "preprocessed_sha256": "191404c470c846727d9d0ba2de654c7e28c68368e7274bf451c8c6af3f348d84",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_gnsrecord_json_lib.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "adfec2e582eaab4fd900c677bd93a58f7750f1ba4b3901600654377f89e7444b"
       },
       "conditional_directives": [
@@ -7352,7 +7310,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "d8a2a6c7ef2c3a168c4882b73d3b7b3cadf528eb443c327a82798660aa194226",
         "preprocessed_sha256": "29a90ad5ba7fb24a616617fbe8d44325d0f763917cee67d0cfdf9ce35243790c",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_gnsrecord_lib.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "4bd6fd6ea7124a51af7896e1d145c45d49c98d8d47b8d83d1afc4f7d0198bc52"
       },
       "conditional_directives": [
@@ -7497,7 +7454,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "ed0967253d7897da38e77f84c46c688f8a5330a02f04d43b3bc71b7c7b5668a3",
         "preprocessed_sha256": "dac55f19a7b007cbfc085cf701fe37b62d7291bbf5b9653261efbf757da1f63c",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_gnsrecord_plugin.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "29c4118a7f15b27100ef908e4739b63766f39022f086ad0499eb96dc7e68b891"
       },
       "conditional_directives": [
@@ -7629,7 +7585,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "5dca4c570516f3c191ad38997c83139760323ca485c2b5eab62b89921cb07403",
         "preprocessed_sha256": "51ec63e75be712de493be3f3daa028b2a25b5414d269d6e8408871df7911cdb9",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_hello_uri_lib.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "d4d4a844157727434e78b957e50b59fb322dcdd79877f2ccaf4020f296c88948"
       },
       "conditional_directives": [
@@ -7745,7 +7700,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "34bb705a9e5b6b46fe5aca50cfd475eb4b36988c04053490445b81191d15fc86",
         "preprocessed_sha256": "5bd72f36fc243c44d7a745fd0336cc7bebb00559ef26661e53d973f8848b8f0f",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_helper_lib.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "7ae730907e3c038edffd1a6b8043dd16441e319e87c4896fd3edf07708f24ed8"
       },
       "conditional_directives": [
@@ -7836,7 +7790,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "df5ff4cb4781e181310146b472a65648f3634afc974336c78f736940c59fdea0",
         "preprocessed_sha256": "b891bc148a426e01cd59b4fe948f96660d3653a685f439024de97b1c7a053743",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_identity_service.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "f652bd2f2ee8b069f81c3c3b0ecb4c368deee736c2596aa34b31c67ee81d8124"
       },
       "conditional_directives": [
@@ -8014,7 +7967,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "f5ee83d0da33d7791053d42398a6d77a6c941c0cf86c6282708f941c1399fb6e",
         "preprocessed_sha256": "78e6c983af5787f0ad108568eaaafc659ced94532826625bb6c361dfa6063f7d",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_json_lib.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "0f037114197e8f64107426eda0088c8ee6bde09e7cb06472351ea82101272f6a"
       },
       "conditional_directives": [
@@ -8141,7 +8093,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "5befd6b3c8e1f37edb55423b36390d0b51e6acd790066449017f4e7da9e8cf0c",
         "preprocessed_sha256": "ab98d014266dd186ba1d911fb2ff832934a8b3c64996d1c86fdab03d2ad3ff44",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_load_lib.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "6bd0223cdfd35fef1eb3d5d341938cd9d24639d192285b3bdf97131427ad3155"
       },
       "conditional_directives": [
@@ -8319,7 +8270,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "bfb9760b0a89de9f3763738d294dbb4076c2263ca83263a5e8bf447312026feb",
         "preprocessed_sha256": "4b2d3aaffd5c9f3ff167f08e9e564b4d734011a4933ea6fb728a094910c1147f",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_messenger_service.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "6897a00adc7ebd369ddd122e3e66ac6710e853bf0568ef9cbce6608795bc2e55"
       },
       "conditional_directives": [
@@ -8479,7 +8429,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "bb1d9f4327f931d175c4f268966e5309b632cd24d119018a0ac75e6693ebd09d",
         "preprocessed_sha256": "da5235b85d3592981a5ecaaac31291e8bf20ac98d4e62015765bf6295f19f2d9",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_mhd_compat.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "8dec2ed79a450faf3a2faa25d93cdb1fe5df1de005b207b1dd71127214ed15bb"
       },
       "conditional_directives": [
@@ -8554,7 +8503,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "234879b26cb393558a2af60cff95e4801c677b46e2d1b59f1930ffe938a446e2",
         "preprocessed_sha256": "a19b2272da1c7761ccc656fe58299955b176acb39835741b48163eda5d7ebd85",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_mhd_lib.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "7348324ced2fb1c096a0ae9eec3125caac6362cd8515b799bbbdda294869541a"
       },
       "conditional_directives": [
@@ -8618,7 +8566,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "8c542891bfa470cd7a2158a5e21f94ac99b1bfb39643ae29bd669c6a1fda7295",
         "preprocessed_sha256": "3e0f6a770a58fe4449ba5d1b4a58c2de0633259d50a2eb9600b1749fe7f34ceb",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_microphone_lib.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "4cd616cfd0ec4b6e44e93b600b8d45e8e5a532843969164254f6ab1bb1750510"
       },
       "conditional_directives": [
@@ -8774,7 +8721,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "e3744fab72e7fe6605a96d2c9de218afb1030a4bb36e55b324c7faff5367e238",
         "preprocessed_sha256": "20f9b2656bc8224f0b49b100a8f434e796b96ff6a4015897294ddce34000178a",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_mq_lib.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "63d3aef3e7ed91c419986e5763813a5e1f1b5ebacea439477974b9227625efbc"
       },
       "conditional_directives": [
@@ -8946,7 +8892,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "6337506bdce28cc41ca418a6d7302d4d6524824b39fc446229c25916aae3f66e",
         "preprocessed_sha256": "4794f243d1e5e9f076e983a496e60f68c3785aef7a5fdebfdd6e0786bf166af7",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_mst_lib.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "5763e689645f473f05690d274c460e215a9697c7d13cdd3678cdcfad2ffa3dde"
       },
       "conditional_directives": [
@@ -9055,7 +9000,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "c44fc58d3e456a4a7fc580206decc12f3d73c230bba43bf76ef10b5b855e6d98",
         "preprocessed_sha256": "6124f4b83bbc6ce6c0c9718302d3df991f71dd811f65dfe2d310794009da6ae1",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_namecache_plugin.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "a7d869380dfa92c19a44df9b7f3883db686fd11f31692504cf620ddd56ea7c5f"
       },
       "conditional_directives": [
@@ -9162,7 +9106,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "d36ea003c147e84782088dedc7df50d72e245f372e33de264dbc587afc57755f",
         "preprocessed_sha256": "fbe4908fb57244c91c2ea447eec955aadd12a3d59c6f7bc8e60729ed3e63213b",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_namecache_service.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "3e004cac8eb24f09139f363a1a3f4ad91a7c473857843693bd9da8b2ddad0639"
       },
       "conditional_directives": [
@@ -9269,7 +9212,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "a1e46065aee601a4260dbc79bd13468685a677cd172dde58a1ba2767f03a5588",
         "preprocessed_sha256": "f5c373fecb356f0cc58112fa3d1cf59c21beb039039531bcc3960f85eff34670",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_namestore_plugin.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "9cbfbeece02c717594e79c147a431fe6546be37214805056d893f131099b2b63"
       },
       "conditional_directives": [
@@ -9395,7 +9337,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "5d7c3430cc681cc372b9d5f81dbae3d11502454f025bd62dd88db6dd1df38917",
         "preprocessed_sha256": "bb1c33770f74fdf54a8e840be6466e70e375607e28d073dc1efcf6c2e381dcc9",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_namestore_service.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "8f13f0d3727833f35967dd3f2a091fc0ad7e6fcfd15dd0d782cdbf33f8a019db"
       },
       "conditional_directives": [
@@ -9500,7 +9441,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "f533faf686a68a939dcc08309ab70c366f239c5dede8beaf3e04e1b1b81eb712",
         "preprocessed_sha256": "40a56bd4651719658eae47aabfbcc30943f65534864cfc18c396bed0fca4fe77",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_nat_auto_service.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "2bbb9bddf2d5d0bd46b1d6b7dc744b8fe89e4143d24c2f2370fe807d7c9eba10"
       },
       "conditional_directives": [
@@ -9567,7 +9507,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "08a28e0b551327d00aa13092877e6ea87ddf1724ec9c4aa22b73a7ac4df4b22b",
         "preprocessed_sha256": "b3bbbf796568bb69190092bde6faedd9ba5925c86908b95bc8955e0c71c5fae1",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_nat_lib.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "0668f879c91b75f02ff9711da440e2c71ea61646a0031647c6309e04b47aab41"
       },
       "conditional_directives": [
@@ -9650,7 +9589,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "dac3d457ec8912bc21f81dcc2abe6deb8dc295d691d768b4546c4c0fb0ad9a54",
         "preprocessed_sha256": "19cf945b40045063a0426ff73efadab1775c851e24e8b42f0a7f8ad84d468008",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_nat_service.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "359d2de1c64d7d9a3dd7539109d513238862c31f320058d2b1befa60298818c8"
       },
       "conditional_directives": [
@@ -9713,7 +9651,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "4380fb844972e387b310028bec0e839baa4ba32f216c3aecbbd5b15eeb543501",
         "preprocessed_sha256": "a8ecbdfb3a468b071cb655a9707e7ee214d0602e7f3dac16e4c9e31301959f2d",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_nc_lib.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "cf26372c3a91e9217b6c352efbd7408a9b93e604980678a9b6b67b180608ca31"
       },
       "conditional_directives": [
@@ -9822,7 +9759,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "6225e55d5d31a5cf193b7b41589d579b3a16e8a5321d97ec48248e5a0b643e48",
         "preprocessed_sha256": "261fb86a6c1f13a30f9778246d3450da5af7fca3cef4971a8b4fd1576f7c3250",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_network_lib.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "1a94a8f87dfb5ea03d9cf7847f53c08494018e11ae3fc6598529f64bc850abac"
       },
       "conditional_directives": [
@@ -9943,7 +9879,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "6d6737bf6b49721573573cb004c28346c13d7e54db35c62aaacd3de0fb05af0b",
         "preprocessed_sha256": "514324eaadfea118ffe707deedeb00be95e9c96f8a9c05adba1551f149b3b81e",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_nse_service.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "c8ccf287a6377918037c49b389d2744721439165496bcbb8dcdec1db134e7e3e"
       },
       "conditional_directives": [
@@ -10062,7 +9997,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "e477eaa63b52637a70fe7697cccd4b77fd43c39d053f7bca7b938c1dc1e96336",
         "preprocessed_sha256": "81f25da789add7f742fb22d17818ba005e19d60b1bb4cc86d55aac59119bf7d4",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_nt_lib.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "e920ffda9e6b5dd0288e080526edd3a82f039d9ab2e6adb2bb92693c4d556f13"
       },
       "conditional_directives": [
@@ -10143,7 +10077,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "6a877f3f0795b2645f47e2fa65aed8ce1020e5897d0169461e32a1c290e88d61",
         "preprocessed_sha256": "382a101aab7487022594e144230a77a9ea87a30cc73465aff3271ecf195fef04",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_op_lib.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "c70bc9ce2587412fb0d85794beb07bd012d878803fb55404a4af99a20211a7f5"
       },
       "conditional_directives": [
@@ -10242,7 +10175,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "43fca6615ba2e6b4175301c64a9544983c4b68df0aa266b1635329619cccf7fa",
         "preprocessed_sha256": "ee4da351bc756a663766b7d03c85253969d238067d384302389ba0cf825c3ac0",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_os_lib.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "e53a9c9c84d5dce3f2409e3c810b3f1f00eee6d8540126c242424a85cf95d765"
       },
       "conditional_directives": [
@@ -10458,7 +10390,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "d8907395332ef19fd94f19d1131ff39689dcea88a9431a6d8716f71a862d1657",
         "preprocessed_sha256": "f2073d81fa3a3c44ded76ee0bc165cc8b9212fbaabab7e3d598c40edfbf724e7",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_peer_lib.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "3005b8646b63ec640d866585a8fb5cccfa97e292a2043139eaf4a8fb7541e2e1"
       },
       "conditional_directives": [
@@ -10567,7 +10498,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "c56b7f10de161788800840003a12f055cbeb3ebbc34f73e673c37a20ca4ec7f7",
         "preprocessed_sha256": "a56f8626803ce4b96bd9e3d4b6e6859a13f2974588ee2bacded10439f8a931ff",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_peerstore_plugin.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "40558ff368f58241047981473861b8670b710e88e0314c3a69ddefe3c670afe7"
       },
       "conditional_directives": [
@@ -10686,7 +10616,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "2194dd6758fd95e59c6a5d362fddbdda17123974c5714b70bf55d59e282062a6",
         "preprocessed_sha256": "2661669742971bea57b5ac081ba35bc09e59b114f97f746cc39dba3b15d2993e",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_peerstore_service.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "46be8a30c76675c49cfdc20715386786d980aff6f957c44ec6d2e1db4c8532b2"
       },
       "conditional_directives": [
@@ -10872,7 +10801,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "226cf635bc7190555c4317d65b145049f761dce94a7f934d60710ed3e6b865a6",
         "preprocessed_sha256": "4d2d4d57dbc5a7720531d994fd49c008b62863c88dcc4476aa5e642103b51925",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_pils_service.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "d9937539ad10c2a09702b504d9e17a52935056057f01ed10554aae3f5a1718d1"
       },
       "conditional_directives": [
@@ -10975,7 +10903,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "306a56cf1fd885eae15c89eea29ea2807a2d26eb01e4399daabe8b1c2fdf1809",
         "preprocessed_sha256": "99a349e26066e9476aa868bdd48214264bcd33bafefcc6ed5a2fcd93fcaec5be",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_plugin_lib.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "de8a7cae1bfcb10d64888938d4fbd22b404275012abdb1845f5933a0e2086436"
       },
       "conditional_directives": [
@@ -11191,7 +11118,6 @@
         "preprocessor_exit_code": 1,
         "ast_sha256": "d8e8e6df04e7f4263100c76de7186181922df812e905f3197154fe26365d68de",
         "preprocessed_sha256": "00fc9d80bbe33f73b0324ff64b729f6eaa425f835e234ab6762455b5fddedb5f",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_pq_lib.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "1b1fa32a7e409a08e6e98ee23457361e1168f1aa111928f9b0866835c822b092"
       },
       "conditional_directives": [
@@ -11345,7 +11271,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "cdeb0c406cf0860c12b5e6cb5ba074c645571a9f4662e91bbb4b6e89e32e7667",
         "preprocessed_sha256": "8e3b2ead5441e2c678d4800519b1254c0d4642341671ffafcb0b9601e989d5dc",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_program_lib.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "9da976a98442424f48128707034838d2c5a3eed622dc10455f1d131e3d893607"
       },
       "conditional_directives": [
@@ -11476,7 +11401,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "51acf8c153ad673b5bd4bcb2cfcce7401111adf5e076bbd9ce2b19224902ac3a",
         "preprocessed_sha256": "383f288b3ffe5df913dc8c140f8ad0479c02a87acc6fadf7fb53a61479ff42fc",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_protocols.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "0be68b58d23d5fda1dd48f73684e9b4796375f36052952ec6a9577ac494f3106"
       },
       "conditional_directives": [
@@ -17070,7 +16994,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "29ebe3759949cdc6833e3aa37c03d33d863882e4a5d8d7b946fae9c444f637f4",
         "preprocessed_sha256": "4f190bf81ec1ddf3f44bbb848db8d58fbf894ac760e29fb337e773f643e6b7ef",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_reclaim_lib.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "da302c3817151d91bb3af0a2bfc42941f7dea27c47781850d33e86eb1d22e21c"
       },
       "conditional_directives": [
@@ -17220,7 +17143,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "ad5d74cd53478b5534beda1bada4497a19ae9e2e23f409b4edba77f3704b70f1",
         "preprocessed_sha256": "550def7463b6932434a40ef3ff7f9f810d3d2c77e69979de627237aabb51e4d4",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_reclaim_plugin.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "4c050c799c73caa923fa85c7144d74198e00e8f28dd653acea9499daa5e32a4c"
       },
       "conditional_directives": [
@@ -17348,7 +17270,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "ea0ad24c69eaf50f0824e2130679cccd9d2e86f7332573d39e2599e213ccab03",
         "preprocessed_sha256": "279cf1ebaeba56a72a87f2a032db27d970290990cf1766ba1f5a9f74521ec408",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_reclaim_service.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "a7cb524977565dcb561b41c8292d057e80b7eb09cb5916ee45e53e51b29e751c"
       },
       "conditional_directives": [
@@ -17480,7 +17401,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "68849470859981439ca84e88d67467a50d2283d2e28ce6905d9d4cc289ea74b8",
         "preprocessed_sha256": "3068d10cec73d241c74b5f68898c886253e3be52eb6fe7c5f0d595d6429b950c",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_regex_service.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "f7a1e2ade851f581ebf9b2c311edeb8901956dffa88d879c28e788803c50e7fa"
       },
       "conditional_directives": [
@@ -17595,7 +17515,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "ee3a423f552437b7a4c2d46ec7302ff62bab93c8cccd5122eee8f1fd7063220c",
         "preprocessed_sha256": "2b441fc980a0704737d62d23a773362e37cfa0e17c36134a041198b416948ce2",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_resolver_service.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "8e1371030d2c547d903a7557acd80f8abda5823f094b3fbd0c3cc0ca918d42a4"
       },
       "conditional_directives": [
@@ -17699,7 +17618,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "9ce08fd75c8c12f7638724c581d62b0336db9ebdfacaeff1d9dab3e82afaaecd",
         "preprocessed_sha256": "fc53ae3968fd8852a17ffa924ea191cff3e5bf310596096e14e2eafbc4eca8a5",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_rest_lib.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "7b0b6810e7af47d205fa4b3a9f346e3f1614b3f4307e5dba4aa1363051a3b68f"
       },
       "conditional_directives": [
@@ -17766,7 +17684,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "d14f08aa14791b81cf0de6a16f0c03adabb08a9b282b704a48bb300abd43a4f6",
         "preprocessed_sha256": "7f8fdb6a77e0b6ae2420251e8b3e3a5f6ff59e7e15d3632c1dda38bfab3fcf81",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_rest_plugin.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "c99aab2c49dedc76fcafcdb551bf7df29921817c472414b6e9e1f5e01c45b3b1"
       },
       "conditional_directives": [
@@ -17870,7 +17787,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "e0815544af7327ed8cb4a31ff955c904a6f1b99823a9af15e1bf79aaa71ac764",
         "preprocessed_sha256": "5f06c61e1dbdf7cc506863d7060294b532261aa36c0f62474889b39ca451dd2a",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_revocation_service.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "9908561a1e743eeedc2b113795618479a90e4b951d48b0a41ccd1570c28f61b6"
       },
       "conditional_directives": [
@@ -17991,7 +17907,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "7389a68cf207d37ea7d7f4ac59ec321e572dae6028b3a56cf61f61292e023f88",
         "preprocessed_sha256": "5e180419018b0c033cd9fd5e3b55224879ea91cf6610378e511cb967bbb26696",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_rps_service.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "f771d6fa41357ee714f330a4ca1c7945a61369679d42502f6a38c28634740dd6"
       },
       "conditional_directives": [
@@ -18113,7 +18028,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "48d8bac897e703dc3d6f4bd3b8b25d93bcf6e47d8cd79b352f83a7d92853eafb",
         "preprocessed_sha256": "925d5938a4eeb0cb072302cf9553c058eae534b3a03e1fd6ceb5ecfc7ce5567b",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_scalarproduct_service.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "8d6866256e417af17ba5b948526c2a8ff0e24e9f05b98d5381ad1e7d8b481674"
       },
       "conditional_directives": [
@@ -18259,7 +18173,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "16603213dec1562646828305fa2d1bd06b04c13cd967ee8b10d23e1d53ca6ac5",
         "preprocessed_sha256": "63c3ac2e5cdb301978d6b57ae713742937c292a392079e466c5af447e194b0e9",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_scheduler_lib.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "32a322a841e7c60e0c2e71ddf8867889df1693c6558d6a96fa472d40251f744a"
       },
       "conditional_directives": [
@@ -18372,7 +18285,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "e4144341cd2f08158ad95b6d98ea0022447ac029b4ffdcab628157ba4616a6e4",
         "preprocessed_sha256": "5f98212dcbdb85205396f4766e0dbb5b817742e9451bc60519a3359c860a1ab5",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_secretsharing_service.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "46fcd788205427adc9d4d7df8f1125b3e4fde6bbcb7e8532125a920fb8877b4c"
       },
       "conditional_directives": [
@@ -18523,7 +18435,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "a5f44627d6b136824b728124cc4d45a50d1bc5504e193e6e812408bb61e30ad9",
         "preprocessed_sha256": "34a577cb10b395f79e135ec94591cca072938dcad0fc2dd98302038721e21520",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_service_lib.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "cf587fef66615bf2bc8e0d7780d9fb602c196e243d5c976a719b68fccd2baaf4"
       },
       "conditional_directives": [
@@ -18681,7 +18592,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "b8c7696f973600a801991140dafa2d3b027775d24b7cf22987e86c40d0c2a637",
         "preprocessed_sha256": "e903b002e0a10b530f0e3da22f77fd575ee9c05ce2acdd3443e720692ba1aec7",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_set_service.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "c617766470d17bf9de5cf567558274ae53660f7870758091fda137b7a604b795"
       },
       "conditional_directives": [
@@ -18806,7 +18716,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "e30688a7e74047b501d0029e9a1d4472899e3920983aeaa84ec85508513e6656",
         "preprocessed_sha256": "d41b2ad837a14bd116a6fb480f8ff72f11e62379d643796471751abffa427575",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_seti_service.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "9505386ae2daa3e0222077e12afcd99c778b87e11167f99914d9999922d21005"
       },
       "conditional_directives": [
@@ -18931,7 +18840,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "693a38ff6073bffb55453f39301ab8dfb676224b5a58dfe068b97d488f03137e",
         "preprocessed_sha256": "8f5d43e6dbaf501d06cbd24b90b0d96af9fe2edbe15b0a844a5670bc565026c8",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_setu_service.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "4b2f197f85fb8cf3cfb0740051cb9cca2c7862a530cc77ed724d02122fd53677"
       },
       "conditional_directives": [
@@ -19041,7 +18949,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "75ff49023ac6ca02c02f7da124ab4bdaa48191aa66d89c8f4af11cc6dc555121",
         "preprocessed_sha256": "d708c3f64e478fb38bec2b7f836aa2470da34344914e7284af7fc907da887ef4",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_signal_lib.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "9f99d52f4a769e402a546da0e9d9f2b12b33c71342f31eac1d70ceac913b292f"
       },
       "conditional_directives": [
@@ -19150,7 +19057,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "fb7a8805201055b479645b5a3079e54c90e969d4167e76b01110a9740db409e8",
         "preprocessed_sha256": "24b545b5e30c33f4856adcd65c985f157f048025811ddef4c0bff15009e3f5b9",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_signatures.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "7f0955e0011039dd563a850b3aef76cadf500ab0323a945ef1ffee20c3d950b0"
       },
       "conditional_directives": [
@@ -19514,7 +19420,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "03d133c8b51ee5bcf57d0fabdd0eeb8047cc56172caeb8889366d8cbe3eb20ab",
         "preprocessed_sha256": "2e6ccabae80a941559a5ce354bcb4f160378d28673d96cc84ccec45e6ab8e051",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_socks.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "f5cdd3596affa06de8c626329ac7862e8367c51bde239366a82b04130c90f15b"
       },
       "conditional_directives": [
@@ -19618,7 +19523,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "9f1c1e8e99d0fd643fe13c4283329eee471cfe68a105a164069883ce547a5783",
         "preprocessed_sha256": "ad82cd15659f2d8c0bdd7d8d06f4b5c893d56097f6413649ec9dcdce0ed1e42f",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_speaker_lib.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "b0d8b1f6f2ec479a9930c479114389885c16fc53111967ef77d0e606cb0d283e"
       },
       "conditional_directives": [
@@ -19752,7 +19656,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "ef9131a495c209dfcc755245ad7ee3ca1111f92663e1b2b0b865e25e41f649b7",
         "preprocessed_sha256": "fa9c0654763adbece1a10d7443bed27a294aabe1179ec63cef8510bc04225e7b",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_sq_lib.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "110098e3d481e2c8ebcba8023f8189c4e9ce90324dcff8cc0fa33b4375f26475"
       },
       "conditional_directives": [
@@ -19869,7 +19772,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "cb508b62eaf484b1965dfefc397c9d89d5c5a21e749c785f2ef00d21c03c53ce",
         "preprocessed_sha256": "b7fd3cf6152f6d297cf811f32f0180039822305642bf6b0e9a2046df941800d9",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_statistics_service.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "f8393e356fd2bf5998c845aa0f3a69dff83191b53339c081d0e81996072d0c83"
       },
       "conditional_directives": [
@@ -20017,7 +19919,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "7f44c61b5bfbbfc11e40e1088d3cc99ad2398310fe095fb805eb432361e487e1",
         "preprocessed_sha256": "badfea3b755e93f0191a3b5bffc11b9111e937e5683d7f2d21202c489f87f1c1",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_strings_lib.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "1c83473cb4a825e7d5ba31c633656c7ed02e4fafd5fbac62c6baef0a29787b62"
       },
       "conditional_directives": [
@@ -20141,7 +20042,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "192f838ac05accfd8c8120b43368bd5c6347642676936bcb45f235f857f47f48",
         "preprocessed_sha256": "c931b61b9e81ded6e2f3b2d9a0e18d0b8f0b206c7dd276618747eacde11ba0b4",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#include \"gnunet_testing_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_testing_arm_lib.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "1e019d3026406cbd0d989176ae023a7a2391d976395a4f98449c3593cd76b33b"
       },
       "conditional_directives": [
@@ -20223,7 +20123,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "0ed94230ffab5a3611144fba745585791368c136dae46e06496722183616e008",
         "preprocessed_sha256": "73f39a34d14de41ccaa65744d5258a502201eadba9d0b83fcacd728f6537df0b",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#include \"gnunet_testing_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_testing_core_lib.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "e51792ebab2a5c911e19056b9cf0c5e22b2134d8665bf30ba3ea77f81c9f5c14"
       },
       "conditional_directives": [
@@ -20341,7 +20240,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "acdaf7c4ca68ea91a3747112bce2b5259f62e80b72a5c645062e4fe41dd81df6",
         "preprocessed_sha256": "dfc8f46befb15876e33b70226e8d5e26d407f20d9ffe12ba52bfffa783e088a6",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#include \"gnunet_testing_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_testing_lib.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "0fcd087825aa4706a408c1f24f901fc06caf901863b33e337cee532cf3880f34"
       },
       "conditional_directives": [
@@ -20498,7 +20396,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "9a885b36c5ac2dee9657ee66105ed24a8617e635b1ac151b6a69a1be4cae9d34",
         "preprocessed_sha256": "ebd8944e82d356f2f7d091de633089c63c2e9973387807582a4f4579bbf23a3d",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#include \"gnunet_testing_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_testing_testbed_lib.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "33b9f973e000356a2d3e2cd4ac833fa5eaf5247d7a6897c2736d35d7eb0fd75f"
       },
       "conditional_directives": [
@@ -20584,7 +20481,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "473a7f5f8c7f2b43faf93955e938aa9d3a7243d70ab0114a07ab4ec7b15d8444",
         "preprocessed_sha256": "380b8b39ef054fbafbb6b3978ab23926b3e7405096cedc3057e5899880f0c300",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#include \"gnunet_testing_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_testing_transport_lib.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "0a7a08d44670b7cb8bef32cf25cf65e8baf51b99e0a2f0effcd61c2ec36b931e"
       },
       "conditional_directives": [
@@ -20727,7 +20623,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "05a5052e1dcf4d2ec898895c99f1c18255948770319ac8bea23b59ea1590106a",
         "preprocessed_sha256": "eed67be6ead009c28acc487150831007842970072220ea46aa5e6b31eb7caed8",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_time_lib.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "f560f028c198d339076342eff2899e009597476c9aec709acd3a762c6a5a20d0"
       },
       "conditional_directives": [
@@ -20999,7 +20894,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "e167e3f4d85b9ff0b5a750177badddc722923673524d156dd295bf948b17f8e3",
         "preprocessed_sha256": "a8fade074644ce96efcf6fa0216d98f74741154893329a96e4548c278809eb3c",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_transport_application_service.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "2798b44871e2e0d0a43161bb32d89a1fec992513a75b0276f0e2fb97b4cb80a8"
       },
       "conditional_directives": [
@@ -21076,7 +20970,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "948fb77b07780885fba7b448a119025781e1ff261ae805fa525d7bda80eb31d2",
         "preprocessed_sha256": "cebaafd8ea09898f5c0879a42609dc1b5169283f5d2d002481c89f4581e20b7e",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_transport_communication_service.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "92dee9ebb9ba2ecfcbd57a788dcbb4405dbbea0181b8f7e8c3a91087ad32005b"
       },
       "conditional_directives": [
@@ -21196,7 +21089,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "8e8f6f2949a60bf8ec4f7f3a2a606d03eea62f593beb685be00e4983ded368ee",
         "preprocessed_sha256": "030ebc36b11fe3a7cc3dbe5df9742ee2b99f6dc2f8d99ee1c7c9ced2ec0c24f0",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_transport_core_service.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "8fda6944d0af78e7087ff6aeffbca20605f46ecab5dbfad964feeaa4b51c63a3"
       },
       "conditional_directives": [
@@ -21312,7 +21204,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "a22e89360dd9c41471c5ccc76468b2ea89a80ae677c60d2398a527f95aa8f017",
         "preprocessed_sha256": "cc07646cb28a088523f002211b9b7cfacd3e157f2aa9097c52c89b6b32e09af0",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_transport_monitor_service.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "e6fc20013402e2534542b772f450a7a5913ae77f9cc2c5f09b624d64c8cecc9a"
       },
       "conditional_directives": [
@@ -21443,7 +21334,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "3401bfa47789786a58b98010a6e952c726f57116ba8f296692ef4743b0f6ccfe",
         "preprocessed_sha256": "65ef52b799cc4135157e239948c18ec897e1b42e41641e3f68261be29041d09f",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_tun_lib.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "936dd105b9e456fa5a6ef81234281116d1e24372e7db980bebd622ac62171db5"
       },
       "conditional_directives": [
@@ -21943,7 +21833,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "a6ef9082e4328987bcd2a20451b052774d97f0f7ce6d731bdcf278fcced41e9b",
         "preprocessed_sha256": "97f03a8b0ce7291892679c22e5501d460a8be1077a8f196b39060f8e10f30a6e",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_uri_lib.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "0ca040fbd5e72850ca942e03fcfe1ce7a9916645f60a65bead0e23c6afb8308c"
       },
       "conditional_directives": [
@@ -21999,7 +21888,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "99ebb637772a2287273718edd7c824cf581a132fef089dd85d8130e01f4c8a1b",
         "preprocessed_sha256": "3d38f02c019df8e1c3c4edf89618d80c7fa27aa820a1c9e39c26517eba97498a",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_util_lib.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "054345e9ed373fcdcba3cbbaf993d3dc32bec6f70420b148d8f94391cdd966b7"
       },
       "conditional_directives": [
@@ -22136,7 +22024,6 @@
         "preprocessor_exit_code": 0,
         "ast_sha256": "b3dfa908e143c911525948798e37c33e829adc5a37e165f53a5ef3ff52ff0bb5",
         "preprocessed_sha256": "18641e72b87921fb73fad02b9fd282cbf12cf31753eff853be2694a488747263",
-        "translation_unit": "#include \"platform.h\"\n#include \"gnunet_util_lib.h\"\n#define __GNUNET_UTIL_LIB_H_INSIDE__\n#include \"/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_vpn_service.h\"\n#undef __GNUNET_UTIL_LIB_H_INSIDE__\n",
         "translation_unit_sha256": "033eb16055f8fbca4a52ab7a9fa4da5a0b59a3a9f28a3880eab3716a3fe10172"
       },
       "conditional_directives": [
@@ -46196,7 +46083,7 @@
         },
         {
           "name": null,
-          "type": "union GNUNET_CRYPTO_BlindablePrivateKey::(anonymous at ../../gnunet-upstream-audit-20261026/src/include/gnunet_crypto_lib.h:397:3)",
+          "type": "union GNUNET_CRYPTO_BlindablePrivateKey::(anonymous at src/include/gnunet_crypto_lib.h:397:3)",
           "bitfield": false
         }
       ],
@@ -46244,7 +46131,7 @@
         },
         {
           "name": null,
-          "type": "union GNUNET_CRYPTO_BlindablePublicKey::(anonymous at ../../gnunet-upstream-audit-20261026/src/include/gnunet_crypto_lib.h:424:3)",
+          "type": "union GNUNET_CRYPTO_BlindablePublicKey::(anonymous at src/include/gnunet_crypto_lib.h:424:3)",
           "bitfield": false
         }
       ],
@@ -46292,7 +46179,7 @@
         },
         {
           "name": null,
-          "type": "union GNUNET_CRYPTO_HpkePrivateKey::(anonymous at ../../gnunet-upstream-audit-20261026/src/include/gnunet_crypto_lib.h:450:3)",
+          "type": "union GNUNET_CRYPTO_HpkePrivateKey::(anonymous at src/include/gnunet_crypto_lib.h:450:3)",
           "bitfield": false
         }
       ],
@@ -46340,7 +46227,7 @@
         },
         {
           "name": null,
-          "type": "union GNUNET_CRYPTO_HpkePublicKey::(anonymous at ../../gnunet-upstream-audit-20261026/src/include/gnunet_crypto_lib.h:473:3)",
+          "type": "union GNUNET_CRYPTO_HpkePublicKey::(anonymous at src/include/gnunet_crypto_lib.h:473:3)",
           "bitfield": false
         }
       ],
@@ -46388,7 +46275,7 @@
         },
         {
           "name": null,
-          "type": "union GNUNET_CRYPTO_BlindableKeySignature::(anonymous at ../../gnunet-upstream-audit-20261026/src/include/gnunet_crypto_lib.h:495:3)",
+          "type": "union GNUNET_CRYPTO_BlindableKeySignature::(anonymous at src/include/gnunet_crypto_lib.h:495:3)",
           "bitfield": false
         }
       ],
@@ -58085,7 +57972,7 @@
         },
         {
           "name": "details",
-          "type": "union (unnamed union at ../../gnunet-upstream-audit-20261026/src/include/gnunet_crypto_lib.h:4151:3)",
+          "type": "union (unnamed union at src/include/gnunet_crypto_lib.h:4151:3)",
           "bitfield": false
         }
       ],
@@ -58138,7 +58025,7 @@
         },
         {
           "name": "details",
-          "type": "union (unnamed union at ../../gnunet-upstream-audit-20261026/src/include/gnunet_crypto_lib.h:4188:3)",
+          "type": "union (unnamed union at src/include/gnunet_crypto_lib.h:4188:3)",
           "bitfield": false
         }
       ],
@@ -58196,7 +58083,7 @@
         },
         {
           "name": "details",
-          "type": "union (unnamed union at ../../gnunet-upstream-audit-20261026/src/include/gnunet_crypto_lib.h:4231:3)",
+          "type": "union (unnamed union at src/include/gnunet_crypto_lib.h:4231:3)",
           "bitfield": false
         }
       ],
@@ -58249,7 +58136,7 @@
         },
         {
           "name": "details",
-          "type": "union (unnamed union at ../../gnunet-upstream-audit-20261026/src/include/gnunet_crypto_lib.h:4266:3)",
+          "type": "union (unnamed union at src/include/gnunet_crypto_lib.h:4266:3)",
           "bitfield": false
         }
       ],
@@ -58302,7 +58189,7 @@
         },
         {
           "name": "details",
-          "type": "union (unnamed union at ../../gnunet-upstream-audit-20261026/src/include/gnunet_crypto_lib.h:4300:3)",
+          "type": "union (unnamed union at src/include/gnunet_crypto_lib.h:4300:3)",
           "bitfield": false
         }
       ],
@@ -58398,7 +58285,7 @@
         },
         {
           "name": "details",
-          "type": "union (unnamed union at ../../gnunet-upstream-audit-20261026/src/include/gnunet_crypto_lib.h:4344:3)",
+          "type": "union (unnamed union at src/include/gnunet_crypto_lib.h:4344:3)",
           "bitfield": false
         }
       ],
@@ -69672,7 +69559,7 @@
         },
         {
           "name": "data",
-          "type": "union (unnamed union at ../../gnunet-upstream-audit-20261026/src/include/gnunet_dnsparser_lib.h:478:3)",
+          "type": "union (unnamed union at src/include/gnunet_dnsparser_lib.h:478:3)",
           "bitfield": false
         },
         {
@@ -74150,7 +74037,7 @@
       "fields": [
         {
           "name": "value",
-          "type": "union (unnamed union at /private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_fs_service.h:902:3)",
+          "type": "union (unnamed union at src/include/gnunet_fs_service.h:902:3)",
           "bitfield": false
         },
         {
@@ -81163,7 +81050,7 @@
         },
         {
           "name": null,
-          "type": "union GNUNET_GNSRECORD_Block::(anonymous at /private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_gnsrecord_lib.h:295:3)",
+          "type": "union GNUNET_GNSRECORD_Block::(anonymous at src/include/gnunet_gnsrecord_lib.h:295:3)",
           "bitfield": false
         }
       ],
@@ -93300,7 +93187,7 @@
       "fields": [
         {
           "name": null,
-          "type": "union GNUNET_MESSENGER_MessageBody::(anonymous at /private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_messenger_service.h:1094:3)",
+          "type": "union GNUNET_MESSENGER_MessageBody::(anonymous at src/include/gnunet_messenger_service.h:1094:3)",
           "bitfield": false
         }
       ],
@@ -106337,7 +106224,7 @@
         },
         {
           "name": "details",
-          "type": "union (unnamed union at ../../gnunet-upstream-audit-20261026/src/include/gnunet_os_lib.h:586:3)",
+          "type": "union (unnamed union at src/include/gnunet_os_lib.h:586:3)",
           "bitfield": false
         }
       ],
@@ -127836,7 +127723,7 @@
         },
         {
           "name": "v",
-          "type": "union (unnamed union at /private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_set_service.h:264:3)",
+          "type": "union (unnamed union at src/include/gnunet_set_service.h:264:3)",
           "bitfield": false
         }
       ],
@@ -129069,7 +128956,7 @@
         },
         {
           "name": "v",
-          "type": "union (unnamed union at /private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_seti_service.h:166:3)",
+          "type": "union (unnamed union at src/include/gnunet_seti_service.h:166:3)",
           "bitfield": false
         }
       ],
@@ -130000,7 +129887,7 @@
         },
         {
           "name": "v",
-          "type": "union (unnamed union at /private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_setu_service.h:211:3)",
+          "type": "union (unnamed union at src/include/gnunet_setu_service.h:211:3)",
           "bitfield": false
         }
       ],
@@ -147192,7 +147079,7 @@
         },
         {
           "name": "quench",
-          "type": "union (unnamed union at ../../gnunet-upstream-audit-20261026/src/include/gnunet_tun_lib.h:734:3)",
+          "type": "union (unnamed union at src/include/gnunet_tun_lib.h:734:3)",
           "bitfield": false
         }
       ],

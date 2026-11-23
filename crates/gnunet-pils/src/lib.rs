@@ -8,7 +8,10 @@ extern crate alloc;
 
 /// Typed allocation-free client ownership over the official PILS IPC.
 pub mod client;
+mod fixed;
+mod storage;
 
+pub use fixed::FixedService;
 /// Explicit public HELLO parsing and canonical-address resource limits.
 pub use gnunet_hello::Limits as HelloLimits;
 
@@ -20,9 +23,12 @@ use gnunet_session_crypto::{
 };
 use gnunet_types::Error;
 use gnunet_wire::official::{
-    AbsoluteTime, SignaturePurpose,
-    pils::{PeerUpdate, Request, Response},
+    AbsoluteTime, MessageHeader, SignaturePurpose, message_type,
+    pils::{self, PeerUpdate, Request, Response},
 };
+#[cfg(feature = "alloc")]
+use storage::HeapBytes;
+use storage::{ByteStorage, InlineBytes};
 use zeroize::{Zeroize, Zeroizing};
 
 /// Reference HELLO validity: two days in microseconds.
@@ -118,10 +124,7 @@ impl MasterKey {
     /// Construct fresh purpose-specific key owners under the chosen context.
     pub fn derive(&self, hash: &[u8; 64], profile: Profile) -> Result<ActiveIdentity, Error> {
         let seed = self.derive_seed(hash, profile)?;
-        Ok(ActiveIdentity {
-            signing: EddsaPrivateKey::from_seed(*seed),
-            exchange: EcdheSecret::from_eddsa_seed(*seed),
-        })
+        Ok(ActiveIdentity::from_active_seed(&seed))
     }
 }
 
@@ -131,6 +134,15 @@ pub struct ActiveIdentity {
     exchange: EcdheSecret,
 }
 impl ActiveIdentity {
+    /// Import an already selected active Ed25519 seed. The caller retains its
+    /// original seed and has established which public identity it represents.
+    #[must_use]
+    pub fn from_active_seed(seed: &[u8; 32]) -> Self {
+        Self {
+            signing: EddsaPrivateKey::from_seed(*seed),
+            exchange: EcdheSecret::from_eddsa_seed(*seed),
+        }
+    }
     /// Public identity; this is not proof of any remote connection.
     #[must_use]
     pub fn public_key(&self) -> EddsaPublicKey {
@@ -176,32 +188,55 @@ pub enum Action {
     },
 }
 
-/// Allocation-free PILS service owner. H bounds the retained public announcement.
+/// PILS service owner with inline announcement storage by default. `H` bounds
+/// the retained public announcement for either storage profile.
 /// The host owns clients, immutable queued frame copies and secret-buffer erasure.
-pub struct Service<const H: usize = 4096> {
+pub struct Service<const H: usize = 4096, A: ByteStorage = InlineBytes<H>> {
     master: MasterKey,
     profile: Profile,
     identity: ActiveIdentity,
     hash: [u8; 64],
-    announcement: [u8; H],
+    announcement: A,
     announcement_len: usize,
     limits: Limits,
 }
+/// PILS service owner with exact-length heap storage for each announcement.
+#[cfg(feature = "alloc")]
+pub type HeapService<const H: usize = 4096> = Service<H, HeapBytes>;
+
 impl<const H: usize> Service<H> {
-    /// Start with the source's real empty-address identity and signed HELLO.
+    /// Start with the source's real empty-address identity and signed HELLO
+    /// in allocation-free inline storage.
     pub fn new(
         master: MasterKey,
         profile: Profile,
         now: u64,
         limits: Limits,
     ) -> Result<Self, Error> {
+        Self::build(master, profile, now, limits)
+    }
+}
+#[cfg(feature = "alloc")]
+impl<const H: usize> HeapService<H> {
+    /// Start with the source's real empty-address identity and signed HELLO
+    /// in exact-length heap storage. Allocation failure returns `Error::Capacity`.
+    pub fn new_heap(
+        master: MasterKey,
+        profile: Profile,
+        now: u64,
+        limits: Limits,
+    ) -> Result<Self, Error> {
+        Self::build(master, profile, now, limits)
+    }
+}
+impl<const H: usize, A: ByteStorage> Service<H, A> {
+    fn build(master: MasterKey, profile: Profile, now: u64, limits: Limits) -> Result<Self, Error> {
         let mut empty = [];
         let builder = HelloBuilder::new(&mut empty, limits);
         let hash = builder.address_hash(profile.hello());
         let identity = master.derive(&hash, profile)?;
-        let mut announcement = [0; H];
-        let announcement_len =
-            announcement_for(&builder, &identity, hash, profile, now, &mut announcement)?;
+        let (announcement, announcement_len) =
+            announcement_for::<H, A>(&builder, &identity, hash, profile, now)?;
         Ok(Self {
             master,
             profile,
@@ -261,50 +296,40 @@ impl<const H: usize> Service<H> {
         now: u64,
         out: &mut [u8],
     ) -> Result<Action, Error> {
-        match Request::decode(bytes)? {
-            Request::Feed { block } => {
-                let mut builder = HelloBuilder::new(scratch, self.limits);
-                let mut addresses = block
-                    .get(gnunet_hello::BLOCK_HEADER_LEN..)
-                    .ok_or(Error::Truncated)?;
-                if block.len() > self.limits.maximum_input_bytes {
-                    return Err(Error::Capacity);
-                }
-                while !addresses.is_empty() {
-                    let end = addresses
-                        .iter()
-                        .position(|b| *b == 0)
-                        .ok_or(Error::Truncated)?;
-                    if builder.add_address(&addresses[..end])? == AddAddress::AlreadyPresent {
-                        return Err(Error::Malformed);
-                    }
-                    addresses = &addresses[end + 1..];
-                }
-                let hash = builder.address_hash(self.profile.hello());
-                if self.profile == Profile::ReferenceDeterministic && hash == self.hash {
-                    return Ok(Action::Unchanged);
-                }
-                let identity = self.master.derive(&hash, self.profile)?;
-                let mut next = [0; H];
-                let n = announcement_for(&builder, &identity, hash, self.profile, now, &mut next)?;
-                let identity_changed = identity.public_key() != self.identity.public_key();
-                self.identity = identity;
-                self.hash = hash;
-                self.announcement = next;
-                self.announcement_len = n;
-                Ok(Action::Broadcast { identity_changed })
-            }
+        let request = Request::decode(bytes)?;
+        let Request::Feed { block } = request else {
+            return self.identity.reply(request, out);
+        };
+        let builder = fed_addresses(block, scratch, self.limits)?;
+        let hash = builder.address_hash(self.profile.hello());
+        if self.profile == Profile::ReferenceDeterministic && hash == self.hash {
+            return Ok(Action::Unchanged);
+        }
+        let identity = self.master.derive(&hash, self.profile)?;
+        let (next, n) = announcement_for::<H, A>(&builder, &identity, hash, self.profile, now)?;
+        let identity_changed = identity.public_key() != self.identity.public_key();
+        self.identity = identity;
+        self.hash = hash;
+        self.announcement = next;
+        self.announcement_len = n;
+        Ok(Action::Broadcast { identity_changed })
+    }
+}
+
+impl ActiveIdentity {
+    fn reply(&self, request: Request<'_>, out: &mut [u8]) -> Result<Action, Error> {
+        match request {
             Request::Sign { request, region } => {
-                if out.len() < gnunet_wire::official::pils::SIGN_RESULT_LEN {
+                if out.len() < pils::SIGN_RESULT_LEN {
                     return Err(Error::Capacity);
                 }
-                let (signature, crypto_error) = match self.identity.sign(region) {
+                let (signature, crypto_error) = match self.sign(region) {
                     Ok(sig) => (*sig.as_bytes(), None),
                     Err(e) => ([0; 64], Some(e)),
                 };
                 let len = Response::Signature {
                     request,
-                    peer: *self.identity.public_key().as_bytes(),
+                    peer: *self.public_key().as_bytes(),
                     signature,
                 }
                 .encode(out)?;
@@ -314,10 +339,10 @@ impl<const H: usize> Service<H> {
                 request,
                 encapsulation,
             } => {
-                if out.len() < gnunet_wire::official::pils::KEY_MESSAGE_LEN {
+                if out.len() < pils::KEY_MESSAGE_LEN {
                     return Err(Error::Capacity);
                 }
-                let (key, crypto_error) = match self.identity.decapsulate(encapsulation) {
+                let (key, crypto_error) = match self.decapsulate(encapsulation) {
                     Ok(k) => (k, None),
                     Err(e) => (Zeroizing::new([0; 32]), Some(e)),
                 };
@@ -325,45 +350,102 @@ impl<const H: usize> Service<H> {
                 Ok(Action::Reply { len, crypto_error })
             }
             Request::Ecdh { request, public } => {
-                if out.len() < gnunet_wire::official::pils::ECDH_RESULT_LEN {
+                if out.len() < pils::ECDH_RESULT_LEN {
                     return Err(Error::Capacity);
                 }
-                let (key, crypto_error) = match self.identity.ecdh(public) {
+                let (key, crypto_error) = match self.ecdh(public) {
                     Ok(k) => (k, None),
                     Err(e) => (Zeroizing::new([0; 64]), Some(e)),
                 };
                 let len = Response::Ecdh { request, key: &key }.encode(out)?;
                 Ok(Action::Reply { len, crypto_error })
             }
+            Request::Feed { .. } => Err(Error::InvalidInput),
         }
     }
 }
-fn announcement_for(
+
+fn fed_addresses<'a>(
+    block: &[u8],
+    scratch: &'a mut [u8],
+    limits: Limits,
+) -> Result<HelloBuilder<'a>, Error> {
+    if block.len() > limits.maximum_input_bytes {
+        return Err(Error::Capacity);
+    }
+    let mut addresses = block
+        .get(gnunet_hello::BLOCK_HEADER_LEN..)
+        .ok_or(Error::Truncated)?;
+    let mut builder = HelloBuilder::new(scratch, limits);
+    while !addresses.is_empty() {
+        let end = addresses
+            .iter()
+            .position(|byte| *byte == 0)
+            .ok_or(Error::Truncated)?;
+        if builder.add_address(&addresses[..end])? == AddAddress::AlreadyPresent {
+            return Err(Error::Malformed);
+        }
+        addresses = &addresses[end + 1..];
+    }
+    Ok(builder)
+}
+
+fn announcement_for<const H: usize, A: ByteStorage>(
     builder: &HelloBuilder<'_>,
     identity: &ActiveIdentity,
     hash: [u8; 64],
     profile: Profile,
     now: u64,
-    out: &mut [u8],
-) -> Result<usize, Error> {
-    let hello = builder.sign(
-        &identity.signing,
-        AbsoluteTime::from_micros(now.saturating_add(HELLO_LIFETIME)),
-        profile.hello(),
-    )?;
-    let n = gnunet_wire::official::pils::PEER_UPDATE_PREFIX
-        .checked_add(hello.block_len()?)
-        .ok_or(Error::Overflow)?;
-    let header = gnunet_wire::official::MessageHeader::from_total_size(
-        gnunet_wire::official::message_type::PILS_PEER_ID,
-        n,
-    )?;
-    if out.len() < n {
+) -> Result<(A, usize), Error> {
+    let update = Announcement::new(builder, identity, hash, profile, now)?;
+    let length = update.header.size();
+    if H < length {
         return Err(Error::Capacity);
     }
-    header.encode(out)?;
-    out[4..68].copy_from_slice(&hash);
-    out[68..72].copy_from_slice(&((n - 72) as u32).to_be_bytes());
-    hello.encode_block(&mut out[72..n])?;
-    Ok(n)
+    let mut out = A::zeroed(length)?;
+    update.encode(&mut out)?;
+    Ok((out, length))
+}
+
+struct Announcement<'a> {
+    hello: Hello<'a>,
+    hash: [u8; 64],
+    header: MessageHeader,
+}
+
+impl<'a> Announcement<'a> {
+    fn new(
+        builder: &'a HelloBuilder<'_>,
+        identity: &ActiveIdentity,
+        hash: [u8; 64],
+        profile: Profile,
+        now: u64,
+    ) -> Result<Self, Error> {
+        let hello = builder.sign(
+            &identity.signing,
+            AbsoluteTime::from_micros(now.saturating_add(HELLO_LIFETIME)),
+            profile.hello(),
+        )?;
+        let length = pils::PEER_UPDATE_PREFIX
+            .checked_add(hello.block_len()?)
+            .ok_or(Error::Overflow)?;
+        let header = MessageHeader::from_total_size(message_type::PILS_PEER_ID, length)?;
+        Ok(Self {
+            hello,
+            hash,
+            header,
+        })
+    }
+
+    fn encode(self, out: &mut [u8]) -> Result<usize, Error> {
+        let length = self.header.size();
+        let out = out.get_mut(..length).ok_or(Error::Capacity)?;
+        let block_len = self
+            .hello
+            .encode_block(&mut out[pils::PEER_UPDATE_PREFIX..])?;
+        self.header.encode(out)?;
+        out[4..68].copy_from_slice(&self.hash);
+        out[68..72].copy_from_slice(&(block_len as u32).to_be_bytes());
+        Ok(length)
+    }
 }

@@ -8,7 +8,8 @@ pub struct Limits {
     pub native: gnunet_messenger_client_host::Limits,
     /// Retained room/message/member/history/epoch state capacities.
     pub core: gnunet_messenger_core::Limits,
-    /// Original high-level jobs including whole-written jobs awaiting real input.
+    /// Original jobs, including retained terminal receipts. At least four are
+    /// required: two ordinary jobs, one SYNC and one dependency retrieval job.
     pub operations: usize,
     /// Maximum owned opaque local signing identities, including rotations.
     pub identities: usize,
@@ -21,6 +22,8 @@ pub struct Limits {
     pub work_per_poll: usize,
     /// Whether each actual joined room drives official epoch key distribution.
     pub automatic_epochs: bool,
+    /// Whether the epoch driver may originate GROUP proposals in private rooms.
+    pub group_keys: bool,
 }
 impl Default for Limits {
     fn default() -> Self {
@@ -33,6 +36,7 @@ impl Default for Limits {
             bytes: 4 * 1024 * 1024,
             work_per_poll: 4,
             automatic_epochs: true,
+            group_keys: true,
         }
     }
 }
@@ -45,7 +49,8 @@ impl Limits {
         })?;
         if N < 384
             || N > 65524
-            || self.operations == 0
+            || self.operations < 4
+            || self.core.operations_per_room < 4
             || self.identities == 0
             || self.work_per_poll == 0
             || self.bytes == 0

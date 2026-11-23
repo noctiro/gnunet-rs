@@ -1,0 +1,17 @@
+[package]
+name = "gnunet-direct-peer"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+gnunet-core.workspace = true
+gnunet-crypto.workspace = true
+gnunet-tcp-communicator-core.workspace = true
+gnunet-transport.workspace = true
+gnunet-types.workspace = true
+zeroize.workspace = true
+
+[lints]
+workspace = true

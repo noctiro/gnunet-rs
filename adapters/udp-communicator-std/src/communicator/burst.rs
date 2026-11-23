@@ -252,12 +252,13 @@ impl<'id> Communicator<'id> {
             until,
             hard: command.hard,
         };
-        let result = Burst::start_ready(
+        let result = Burst::start_ready_with_socket_policy(
             port.instance,
             self.sockets[command.default].shared()?,
             parameters,
             port.policy.scan,
             port.clock.clone(),
+            self.sockets[command.default].socket_policy().clone(),
         );
         match result {
             Ok(owner) => {

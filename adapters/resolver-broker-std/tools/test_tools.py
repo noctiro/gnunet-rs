@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
 """Pure guard negative controls; never stands in for runtime C/R actors."""
 import json,pathlib,tempfile,unittest,subprocess,sys
-from common import disjoint,observed_tests,check_actor_result,sha,compile_source,rust_library,workspace_files,workspace_contract,normalized_metadata
+from common import disjoint,observed_tests,check_actor_result,sha,compile_source,workspace_files,workspace_contract,normalized_metadata
+sys.path.insert(0,str(pathlib.Path(__file__).resolve().parents[3]/'tools'))
+from cargo_artifacts import CargoArtifacts
+
+def broker_library(stdout):
+ return CargoArtifacts(stdout).rlib('gnunet_resolver_broker','/private/tmp/wanted/Cargo.toml',package_id='wanted')
+
 class Controls(unittest.TestCase):
  def test_empty_expected_rejected(self):
   with self.assertRaises(ValueError):observed_tests('',set(),1)
@@ -28,13 +34,13 @@ class Controls(unittest.TestCase):
  def test_compile_source_relative_cwd_is_bound(self):
   self.assertEqual(compile_source({'file':'../source/src/lib/util/resolver_api.c'},'/private/tmp/build','/private/tmp/source'),pathlib.Path('/private/tmp/source/src/lib/util/resolver_api.c'))
  def test_missing_library_artifact_rejected(self):
-  with self.assertRaises(ValueError):rust_library('', 'gnunet_resolver_broker')
+  with self.assertRaises(ValueError):broker_library('')
  def test_duplicate_library_artifact_rejected(self):
-  row=json.dumps({'reason':'compiler-artifact','target':{'name':'gnunet_resolver_broker','kind':['lib']},'filenames':['/private/tmp/one.rlib']})
-  with self.assertRaises(ValueError):rust_library(row+'\n'+row,'gnunet_resolver_broker')
+  row=json.dumps({'reason':'compiler-artifact','target':{'name':'gnunet_resolver_broker','kind':['lib']},'filenames':['/private/tmp/one.rlib'],'manifest_path':'/private/tmp/wanted/Cargo.toml','package_id':'wanted'})
+  with self.assertRaisesRegex(ValueError,'got 2'):broker_library(row+'\n'+row)
  def test_actual_library_artifact_selected_without_glob(self):
-  row=json.dumps({'reason':'compiler-artifact','target':{'name':'gnunet_resolver_broker','kind':['lib']},'filenames':['/private/tmp/one.rlib','/private/tmp/one.rmeta']})
-  self.assertEqual(rust_library(row,'gnunet_resolver_broker'),pathlib.Path('/private/tmp/one.rlib'))
+  row=json.dumps({'reason':'compiler-artifact','target':{'name':'gnunet_resolver_broker','kind':['lib']},'filenames':['/private/tmp/one.rlib','/private/tmp/one.rmeta'],'manifest_path':'/private/tmp/wanted/Cargo.toml','package_id':'wanted'})
+  self.assertEqual(broker_library(row),pathlib.Path('/private/tmp/one.rlib'))
  def test_named_nonempty_positive(self):
   self.assertEqual(observed_tests('test a::real ... ok\n',{'real'},1),['real'])
  def test_optimized_actual_decoder_rejects_malformed_header(self):
@@ -62,8 +68,8 @@ class Controls(unittest.TestCase):
    with self.assertRaisesRegex(ValueError,'two-lock'):workspace_contract(root)
  def test_foreign_actual_library_manifest_rejected(self):
   row=json.dumps({'reason':'compiler-artifact','target':{'name':'gnunet_resolver_broker','kind':['lib']},'filenames':['/private/tmp/one.rlib'],'manifest_path':'/private/tmp/foreign/Cargo.toml','package_id':'wanted'})
-  with self.assertRaisesRegex(ValueError,'foreign actual library manifest'):rust_library(row,'gnunet_resolver_broker','/private/tmp/wanted/Cargo.toml','wanted')
+  with self.assertRaisesRegex(ValueError,'foreign actual library manifest'):broker_library(row)
  def test_foreign_actual_library_package_id_rejected(self):
   row=json.dumps({'reason':'compiler-artifact','target':{'name':'gnunet_resolver_broker','kind':['lib']},'filenames':['/private/tmp/one.rlib'],'manifest_path':'/private/tmp/wanted/Cargo.toml','package_id':'foreign'})
-  with self.assertRaisesRegex(ValueError,'foreign actual library package id'):rust_library(row,'gnunet_resolver_broker','/private/tmp/wanted/Cargo.toml','wanted')
+  with self.assertRaisesRegex(ValueError,'foreign actual library package id'):broker_library(row)
 if __name__=='__main__':unittest.main(verbosity=2)

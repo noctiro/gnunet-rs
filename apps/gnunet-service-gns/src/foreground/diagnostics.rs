@@ -2,7 +2,7 @@
 use crate::Cause;
 use gnunet_gns_service_host::{
     self as host, Shared,
-    auxiliary::{self, dns, registry},
+    auxiliary::{self, registry},
     interceptor::{self, SourceCause, SourceProgress},
     native::{
         self,
@@ -22,7 +22,6 @@ pub(super) struct Observations {
     pub(super) report_counts: [u64; 6],
     // Optional preparation failures stay distinct from a real lookup miss.
     pub(super) initial_registry: Option<Arc<registry::Error>>,
-    pub(super) initial_dns_bootstrap: Option<Arc<dns::Error>>,
     pub(super) first_frontend: Option<server::Error>,
     pub(super) frontend_errors: u64,
     pub(super) first_accept: Option<gnunet_service_runtime::accepted::AcceptError>,

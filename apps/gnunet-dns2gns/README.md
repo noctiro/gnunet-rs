@@ -22,7 +22,8 @@ BIND_TO6 = ::1
 PORT = 15353
 ```
 
-Both listener addresses are required and numeric. Each family binds independently;
+Both listener addresses are required and numeric. A link-local `BIND_TO6`
+address requires a numeric zone, for example `fe80::53%4`. Each family binds independently;
 either may run, and each original bind error remains available. Missing `PORT`
 falls back to 53; explicit zero requests an ephemeral port. Installed `gns.conf`
 selects port 15353 separately. Its launcher `OPTIONS` do not replace the manual

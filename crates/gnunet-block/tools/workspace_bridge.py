@@ -66,14 +66,14 @@ def fixture_root(metadata):
 
 
 def examples(commands,workspace):
-    output=commands.run('release-probes',['cargo','+1.99.1','build','--manifest-path',Path(workspace)/'Cargo.toml',
+    output=commands.run('release-probes',[*commands.cargo,'build','--manifest-path',Path(workspace)/'Cargo.toml',
         '--locked','--offline','-p','gnunet-block','--release','--examples','--message-format=json','-j','1'])
     rows=[json.loads(line)for line in output.splitlines()if line.startswith(b'{')]
     finished=[r for r in rows if r.get('reason')=='build-finished']
     if len(finished)!=1 or finished[0].get('success')is not True:raise ValueError('successful actual Cargo artifact build required')
     result={}
-    for name in('probe','vectors'):
-        found=[r for r in rows if r.get('reason')=='compiler-artifact'and r['target']['name']==name
+    for name, target in (('probe', 'block_probe'), ('vectors', 'vectors')):
+        found=[r for r in rows if r.get('reason')=='compiler-artifact'and r['target']['name']==target
                and 'example'in r['target']['kind']and r.get('executable')
                and Path(r['manifest_path']).resolve()==(Path(workspace)/BLOCK_PATH/'Cargo.toml').resolve()]
         if len(found)!=1:raise ValueError('unique actual BLOCK Cargo artifact required: '+name)

@@ -13,6 +13,7 @@ RUST_NAMES={
 'gns_native_assertion_size_is_safe_error_and_unknown_type_key_is_unchanged','source_assertion_or_pointer_preconditions_are_safe_errors_without_partial_group_update','hello_capacity_is_resource_failure_and_cannot_be_invalid_or_fallback','dns_exact_expiration_readpoint_and_reply_does_not_revalidate'}
 TOOL_NAMES={'test_actual_normal_exit_required','test_changed_bytes_rejected','test_complete_core_corpus_cannot_be_empty_or_filtered','test_deleted_file_rejected','test_duplicate_binding_rejected','test_empty_binding_rejected','test_legal_output_then_exit7_rejected','test_output_ancestor_of_input_rejected','test_output_descendant_of_input_rejected','test_output_same_as_input_rejected','test_real_file_bound_accepted','test_sibling_output_accepted','test_optimized_missing_trace_child_rejected','test_no_verification_asserts_can_be_disabled','test_virtual_workspace_member_identity_is_required','test_actual_fixture_graph_rejects_member_union','test_workspace_file_addition_and_deletion_rejected','test_builder_input_roles_are_complete_and_unique','test_changed_actual_builder_helper_is_rejected_even_optimized'}
 NEW_REGISTRY={'argon2':('0.6.0','134c52ddac6d63c576bef8168db10c83c49c26444ecbc68060fef078925a901c'),'blake2':('0.11.0','5b5d4d889834ee8ecfc0f8426ad30faf7cdcb10f741a8e6d7224d95325479f6f'),'base64ct':('1.8.3','2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06')}
+CRATES_IO='registry+https://github.com/rust-lang/crates.io-index'
 def noalloc(meta):
  fixture_root(meta)
  packages={p['id']:p for p in meta['packages']};nodes={n['id']:n for n in meta['resolve']['nodes']};pending=[meta['resolve']['root']];visited=set();result=[]
@@ -32,7 +33,7 @@ def noalloc(meta):
 def archives(meta,cargo_home):
  result=[]
  for name,(version,checksum)in NEW_REGISTRY.items():
-  p=next(x for x in meta['packages']if x['name']==name and x['version']==version);base=pathlib.Path(p['manifest_path']).parent;archive=cargo_home/'registry/cache'/base.parent.name/(name+'-'+version+'.crate')
+  p=next(x for x in meta['packages']if x['name']==name and x['version']==version and x['source']==CRATES_IO);base=pathlib.Path(p['manifest_path']).parent;archive=cargo_home/'registry/cache'/base.parent.name/(name+'-'+version+'.crate')
   if sha(archive)!=checksum:raise ValueError('registry archive checksum mismatch')
   files={}
   with tarfile.open(archive)as tar:
@@ -48,9 +49,9 @@ def archives(meta,cargo_home):
   result.append({'name':name,'version':version,'archive':str(archive),'checksum':checksum,'license':p['license'],'source_files':len(files),'source_projection_sha256':hashlib.sha256(json.dumps(files,sort_keys=True).encode()).hexdigest()})
  return result
 
-def dependency_contract(metadata,package):
+def dependency_contract(metadata,package,locked_registry):
  p=member(metadata,package)
- if p['name']!='gnunet-block'or p['features']!={'default':[]}or p['edition']!='2024'or p['rust_version']!='1.99.1':raise ValueError('package/default feature contract changed')
+ if p['name']!='gnunet-block'or p['features']!={'default':[]}or p['edition']!='2024'or p['rust_version']!='1.100.0':raise ValueError('package/default feature contract changed')
  expected={'gnunet-types','gnunet-crypto','gnunet-hello'}
  if {d['name']for d in p['dependencies']}!=expected or len(p['dependencies'])!=3:raise ValueError('unexpected or duplicate dependency')
  for d in p['dependencies']:
@@ -62,8 +63,16 @@ def dependency_contract(metadata,package):
  argon=[d for d in crypto['dependencies']if d['name']=='argon2']
  if len(argon)!=1:raise ValueError('unique shared Argon2 dependency required')
  d=argon[0]
- if d['req']!='=0.6.0'or set(d['features'])!={'zeroize'}or d['source']!='registry+https://github.com/rust-lang/crates.io-index'or d['uses_default_features']or not d['optional']or d['kind']is not None or d['target']is not None or d['rename']is not None:raise ValueError('unpinned optional shared Argon2/feature source contract')
- return {'package':p['name'],'dependencies':sorted(expected),'shared_pow':'gnunet-crypto/pow','argon2':'optional =0.6.0/no-default/zeroize'}
+ if set(d['features'])!={'zeroize'}or d['source']!=CRATES_IO or d['uses_default_features']or not d['optional']or d['kind']is not None or d['target']is not None or d['rename']is not None:raise ValueError('optional shared Argon2 feature/source contract changed')
+ nodes={row['id']:row for row in metadata['resolve']['nodes']}
+ edges=[edge for edge in nodes[crypto['id']]['deps']if edge['name']=='argon2']
+ if len(edges)!=1 or edges[0]['dep_kinds']!=[{'kind':None,'target':None}]:raise ValueError('unique resolved Argon2 dependency edge required')
+ target=next(row for row in metadata['packages']if row['id']==edges[0]['pkg'])
+ version,checksum=NEW_REGISTRY['argon2']
+ lock_entry={'name':'argon2','version':version,'source':CRATES_IO,'checksum':checksum}
+ if any(target[field]!=lock_entry[field]for field in ('name','version','source'))or lock_entry not in locked_registry:raise ValueError('resolved Argon2 package differs from the reviewed Cargo.lock identity')
+ if 'zeroize' not in nodes[target['id']]['features']:raise ValueError('resolved Argon2 is missing the requested zeroize feature')
+ return {'package':p['name'],'dependencies':sorted(expected),'shared_pow':'gnunet-crypto/pow','argon2':lock_entry}
 
 def lint_contract(package,metadata):
  root=pathlib.Path(next(p['manifest_path']for p in metadata['packages']if p['name']=='gnunet-crypto')).parents[2]/'Cargo.toml'
@@ -122,7 +131,7 @@ def main():
   require(names==TOOL_NAMES and f'Ran {len(TOOL_NAMES)} tests'in log and log.rstrip().endswith('OK'),'exact named nonempty BLOCK tool controls required')
   profiles={'default':(),'all-features':('--all-features',),'no-default-features':('--no-default-features',)}
   original_meta={name:origin_cmd.metadata('original-metadata-'+name,flags)for name,flags in profiles.items()}
-  contract=shared.workspace_contract(origin,original_meta);dependencies=dependency_contract(original_meta['default'],package);lints=lint_contract(package,original_meta['default'])
+  contract=shared.workspace_contract(origin,original_meta);dependencies=dependency_contract(original_meta['default'],package,contract['registries']['workspace']);lints=lint_contract(package,original_meta['default'])
   shared.same(shared.tree(origin),before,'complete original inputs before copy')
   workspace=out/'workspace';shared.same(shared.copy_workspace(origin,workspace),before,'actual complete Root/settings/two-lock copy')
   cmd=shared.Commands(out,workspace,{'BLOCK_WORKSPACE_HELPER':os.environ['BLOCK_WORKSPACE_HELPER']});copied_package=workspace/'crates/gnunet-block'
@@ -147,7 +156,7 @@ def main():
   xtask=cmd.xtask();architecture=[]
   for check in('check-deps','check-features','check-noalloc','check-lints'):
    require(cmd.run(check,[xtask,check]).decode().rstrip().endswith(check+': passed'),'actual architecture check missing');architecture.append(check)
-  cargo=['cargo','+1.99.1'];common=['--manifest-path',workspace/'Cargo.toml','--offline','--locked','-j','1','-p','gnunet-block']
+  cargo=list(cmd.cargo);common=['--manifest-path',workspace/'Cargo.toml','--offline','--locked','-j','1','-p','gnunet-block']
   cmd.run('fmt',cargo+['fmt','--manifest-path',workspace/'Cargo.toml','--package','gnunet-block','--check'])
   cmd.run('clippy',cargo+['clippy',*common,'--all-targets','--','-D','warnings'])
   built=cmd.run('rust-test-build',cargo+['test',*common,'--all-targets','--no-run','--message-format=json'])

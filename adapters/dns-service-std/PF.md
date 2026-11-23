@@ -28,14 +28,22 @@ that group bypasses interception.
 
 Four generation-labeled rules route outgoing IPv4/IPv6 UDP destination-port 53
 to the original TUN name and permit incoming UDP source-port 53 replies from that
-interface. The daemon's socket group is exempt. IPv6 link-local source traffic
-is excluded. Rules use `no state`; they create no persistent PF flow state.
+interface. The daemon's socket group is exempt. Traffic with either IPv6
+link-local or legacy site-local endpoint is excluded (`fe80::/9`). Rules use
+`no state`; they create no persistent PF flow state.
 
 The official helper envelope carries raw IP bytes and TUN_PI without the
 original interface's scope. Injecting a reply through a different TUN does not
-restore that scope. Supporting link-local flows requires a capture/reinjection
-backend that retains the native zone; removing the rule exclusion alone cannot
-supply it.
+restore that scope. A scoped destination also requires the original zone
+when its reply becomes a source address. Supporting these flows requires a
+capture/reinjection backend that retains the native zone; removing the rule
+exclusions alone cannot supply it. The gateway independently refuses either
+link-local or site-local endpoint on raw helper/TUN inputs before admitting a
+request. Raw replies require unicast numeric endpoints: multicast, unspecified,
+limited broadcast and IPv4-mapped IPv6 wire endpoints are refused before DNS
+admission. Multicast DNS requires a separate responder-source owner; these
+checks do not provide one. A raw WinDivert interface observation can supply link
+scope but does not supply a legacy site zone.
 
 The root ruleset, skip settings and PF enable ownership remain with the
 administrator. Existing-state handling is platform-specific as described below;
@@ -66,11 +74,20 @@ retirement deadline. Runtime verification uses the same complete coverage check.
 ## Runtime policy observation
 
 Automatic interception retains the native address scope used for startup state
-retirement: interface names, indices and scoped socket addresses, sorted and
-deduplicated within the native snapshot bounds. Final installation must observe
-the same scope. Down/up flag changes alone do not revoke it; down interfaces
-were already included in state selection. Added, removed or rebound addresses
-require a new startup state sweep rather than adopting an older sweep.
+retirement. The scope pairs socket addresses with names and nonzero indices from
+one `getifaddrs` list and rejects ambiguous interfaces. Final installation must
+observe the same scope. Down interfaces are included in state selection, so
+down/up flag changes alone leave the scope active. Added, removed or rebound
+addresses require a new startup state sweep.
+
+The helper opens a read-only routing socket before the state sweep and drains
+its notifications before packet I/O. An address removal or FreeBSD interface
+departure on an original interface retires the source even if a later snapshot
+looks unchanged. Address additions trigger a fresh comparison of the whole
+scope. The helper pauses packet I/O while draining and stops on malformed or
+truncated notifications, an original receive error or a backlog that persists
+for three seconds. FreeBSD enables `SO_RERROR` so the original socket reports
+`ENOBUFS` when its receive queue overflows.
 
 While pumping, the helper checks PF enablement, the root delegation, exact
 canonical anchor rules, absence of child anchors, the original lease and native
@@ -95,11 +112,10 @@ automatically adopted. A failed read-only probe reports its original failure
 before waiting for child retirement, so that wait cannot extend packet admission.
 Cleanup then performs the executor's bounded original-child stop and reap.
 
-These periodic observations do not lock PF or native interfaces. Packets can be
-processed between a change and detection, and transient changes entirely between
-observations may be missed. Index/name reuse with the same observed address is
-not proof of uninterrupted physical identity. Concurrent administrator changes
-remain outside an atomic interception guarantee.
+Route notifications and periodic observations leave PF and interfaces unlocked.
+The kernel can still lose notifications without reporting an overrun, and a
+change can race packet processing. Index/name reuse can leave an identical
+address snapshot.
 
 ## Existing DNS states on FreeBSD
 
@@ -107,19 +123,22 @@ After the owned rules are loaded, startup reads numeric FreeBSD 14 `pfctl -vv -s
 states` records. It selects locally originated outbound UDP destination-port 53
 flows against the native assigned-address snapshot, including addresses on down
 interfaces. NAT's stack-side endpoints determine origin and destination. Inbound,
-forwarded, TCP, other-port and IPv6 link-local-source flows are excluded.
+forwarded, TCP, other-port and flows with either IPv6 scoped endpoint are
+excluded. State retirement also excludes non-unicast and IPv4-mapped IPv6 raw
+endpoints, matching the raw reply validator.
 
-Each target uses the original nonzero state ID and creator ID through
-[`pfctl -k id`](https://man.freebsd.org/cgi/man.cgi?manpath=FreeBSD+14.0-RELEASE&query=pfctl&sektion=8).
-No host wildcard or global state flush is used. An independent full-table
+One retained `/dev/pf` descriptor uses `DIOCKILLSTATESNV` with each original
+nonzero state ID and creator ID. The kernel selects the caller's original VNET.
+Each exact mutation checks the original startup deadline before and after the
+ioctl. The call may take effect before returning late. An independent full-table
 readback checks those original IDs regardless of their later flow predicate.
 Unknown, duplicate, truncated or wildcard target identities refuse the snapshot
 before any kill is admitted. Native command success alone is not absence proof.
 
 The state table does not carry the original socket group. Cached DNS state for
 the dedicated daemon group can therefore also be removed; new traffic retains
-the rule's group exemption. This is startup state retirement; runtime observations
-stop the pump when its recorded address scope changes.
+the rule's group exemption. At runtime, the pump stops when its recorded address
+scope changes.
 
 Parsing streams through one bounded 2048-byte line and retains at most 4096 target
 IDs; unrelated records are discarded without accumulating the state table.

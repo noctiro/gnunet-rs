@@ -137,7 +137,7 @@ impl<R: Retention> EncryptionCore<R> {
         self.attempts = attempts;
         let mut raw = Zeroizing::new([0u8; 256]);
         entropy.fill(raw.as_mut()).map_err(Error::Entropy)?;
-        if self.key.n.bits() == 2047 {
+        if self.key.n.bit_width() == 2047 {
             raw[0] &= 0x7f;
         }
         let r = Zeroizing::new(U2048::from_be_slice(raw.as_ref()));
@@ -299,6 +299,14 @@ impl EncryptWithWitnessJob {
     /// Advance the same finite sampling and exponent-bit schedule as EncryptJob.
     pub fn advance(&mut self, entropy: &mut impl Entropy, units: u16) -> Result<Progress, Error> {
         self.core.advance(entropy, units)
+    }
+    /// Whether the running encryption has retained its sampled unit.
+    ///
+    /// This reports the phase boundary without exposing the unit or a
+    /// ciphertext. It is false before sampling and after result or retirement.
+    #[must_use]
+    pub fn has_sampled_randomizer(&self) -> bool {
+        self.core.retention.randomizer.is_some()
     }
     /// Consume the actual original ciphertext and its secret unit witness once.
     pub fn take_result(&mut self) -> Result<EncryptionWitness, Error> {

@@ -19,7 +19,6 @@ use gnunet_transport::{
     dv::{self, BoxHeader, BoxPacket, Plaintext},
 };
 use gnunet_types::Error;
-use gnunet_wire::official::Frame;
 use zeroize::{Zeroize, Zeroizing};
 /// Stable caller allocation domain, with checked counters and no Atomic64/global.
 #[derive(Default)]
@@ -254,12 +253,31 @@ impl<'source, 'id> PreparedSeal<'source, 'id> {
         out: &mut [u8],
     ) -> Result<Sealed<'id>, Error> {
         let work = Scratch::new(scratch);
-        self.check(now)?;
-        if key.public_key().as_bytes() != &self.local().0 {
-            return Err(Error::Authentication);
-        }
-        let signature = key.sign(dv::EPHEMERAL_PURPOSE, &self.region())?;
+        let signature = self.sign_local(key, now)?;
         self.seal_inner(&signature, now, packet, work, out)
+    }
+    /// Finish into an uncommitted wire buffer, encrypting the plaintext directly
+    /// in its final ciphertext range. The caller publishes only a successful
+    /// receipt. A failed encryption wipes the temporary plaintext range.
+    pub fn seal_local_in_place(
+        self,
+        key: &EddsaPrivateKey,
+        now: u64,
+        packet: cache::Packet<'_>,
+        out: &mut [u8],
+    ) -> Result<Sealed<'id>, Error> {
+        let (plain, length) = cache::layout(self.local(), self.target, &packet, out.len())?;
+        let signature = self.sign_local(key, now)?;
+        let ciphertext = &mut out[length - plain..length];
+        let header = match self.encrypt(&packet, &signature, ciphertext) {
+            Ok(header) => header,
+            Err(error) => {
+                ciphertext.zeroize();
+                return Err(error);
+            }
+        };
+        header.encode_prefix(packet.route, plain, out)?;
+        Ok(self.receipt(length))
     }
     /// Finish a real external signer result. Signature is independently verified
     /// against the original local identity/region before plaintext or encryption.
@@ -285,35 +303,8 @@ impl<'source, 'id> PreparedSeal<'source, 'id> {
         out: &mut [u8],
     ) -> Result<Sealed<'id>, Error> {
         self.check(now)?;
-        let cache::Packet {
-            route,
-            without_fc,
-            message,
-        } = packet;
-        let inner = Frame::decode(message)?;
-        if matches!(
-            inner.header().message_type().value(),
-            dv::LEARN_TYPE | dv::BOX_TYPE
-        ) {
-            return Err(Error::Malformed);
-        }
-        if route.len() > dv::MAX_HOPS || (!route.is_empty() && route.last() != Some(&self.target)) {
-            return Err(Error::InvalidInput);
-        }
-        for (i, peer) in route.iter().enumerate() {
-            if *peer == self.local() || route[..i].contains(peer) {
-                return Err(Error::InvalidInput);
-            }
-        }
-        let plain = dv::PAYLOAD_PREFIX
-            .checked_add(message.len())
-            .ok_or(Error::Overflow)?;
-        let length = dv::BOX_PREFIX
-            .checked_add(route.len() * 32)
-            .and_then(|n| n.checked_add(plain))
-            .filter(|n| *n <= u16::MAX as usize)
-            .ok_or(Error::TooLarge)?;
-        if work.0.len() < plain || out.len() < length {
+        let (plain, length) = cache::layout(self.local(), self.target, &packet, out.len())?;
+        if work.0.len() < plain {
             return Err(Error::Capacity);
         }
         EddsaPublicKey::from_bytes(self.local().0).verify(
@@ -321,28 +312,50 @@ impl<'source, 'id> PreparedSeal<'source, 'id> {
             &self.region(),
             signature,
         )?;
+        let ciphertext = &mut work.0[..plain];
+        let header = self.encrypt(&packet, signature, ciphertext)?;
+        header.encode(packet.route, ciphertext, out)?;
+        Ok(self.receipt(length))
+    }
+
+    fn sign_local(&self, key: &EddsaPrivateKey, now: u64) -> Result<EddsaSignature, Error> {
+        self.check(now)?;
+        if key.public_key().as_bytes() != &self.local().0 {
+            return Err(Error::Authentication);
+        }
+        key.sign(dv::EPHEMERAL_PURPOSE, &self.region())
+    }
+
+    fn encrypt(
+        &self,
+        packet: &cache::Packet<'_>,
+        signature: &EddsaSignature,
+        ciphertext: &mut [u8],
+    ) -> Result<BoxHeader, Error> {
         dv::encode_plaintext(
             self.local(),
             self.task.stamp,
             signature.as_bytes(),
-            message,
-            &mut work.0[..plain],
+            packet.message,
+            ciphertext,
         )?;
-        let mac = xchacha20poly1305_seal(&self.key, &self.nonce, &[], &mut work.0[..plain])?;
-        let header = BoxHeader {
-            without_fc,
+        let mac = xchacha20poly1305_seal(&self.key, &self.nonce, &[], ciphertext)?;
+        Ok(BoxHeader {
+            without_fc: packet.without_fc,
             encapsulation: self.encapsulation,
             nonce: self.nonce,
             mac,
-        };
-        header.encode(route, &work.0[..plain], out)?;
-        Ok(Sealed {
+        })
+    }
+
+    fn receipt(&self, bytes: usize) -> Sealed<'id> {
+        Sealed {
             token: self.task.token(),
             source: self.local(),
             target: self.target,
             stamp: self.task.stamp,
-            bytes: length,
-        })
+            bytes,
+        }
     }
 }
 /// Actual complete crypto construction receipt, not an enqueue/write/remote ACK.

@@ -18,17 +18,7 @@ pub(crate) fn spawn(
     limits: ProcessLimits,
     children: &mut ChildRegistry,
 ) -> Result<SpawnResult, LaunchError> {
-    let (filename, argv) = match request.recipe {
-        Recipe::Gnunet(command) => {
-            let argv = native::parse_command(command, limits.launch.max_arguments)?;
-            (argv.first().cloned().unwrap_or_default(), argv)
-        }
-        Recipe::Simple {
-            filename,
-            argv0,
-            options,
-        } => (filename.clone(), vec![argv0.clone(), options.clone()]),
-    };
+    let (filename, argv) = native_arguments(request.recipe, limits.launch.max_arguments)?;
     let command = native::NativeCommand {
         filename,
         argv,

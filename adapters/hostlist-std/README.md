@@ -14,7 +14,10 @@ Construct `gnunet_hostlist::Core`, stable outer `Instances` (CORE and separate g
 
 Hyper1.12.0 parses/serializes HTTP/1.0/1.1. Connection futures are polled inside the owner, with bounded header count/buffer, request/response native wire bytes, decoded body, frame work and address probes. Bodies are incrementally consumed with foreground yields; no unbounded collect is used. Standard chunked/content-length/EOF framing comes from Hyper. There are at most four redirects by default. Initial HTTPS URLs stay HTTPS; initial HTTP URLs may redirect to HTTP or HTTPS, matching the active libcurl settings. Redirects preserve the original job/deadlines, never become a retry of an errored socket. Origin Basic credentials are scoped to the original URL origin or an explicit current URL userinfo, and are never forwarded as proxy authentication.
 
-Rustls0.23.46/tokio-rustls0.26.6 use the explicit owned AWS-LC provider, non-FIPS native/asm primitives, and public webpki-roots1.0.11. There is no global provider install, client key, key log, insecure hostname/certificate override or plaintext fallback. X509 validity uses the standard Unix wall/SystemTime provider, matching libcurl. This trust clock is separate from the shared GNUnet RuntimeClock used for operation deadlines. Session resumption/early data are disabled. The code does not claim pure Rust cryptographic primitives or FIPS qualification.
+The HTTP adapter uses the [shared Rust TLS provider](../tls-crypto-std/README.md)
+and WebPKI roots. TLS certificate validity uses wall time, while GNUnet operation
+deadlines use the shared runtime clock. Origin and proxy handshakes disable
+resumption and early data.
 
 All ordinary target/proxy hostname resolution uses the original shared GNUnet Resolver context; `TcpStream::connect` receives already selected numeric SocketAddr. The original address callback is returned only after its socket/proxy-target effect actually starts; its query drain remains attached to the original connection. No target callback is held while opening a different proxy DNS/socket attempt. IPv6 URL brackets are removed for numeric resolution and TLS server-name checking, while HTTP authorities remain bracketed. Socket initialization reuses the native reactor boundary; original warnings and fatal errors are preserved by probe id.
 

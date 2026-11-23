@@ -2,8 +2,9 @@
 use super::{Failure, Outcome, Persisted, Stage, Store, failure, fence::Fence, staging::Candidate};
 use gnunet_native::{
     DirectorySync,
-    filesystem::{EntryInfo, file_info, private_single_file_identity},
+    filesystem::{EntryInfo, FileInfo, private_data_file_info, publication, validate_readonly},
 };
+use gnunet_tcp_replay_host::pairing::FRONTIER_BYTES;
 use std::{
     fs::File,
     io::{self, Read, Seek, SeekFrom, Write},
@@ -14,6 +15,11 @@ use std::{
 pub(super) struct Snapshot {
     pub image: Persisted,
     pub file: File,
+    info: FileInfo,
+}
+struct Readback {
+    image: Persisted,
+    info: FileInfo,
 }
 pub(super) struct Pending {
     image: Persisted,
@@ -27,38 +33,102 @@ pub(super) enum Settlement {
 fn invalid(stage: Stage, why: &'static str) -> Failure {
     failure(stage, Outcome::Unknown, io::Error::other(why))
 }
-fn read_original(owner: &Fence, file: &mut File) -> Result<Persisted, Failure> {
+fn check_name(owner: &Fence, info: FileInfo) -> Result<(), Failure> {
+    let map = |cause| failure(Stage::Read, Outcome::Unknown, cause);
+    let named = owner.parent.entry_info(&owner.name).map_err(map)?;
+    if named != EntryInfo::File(info) {
+        return Err(map(io::Error::other(format!(
+            "TCP frontier no longer selects the original snapshot: held={info:?}, named={named:?}"
+        ))));
+    }
+    Ok(())
+}
+fn check_absent(owner: &Fence) -> Result<(), Failure> {
+    match owner.parent.entry_info(&owner.name) {
+        Err(cause) if cause.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(cause) => Err(failure(Stage::Read, Outcome::Unknown, cause)),
+        Ok(_) => Err(invalid(
+            Stage::Read,
+            "TCP frontier appeared before original initialization",
+        )),
+    }
+}
+fn read_original(owner: &Fence, file: &mut File) -> Result<Readback, Failure> {
     owner.check()?;
     let map = |cause| failure(Stage::Read, Outcome::Unknown, cause);
-    let id = private_single_file_identity(file).map_err(map)?;
-    let EntryInfo::File(before) = file_info(file).map_err(map)? else {
-        return Err(invalid(Stage::Read, "ordinary TCP frontier required"));
-    };
-    if id == owner.guard_id
-        || before.bytes != 89
-        || !owner.parent.same_file(&owner.name, file).map_err(map)?
-    {
+    validate_readonly(file).map_err(map)?;
+    let before = private_data_file_info(file).map_err(map)?;
+    if before.identity == owner.guard_id || before.bytes != FRONTIER_BYTES as u64 {
         return Err(invalid(
             Stage::Read,
             "original exact V2 TCP frontier is not bound",
         ));
     }
+    check_name(owner, before)?;
     file.seek(SeekFrom::Start(0)).map_err(map)?;
-    let mut bytes = [0; 89];
+    let mut bytes = [0; FRONTIER_BYTES];
     file.read_exact(&mut bytes).map_err(map)?;
     let mut trailing = [0];
-    if file.read(&mut trailing).map_err(map)? != 0
-        || file_info(file).map_err(map)? != EntryInfo::File(before)
-        || private_single_file_identity(file).map_err(map)? != id
-        || !owner.parent.same_file(&owner.name, file).map_err(map)?
-    {
-        return Err(invalid(
-            Stage::Read,
-            "original TCP frontier changed during read",
-        ));
+    let trailing_bytes = file.read(&mut trailing).map_err(map)?;
+    if trailing_bytes != 0 {
+        return Err(map(io::Error::other(format!(
+            "original TCP frontier changed during read: unexpected_tail={trailing_bytes}, before={before:?}"
+        ))));
     }
+    let after = private_data_file_info(file).map_err(map)?;
+    if after != before {
+        return Err(map(io::Error::other(format!(
+            "original TCP frontier changed during read: before={before:?}, after={after:?}"
+        ))));
+    }
+    check_name(owner, after)?;
     owner.check()?;
-    Persisted::decode(bytes).map_err(map)
+    Ok(Readback {
+        image: Persisted::decode(bytes).map_err(map)?,
+        info: after,
+    })
+}
+impl Snapshot {
+    fn from_readback(file: File, readback: Readback) -> Self {
+        Self {
+            image: readback.image,
+            file,
+            info: readback.info,
+        }
+    }
+    fn check(&self, owner: &Fence) -> Result<(), Failure> {
+        let map = |cause| failure(Stage::Read, Outcome::Unknown, cause);
+        validate_readonly(&self.file).map_err(map)?;
+        let held = private_data_file_info(&self.file).map_err(map)?;
+        if held != self.info {
+            return Err(map(io::Error::other(format!(
+                "settled TCP frontier changed: expected={:?}, observed={held:?}",
+                self.info
+            ))));
+        }
+        check_name(owner, held)
+    }
+    fn read_expected(&mut self, owner: &Fence) -> Result<FileInfo, Failure> {
+        let observed = read_original(owner, &mut self.file)?;
+        // The fixed V2 codec interprets every byte. Equal images have equal
+        // original bytes, and this read used the pinned file at its own name.
+        if observed.info.identity != self.info.identity || observed.image != self.image {
+            return Err(invalid(
+                Stage::Recovery,
+                "restored TCP frontier differs from the last settled original",
+            ));
+        }
+        Ok(observed.info)
+    }
+    fn refresh(&mut self, owner: &Fence) -> Result<(), Failure> {
+        if self.read_expected(owner)? != self.info {
+            let map = |cause| failure(Stage::Recovery, Outcome::Unknown, cause);
+            publication::sync_original(&owner.parent, &owner.name, &self.file).map_err(map)?;
+            owner.sync().map_err(map)?;
+            self.info = self.read_expected(owner)?;
+        }
+        Ok(())
+    }
 }
 impl Store {
     /// Hold the original native writer fence and exact V2 file. Missing state
@@ -75,23 +145,25 @@ impl Store {
             unknown: None,
             catalog: None,
         };
-        match store.owner.parent.open_file_for_sync(&store.owner.name) {
+        match store.owner.parent.open_file(&store.owner.name) {
             Ok(mut file) => {
                 let initial = read_original(&store.owner, &mut file)?;
-                file.sync_all()
+                publication::sync_original(&store.owner.parent, &store.owner.name, &file)
                     .map_err(|cause| failure(Stage::Read, Outcome::Unknown, cause))?;
                 store
                     .owner
                     .sync()
                     .map_err(|cause| failure(Stage::DirectorySync, Outcome::Unknown, cause))?;
-                let image = read_original(&store.owner, &mut file)?;
-                if image != initial {
+                let readback = read_original(&store.owner, &mut file)?;
+                if readback.image != initial.image
+                    || readback.info.identity != initial.info.identity
+                {
                     return Err(invalid(
                         Stage::Read,
                         "TCP frontier changed across startup synchronization",
                     ));
                 }
-                store.current = Some(Snapshot { image, file });
+                store.current = Some(Snapshot::from_readback(file, readback));
             }
             Err(cause) if cause.kind() == io::ErrorKind::NotFound => {}
             Err(cause) => return Err(failure(Stage::Read, Outcome::NotCommitted, cause)),
@@ -116,31 +188,30 @@ impl Store {
                 io::Error::other("original TCP stage cleanup remains owned"),
             ));
         }
-        if self.unknown.is_none()
-            && let Some(original) = &self.current
-        {
-            private_single_file_identity(&original.file)
-                .map_err(|cause| failure(Stage::Read, Outcome::Unknown, cause))?;
-            if !self
-                .owner
-                .parent
-                .same_file(&self.owner.name, &original.file)
-                .map_err(|cause| failure(Stage::Read, Outcome::Unknown, cause))?
-            {
-                return Err(invalid(
-                    Stage::Read,
-                    "settled TCP frontier identity changed",
-                ));
+        if self.unknown.is_none() {
+            match &self.current {
+                Some(original) => original.check(&self.owner),
+                None => check_absent(&self.owner),
             }
+        } else {
+            Ok(())
         }
-        Ok(())
     }
-    /// Reconcile only this owner's original publication and cleanup debt. This
-    /// creates no epoch, replay permit, timestamp or backend-quiescence proof.
+    /// Reconcile original publication and cleanup debt or refresh the held
+    /// settled file after exact original-byte readback and synchronization.
+    /// This grants no epoch, replay permit, timestamp or backend quiescence.
     pub fn reconcile(&mut self) -> Result<(), Failure> {
-        self.settle().map(|_| ())
+        if self.unknown.is_some() {
+            return self.settle().map(|_| ());
+        }
+        self.retire_cleanup()?;
+        match (self.fence(), &mut self.current) {
+            (Ok(()), _) => Ok(()),
+            (Err(_), Some(current)) => current.refresh(&self.owner),
+            (Err(error), None) => Err(error),
+        }
     }
-    pub(super) fn settle(&mut self) -> Result<Settlement, Failure> {
+    fn retire_cleanup(&mut self) -> Result<(), Failure> {
         self.owner.check()?;
         if let Some(mut original) = self.cleanup.take()
             && let Err(cause) = original.discard()
@@ -148,8 +219,12 @@ impl Store {
             self.cleanup = Some(original);
             return Err(failure(Stage::Recovery, Outcome::NotCommitted, cause));
         }
-        self.fence()?;
+        Ok(())
+    }
+    pub(super) fn settle(&mut self) -> Result<Settlement, Failure> {
+        self.retire_cleanup()?;
         let Some(mut original) = self.unknown.take() else {
+            self.fence()?;
             return Ok(Settlement::Idle);
         };
         let result = (|| {
@@ -168,8 +243,7 @@ impl Store {
             };
             if published {
                 if barrier == DirectorySync::Unavailable {
-                    candidate
-                        .sync_all()
+                    publication::sync_original(&self.owner.parent, &self.owner.name, candidate)
                         .map_err(|cause| failure(Stage::Recovery, Outcome::Unknown, cause))?;
                 }
                 let file = original
@@ -177,61 +251,53 @@ impl Store {
                     .file
                     .as_mut()
                     .ok_or_else(|| invalid(Stage::Recovery, "original candidate consumed"))?;
-                if read_original(&self.owner, file)? != original.image {
+                let readback = read_original(&self.owner, file)?;
+                if readback.image != original.image {
                     return Err(invalid(
                         Stage::Recovery,
                         "original TCP publication differs from its intent",
                     ));
                 }
-                return Ok(true);
+                return Ok(Some(readback));
             }
             // Only the still-bound predecessor and still-named original stage
             // can prove no publication. Equal bytes in a replacement cannot.
-            let previous = if let Some(current) = self.current.as_mut() {
-                read_original(&self.owner, &mut current.file)? == current.image
-            } else {
-                match self.owner.parent.entry_info(&self.owner.name) {
-                    Err(cause) if cause.kind() == io::ErrorKind::NotFound => true,
-                    Err(cause) => return Err(failure(Stage::Recovery, Outcome::Unknown, cause)),
-                    Ok(_) => false,
-                }
-            };
-            if !previous
-                || !self
-                    .owner
-                    .parent
-                    .same_file(
-                        &original.candidate.name,
-                        original
-                            .candidate
-                            .original()
-                            .map_err(|cause| failure(Stage::Recovery, Outcome::Unknown, cause))?,
-                    )
-                    .map_err(|cause| failure(Stage::Recovery, Outcome::Unknown, cause))?
+            if !self
+                .owner
+                .parent
+                .same_file(
+                    &original.candidate.name,
+                    original
+                        .candidate
+                        .original()
+                        .map_err(|cause| failure(Stage::Recovery, Outcome::Unknown, cause))?,
+                )
+                .map_err(|cause| failure(Stage::Recovery, Outcome::Unknown, cause))?
             {
                 return Err(invalid(
                     Stage::Recovery,
                     "original TCP publication outcome unresolved",
                 ));
             }
+            match self.current.as_mut() {
+                Some(current) => current.refresh(&self.owner)?,
+                None => check_absent(&self.owner)?,
+            }
             original
                 .candidate
                 .discard()
                 .map_err(|cause| failure(Stage::Recovery, Outcome::NotCommitted, cause))?;
-            Ok(false)
+            Ok(None)
         })();
         match result {
-            Ok(true) => {
+            Ok(Some(readback)) => {
                 let file = original.candidate.file.take().ok_or_else(|| {
                     invalid(Stage::Recovery, "settled original TCP file consumed")
                 })?;
-                self.current = Some(Snapshot {
-                    image: original.image,
-                    file,
-                });
+                self.current = Some(Snapshot::from_readback(file, readback));
                 Ok(Settlement::Published)
             }
-            Ok(false) => Ok(Settlement::Unpublished),
+            Ok(None) => Ok(Settlement::Unpublished),
             Err(error) => {
                 self.unknown = Some(original);
                 Err(error)
@@ -271,9 +337,32 @@ impl Store {
                 }
                 at += count;
             }
-            file.sync_all()
+            let prepared = publication::seal_retained(
+                &candidate.owner.parent,
+                &candidate.name,
+                file,
+                bytes.len() as u64,
+            )
+            .map_err(|error| {
+                failure(
+                    Stage::Write,
+                    Outcome::NotCommitted,
+                    io::Error::new(error.cause.kind(), error),
+                )
+            })?;
+            self.fence()?;
+            let observed = private_data_file_info(file)
                 .map_err(|cause| failure(Stage::Write, Outcome::NotCommitted, cause))?;
-            self.fence()
+            if observed != prepared {
+                return Err(failure(
+                    Stage::Write,
+                    Outcome::NotCommitted,
+                    io::Error::other(format!(
+                        "original TCP stage changed before publication: prepared={prepared:?}, observed={observed:?}"
+                    )),
+                ));
+            }
+            Ok(())
         })();
         if let Err(mut error) = prepared {
             if let Err(cleanup) = candidate.discard() {

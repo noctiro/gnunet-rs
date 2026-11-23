@@ -1,7 +1,7 @@
 # Reference contract and evidence
 
-The baseline is GNUnet v0.29.1, commit
-`346358e26d4dcc2dc4f51bef5d52dca29c7d8165`.
+Configuration parsing, expansion, scalar conversion and glob matching track
+GNUnet commit `7e0f9c3640310fd406fcf32c271ab583ef83d6c9`.
 
 - `src/lib/util/configuration.c`: parser, precedence, includes/secrets, accessors,
   source definitions, serialization, duplicate/diff, cleanup and atomic writes.
@@ -16,7 +16,7 @@ There are two distinct reference checks. The fast component oracle extracts orig
 C function bodies into a temporary program, retaining the original license
 notices. Shims provide allocation/logging and reject include dispatch. It does
 not substitute handwritten C parser or conversion logic. File includes and the wildcard helper are covered by Rust filesystem
-and boundary tests separately. This 44-row differential does not execute
+and boundary tests separately. This component differential does not execute
 GNUNET_DISK_glob or file include loading and makes no complete-daemon claim.
 
 ```sh
@@ -26,7 +26,7 @@ cargo test -p gnunet-config --locked
 cargo clippy -p gnunet-config --all-targets --locked -- -D warnings
 ```
 
-Default oracle mode compiles and executes C, verifies 44 rows against
+Default oracle mode compiles and executes C, verifies its rows against
 retained fixtures, and reports source hashes. `--output` additionally compiles
 and executes the unique Rust function-trace test, retains a copy of its
 binary and its trace, compares every C/Rust row, and records commands,
@@ -34,7 +34,8 @@ nonzero executed counts, binary/log/source hashes and input invariance. Empty or
 filtered-out Rust tests cannot produce a successful receipt. `--write` is a
 separate explicit fixture-regeneration operation.
 
-The normal reference check compiles `normal_api.c`, an ordinary caller of all
+The normal reference check is pinned separately to GNUnet v0.29.1, commit
+`346358e26d4dcc2dc4f51bef5d52dca29c7d8165`. It compiles `normal_api.c`, an ordinary caller of all
 43 configuration public functions, against an unmodified normal C
 `libgnunetutil`. It compares 172 C/Rust trace rows and written files, including
 defaults, includes, limited globbing, secrets, diagnostics and cleanup.
@@ -108,18 +109,20 @@ python3 adapters/config-std/tests/suid_project_reference.py \
   reference API does not promise that arbitrary programmatically set whitespace
   or LF values round-trip through the text format.
 - Fancy conversion allows joined units, repeated units, bare units and sums;
-  unsigned products/sums wrap. The decimal TB/PB/EB table contains a historical
-  1024 factor, retained here. Only YES/NO are official booleans. Negative decimal
+  unsigned products/sums wrap. Decimal TB/PB/EB use powers of 1000; binary
+  TiB/PiB/EiB use powers of 1024. Only YES/NO are official booleans. Negative decimal
   magnitudes within u64 are converted to the unsigned two's-complement value.
 - Dollar names outside braces stop only at slash, backslash or space. PATHS
   takes precedence over environment; an existing empty value suppresses a
-  default. Unknown variables and unmatched closing braces remain literal.
+  default. Unknown variables and unmatched closing braces remain literal. A
+  name already being expanded is treated as undefined, using its default or
+  preserving the term. Active names are compared exactly even though PATHS
+  lookup is case insensitive. Finalized replacements are not expanded again.
 - Filename `~user/file` is HOME plus `user/file`; it is not passwd lookup.
 - Matching includes use GNUnet's limited wildcard code: only `*` is special and
   only in the final component, `?` is literal, hidden names are included, and
-  `+`, `[` and `~` anywhere in the pattern are rejected. The original matcher
-  returns false when a trailing star would consume a nonempty suffix; that
-  behavior is retained, rather than silently replacing it with POSIX globbing.
+  `+`, `[` and `~` anywhere in the pattern are rejected. A trailing star consumes
+  the remaining suffix; matching can backtrack across repeated literal bytes.
 - Inaccessible secret sections can retain previously defined visible entries.
   Their missing contents do not fabricate empty-string values. Restricted
   sources reject every directive, including ones under unrelated sections.
@@ -139,15 +142,13 @@ python3 adapters/config-std/tests/suid_project_reference.py \
 
 ## Safety boundaries
 
-The C parser indexes original physical length after advancing leading whitespace;
-multiple leading bytes before a section can cause out-of-bounds reads. Embedded
-NUL bytes can likewise make its allocated/string lengths disagree. Safe Rust
-rejects embedded NUL and recognizes section headers only at the well-defined
-unindented, unpadded boundary; ordinary malformed sections return syntax errors.
+Section recognition uses trimmed physical lines, including indented headers,
+trailing whitespace and CRLF. A NUL byte rejects its physical line and stops
+parsing; earlier accepted lines remain applied and later lines are not parsed.
 Unsigned scanf overflow has undefined C semantics, so overflowing numeric
-magnitudes are explicit Rust errors. The C dollar helper's depth guard does not
-bound all recursive re-entry; Rust bounds nested defaults and detects reference
-cycles instead of risking stack overflow.
+magnitudes are explicit Rust errors. Dollar expansion treats active references
+as undefined and additionally bounds nested defaults, operation count and output
+bytes. Exceeding these limits returns an explicit error.
 
 This bounded host profile accepts regular configuration files and follows their
 symlinks. Unix opens are nonblocking and validate the opened descriptor as a
@@ -158,9 +159,8 @@ inaccessible, matching the reference secret-file readability test. Explicit
 serialization and query APIs can return secret values; they do not promise
 secret-buffer zeroization.
 
-C serialization's sizing pass skips an inaccessible empty section while its
-writing pass does not, allowing an allocation overrun. Rust consistently skips
-that section. These undefined-memory cases are not copied into safe Rust.
+Serialization omits inaccessible empty sections. Previously defined visible
+entries in an inaccessible section remain available and are serialized.
 
 ## Native platform mapping
 
@@ -177,9 +177,10 @@ comparison does not certify Windows filesystem or permission behavior.
 
 Windows numeric-C conversion uses owned UCRT locale objects and defined native
 conversion with trailing-whitespace validation. It leaves thread/global locale
-unchanged on success and failure. The POSIX current-thread capability retains
-the pinned source's failure effect under its explicit native ownership contract;
-that implementation detail is not imposed on the Windows backend.
+unchanged on success and failure. POSIX current-thread conversion temporarily
+installs an owned numeric-C locale and restores the original selection before
+freeing it on every path, matching the current official implementation. Locale
+creation errors are returned before conversion.
 
 ## Reference limitations
 

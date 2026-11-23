@@ -1,6 +1,7 @@
 //! Actual original MQ ownership. A peer's frame/result stays on that physical
 //! source; output capacity is preflighted before any actual cache mutation.
 use crate::dispatch::{self, Kind};
+use crate::files::{Files, Mutation};
 use gnunet_namecache::{Cache, Stats};
 use gnunet_service_runtime::{
     accepted::{AcceptState, AcceptedConnection},
@@ -12,16 +13,22 @@ use gnunet_types::Error as Fault;
 use gnunet_wire::official::{Frame, message_type as mt};
 use std::{
     future::{Future, poll_fn},
+    io,
+    path::PathBuf,
     pin::Pin,
     rc::Rc,
     task::{Context, Poll},
     time::Duration,
 };
-use tokio::time::{Instant, Sleep};
+use tokio::{
+    task::JoinHandle,
+    time::{Instant, Sleep},
+};
 mod metrics;
 mod types;
 pub use metrics::Metrics;
 pub use types::*;
+const EXPIRY_BATCH: usize = 32;
 #[derive(Clone, Copy)]
 struct Origin {
     client: u64,
@@ -38,10 +45,32 @@ struct Peer {
     output_until: Option<Instant>,
     read_first: bool,
 }
-/// Caller-driven actual NAMECACHE service with one explicit volatile backend.
-/// No constructor spawns an executor, thread, resolver or storage worker.
+struct Reply {
+    slot: usize,
+    client: u64,
+    write: u64,
+    applied: dispatch::Applied,
+    bytes: Vec<u8>,
+}
+enum Work {
+    Request { mutation: Mutation, reply: Reply },
+    Expiry(Vec<[u8; 64]>),
+}
+struct Commit {
+    files: Files,
+    work: Work,
+    outcome: io::Result<()>,
+}
+enum Storage {
+    Memory,
+    Files(Files),
+    Committing(JoinHandle<Commit>),
+    Failed,
+}
+/// Caller-driven NAMECACHE service with a volatile or private file backend.
 pub struct Server {
     cache: Cache,
+    storage: Storage,
     limits: Limits,
     ports: Ports,
     peers: Vec<Option<Peer>>,
@@ -127,6 +156,7 @@ impl Server {
         peers.resize_with(limits.clients, || None);
         Ok(Self {
             cache,
+            storage: Storage::Memory,
             limits,
             ports,
             peers,
@@ -146,11 +176,29 @@ impl Server {
             yield_due: false,
         })
     }
+    /// Open and recover a private cache before serving any request. The one
+    /// writer lease is retained until this server is dropped.
+    pub async fn new_persistent(
+        path: PathBuf,
+        cache_limits: gnunet_namecache::Limits,
+        limits: Limits,
+        ports: Ports,
+    ) -> Result<Self, Error> {
+        limits.validate()?;
+        let now = ports.clock.sample().map_err(Error::Clock)?.now;
+        let (files, cache) =
+            tokio::task::spawn_blocking(move || Files::open(&path, cache_limits, now))
+                .await
+                .map_err(io::Error::other)??;
+        let mut server = Self::new(cache, limits, ports)?;
+        server.storage = Storage::Files(files);
+        Ok(server)
+    }
     /// Actual source counters, without packet or ciphertext dumps.
     pub const fn report(&self) -> Report {
         self.report
     }
-    /// Actual volatile allocation/resource summary.
+    /// Actual retained cache allocation and resource summary.
     pub fn cache_stats(&self) -> Stats {
         self.cache.stats()
     }
@@ -282,6 +330,12 @@ impl Server {
         Ok(())
     }
     fn process(&mut self, i: usize, observe: &mut impl FnMut(Event)) -> Result<bool, Fault> {
+        match self.storage {
+            // Existing output may still drain and peer deadlines remain live.
+            Storage::Committing(_) => return Ok(false),
+            Storage::Failed => return Err(Fault::Closed),
+            Storage::Files(_) | Storage::Memory => {}
+        }
         let peer = self.peers[i].as_ref().ok_or(Fault::Stale)?;
         let input = peer.io.frame().ok_or(Fault::NotReady)?;
         let message = Frame::decode(input)?.header().message_type();
@@ -313,20 +367,50 @@ impl Server {
             Err(e) => return Err(e),
         };
         let write = peer.next_write.checked_add(1).ok_or(Fault::Overflow)?;
-        let output_until = match peer.output_until {
-            Some(until) => until,
-            None => Instant::now()
-                .checked_add(self.limits.output_lifetime)
-                .ok_or(Fault::Overflow)?,
+        let input = peer.io.frame().ok_or(Fault::NotReady)?;
+        let mutation = match &self.storage {
+            Storage::Files(files) => files.prepare(&self.cache, input)?,
+            _ => None,
         };
         let metrics = &mut self.metrics;
-        let applied = dispatch::apply_observed(
-            &mut self.cache,
-            peer.io.frame().ok_or(Fault::NotReady)?,
-            &mut bytes,
-            |event| metrics.observe(event),
-        )?;
+        let applied = dispatch::apply_observed(&mut self.cache, input, &mut bytes, |event| {
+            metrics.observe(event)
+        })?;
         self.report.handled = self.report.handled.saturating_add(1);
+        if applied.size != size {
+            return Err(Fault::Stale);
+        }
+        let reply = Reply {
+            slot: i,
+            client: peer.client.serial,
+            write,
+            applied,
+            bytes,
+        };
+        if applied.result == Some(gnunet_wire::official::namecache::OK)
+            && let Some(mutation) = mutation
+        {
+            self.start_commit(Work::Request { mutation, reply })?;
+        } else {
+            self.queue_reply(reply, observe)?;
+        }
+        Ok(true)
+    }
+
+    fn queue_reply(&mut self, reply: Reply, observe: &mut impl FnMut(Event)) -> Result<(), Fault> {
+        let Reply {
+            slot,
+            client,
+            write,
+            applied,
+            bytes,
+        } = reply;
+        let Some(peer) = self.peers[slot]
+            .as_mut()
+            .filter(|p| p.client.serial == client)
+        else {
+            return Ok(());
+        };
         if let Some(result) = applied.result {
             observe(Event::Result {
                 client: peer.client.clone(),
@@ -335,12 +419,12 @@ impl Server {
                 result,
             });
         }
-        if applied.size != size {
-            return Err(Fault::Stale);
-        }
-        // No other peer, callback or native poll can alter this queue between
-        // reserve and enqueue. A terminal internal failure closes only this MQ;
-        // the already actual memory effect is never retried or moved elsewhere.
+        let output_until = match peer.output_until {
+            Some(until) => until,
+            None => Instant::now()
+                .checked_add(self.limits.output_lifetime)
+                .ok_or(Fault::Overflow)?,
+        };
         peer.io
             .enqueue_owned(
                 OwnedFrame::new(bytes),
@@ -360,7 +444,76 @@ impl Server {
             rid: applied.rid,
             write,
         });
-        Ok(true)
+        Ok(())
+    }
+
+    fn start_commit(&mut self, work: Work) -> Result<(), Fault> {
+        let Storage::Files(files) = std::mem::replace(&mut self.storage, Storage::Failed) else {
+            return Err(Fault::Stale);
+        };
+        self.storage = Storage::Committing(tokio::task::spawn_blocking(move || {
+            let outcome = match &work {
+                Work::Request { mutation, .. } => files.commit(mutation),
+                Work::Expiry(queries) => files.remove_queries(queries),
+            };
+            Commit {
+                files,
+                work,
+                outcome,
+            }
+        }));
+        Ok(())
+    }
+
+    fn record_expiry(&mut self, count: usize, observe: &mut impl FnMut(Event)) {
+        self.report.expired = self
+            .report
+            .expired
+            .saturating_add(u64::try_from(count).unwrap_or(u64::MAX));
+        if count != 0 {
+            observe(Event::Expired { count });
+        }
+    }
+
+    fn poll_commit(
+        &mut self,
+        cx: &mut Context<'_>,
+        observe: &mut impl FnMut(Event),
+    ) -> Poll<Result<bool, Error>> {
+        let Storage::Committing(task) = &mut self.storage else {
+            return Poll::Ready(Ok(false));
+        };
+        let outcome = std::task::ready!(Pin::new(task).poll(cx));
+        self.storage = Storage::Failed;
+        let Commit {
+            files,
+            work,
+            outcome: committed,
+        } = outcome.map_err(io::Error::other)?;
+        committed?;
+        self.storage = Storage::Files(files);
+        match work {
+            Work::Expiry(queries) => {
+                for query in &queries {
+                    self.cache.delete(query);
+                }
+                self.record_expiry(queries.len(), observe);
+            }
+            Work::Request { reply, .. } => {
+                let slot = reply.slot;
+                if self.peers[slot].as_ref().is_some_and(|peer| {
+                    peer.client.serial == reply.client
+                        && peer
+                            .input_until
+                            .is_some_and(|until| Instant::now() >= until)
+                }) {
+                    self.close_index(slot, CloseCause::Deadline, observe);
+                } else if let Err(error) = self.queue_reply(reply, observe) {
+                    self.close_index(slot, CloseCause::Protocol(error), observe);
+                }
+            }
+        }
+        Poll::Ready(Ok(true))
     }
     fn read_peer(
         &mut self,
@@ -528,6 +681,10 @@ impl Server {
         if until.is_some_and(|u| Instant::now() >= u) {
             return Poll::Ready(Ok(Progress::WaitDeadline));
         }
+        let committed = match self.poll_commit(cx, observe) {
+            Poll::Ready(result) => result?,
+            Poll::Pending => false,
+        };
         match self.subscription.poll_changed(cx, self.revision) {
             Poll::Ready(Err(e)) => return Poll::Ready(Err(Error::Clock(e))),
             Poll::Ready(Ok(s)) => self.revision = s.revision,
@@ -543,8 +700,27 @@ impl Server {
             }
             Poll::Pending => {}
         }
-        if sample.now.as_micros() >= self.next_sweep {
-            let count = self.cache.expire_before(sample.now);
+        let idle = matches!(self.storage, Storage::Memory | Storage::Files(_));
+        if !committed && idle && sample.now.as_micros() >= self.next_sweep {
+            match self.storage {
+                Storage::Files(_) => {
+                    let queries: Vec<_> = self
+                        .cache
+                        .expired_queries(sample.now)
+                        .take(EXPIRY_BATCH)
+                        .copied()
+                        .collect();
+                    if !queries.is_empty() {
+                        self.start_commit(Work::Expiry(queries))?;
+                        return Poll::Ready(Ok(Progress::Activity));
+                    }
+                }
+                Storage::Memory => {
+                    let count = self.cache.expire_before(sample.now);
+                    self.record_expiry(count, observe);
+                }
+                _ => return Poll::Ready(Err(Fault::Stale.into())),
+            }
             let delay = u64::try_from(self.limits.maintenance_interval.as_micros())
                 .map_err(|_| Fault::Overflow)?;
             self.next_sweep = sample
@@ -552,13 +728,6 @@ impl Server {
                 .as_micros()
                 .checked_add(delay)
                 .ok_or(Fault::Overflow)?;
-            self.report.expired = self
-                .report
-                .expired
-                .saturating_add(u64::try_from(count).unwrap_or(u64::MAX));
-            if count != 0 {
-                observe(Event::Expired { count });
-            }
             return Poll::Ready(Ok(Progress::Activity));
         }
         for direction in 0..2 {
@@ -586,12 +755,18 @@ impl Server {
                 return result;
             }
         }
-        let logical_due = Instant::now()
-            .checked_add(Duration::from_micros(
-                self.next_sweep - sample.now.as_micros(),
-            ))
-            .ok_or(Fault::Overflow)?;
-        let mut target = until.map_or(logical_due, |u| u.min(logical_due));
+        let maintenance = if matches!(self.storage, Storage::Memory | Storage::Files(_)) {
+            Some(
+                Instant::now()
+                    .checked_add(Duration::from_micros(
+                        self.next_sweep.saturating_sub(sample.now.as_micros()),
+                    ))
+                    .ok_or(Fault::Overflow)?,
+            )
+        } else {
+            None
+        };
+        let mut target = until.into_iter().chain(maintenance).min();
         for p in self.peers.iter().flatten() {
             for due in p
                 .first
@@ -600,12 +775,14 @@ impl Server {
                 .chain(p.input_until)
                 .chain(p.output_until)
             {
-                target = target.min(due);
+                target = Some(target.map_or(due, |old| old.min(due)));
             }
         }
-        self.timer.as_mut().reset(target);
-        if self.timer.as_mut().poll(cx).is_ready() {
-            cx.waker().wake_by_ref();
+        if let Some(target) = target {
+            self.timer.as_mut().reset(target);
+            if self.timer.as_mut().poll(cx).is_ready() {
+                cx.waker().wake_by_ref();
+            }
         }
         Poll::Pending
     }
@@ -643,8 +820,16 @@ impl Server {
     ) -> Result<Progress, Error> {
         poll_fn(|cx| self.poll(cx, listeners, until, &mut observe)).await
     }
-    /// Independently close all physical sources and return actual volatile state
-    /// counters. No storage worker, filesystem flush, fsync or disk join is claimed.
+    /// Wait for the last submitted file change after the caller closes sources.
+    /// On success the normal shutdown report includes any completed expiry.
+    pub async fn finish_storage(&mut self, mut observe: impl FnMut(Event)) -> Result<(), Error> {
+        poll_fn(|cx| self.poll_commit(cx, &mut observe))
+            .await
+            .map(|_| ())
+    }
+
+    /// Immediately close all physical sources. The caller can then await any
+    /// submitted storage operation and take a final report via this method.
     pub fn shutdown(&mut self, mut observe: impl FnMut(Event)) -> Shutdown {
         self.close_all(&mut observe);
         Shutdown {

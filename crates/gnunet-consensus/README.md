@@ -40,6 +40,9 @@ result handling and recovery use those original source facts. Later leaders,
 context decoding and new attempts cannot renew an admitted bound.
 `next_deadline()` also exposes the original union/inventory window during
 population setup, before a native source has been created or prepared.
+An early inbound offer retains its phase deadline while the client collects
+inputs. After expiry its slot remains owned until the original rejection
+retires.
 
 Leader chains advance independently through dissemination, echo and confirmation.
 A lagging leader does not impose an all-leader barrier between those phases.
@@ -53,8 +56,9 @@ retain their original host retirement obligation. Expired prefaces and leader
 phases can advance without creating new native populations. Existing active tasks
 still require actual cancellation and source retirement before advancing. The
 public session deadline and grading quorums remain mandatory.
-Unclaimed offers from a completed phase are rejected through their original
-listener; future-phase offers and claimed operation obligations remain intact.
+Unclaimed offers are rejected through their original listener when their phase
+completes or expires, including before the client concludes. The offer holds
+its capacity until the original rejection or listener retirement settles.
 
 [Session ownership](src/session.rs), [initial reconciliation](src/session/preface.rs),
 [gradecast decisions](src/session/gradecast.rs),
@@ -76,29 +80,35 @@ Original strong quorum remains mandatory. Early stopping requires two adequate
 repetitions under the same `n-faults` threshold. Final client output is Current
 without locally inserted values or internal markers. These decisions follow the
 [construction's agreement rules](https://grothoff.org/christian/consensus2016.pdf).
-Selected C grading, LastGradecast aliasing, weak-threshold and unfinished-timeout
-behavior differ and require explicit mixed-peer qualification; those defects are
-not treated as security guarantees.
+The selected C service grades using the ECHO referendum and starts final
+iteration from the last evaluated ECHO output. Its thresholds and unfinished
+timeout handling also differ.
 
 ## Effects and retirement
 
 `Reconcile` preserves original prepare/accept/commit ownership and SET options.
 `Written` acknowledges a composite local write. Matching SET DONE/FAILURE supplies
 semantic terminal state; cancellation and deadline expiry cannot create a vote.
-Input populations remain immutable while their operations are active. Marker
-inference requires the complete SYMMETRIC difference contract described by the
-[SET core](../gnunet-set/README.md).
+Input populations remain immutable while their operations are active. A remote
+contested marker is exactly the three-byte wrapper, with an unused payload type
+and no trailing data. Marker inference requires the complete SYMMETRIC
+difference contract described by the [SET core](../gnunet-set/README.md).
 
 Union and leader differences remain staged on their original task until matching
 DONE. The scheduler applies one completed membership change per turn before
 creating the next population. Failure or cancellation discards partial changes;
 later physical source loss does not revoke a previously completed task. Echo and
 confirmation ballots similarly count only committed tasks.
+A removal must refer to the original local population. It never allocates a
+new payload. A leader retains its own proposal population independently of
+peer-only differences returned by its dissemination tasks.
 
-Inventory size markers are accepted only from the matching inventory task and
-published after its DONE. The official sender field is one byte: participants
-above index255 omit this optional optimization marker rather than wrap their
-identity or change the wire format.
+Inventory size markers describe individual SET populations. Their sender is
+checked against the matching inventory task. The official sender field is one
+byte, so participants above index 255 omit the marker. CONSENSUS enables generic
+SET Byzantine checks with a zero shared-membership minimum because gradecast
+can compare disjoint populations. Confirmation and grading use their own
+quorums.
 
 Trusted `source_retired` settles that source's pending effect with its actual
 Written/Unsent/Lost disposition and fails all unfinished tasks on it. Future

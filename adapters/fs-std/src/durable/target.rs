@@ -7,7 +7,7 @@ use super::{
 use crate::network::tree_download::{
     TreeDownloadOptions, TreeDownloadProgress, driver, inline::InlineBlocks, paths::Job,
 };
-use crate::output::{OutputObservation, TempRecord};
+use crate::output::{OutputObservation, TempRecord, TemporaryNames};
 use crate::search::proof::NamespaceProof;
 use crate::{
     Buffers, CommitStage, Control, Error, FileIdentity, OWNER_MARKER_NAME, OutputDir, ReadFile,
@@ -262,6 +262,7 @@ impl driver::Target for Target<'_> {
         cache: Option<&mut Repository>,
         options: crate::network::DownloadOptions,
         inline: Option<&mut InlineBlocks>,
+        temporary: TemporaryNames<'_>,
         control: &mut impl FnMut(crate::Progress) -> Control,
     ) -> Result<ReadFile, Cause> {
         let binding = self.binding(job, content)?;
@@ -336,6 +337,7 @@ impl driver::Target for Target<'_> {
                 buffers,
                 options.limits,
                 control,
+                Some(temporary),
                 observe,
             ),
             None => {
@@ -351,6 +353,7 @@ impl driver::Target for Target<'_> {
                         Some(cache),
                         options,
                         control,
+                        Some(temporary),
                         observe,
                     )
                     .await

@@ -1,18 +1,29 @@
 //! Bounded Windows child records over original process handles and kernel waits.
 #![forbid(unsafe_code)]
 use super::identity::{OriginalChild, RegistryIdentity};
-use gnunet_native::process::{
-    LaunchLimits, Process, ProcessIdentity, ProcessWait, ResourceUsage, ResumeFailure, Spawn,
-    SuspendedProcess,
+use gnunet_native::{
+    process::{
+        AccountProfile, ActivationTarget, LaunchLimits, Process, ProcessIdentity, ProcessWait,
+        ProfileCleanup, ProfileRetirement, ResourceUsage, ResumeFailure, Spawn, SuspendedProcess,
+    },
+    socket_activation::{AccountExportSection, ExportSection},
 };
 use std::{
     collections::VecDeque,
-    fmt, io,
+    ffi::OsStr,
+    fmt,
+    future::Future,
+    io,
     mem::MaybeUninit,
     num::NonZeroU64,
+    pin::Pin,
     sync::Arc,
     task::{Context, Poll},
+    time::Duration,
 };
+use tokio::time::{Instant, Sleep};
+
+const PROFILE_RETIREMENT_GRACE: Duration = Duration::from_secs(3);
 
 /// A refused registry operation, never a synthesized child exit/readiness result.
 #[derive(Debug)]
@@ -54,6 +65,8 @@ pub struct Reaped {
     pub child: OriginalChild,
     /// Actual GetExitCodeProcess result after the kernel signaled termination.
     pub exit_code: u32,
+    /// Independent optional account-profile retirement after real process exit.
+    pub profile: Option<ProfileRetirement>,
 }
 enum Execution {
     Running(Process),
@@ -68,9 +81,19 @@ impl Execution {
         }
     }
 }
-enum Start {
+enum Start<'a, 'sockets> {
     Running,
+    Account(AccountProfile),
     Suspended,
+    Activation {
+        section: &'a mut ExportSection<'sockets>,
+        environment_key: &'a OsStr,
+    },
+    AccountSuspended {
+        profile: AccountProfile,
+        section: &'a mut AccountExportSection<'sockets>,
+        environment_key: &'a OsStr,
+    },
 }
 struct Entry {
     // Native wait cancellation precedes the last ordinary process-handle owner.
@@ -78,6 +101,38 @@ struct Entry {
     process: Execution,
     child: OriginalChild,
     usage: Option<Box<MaybeUninit<ResourceUsage>>>,
+    profile: Option<ProfileWait>,
+}
+struct ProfileWait {
+    cleanup: ProfileCleanup,
+    deadline: Option<Instant>,
+    alarm: Option<Pin<Box<Sleep>>>,
+}
+impl ProfileWait {
+    fn after_exit(&mut self, cx: Option<&mut Context<'_>>) -> Option<ProfileRetirement> {
+        if let Some(result) = self.cleanup.result() {
+            return Some(result);
+        }
+        let now = Instant::now();
+        let deadline = *self
+            .deadline
+            .get_or_insert_with(|| now.checked_add(PROFILE_RETIREMENT_GRACE).unwrap_or(now));
+        if now >= deadline {
+            return Some(ProfileRetirement::WaitDeadline);
+        }
+        if let Some(cx) = cx {
+            let alarm = self
+                .alarm
+                .get_or_insert_with(|| Box::pin(tokio::time::sleep_until(deadline)));
+            if let Poll::Ready(result) = self.cleanup.poll(cx) {
+                return Some(result);
+            }
+            if alarm.as_mut().poll(cx).is_ready() {
+                return Some(ProfileRetirement::WaitDeadline);
+            }
+        }
+        None
+    }
 }
 struct Completion {
     event: Reaped,
@@ -89,18 +144,41 @@ impl Completion {
     }
 }
 impl Entry {
-    fn complete(self, exit_code: u32) -> Completion {
+    fn completed(&mut self) -> io::Result<Option<(u32, Option<ProfileRetirement>)>> {
+        let Some(code) = self.process.original().try_wait()? else {
+            return Ok(None);
+        };
+        Ok(match self.profile.as_mut() {
+            Some(profile) => profile
+                .after_exit(None)
+                .map(|receipt| (code, Some(receipt))),
+            None => Some((code, None)),
+        })
+    }
+
+    fn profile_ready(&mut self, cx: &mut Context<'_>) -> bool {
+        self.profile
+            .as_mut()
+            .is_none_or(|profile| profile.after_exit(Some(cx)).is_some())
+    }
+
+    fn complete(self, exit_code: u32, profile: Option<ProfileRetirement>) -> Completion {
         let Self {
             wait,
             process,
             child,
             usage,
+            profile: _,
         } = self;
         let usage = usage.map(|backing| Box::write(backing, process.original().resource_usage()));
         drop(wait);
         drop(process);
         Completion {
-            event: Reaped { child, exit_code },
+            event: Reaped {
+                child,
+                exit_code,
+                profile,
+            },
             usage,
         }
     }
@@ -173,6 +251,15 @@ impl ChildRegistry {
     ) -> Result<OriginalChild, RegistryError> {
         self.admit(command, limits, Start::Running)
     }
+    /// Admit a detached child under the verified account using its original process handle.
+    pub fn spawn_as(
+        &mut self,
+        command: Spawn<'_>,
+        profile: AccountProfile,
+        limits: LaunchLimits,
+    ) -> Result<OriginalChild, RegistryError> {
+        self.admit(command, limits, Start::Account(profile))
+    }
     /// Admit an original child before its primary thread runs. The record remains
     /// authoritative throughout socket/handle setup. Resume or terminate/drain it
     /// explicitly; Drop never runs or kills a suspended child.
@@ -183,20 +270,84 @@ impl ChildRegistry {
     ) -> Result<OriginalChild, RegistryError> {
         self.admit(command, limits, Start::Suspended)
     }
+    /// Admit the one same-account child that receives this activation section.
+    /// Its original start permission is held until publication succeeds.
+    pub fn spawn_for_activation(
+        &mut self,
+        command: Spawn<'_>,
+        section: &mut ExportSection<'_>,
+        environment_key: &OsStr,
+        limits: LaunchLimits,
+    ) -> Result<OriginalChild, RegistryError> {
+        self.admit(
+            command,
+            limits,
+            Start::Activation {
+                section,
+                environment_key,
+            },
+        )
+    }
+    /// Admit the exact original cross-account child before its first instruction.
+    /// It gets the original read-only activation section through the launch
+    /// route prepared for that account and session. Publish and resume it or
+    /// retain the original for explicit retirement.
+    pub fn spawn_suspended_as(
+        &mut self,
+        command: Spawn<'_>,
+        profile: AccountProfile,
+        section: &mut AccountExportSection<'_>,
+        environment_key: &OsStr,
+        limits: LaunchLimits,
+    ) -> Result<OriginalChild, RegistryError> {
+        self.admit(
+            command,
+            limits,
+            Start::AccountSuspended {
+                profile,
+                section,
+                environment_key,
+            },
+        )
+    }
     fn admit(
         &mut self,
         command: Spawn<'_>,
         limits: LaunchLimits,
-        start: Start,
+        start: Start<'_, '_>,
     ) -> Result<OriginalChild, RegistryError> {
         if !self.credit_available(self.maximum) {
             return Err(RegistryError::Capacity);
         }
         let generation = self.next_generation.ok_or(RegistryError::Capacity)?;
         let usage = self.usage_enabled.then(Box::<ResourceUsage>::new_uninit);
-        let process = match start {
-            Start::Running => Execution::Running(command.launch(limits)?),
-            Start::Suspended => Execution::Preparing(command.suspend(limits)?),
+        let (process, cleanup) = match start {
+            Start::Running => (Execution::Running(command.launch(limits)?), None),
+            Start::Account(profile) => {
+                let (process, cleanup) = command.launch_as(profile, limits)?;
+                (Execution::Running(process), Some(cleanup))
+            }
+            Start::Suspended => (Execution::Preparing(command.suspend(limits)?), None),
+            Start::Activation {
+                section,
+                environment_key,
+            } => (
+                Execution::Preparing(command.suspend_for_activation(
+                    section,
+                    environment_key,
+                    limits,
+                )?),
+                None,
+            ),
+            Start::AccountSuspended {
+                profile,
+                section,
+                environment_key,
+            } => {
+                let (process, cleanup) =
+                    command.suspend_as(profile, section, environment_key, limits)?;
+                (Execution::Preparing(process), Some(cleanup))
+            }
         };
         let child = OriginalChild {
             identity: Arc::clone(&self.identity),
@@ -209,6 +360,11 @@ impl ChildRegistry {
             usage,
             process,
             child: child.clone(),
+            profile: cleanup.map(|cleanup| ProfileWait {
+                cleanup,
+                deadline: None,
+                alarm: None,
+            }),
         });
         Ok(child)
     }
@@ -221,6 +377,27 @@ impl ChildRegistry {
             .find(|entry| entry.child == *child)
             .map(|entry| entry.process.original())
             .ok_or(RegistryError::Stale)
+    }
+    /// Lend only the original child's pending activation authority. This
+    /// excludes registry resume and retirement until publication returns.
+    pub fn activation_target(
+        &mut self,
+        child: &OriginalChild,
+    ) -> Result<ActivationTarget<'_>, RegistryError> {
+        let entry = self
+            .entries
+            .iter_mut()
+            .find(|entry| entry.child == *child)
+            .ok_or(RegistryError::Stale)?;
+        if let Execution::Preparing(process) = &mut entry.process
+            && let Some(target) = process.activation_target()
+        {
+            return Ok(target);
+        }
+        Err(RegistryError::Native(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "child has no pending socket activation",
+        )))
     }
     /// Revoke an original suspended child's start permission after setup failure.
     /// The same process/thread owners remain available for explicit termination
@@ -242,6 +419,7 @@ impl ChildRegistry {
             process,
             child,
             usage,
+            profile,
         } = self.entries.swap_remove(index);
         let process = match process {
             Execution::Preparing(process) => Execution::StartFailed(process),
@@ -252,6 +430,7 @@ impl ChildRegistry {
             process,
             child,
             usage,
+            profile,
         });
         Ok(())
     }
@@ -275,6 +454,7 @@ impl ChildRegistry {
             process,
             child,
             usage,
+            profile,
         } = self.entries.swap_remove(index);
         let (process, result) = match process {
             Execution::Preparing(process) => match process.resume() {
@@ -293,6 +473,7 @@ impl ChildRegistry {
             process,
             child,
             usage,
+            profile,
         });
         result
     }
@@ -362,11 +543,11 @@ impl ChildRegistry {
         let mut count = 0;
         let mut index = 0;
         while index < self.entries.len() {
-            let Some(exit_code) = self.entries[index].process.original().try_wait()? else {
+            let Some((exit_code, profile)) = self.entries[index].completed()? else {
                 index += 1;
                 continue;
             };
-            let completed = self.entries.swap_remove(index).complete(exit_code);
+            let completed = self.entries.swap_remove(index).complete(exit_code, profile);
             self.completed.push_back(completed);
             count += 1;
         }
@@ -411,13 +592,13 @@ impl ChildRegistry {
             .iter()
             .position(|entry| entry.child == *child)
             .ok_or(RegistryError::Stale)?;
-        let Some(exit_code) = self.entries[index].process.original().try_wait()? else {
+        let Some((exit_code, profile)) = self.entries[index].completed()? else {
             return Ok(None);
         };
         Ok(Some(
             self.entries
                 .swap_remove(index)
-                .complete(exit_code)
+                .complete(exit_code, profile)
                 .into_parts(),
         ))
     }
@@ -429,14 +610,14 @@ impl ChildRegistry {
         for entry in &mut self.entries {
             if entry.wait.is_none() {
                 if entry.process.original().try_wait()?.is_some() {
-                    ready = true;
+                    ready |= entry.profile_ready(cx);
                     continue;
                 }
                 entry.wait = Some(ProcessWait::new(entry.process.original())?);
             }
             if let Some(wait) = &mut entry.wait {
                 match wait.poll_exit(cx) {
-                    Poll::Ready(Ok(_)) => ready = true,
+                    Poll::Ready(Ok(_)) => ready |= entry.profile_ready(cx),
                     Poll::Ready(Err(error)) => return Poll::Ready(Err(error.into())),
                     Poll::Pending => {}
                 }

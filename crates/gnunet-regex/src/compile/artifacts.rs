@@ -1,8 +1,12 @@
-//! Iterative compressed path and synthetic24-byte entry construction.
-use super::dfa::Dfa;
-use super::{Budget, BuildError, Edge, Initial, Limit, State, bytes, filled, push};
+//! Compress transitions and construct official synthetic prefixes.
+
+use super::automaton::Graph;
+use super::proof::Proofs;
+use super::records::{EdgeSlot, Layout, RecordSlot, Span, Table};
+use super::storage::Buffer;
+use super::{Budget, BuildError, Limit};
 use crate::{INITIAL_BYTES, proof_key};
-use alloc::vec::Vec;
+
 #[derive(Clone, Copy)]
 struct Frame {
     node: usize,
@@ -11,428 +15,272 @@ struct Frame {
     entered: bool,
     expanded: bool,
 }
-fn leave(stack: &mut Vec<Frame>, path: &mut Vec<u8>, active: &mut [bool]) {
-    if let Some(frame) = stack.pop() {
-        if frame.expanded {
-            active[frame.node] = false;
+
+impl Frame {
+    const fn new(node: usize, base: usize) -> Self {
+        Self {
+            node,
+            next: 0,
+            base,
+            entered: false,
+            expanded: false,
         }
-        path.truncate(frame.base);
     }
 }
-pub(super) fn compress(
-    dfa: &Dfa,
-    proofs: Vec<Vec<u8>>,
-    compression: u16,
-    b: &mut Budget,
-) -> Result<Vec<State>, BuildError> {
-    let n = dfa.rows.len();
-    let mut incoming = filled(n, 0usize)?;
-    for row in &dfa.rows {
-        for edge in &row.edges {
-            b.step()?;
-            incoming[edge.to] = incoming[edge.to]
-                .checked_add(1)
-                .ok_or(BuildError::Overflow)?;
+
+#[derive(Clone, Copy)]
+struct Pending {
+    edge: EdgeSlot,
+    next: Option<usize>,
+}
+
+impl Pending {
+    const EMPTY: Self = Self {
+        edge: EdgeSlot::EMPTY,
+        next: None,
+    };
+}
+
+/// Caller-owned scratch for compression and construction of synthetic entries.
+/// This storage is reusable as soon as compilation returns.
+pub struct ArtifactMemory<
+    const STATES: usize,
+    const STACK: usize,
+    const PATH: usize,
+    const INITIAL_EDGES: usize,
+> {
+    incoming: [usize; STATES],
+    active: [bool; STATES],
+    stack: [Frame; STACK],
+    path: [u8; PATH],
+    pending: [Pending; INITIAL_EDGES],
+}
+
+impl<const STATES: usize, const STACK: usize, const PATH: usize, const INITIAL_EDGES: usize>
+    ArtifactMemory<STATES, STACK, PATH, INITIAL_EDGES>
+{
+    /// Empty scratch, suitable for constant initialization.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            incoming: [0; STATES],
+            active: [false; STATES],
+            stack: [Frame::new(0, 0); STACK],
+            path: [0; PATH],
+            pending: [Pending::EMPTY; INITIAL_EDGES],
         }
     }
-    let mut states: Vec<State> = Vec::new();
-    for (i, proof) in proofs.into_iter().enumerate() {
-        let key = proof_key(&proof);
-        for previous in &states {
+
+    /// Exclusively borrow this scratch for artifact construction.
+    pub fn workspace(&mut self) -> ArtifactWorkspace<'_> {
+        ArtifactWorkspace {
+            incoming: Buffer::fixed(&mut self.incoming),
+            active: Buffer::fixed(&mut self.active),
+            stack: Buffer::fixed(&mut self.stack),
+            path: Buffer::fixed(&mut self.path),
+            pending: Buffer::fixed(&mut self.pending),
+        }
+    }
+}
+
+impl<const STATES: usize, const STACK: usize, const PATH: usize, const INITIAL_EDGES: usize> Default
+    for ArtifactMemory<STATES, STACK, PATH, INITIAL_EDGES>
+{
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Exclusive artifact workspace borrowed from [`ArtifactMemory`].
+pub struct ArtifactWorkspace<'a> {
+    incoming: Buffer<'a, usize>,
+    active: Buffer<'a, bool>,
+    stack: Buffer<'a, Frame>,
+    path: Buffer<'a, u8>,
+    pending: Buffer<'a, Pending>,
+}
+
+#[cfg(feature = "alloc")]
+impl ArtifactWorkspace<'static> {
+    pub(super) fn heap() -> Self {
+        Self {
+            incoming: Buffer::heap(),
+            active: Buffer::heap(),
+            stack: Buffer::heap(),
+            path: Buffer::heap(),
+            pending: Buffer::heap(),
+        }
+    }
+}
+
+impl ArtifactWorkspace<'_> {
+    fn backtrack(&mut self) {
+        if let Some(frame) = self.stack.pop() {
+            if frame.expanded {
+                self.active[frame.node] = false;
+            }
+            self.path.truncate(frame.base);
+        }
+    }
+
+    fn descend(&mut self, node: usize, base: usize, b: &Budget) -> Result<(), BuildError> {
+        self.stack
+            .push(Frame::new(node, base), b.limits.stack, Limit::ParserStack)
+    }
+
+    fn compress(
+        &mut self,
+        dfa: &Graph<'_>,
+        table: &mut Table<'_>,
+        compression: u16,
+        b: &mut Budget,
+    ) -> Result<(), BuildError> {
+        self.incoming.clear();
+        self.active.clear();
+        self.path.clear();
+        self.stack.clear();
+        let n = dfa.len();
+        self.incoming
+            .resize(n, 0, b.limits.dfa_states, Limit::DfaStates)?;
+        self.active
+            .resize(n, false, b.limits.dfa_states, Limit::DfaStates)?;
+        for row in dfa.rows() {
+            for edge in row.edges {
+                b.step()?;
+                let incoming = &mut self.incoming[edge.to];
+                *incoming = incoming.checked_add(1).ok_or(BuildError::Overflow)?;
+            }
+        }
+        let mut labels = 0usize;
+        for start in 0..n {
+            let cap = match compression {
+                1 => 1,
+                _ if start == 0 => INITIAL_BYTES,
+                0 => usize::MAX,
+                n => usize::from(n),
+            };
+            let edge_start = table.edges.len();
+            self.descend(start, 0, b)?;
+            while let Some(mut frame) = self.stack.last().copied() {
+                b.step()?;
+                let row = dfa.row(frame.node);
+                if !frame.entered {
+                    frame.entered = true;
+                    if !self.path.is_empty()
+                        && (row.accept
+                            || self.incoming[frame.node] > 1
+                            || self.active[frame.node]
+                            || self.path.len() >= cap)
+                    {
+                        account(
+                            &mut labels,
+                            self.path.len(),
+                            b.limits.label_bytes,
+                            Limit::LabelBytes,
+                        )?;
+                        let label = table.text(&self.path, Limit::LabelBytes)?;
+                        table.edges.push(
+                            EdgeSlot {
+                                label,
+                                target: frame.node,
+                            },
+                            b.limits.transitions,
+                            Limit::Transitions,
+                        )?;
+                        self.backtrack();
+                        continue;
+                    }
+                    self.active[frame.node] = true;
+                    frame.expanded = true;
+                    if let Some(top) = self.stack.last_mut() {
+                        *top = frame;
+                    }
+                }
+                let Some(edge) = row.edges.get(frame.next) else {
+                    self.backtrack();
+                    continue;
+                };
+                if let Some(top) = self.stack.last_mut() {
+                    top.next += 1;
+                }
+                let base = self.path.len();
+                self.path
+                    .push(edge.byte, b.limits.label_bytes, Limit::LabelBytes)?;
+                self.descend(edge.to, base, b)?;
+            }
+            table.records[start].edges = Span {
+                start: edge_start,
+                end: table.edges.len(),
+            };
+        }
+        Ok(())
+    }
+}
+
+fn account(used: &mut usize, bytes: usize, max: usize, kind: Limit) -> Result<(), BuildError> {
+    *used = used.checked_add(bytes).ok_or(BuildError::Overflow)?;
+    if *used > max {
+        return Err(BuildError::Limit(kind));
+    }
+    Ok(())
+}
+
+pub(super) fn create(
+    dfa: &Graph<'_>,
+    proofs: &Proofs<'_>,
+    scratch: &mut ArtifactWorkspace<'_>,
+    table: &mut Table<'_>,
+    compression: u16,
+    b: &mut Budget,
+) -> Result<Layout, BuildError> {
+    for (row, proof) in dfa.rows().zip(proofs.states()) {
+        let key = proof_key(proof);
+        for previous in table.records.iter() {
             b.step()?;
             if previous.key == key {
                 return Err(BuildError::Conflict);
             }
         }
-        push(
-            &mut states,
-            State {
+        let proof = table.text(proof, Limit::TotalProofBytes)?;
+        table.records.push(
+            RecordSlot {
                 key,
                 proof,
-                accepting: dfa.rows[i].accept,
-                edges: Vec::new(),
+                accepting: row.accept,
+                edges: Span::EMPTY,
+                pending: None,
             },
             b.limits.dfa_states,
             Limit::DfaStates,
         )?;
     }
-    let mut active = filled(n, false)?;
-    let mut path = Vec::new();
-    let mut stack = Vec::new();
-    let mut edges = 0usize;
-    let mut labels = 0usize;
-    for start in 0..n {
-        let cap = if compression == 1 {
-            1
-        } else if start == 0 {
-            INITIAL_BYTES
-        } else if compression == 0 {
-            usize::MAX
-        } else {
-            usize::from(compression)
-        };
-        push(
-            &mut stack,
-            Frame {
-                node: start,
-                next: 0,
-                base: 0,
-                entered: false,
-                expanded: false,
-            },
-            b.limits.stack,
-            Limit::ParserStack,
-        )?;
-        while let Some(mut frame) = stack.last().copied() {
-            b.step()?;
-            if !frame.entered {
-                frame.entered = true;
-                if !path.is_empty()
-                    && (dfa.rows[frame.node].accept
-                        || incoming[frame.node] > 1
-                        || active[frame.node]
-                        || path.len() >= cap)
-                {
-                    edges = edges.checked_add(1).ok_or(BuildError::Overflow)?;
-                    labels = labels.checked_add(path.len()).ok_or(BuildError::Overflow)?;
-                    if edges > b.limits.transitions {
-                        return Err(BuildError::Limit(Limit::Transitions));
-                    }
-                    if labels > b.limits.label_bytes {
-                        return Err(BuildError::Limit(Limit::LabelBytes));
-                    }
-                    let edge = Edge {
-                        label: bytes(&path)?,
-                        destination: states[frame.node].key,
-                        target: frame.node,
-                    };
-                    push(
-                        &mut states[start].edges,
-                        edge,
-                        b.limits.transitions,
-                        Limit::Transitions,
-                    )?;
-                    leave(&mut stack, &mut path, &mut active);
-                    continue;
-                }
-                active[frame.node] = true;
-                frame.expanded = true;
-                if let Some(top) = stack.last_mut() {
-                    *top = frame;
-                }
-            }
-            let Some(edge) = dfa.rows[frame.node].edges.get(frame.next) else {
-                leave(&mut stack, &mut path, &mut active);
-                continue;
-            };
-            if let Some(top) = stack.last_mut() {
-                top.next += 1;
-            }
-            let base = path.len();
-            push(
-                &mut path,
-                edge.byte,
-                b.limits.label_bytes,
-                Limit::LabelBytes,
-            )?;
-            push(
-                &mut stack,
-                Frame {
-                    node: edge.to,
-                    next: 0,
-                    base,
-                    entered: false,
-                    expanded: false,
-                },
-                b.limits.stack,
-                Limit::ParserStack,
-            )?;
-        }
-    }
-    Ok(states)
-}
-struct Entries {
-    entries: Vec<Initial>,
-    buckets: Vec<usize>,
-    bytes: usize,
-    edges: usize,
-}
-impl Entries {
-    // This public-prefix index is not a protocol hash. Exact proof bytes still
-    // resolve collisions, every probe is charged, and records use SHA-512 keys.
-    fn bucket(prefix: &[u8], size: usize) -> usize {
-        let hash = prefix.iter().fold(0xcbf29ce484222325u64, |hash, byte| {
-            (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
-        });
-        (hash as usize) & (size - 1)
-    }
-    fn find(&self, prefix: &[u8], b: &mut Budget) -> Result<Option<usize>, BuildError> {
-        if self.buckets.is_empty() {
-            return Ok(None);
-        }
-        let mut at = Self::bucket(prefix, self.buckets.len());
-        for _ in 0..self.buckets.len() {
-            b.step()?;
-            let index = self.buckets[at];
-            if index == usize::MAX {
-                return Ok(None);
-            }
-            if self.entries[index].proof == prefix {
-                return Ok(Some(index));
-            }
-            at = (at + 1) & (self.buckets.len() - 1);
-        }
-        Err(BuildError::Conflict)
-    }
-    fn insert_index(
-        entries: &[Initial],
-        buckets: &mut [usize],
-        index: usize,
-        b: &mut Budget,
-    ) -> Result<(), BuildError> {
-        let mut at = Self::bucket(&entries[index].proof, buckets.len());
-        for _ in 0..buckets.len() {
-            b.step()?;
-            if buckets[at] == usize::MAX {
-                buckets[at] = index;
-                return Ok(());
-            }
-            at = (at + 1) & (buckets.len() - 1);
-        }
-        Err(BuildError::Conflict)
-    }
-    fn reserve_index(&mut self, b: &mut Budget) -> Result<(), BuildError> {
-        if self.entries.len() >= b.limits.initial_records {
-            return Err(BuildError::Limit(Limit::InitialRecords));
-        }
-        let needed = self
-            .entries
-            .len()
-            .checked_add(1)
-            .ok_or(BuildError::Overflow)?;
-        if needed.checked_mul(2).ok_or(BuildError::Overflow)? <= self.buckets.len() {
-            return Ok(());
-        }
-        // Grow only with admitted entries, at load <=1/2. No maximum-capacity
-        // table is allocated for the common single-namespace lookup case.
-        let size = self
-            .buckets
-            .len()
-            .max(8)
-            .checked_mul(2)
-            .ok_or(BuildError::Overflow)?;
-        let mut buckets = filled(size, usize::MAX)?;
-        for index in 0..self.entries.len() {
-            Self::insert_index(&self.entries, &mut buckets, index, b)?;
-        }
-        self.buckets = buckets;
-        Ok(())
-    }
-    fn charge(&mut self, len: usize, b: &Budget) -> Result<(), BuildError> {
-        self.bytes = self.bytes.checked_add(len).ok_or(BuildError::Overflow)?;
-        if self.bytes > b.limits.initial_bytes {
-            return Err(BuildError::Limit(Limit::InitialBytes));
-        }
-        Ok(())
-    }
-    fn add(
-        &mut self,
-        states: &[State],
-        prefix: &[u8],
-        accept: bool,
-        edges: &[Edge],
-        b: &mut Budget,
-    ) -> Result<(), BuildError> {
-        // A regular state with exactly this literal proof already supplies the
-        // lookup block; never publish conflicting duplicate descriptions for it.
-        for state in states {
-            b.step()?;
-            if state.proof == prefix {
-                return Ok(());
-            }
-        }
-        let i = match self.find(prefix, b)? {
-            Some(i) => i,
-            None => {
-                self.reserve_index(b)?;
-                self.charge(prefix.len(), b)?;
-                let i = self.entries.len();
-                push(
-                    &mut self.entries,
-                    Initial {
-                        proof: bytes(prefix)?,
-                        accepting: accept,
-                        edges: Vec::new(),
-                    },
-                    b.limits.initial_records,
-                    Limit::InitialRecords,
-                )?;
-                Self::insert_index(&self.entries, &mut self.buckets, i, b)?;
-                i
-            }
-        };
-        self.entries[i].accepting |= accept;
-        for edge in edges {
-            let mut duplicate = false;
-            for old in &self.entries[i].edges {
-                b.step()?;
-                if old.label == edge.label {
-                    if old.target != edge.target || old.destination != edge.destination {
-                        return Err(BuildError::Conflict);
-                    }
-                    duplicate = true;
-                    break;
-                }
-            }
-            if duplicate {
-                continue;
-            }
-            self.edges = self.edges.checked_add(1).ok_or(BuildError::Overflow)?;
-            if self.edges > b.limits.transitions {
-                return Err(BuildError::Limit(Limit::Transitions));
-            }
-            self.charge(
-                edge.label
-                    .len()
-                    .checked_add(core::mem::size_of::<Edge>())
-                    .ok_or(BuildError::Overflow)?,
-                b,
-            )?;
-            let copy = Edge {
-                label: bytes(&edge.label)?,
-                destination: edge.destination,
-                target: edge.target,
-            };
-            push(
-                &mut self.entries[i].edges,
-                copy,
-                b.limits.transitions,
-                Limit::Transitions,
-            )?;
-        }
-        Ok(())
-    }
-}
-pub(super) fn initial(states: &[State], b: &mut Budget) -> Result<Vec<Initial>, BuildError> {
-    let mut entries = Entries {
-        entries: Vec::new(),
-        buckets: Vec::new(),
-        bytes: 0,
-        edges: 0,
+    let language = table.text(proofs.language(), Limit::TotalProofBytes)?;
+    scratch.compress(dfa, table, compression, b)?;
+    initial::create(table, scratch, b)?;
+    let mut layout = Layout {
+        states: dfa.len(),
+        records: table.records.len(),
+        edges: table.edges.len(),
+        bytes: table.bytes.len(),
+        language,
+        work: b.steps,
     };
-    let mut path = Vec::new();
-    let mut stack = Vec::new();
-    push(
-        &mut stack,
-        Frame {
-            node: 0,
-            next: 0,
-            base: 0,
-            entered: false,
-            expanded: false,
-        },
-        b.limits.stack,
-        Limit::ParserStack,
-    )?;
-    while let Some(mut frame) = stack.last().copied() {
-        b.step()?;
-        let state = &states[frame.node];
-        if !frame.entered {
-            frame.entered = true;
-            if path.len() >= INITIAL_BYTES || state.accepting {
-                if path.len() <= INITIAL_BYTES {
-                    entries.add(states, &path, state.accepting, &state.edges, b)?;
-                    if state.accepting
-                        && path.len() > 1
-                        && state.edges.is_empty()
-                        && path.len() < INITIAL_BYTES
-                    {
-                        let bridge = Edge {
-                            label: bytes(&path[path.len() - 1..])?,
-                            destination: state.key,
-                            target: frame.node,
-                        };
-                        entries.add(
-                            states,
-                            &path[..path.len() - 1],
-                            false,
-                            core::slice::from_ref(&bridge),
-                            b,
-                        )?;
-                    }
-                } else {
-                    let bridge = Edge {
-                        label: bytes(&path[INITIAL_BYTES..])?,
-                        destination: state.key,
-                        target: frame.node,
-                    };
-                    entries.add(
-                        states,
-                        &path[..INITIAL_BYTES],
-                        false,
-                        core::slice::from_ref(&bridge),
-                        b,
-                    )?;
-                }
-            }
-            if let Some(top) = stack.last_mut() {
-                *top = frame;
-            }
-        }
-        if path.len() >= INITIAL_BYTES {
-            if let Some(done) = stack.pop() {
-                path.truncate(done.base);
-            }
-            continue;
-        }
-        let Some(edge) = state.edges.get(frame.next) else {
-            if let Some(done) = stack.pop() {
-                path.truncate(done.base);
-            }
-            continue;
-        };
-        if let Some(top) = stack.last_mut() {
-            top.next += 1;
-        }
-        let base = path.len();
-        let len = base
-            .checked_add(edge.label.len())
-            .ok_or(BuildError::Overflow)?;
-        if len > b.limits.initial_bytes {
-            return Err(BuildError::Limit(Limit::InitialBytes));
-        }
-        path.try_reserve(edge.label.len())
-            .map_err(|_| BuildError::Allocation)?;
-        path.extend_from_slice(&edge.label);
-        push(
-            &mut stack,
-            Frame {
-                node: edge.target,
-                next: 0,
-                base,
-                entered: false,
-                expanded: false,
-            },
-            b.limits.stack,
-            Limit::ParserStack,
-        )?;
+    let view = table.view(layout);
+    for index in 0..layout.records {
+        let record = view.record(index);
+        let n = record.edges.len() as u64;
+        let cost = n
+            .checked_add(1)
+            .and_then(|next| n.checked_mul(next))
+            .ok_or(BuildError::Overflow)?
+            / 2;
+        b.charge(cost)?;
+        record
+            .encoded_len()
+            .map_err(|_| BuildError::Limit(Limit::BlockBytes))?;
     }
-    // SHA collisions between distinct raw prefixes or a normal proof are never
-    // silently taken as identity. Prefix duplicate rows were coalesced above.
-    for (i, entry) in entries.entries.iter().enumerate() {
-        let key = proof_key(&entry.proof);
-        for old in &entries.entries[..i] {
-            b.step()?;
-            if proof_key(&old.proof) == key {
-                return Err(BuildError::Conflict);
-            }
-        }
-        for state in states {
-            b.step()?;
-            if state.key == key {
-                return Err(BuildError::Conflict);
-            }
-        }
-    }
-    Ok(entries.entries)
+    layout.work = b.steps;
+    Ok(layout)
 }
+
+mod initial;

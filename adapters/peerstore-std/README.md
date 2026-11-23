@@ -11,9 +11,37 @@ using complete platform file identities. Unix operations are descriptor-relative
 Windows uses native relative handles and private DACLs. Checkpoint publication
 installs the original staged file without reopening its path. Interrupted writes
 are not retried; a staging-cleanup failure remains independent of the original
-failure. File sync and `Wal::directory_sync()` are separate observations;
-Windows reports the unavailable directory barrier explicitly. The terminal
-worker receipt retains that observation.
+failure. The terminal worker receipt retains the
+[native directory barrier](../native-std/API.md#anchored-filesystem-operations)
+separately from file synchronization.
+
+## Included bootstrap HELLOs
+
+`bootstrap::Directory::configured(config)` selects the official `[peerstore]
+USE_INCLUDED_HELLOS` switch. Enabled imports read the `hellos` child of
+`[PATHS] GNUNET_DATADIR`, falling back to the installation `DATADIR`. An embedded
+host must extract its packaged HELLO resources into that readable directory.
+The selected path is made absolute during configuration. Direct typed policies
+require an absolute path. The caller keeps this trusted asset directory and its
+contents stable until import ends; the importer retains the original native
+directory for enumeration and no-follow ordinary-file opens. This refuses
+symlink/FIFO substitution without claiming a frozen filesystem snapshot.
+`[peerstore-rust] HELLO_DIRECTORY` selects an explicit directory;
+`MAX_INCLUDED_HELLOS` bounds all traversed entries, including non-files, and
+defaults to 1024. Disabled imports and missing directories are empty.
+
+`bootstrap::Import::open(directory.as_ref(), profile, now)` is a synchronous,
+caller-driven cursor. Each file is limited to 65535 bytes, checked under the
+selected signature profile and UTC observation, and encoded as an ordinary
+binary HELLO record. Oversized, malformed, invalidly signed and expired files
+produce `Event::Skipped`; native and traversal failures stop the cursor.
+`Event::Included` retains immutable bytes for one `Wal::import_hello(&included)`
+operation. This returns `StoreOutcome::AlreadyPresent` for an exact committed
+ordinary public record, comparing peer, subsystem, key, value and expiry, and
+performs no write. Normal official IPC MULTIPLE still appends duplicates.
+Each new store commits independently; a later failure does not roll back
+earlier stores or authorize retry of an unknown original store. These public
+records grant no managed local origin or stronger address authentication.
 
 ## Worker and framing
 

@@ -14,11 +14,34 @@ use windows_sys::Win32::System::Threading::ResumeThread;
 pub struct SuspendedProcess {
     process: Process,
     thread: OwnedHandle,
+    activation: Activation,
+}
+
+#[derive(Debug)]
+enum Activation {
+    Unmanaged,
+    AwaitingPublication,
+    Published,
+}
+
+/// Unique publication authority for an original child with pending activation.
+/// While held, the child remains owned by its suspended process or registry.
+pub struct ActivationTarget<'a>(&'a mut SuspendedProcess);
+
+impl ActivationTarget<'_> {
+    pub(crate) fn process(&self) -> &Process {
+        &self.0.process
+    }
+
+    pub(crate) fn published(self) {
+        self.0.activation = Activation::Published;
+    }
 }
 impl fmt::Debug for SuspendedProcess {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SuspendedProcess")
             .field("process", &self.process)
+            .field("activation", &self.activation)
             .finish_non_exhaustive()
     }
 }
@@ -47,7 +70,21 @@ impl SuspendedProcess {
         Self {
             process: created.process,
             thread: created.thread,
+            activation: Activation::Unmanaged,
         }
+    }
+
+    pub(super) fn for_activation(created: Created) -> Self {
+        Self {
+            activation: Activation::AwaitingPublication,
+            ..Self::from_created(created)
+        }
+    }
+
+    /// Borrow original publication authority without releasing process or
+    /// primary-thread ownership.
+    pub fn activation_target(&mut self) -> Option<ActivationTarget<'_>> {
+        matches!(self.activation, Activation::AwaitingPublication).then_some(ActivationTarget(self))
     }
     /// Borrow original process identity/wait/termination authority during setup.
     pub fn process(&self) -> &Process {
@@ -61,6 +98,15 @@ impl SuspendedProcess {
         reason = "ResumeThread borrows the privately owned original primary-thread handle, retaining no pointer or ownership"
     )]
     pub fn resume(self) -> Result<Process, ResumeFailure> {
+        if matches!(self.activation, Activation::AwaitingPublication) {
+            return Err(ResumeFailure {
+                error: io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "original socket activation has not been published",
+                ),
+                original: self,
+            });
+        }
         // SAFETY: original primary-thread handle is live throughout this call.
         let previous = unsafe { ResumeThread(self.thread.as_raw_handle()) };
         if previous == u32::MAX {

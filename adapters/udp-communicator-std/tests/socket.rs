@@ -61,8 +61,8 @@ async fn scenario(bind: SocketAddr, profile: Profile) -> Test {
     let scratch = Scratch::new()?;
     let a = Identity::from_seed([3; 32]);
     let b = Identity::from_seed([5; 32]);
-    let mut outbound = DatagramSocket::bind(bind)?;
-    let mut inbound = DatagramSocket::bind(bind)?;
+    let mut outbound = DatagramSocket::bind(bind, Default::default())?;
+    let mut inbound = DatagramSocket::bind(bind, Default::default())?;
     assert_eq!(outbound.profile(), profile);
     assert_eq!(inbound.profile(), profile);
     assert_eq!(
@@ -193,7 +193,7 @@ async fn native_refusal_returns_original_packet_and_cancellation_never_restores_
 -> Test {
     let a = Identity::from_seed([3; 32]);
     let b = Identity::from_seed([5; 32]);
-    let mut socket = DatagramSocket::bind("127.0.0.1:0".parse()?)?;
+    let mut socket = DatagramSocket::bind("127.0.0.1:0".parse()?, Default::default())?;
     let mut sender = Sender::new(a.peer(), b.peer(), socket.profile().sender_policy(), 100)?;
     let packet = sender.initial(&a, &message(1), 1, 100, &mut Random)?;
     let hash = gnunet_crypto::hash256(packet.bytes());
@@ -231,8 +231,8 @@ async fn native_refusal_returns_original_packet_and_cancellation_never_restores_
 async fn foreign_socket_receipt_cannot_read_or_consume_equal_metadata() -> Test {
     tokio::time::timeout(Duration::from_secs(5), async {
         let source = UdpSocket::bind("127.0.0.1:0")?;
-        let mut first = DatagramSocket::bind("127.0.0.1:0".parse()?)?;
-        let mut second = DatagramSocket::bind("127.0.0.1:0".parse()?)?;
+        let mut first = DatagramSocket::bind("127.0.0.1:0".parse()?, Default::default())?;
+        let mut second = DatagramSocket::bind("127.0.0.1:0".parse()?, Default::default())?;
         let first_message = message(11);
         let second_message = message(22);
         source.send_to(&first_message, first.local_address())?;

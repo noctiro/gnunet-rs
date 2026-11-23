@@ -7,8 +7,9 @@ import os
 from pathlib import Path
 import subprocess
 import copy
+import sys
 
-from semantic import validate_inventory
+from semantic import source_ref, unique_strings, validate_inventory
 
 from scan import FOUNDATIONS, REVISION, SUBSYSTEMS
 from verify import DATA, ROOT, Invalid, LOCK_SHA256, indexed, need, read_data, validate
@@ -17,6 +18,10 @@ from verify import DATA, ROOT, Invalid, LOCK_SHA256, indexed, need, read_data, v
 # require an explicit additive delta review and pin change, preserving the floor.
 STAGE1_LOCK_SHA256 = "4383f92e780fe2cbeece121429691bde7957d61ee7181b0a03adc156d2b46f4a"
 RELEASE_LOCK_SHA256 = "674f858d8827495ec9723df65c998fe96dd72570e537aef3192f872cf8e76014"
+# Only a repository review can pin the canonical catalog. There are no approved
+# additions yet. Evidence index and source CLI arguments cannot select it.
+REVIEW_CATALOG_SHA256 = None
+REVIEW_CATALOG_NAME = "release-review-catalog.json"
 DIRECTIONS = {"C-to-Rust", "Rust-to-C", "mixed", "negative", "recovery", "artifact", "oracle"}
 INPUT_DIRS = ("crates", "adapters", "apps", "tools", "tests", ".cargo", ".github", "spec")
 INPUT_FILES = ("Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "ARCHITECTURE.md", "README.md", "rustfmt.toml")
@@ -28,7 +33,11 @@ RESULT_INDICES = {"spec/gnunet/external/release-evidence.json", "spec/gnunet/con
 
 
 def sha(path):
-    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def shape(value, keys, label):
@@ -68,6 +77,16 @@ def file_ref(root, ref):
     p = regular(root, ref["path"])
     need(sha(p) == ref["sha256"], "artifact/source digest mismatch: " + ref["path"])
     return p
+
+
+def pinned_bytes(root, ref):
+    """Hash and consume the same bytes for structured inputs and adapter code."""
+    shape(ref, ("path", "sha256"), "file reference")
+    digest(ref["sha256"])
+    path = regular(root, ref["path"])
+    raw = path.read_bytes()
+    need(hashlib.sha256(raw).hexdigest() == ref["sha256"], "artifact/source digest mismatch: " + ref["path"])
+    return path, raw
 
 
 def decode_json(text):
@@ -228,30 +247,115 @@ def validate_stage1_requirements(requirements, survey, schema, legacy):
     return cases
 
 
-def verify_receipt(receipt, receipt_path, requirements, implementation, source_index, evidence_root, adapters):
-    """Integrity layer only; a pinned semantic adapter must also verify raw facts."""
-    receipt_before = sha(receipt_path)
-    shape(receipt, ("schema", "kind", "requirement", "profile", "direction", "adapter", "result", "implementation_inputs", "reference_revision", "reference_inputs", "build", "processes", "artifacts", "observation", "review"), "external receipt")
-    need(type(receipt["schema"]) is int and receipt["schema"] == 1 and receipt["kind"] == "external-boundary-receipt" and receipt["result"] == "pass", "failed/unknown receipt is not passing evidence")
-    cases = indexed(requirements["case_obligations"], "case")
-    need(receipt["requirement"] in cases and receipt["direction"] in DIRECTIONS, "unknown case/direction")
-    profiles = indexed(requirements["reviewed_partial_profiles"], "profile")
-    need(receipt["profile"] in profiles and cases[receipt["requirement"]]["operation"] in profiles[receipt["profile"]]["required_operations"], "case not covered by receipt topology profile")
-    need(receipt["reference_revision"] == REVISION and receipt["reference_inputs"] == source_index, "reference inputs/version omitted or drifted")
-    need(receipt["implementation_inputs"] == implementation, "stale or partial implementation input binding")
-    adapter = adapters.get(receipt["adapter"])
-    need(adapter is not None, "unreviewed semantic evidence adapter; raw JSON cannot award interoperability credit")
+def reviewed_additions(requirements, survey, drafts, data, reference_source):
+    """Project a pinned additive catalog without altering the validated floor."""
+    if requirements["schema"] != 2 or REVIEW_CATALOG_SHA256 is None:
+        return None
+    _, raw = pinned_bytes(data, {"path": REVIEW_CATALOG_NAME, "sha256": REVIEW_CATALOG_SHA256})
+    catalog = decode_json(raw)
+    shape(catalog, ("schema", "kind", "stage2_lock_sha256", "reference_revision",
+                    "operations", "profiles", "cases", "adapters"), "review catalog")
+    need(type(catalog["schema"]) is int and catalog["schema"] == 1
+         and catalog["kind"] == "external-release-review-catalog"
+         and catalog["stage2_lock_sha256"] == RELEASE_LOCK_SHA256
+         and catalog["reference_revision"] == REVISION, "review catalog has a different release baseline")
+
+    operations = indexed(catalog["operations"], "reviewed operation")
+    profiles = indexed(catalog["profiles"], "reviewed profile")
+    cases = indexed(catalog["cases"], "reviewed case")
+    adapters = indexed(catalog["adapters"], "reviewed adapter")
+    reserved = {row["id"] for key in ("reviewed_partial_operations", "reviewed_partial_profiles",
+                                     "case_obligations", "evidence_adapters", "unknowns")
+                for row in requirements[key]}
+    for draft in drafts:
+        for key in ("draft_operations", "draft_profiles", "draft_cases"):
+            reserved.update(draft[key])
+    for rows in (operations, profiles, cases, adapters):
+        need(rows and not reserved.intersection(rows),
+             "review catalog omits a required section or reuses an existing identity")
+        reserved.update(rows)
+
+    owners = set(requirements["required_subsystems"] + requirements["required_foundations"])
+    for operation in operations.values():
+        shape(operation, ("id", "owner", "contract", "source_refs"), "reviewed operation")
+        string(operation["id"], "reviewed operation identity")
+        string(operation["owner"], "reviewed operation owner")
+        string(operation["contract"], "reviewed operation contract")
+        need(operation["owner"] in owners, "unknown reviewed operation owner")
+        refs = operation["source_refs"]
+        need(isinstance(refs, list) and refs, "reviewed operation lacks original sources")
+        for ref in refs:
+            source_ref(ref, survey["paths"], reference_source)
+
+    profile_operations = {}
+    for profile in profiles.values():
+        shape(profile, ("id", "required_components", "forbidden_data_plane_substitutions",
+                        "required_operations"), "reviewed profile")
+        string(profile["id"], "reviewed profile identity")
+        components = unique_strings(profile["required_components"], "required production components")
+        forbidden = profile["forbidden_data_plane_substitutions"]
+        need(isinstance(forbidden, list), "invalid forbidden data plane substitutions")
+        if forbidden:
+            need(not components & unique_strings(forbidden, "forbidden data plane substitutions"),
+                 "reviewed profile requires a forbidden data plane substitution")
+        names = unique_strings(profile["required_operations"], "reviewed profile operations")
+        need(names <= operations.keys(), "reviewed profile contains a foreign operation")
+        profile_operations[profile["id"]] = names
+
+    used_operations = set()
+    used_adapters = set()
+    used_profile_operations = {name: set() for name in profiles}
+    for case in cases.values():
+        shape(case, ("id", "operation", "contract", "evidence_slots"), "reviewed case")
+        operation = case["operation"]
+        string(case["id"], "reviewed case identity")
+        string(operation, "reviewed case operation")
+        string(case["contract"], "reviewed case contract")
+        need(operation in operations and case["id"].startswith(operation + ":case:"),
+             "reviewed case has a foreign operation or invalid identity")
+        used_operations.add(operation)
+        slots = case["evidence_slots"]
+        need(isinstance(slots, list) and slots, "reviewed case lacks evidence slots")
+        used_slots = set()
+        for slot in slots:
+            shape(slot, ("profile", "direction", "adapter"), "reviewed evidence slot")
+            for value in slot.values():
+                string(value, "reviewed evidence slot value")
+            profile, direction, adapter = slot["profile"], slot["direction"], slot["adapter"]
+            need(operation in profile_operations.get(profile, ()) and direction in DIRECTIONS
+                 and adapter in adapters, "reviewed evidence slot has an unrelated profile, direction or adapter")
+            need((profile, direction) not in used_slots, "duplicate reviewed evidence slot")
+            used_slots.add((profile, direction))
+            used_adapters.add(adapter)
+            used_profile_operations[profile].add(operation)
+    need(used_operations == operations.keys() and used_profile_operations == profile_operations
+         and used_adapters == adapters.keys(), "review catalog contains unreachable authority")
+
+    for adapter in adapters.values():
+        read_adapter(adapter)
+    return catalog
+
+
+def read_adapter(adapter):
     shape(adapter, ("id", "script", "sha256", "review"), "adapter")
+    string(adapter["id"], "semantic verifier identity")
     string(adapter["review"], "semantic verifier review")
-    adapter_path = file_ref(ROOT, {"path": adapter["script"], "sha256": adapter["sha256"]})
+    _, raw = pinned_bytes(ROOT, {"path": adapter["script"], "sha256": adapter["sha256"]})
+    return raw
+
+
+def verify_receipt_artifacts(receipt, evidence_root):
+    """Validate referenced bytes and lifecycle independently of review authority."""
     shape(receipt["build"], ("profile", "argv", "toolchain", "binaries", "inputs", "receipt"), "build provenance")
     string(receipt["build"]["profile"], "build profile")
     need(isinstance(receipt["build"]["argv"], list) and receipt["build"]["argv"] and all(isinstance(x, str) for x in receipt["build"]["argv"]), "missing build argv")
     need(isinstance(receipt["build"]["toolchain"], dict) and receipt["build"]["toolchain"], "missing actual compiler/toolchain")
     need(isinstance(receipt["build"]["binaries"], list), "invalid build binaries")
-    for x in receipt["build"]["binaries"]:
-        file_ref(evidence_root, x)
     need(receipt["build"]["binaries"], "missing actual built binaries")
+    built_digests = set()
+    for binary in receipt["build"]["binaries"]:
+        file_ref(evidence_root, binary)
+        built_digests.add(binary["sha256"])
     need(isinstance(receipt["build"]["inputs"], list) and receipt["build"]["inputs"], "missing configured/generated/dependency build inputs")
     for build_input in receipt["build"]["inputs"]:
         file_ref(evidence_root, build_input)
@@ -262,63 +366,104 @@ def verify_receipt(receipt, receipt_path, requirements, implementation, source_i
         file_ref(evidence_root, artifact)
     file_ref(evidence_root, receipt["observation"])
     file_ref(evidence_root, receipt["review"])
+    references = artifacts + receipt["build"]["binaries"] + receipt["build"]["inputs"]
+    references += [receipt["build"]["receipt"], receipt["observation"], receipt["review"]]
     roles = []
     need(isinstance(receipt["processes"], list) and receipt["processes"], "missing process lifecycle observations")
     for process in receipt["processes"]:
         shape(process, ("role", "argv", "binary", "binary_before", "binary_after", "exit_code", "termination", "loaded_files_before", "loaded_files_after"), "process")
         string(process["role"], "process role")
-        p = file_ref(evidence_root, process["binary"])
-        need(process["binary_before"] == process["binary_after"] == sha(p), "binary changed during process epoch")
+        file_ref(evidence_root, process["binary"])
+        references.append(process["binary"])
+        binary = process["binary"]["sha256"]
+        need(binary in built_digests, "process binary is absent from the build provenance")
+        need(process["binary_before"] == process["binary_after"] == binary, "binary changed during process epoch")
         need(type(process["exit_code"]) is int and process["exit_code"] == 0 and process["termination"] == "exited", "owned process failed/forced/still live")
         need(isinstance(process["argv"], list) and process["argv"] and all(isinstance(x, str) for x in process["argv"]), "missing process argv")
         need(isinstance(process["loaded_files_before"], dict) and process["loaded_files_before"] == process["loaded_files_after"], "loaded dependency drift")
         # File-backed images must be actual retained bytes, never UUID-only
         # cache identities relabeled as file content verification.
         for name, value in process["loaded_files_before"].items():
-            file_ref(evidence_root, {"path": name, "sha256": value})
+            reference = {"path": name, "sha256": value}
+            file_ref(evidence_root, reference)
+            references.append(reference)
         roles.append(process["role"])
     need(len(roles) == len(set(roles)), "duplicate topology process role")
+    return roles, references
+
+
+def verify_receipt(raw_receipt, receipt_path, requirements, implementation, source_index, evidence_root, adapters):
+    """Integrity layer only; a pinned semantic adapter must also verify raw facts."""
+    receipt_before = hashlib.sha256(raw_receipt).hexdigest()
+    receipt = decode_json(raw_receipt)
+    shape(receipt, ("schema", "kind", "requirement", "profile", "direction", "adapter", "result", "implementation_inputs", "reference_revision", "reference_inputs", "build", "processes", "artifacts", "observation", "review"), "external receipt")
+    need(type(receipt["schema"]) is int and receipt["schema"] == 1 and receipt["kind"] == "external-boundary-receipt" and receipt["result"] == "pass", "failed/unknown receipt is not passing evidence")
+    cases = indexed(requirements["case_obligations"], "case")
+    need(receipt["requirement"] in cases and receipt["direction"] in DIRECTIONS, "unknown case/direction")
+    case = cases[receipt["requirement"]]
+    profiles = indexed(requirements["reviewed_partial_profiles"], "profile")
+    need(receipt["profile"] in profiles and case["operation"] in profiles[receipt["profile"]]["required_operations"], "case not covered by receipt topology profile")
+    slot = {key: receipt[key] for key in ("profile", "direction", "adapter")}
+    need(case["profile_direction_review"] == "reviewed" and slot in case["evidence_slots"],
+         "case, profile, direction and adapter have no reviewed evidence slot")
+    need(receipt["reference_revision"] == REVISION and receipt["reference_inputs"] == source_index, "reference inputs/version omitted or drifted")
+    need(receipt["implementation_inputs"] == implementation, "stale or partial implementation input binding")
+    adapter = adapters.get(receipt["adapter"])
+    need(adapter is not None, "unreviewed semantic evidence adapter; raw JSON cannot award interoperability credit")
+    adapter_source = read_adapter(adapter)
+    roles, references = verify_receipt_artifacts(receipt, evidence_root)
     profile = profiles[receipt["profile"]]
     need(set(profile["required_components"]) <= set(roles), "required production role absent")
     need(not set(profile["forbidden_data_plane_substitutions"]) & set(roles), "C/backend/mock replaces Rust production data plane")
     # No shell, no new network/profile run: only a reviewed local observation
-    # verifier on frozen artifacts. This migration registers no adapter.
-    command = ["python3", "-B", str(adapter_path), "--receipt", str(receipt_path), "--evidence-root", str(evidence_root)]
-    verified = subprocess.run(command, check=True, capture_output=True, text=True, timeout=60)
+    # verifier on frozen artifacts for this exact reviewed slot.
+    command = [sys.executable, "-I", "-S", "-B", "-", "--receipt", str(receipt_path), "--evidence-root", str(evidence_root)]
+    verified = subprocess.run(command, input=adapter_source, check=True, capture_output=True, timeout=60)
     verdict = decode_json(verified.stdout)
     need(verdict == {"receipt_sha256": receipt_before, "semantic_verdict": "pass"} and sha(receipt_path) == receipt_before, "semantic adapter did not verify this exact unchanged receipt")
-    for artifact in artifacts + receipt["build"]["binaries"] + receipt["build"]["inputs"] + [receipt["build"]["receipt"], receipt["observation"], receipt["review"]]:
-        file_ref(evidence_root, artifact)
-    for process in receipt["processes"]:
-        file_ref(evidence_root, process["binary"])
-        for name, value in process["loaded_files_before"].items():
-            file_ref(evidence_root, {"path": name, "sha256": value})
+    for reference in references:
+        file_ref(evidence_root, reference)
     return (receipt["requirement"], receipt["profile"], receipt["direction"])
 
 
-def evaluate(requirements, evidence, requirements_sha, implementation, survey, evidence_root, data=DATA, reference_source_checked=False):
+def evaluate(requirements, evidence, requirements_sha, implementation, survey, evidence_root, data=DATA, reference_source=None):
     shape(evidence, ("schema", "kind", "requirements_sha256", "records"), "evidence index")
     need(type(evidence["schema"]) is int and evidence["schema"] == 1 and evidence["kind"] == "external-release-evidence-index" and evidence["requirements_sha256"] == requirements_sha, "evidence for different requirements/version")
     need(isinstance(evidence["records"], list), "invalid evidence records")
+    inventories = semantic_summaries(requirements, survey, data)
+    additions = reviewed_additions(requirements, survey, inventories, data, reference_source)
+    cases = requirements["case_obligations"]
+    receipt_policy = requirements
+    if additions is not None:
+        cases = cases + [dict(case, profile_direction_review="reviewed") for case in additions["cases"]]
+        receipt_policy = dict(requirements, case_obligations=cases,
+                              reviewed_partial_profiles=requirements["reviewed_partial_profiles"] + additions["profiles"],
+                              evidence_adapters=requirements["evidence_adapters"] + additions["adapters"])
     keys = set()
     paths = set()
-    adapters = indexed(requirements["evidence_adapters"], "semantic adapter")
+    adapters = indexed(receipt_policy["evidence_adapters"], "semantic adapter")
     for ref in evidence["records"]:
-        path = file_ref(evidence_root, ref)
+        path, raw = pinned_bytes(evidence_root, ref)
         need(ref["path"] not in paths, "duplicate evidence receipt")
         paths.add(ref["path"])
-        key = verify_receipt(load_json(path), path, requirements, implementation, survey["paths"], evidence_root, adapters)
+        key = verify_receipt(raw, path, receipt_policy, implementation, survey["paths"], evidence_root, adapters)
         need(key not in keys, "duplicate case/profile/direction cannot inflate coverage")
         keys.add(key)
     unknowns = [x["id"] for x in requirements["unknowns"]]
-    pending_cases = [x["id"] for x in requirements["case_obligations"] if x["profile_direction_review"] != "reviewed" or not x["evidence_slots"] or any((x["id"], slot["profile"], slot["direction"]) not in keys for slot in x["evidence_slots"])]
-    inventories = semantic_summaries(requirements, survey, data)
+    pending_cases = [x["id"] for x in cases if x["profile_direction_review"] != "reviewed" or not x["evidence_slots"] or any((x["id"], slot["profile"], slot["direction"]) not in keys for slot in x["evidence_slots"])]
     draft_cases = [name for row in inventories for name in row["draft_cases"]]
     pending_review = [name for row in inventories for name in row["pending_inventory_review"]]
     pending_review += [name for row in inventories for name in row["draft_operations"] + row["draft_profiles"] + row["draft_registry_classifications"]]
     pending_cases += draft_cases
+    reference_source_checked = reference_source is not None
     complete, ready = release_state(unknowns, pending_cases, pending_review, reference_source_checked)
-    return {"status": "external-release-ready" if ready else "external-release-pending", "requirement_stage": requirements["schema"], "required_subsystems": len(SUBSYSTEMS), "required_foundations": len(FOUNDATIONS), "registry_assignments": len(requirements["registry_assignments"]), "reviewed_partial_messages": len(requirements["reviewed_partial_messages"]), "reviewed_partial_operations": len(requirements["reviewed_partial_operations"]), "reviewed_partial_profiles": len(requirements["reviewed_partial_profiles"]), "retained_state_failure_cases": len(requirements["case_obligations"]), "semantic_inventories": len(inventories), "draft_semantic_operations": sum(len(x["draft_operations"]) for x in inventories), "draft_semantic_cases": len(draft_cases), "draft_semantic_profiles": sum(len(x["draft_profiles"]) for x in inventories), "conditional_draft_operations": [name for row in inventories for name in row["conditional_draft_operations"]], "conditional_draft_cases": [name for row in inventories for name in row["conditional_draft_cases"]], "pending_semantic_review": pending_review, "unknown_contracts": unknowns, "pending_cases": pending_cases, "integrity_checked_receipts": len(keys), "complete_semantic_inventory": complete, "full_GNUnet_conformance_verified": ready, "C_helper_mapping_required": False, "reference_source_checked": reference_source_checked, "release_ready": ready}
+    report = {"status": "external-release-ready" if ready else "external-release-pending", "requirement_stage": requirements["schema"], "required_subsystems": len(SUBSYSTEMS), "required_foundations": len(FOUNDATIONS), "registry_assignments": len(requirements["registry_assignments"]), "reviewed_partial_messages": len(requirements["reviewed_partial_messages"]), "reviewed_partial_operations": len(requirements["reviewed_partial_operations"]), "reviewed_partial_profiles": len(requirements["reviewed_partial_profiles"]), "retained_state_failure_cases": len(requirements["case_obligations"]), "semantic_inventories": len(inventories), "draft_semantic_operations": sum(len(x["draft_operations"]) for x in inventories), "draft_semantic_cases": len(draft_cases), "draft_semantic_profiles": sum(len(x["draft_profiles"]) for x in inventories), "conditional_draft_operations": [name for row in inventories for name in row["conditional_draft_operations"]], "conditional_draft_cases": [name for row in inventories for name in row["conditional_draft_cases"]], "pending_semantic_review": pending_review, "unknown_contracts": unknowns, "pending_cases": pending_cases, "integrity_checked_receipts": len(keys), "complete_semantic_inventory": complete, "full_GNUnet_conformance_verified": ready, "C_helper_mapping_required": False, "reference_source_checked": reference_source_checked, "release_ready": ready}
+    if additions is not None:
+        report["reviewed_additions"] = {
+            section: [row["id"] for row in additions[section]]
+            for section in ("operations", "cases", "profiles", "adapters")
+        }
+    return report
 
 
 def release_state(unknowns, pending_cases, pending_semantic_review, reference_source_checked):
@@ -353,7 +498,7 @@ def main():
         need(tracked_inputs(args.reference_source) == survey["paths"], "whole reference survey path/type/source drift")
     index_path = data / "release-evidence.json" if args.historical_stage1 and args.evidence_index == DATA / "release-evidence.json" else args.evidence_index
     evidence_before = sha(index_path)
-    report = evaluate(requirements, load_json(index_path), lock["requirements_sha256"], before, survey, args.evidence_root, data, args.reference_source is not None)
+    report = evaluate(requirements, load_json(index_path), lock["requirements_sha256"], before, survey, args.evidence_root, data, args.reference_source)
     need(implementation_inputs(ROOT) == before and sha(index_path) == evidence_before, "inputs changed during release verification")
     if args.reference_source:
         need(tracked_inputs(args.reference_source) == survey["paths"], "reference inputs changed during release verification")

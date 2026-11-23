@@ -18,6 +18,12 @@ accepts a separate original readiness future. Unix callers may use the
 `foreground_prepared*` APIs around an explicit identity transition. Embeddings
 must already have the configured account; these APIs never change identity.
 
+`startup::serve_embedded` selects the node's original private IPC sources and
+absolute raw8 proof path. Its callback follows matching CORE/PILS activation
+and a usable proof store. Proof search can continue after readiness. Complete
+the stop future and keep driving the service until native sources retire and
+pending proof progress is flushed.
+
 The [standard executable](../../apps/gnunet-service-nse/) selects native startup,
 logging, stop subscriptions and a concrete STATISTICS publisher.
 
@@ -56,8 +62,7 @@ CORE/PILS agreement.
 
 `Report::commits` and `Progress::Committed` report file-sync/publication/readback
 completion. `Report::directory_sync` and `Store::directory_sync` separately report
-the naming barrier; Windows returns `Unavailable`. File-sync success does not
-manufacture directory durability.
+the [native naming barrier](../native-std/API.md#anchored-filesystem-operations).
 
 ## Streams and cancellation
 

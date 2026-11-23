@@ -17,7 +17,7 @@ use gnunet_native::filesystem::{
 };
 use gnunet_types::Error;
 pub use namespace::Namespace;
-use std::{fs::File, path::PathBuf, sync::Arc};
+use std::{fs::File, io, mem::DropGuard, path::PathBuf, sync::Arc};
 use zeroize::Zeroizing;
 
 const HEADER: usize = 88;
@@ -44,7 +44,7 @@ pub struct Loaded {
     directory_sync: DirectorySync,
 }
 impl Loaded {
-    /// Actual directory naming-barrier capability used during recovery.
+    /// Combined naming barriers observed for the store and its parent during recovery.
     #[must_use]
     pub const fn directory_sync(&self) -> DirectorySync {
         self.directory_sync
@@ -86,8 +86,7 @@ pub struct Committed {
     directory_sync: DirectorySync,
 }
 impl Committed {
-    /// Actual naming-barrier capability, separate from file flush and readback.
-    /// Windows reports Unavailable; this never asserts a POSIX directory fsync.
+    /// Actual native naming-barrier result, separate from file flush and readback.
     #[must_use]
     pub const fn directory_sync(self) -> DirectorySync {
         self.directory_sync
@@ -115,6 +114,26 @@ impl HeldFile {
     fn qualify(file: File, stage: &'static str) -> Result<Self, Failure> {
         let identity = private_single_file_identity(&file).map_err(|error| os(stage, error))?;
         Ok(Self { file, identity })
+    }
+    fn qualify_created(
+        file: File,
+        stage: &'static str,
+        rollback: impl FnOnce(&File) -> io::Result<()>,
+    ) -> Result<Self, Failure> {
+        let mut cleanup = None;
+        let pending = DropGuard::new(file, |file| cleanup = rollback(&file).err());
+        match private_single_file_identity(&pending) {
+            Ok(identity) => Ok(Self {
+                file: DropGuard::dismiss(pending),
+                identity,
+            }),
+            Err(cause) => {
+                drop(pending);
+                let mut failure = os(stage, cause);
+                failure.cleanup = cleanup;
+                Err(failure)
+            }
+        }
     }
     fn validate(&self, stage: &'static str) -> Result<(), Failure> {
         if private_single_file_identity(&self.file).map_err(|error| os(stage, error))?

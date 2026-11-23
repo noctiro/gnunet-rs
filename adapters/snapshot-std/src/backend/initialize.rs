@@ -1,13 +1,15 @@
 //! Complete private directory publication; existing unmarked stores are refused.
-use super::{Failure, HeldFile, Namespace, failure, os};
+use super::{DirectorySync, Failure, HeldFile, Namespace, failure, os};
 use gnunet_native::filesystem::{
-    Directory, ExclusiveFile, FileIdentity, private_single_file_identity,
+    Directory, ExclusiveFile, FileIdentity, private_single_file_identity, publication,
+    validate_readonly,
 };
 use gnunet_types::Error;
 use std::{
     ffi::OsStr,
-    fs,
+    fs::{self, File},
     io::{self, Write},
+    mem::DropGuard,
     path::{Path, PathBuf},
 };
 
@@ -17,6 +19,7 @@ pub(super) struct Opened {
     pub marker: HeldFile,
     pub writer: ExclusiveFile,
     pub created: bool,
+    pub parent_sync: DirectorySync,
 }
 
 pub(super) fn writer(directory: &Directory, name: &str) -> Result<ExclusiveFile, Failure> {
@@ -29,14 +32,18 @@ pub(super) fn writer(directory: &Directory, name: &str) -> Result<ExclusiveFile,
         Err(error) => return Err(os("writer-create", error)),
     };
     private_single_file_identity(&file).map_err(|error| os("writer-policy", error))?;
-    ExclusiveFile::try_lock(file).map_err(|error| match error {
+    ExclusiveFile::try_lock(file).map_err(writer_lock_error)
+}
+
+fn writer_lock_error(error: fs::TryLockError) -> Failure {
+    match error {
         fs::TryLockError::Error(error) => os("writer-lock", error),
         error => failure(
             "writer-lock",
             Error::Conflict,
             Some(io::Error::other(error)),
         ),
-    })
+    }
 }
 
 pub(super) fn open(path: &Path, namespace: Namespace) -> Result<Opened, Failure> {
@@ -124,19 +131,21 @@ pub(super) fn open(path: &Path, namespace: Namespace) -> Result<Opened, Failure>
     }
     // Completes a previous process's publication even if it stopped before its
     // parent naming barrier. Unavailable is explicit on Windows.
-    parent.sync().map_err(|error| os("sync-parent", error))?;
+    let parent_sync = parent.sync().map_err(|error| os("sync-parent", error))?;
     Ok(Opened {
         directory,
         path: canonical.join(name),
         marker,
         writer,
         created,
+        parent_sync,
     })
 }
 
 fn qualify_marker(marker: &HeldFile, namespace: Namespace) -> Result<(), Failure> {
     use gnunet_native::filesystem::FileReader;
     marker.validate("marker-policy")?;
+    validate_readonly(&marker.file).map_err(|error| os("marker-access", error))?;
     let mut bytes = [0; 64];
     let expected = namespace.marker();
     if expected.len() > bytes.len()
@@ -163,6 +172,31 @@ struct Stage {
     directory: Directory,
     marker: Option<HeldFile>,
     writer: Option<ExclusiveFile>,
+}
+
+impl Stage {
+    fn create_writer(&self, parent: &Directory, name: &OsStr) -> Result<ExclusiveFile, Failure> {
+        let file = self
+            .directory
+            .create_private_file(name)
+            .map_err(|error| os("writer-create", error))?;
+        let mut cleanup = None;
+        let pending = DropGuard::new(file, |file| {
+            cleanup = self.rollback_file(parent, name, &file).err();
+        });
+        let result = private_single_file_identity(&pending)
+            .map_err(|error| os("writer-policy", error))
+            .and_then(|_| ExclusiveFile::try_lock_guarded(pending).map_err(writer_lock_error));
+        result.map_err(|mut failure| {
+            failure.cleanup = cleanup;
+            failure
+        })
+    }
+
+    fn rollback_file(&self, parent: &Directory, name: &OsStr, file: &File) -> io::Result<()> {
+        verify_staging_directory(parent, self)?;
+        self.directory.remove_file(name, file)
+    }
 }
 
 fn create(
@@ -198,12 +232,15 @@ fn create(
             .directory
             .validate_private()
             .map_err(|error| os("staging-policy", error))?;
-        stage.writer = Some(writer(&stage.directory, namespace.lock())?);
+        stage.writer = Some(stage.create_writer(parent, OsStr::new(namespace.lock()))?);
+        let name = OsStr::new(namespace.mark());
         let file = stage
             .directory
-            .create_private_file(OsStr::new(namespace.mark()))
+            .create_private_file(name)
             .map_err(|error| os("create-marker", error))?;
-        stage.marker = Some(HeldFile::qualify(file, "marker-policy")?);
+        stage.marker = Some(HeldFile::qualify_created(file, "marker-policy", |file| {
+            stage.rollback_file(parent, name, file)
+        })?);
         let marker = stage
             .marker
             .as_mut()
@@ -212,10 +249,22 @@ fn create(
             .file
             .write_all(namespace.marker())
             .map_err(|error| os("write-marker", error))?;
-        marker
-            .file
-            .sync_all()
-            .map_err(|error| os("sync-marker", error))?;
+        // Close the only marker writer before any reader or published Store
+        // retains it. Cleanup still owns this same staged object on refusal.
+        publication::seal_retained(
+            &stage.directory,
+            OsStr::new(namespace.mark()),
+            &mut marker.file,
+            namespace.marker().len() as u64,
+        )
+        .map_err(|error| {
+            let stage = if error.stage == "file-sync" {
+                "sync-marker"
+            } else {
+                error.stage
+            };
+            os(stage, io::Error::new(error.cause.kind(), error))
+        })?;
         stage
             .directory
             .sync()
@@ -276,28 +325,36 @@ fn create(
                 error.exposure = super::Exposure::Unknown;
             }
             if !attempted {
-                error.cleanup = cleanup(parent, &stage, namespace).err();
+                let staging_cleanup = cleanup(parent, &stage, namespace).err();
+                error.cleanup = error.cleanup.or(staging_cleanup);
             }
             Err(error)
         }
     }
 }
 
-fn cleanup(parent: &Directory, stage: &Stage, namespace: Namespace) -> io::Result<()> {
+fn verify_staging_directory(parent: &Directory, stage: &Stage) -> io::Result<()> {
     if !parent.same_directory(OsStr::new(&stage.name), &stage.directory)? {
         return Err(io::Error::other("original staging directory changed"));
     }
-    if let Some(marker) = &stage.marker {
+    Ok(())
+}
+
+fn cleanup(parent: &Directory, stage: &Stage, namespace: Namespace) -> io::Result<()> {
+    verify_staging_directory(parent, stage)?;
+    let marker = stage.marker.as_ref().map_or(Ok(()), |marker| {
         stage
             .directory
-            .remove_file(OsStr::new(namespace.mark()), &marker.file)?;
-    }
-    if let Some(writer) = &stage.writer {
+            .remove_file(OsStr::new(namespace.mark()), &marker.file)
+    });
+    let writer = stage.writer.as_ref().map_or(Ok(()), |writer| {
         stage
             .directory
-            .remove_file(OsStr::new(namespace.lock()), writer.as_file())?;
-    }
-    stage.directory.sync()?;
+            .remove_file(OsStr::new(namespace.lock()), writer.as_file())
+    });
+    // Retire each held child independently, then retain the first failure.
+    let sync = stage.directory.sync();
+    marker.and(writer).and(sync)?;
     parent.remove_directory(OsStr::new(&stage.name), &stage.directory)?;
     parent.sync()?;
     Ok(())

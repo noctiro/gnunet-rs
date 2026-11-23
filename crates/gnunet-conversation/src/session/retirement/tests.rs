@@ -57,6 +57,79 @@ fn cancelled_admitted_frames_have_only_bounded_drain_permission() -> Result<(), 
 }
 
 #[test]
+fn new_audio_supersedes_only_an_unadmitted_tail_and_expires_without_hangup() -> Result<(), Error> {
+    let mut instance = Instance::new();
+    let (mut session, identity, call, source) = calling(&mut instance, limits())?;
+    connect(&mut session, identity, call, source)?;
+    session.client_request(&identity, Message::Audio { cid: 0, data: &[1] }, 16, 1002)?;
+    let original = session.effect().ok_or(Error::NotReady)?.id();
+    session.admit_effect(original)?;
+    session.client_request(&identity, Message::Audio { cid: 0, data: &[2] }, 17, 1003)?;
+    let superseded = session.effects.back().ok_or(Error::NotReady)?.id();
+    session.client_request(&identity, Message::Audio { cid: 0, data: &[3] }, 18, 1004)?;
+    check(session.pending_effects() == 2)?;
+    check(session.effect_cancelled(superseded) == Err(Error::StaleGeneration))?;
+    let latest = session.effects.back().ok_or(Error::NotReady)?.id();
+    check(latest != original && latest != superseded)?;
+    check(session.admit_effect(latest) == Err(Error::NotReady))?;
+    let terminal = session.complete_effect(original, Completion::Written, 19)?;
+    check(matches!(terminal.action, Action::PeerFrame { frame, .. }
+        if matches!(Message::decode(&frame), Ok(Message::PeerAudio(&[1])))))?;
+    let queued = session.effect().ok_or(Error::NotReady)?;
+    check(matches!(queued.action(), Action::PeerFrame { frame, .. }
+        if matches!(Message::decode(frame), Ok(Message::PeerAudio(&[3])))))?;
+    let deadline = queued.deadline();
+    session.tick(deadline)?;
+    check(session.pending_effects() == 0 && session.phase(call)? == Phase::Connected)?;
+    check(session.failure().is_none())?;
+    session.client_request(
+        &identity,
+        Message::Control {
+            action: ClientControl::HangUp,
+            cid: 0,
+        },
+        deadline,
+        1005,
+    )?;
+    let (report, notices) = retired(&mut session, call, deadline + 1)?;
+    check(notices == 0 && report.reason == EndReason::LocalHangUp && report.failure.is_none())
+}
+
+#[test]
+fn congested_audio_cannot_replace_peer_controls_or_block_local_input() -> Result<(), Error> {
+    let mut instance = Instance::new();
+    let (mut session, identity, call, source) = calling(
+        &mut instance,
+        Limits {
+            effects: 3,
+            ..limits()
+        },
+    )?;
+    connect(&mut session, identity, call, source)?;
+    session.client_request(&identity, Message::Audio { cid: 0, data: &[1] }, 16, 1002)?;
+    let first = session.effect().ok_or(Error::NotReady)?.id();
+    session.admit_effect(first)?;
+    for (now, action) in [(17, ClientControl::Suspend), (18, ClientControl::Resume)] {
+        session.client_request(&identity, Message::Control { action, cid: 0 }, now, 1002)?;
+    }
+    check(
+        session.client_request(&identity, Message::Audio { cid: 0, data: &[2] }, 19, 1002)?
+            == RequestOutcome::Ignored,
+    )?;
+    check(session.pending_effects() == 3 && session.phase(call)? == Phase::Connected)?;
+    session.complete_effect(first, Completion::Written, 20)?;
+    for expected in [PeerControl::Suspend, PeerControl::Resume] {
+        let next = session.effect().ok_or(Error::NotReady)?;
+        check(matches!(next.action(), Action::PeerFrame { frame, .. }
+            if matches!(Message::decode(frame), Ok(Message::PeerControl(actual)) if actual == expected)))?;
+        let next = next.id();
+        session.admit_effect(next)?;
+        session.complete_effect(next, Completion::Written, 20)?;
+    }
+    check(session.pending_effects() == 0 && session.failure().is_none())
+}
+
+#[test]
 fn cancelled_unwritten_channel_creation_retires_without_a_peer_failure() -> Result<(), Error> {
     let mut instance = Instance::new();
     let identity = Identity::new([1; 32], 1)?;
@@ -388,16 +461,12 @@ fn notification_pressure_parks_without_failing_the_line_or_losing_the_cause() ->
         },
     )?;
     connect(&mut session, identity, call, source)?;
-    for byte in 0..3 {
-        session.client_request(
-            &identity,
-            Message::Audio {
-                cid: 0,
-                data: &[byte],
-            },
-            16,
-            1002,
-        )?;
+    for action in [
+        ClientControl::Suspend,
+        ClientControl::Resume,
+        ClientControl::Suspend,
+    ] {
+        session.client_request(&identity, Message::Control { action, cid: 0 }, 16, 1002)?;
     }
     let original = session.effect().ok_or(Error::NotReady)?.id();
     session.admit_effect(original)?;
@@ -651,9 +720,9 @@ fn an_admitted_close_does_not_hide_another_calls_deadline_or_renew_its_bound() -
     session.admit_effect(original)?;
     session.client_request(
         &identity,
-        Message::Audio {
+        Message::Control {
+            action: ClientControl::Suspend,
             cid: session.cid(second)?,
-            data: &[1],
         },
         20,
         1000,

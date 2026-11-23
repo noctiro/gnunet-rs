@@ -1,4 +1,4 @@
-//! Pure Rust zlib providers for GNUnet metadata's explicit codec boundary.
+//! Pure Rust DEFLATE providers for GNUnet metadata's explicit codec boundary.
 //!
 //! Inflation uses caller-owned state/output without selecting an allocator.
 //! Compression is available only with `alloc`: constructing its reusable state
@@ -13,7 +13,16 @@ use miniz_oxide::inflate::{
     core::{DecompressorOxide, decompress, inflate_flags},
 };
 
-/// Reusable complete-member zlib inflater with no allocator in its state.
+/// Framing of a complete DEFLATE member.
+#[derive(Clone, Copy)]
+pub enum DeflateFormat {
+    /// RFC 1950 header and Adler-32 trailer.
+    Zlib,
+    /// RFC 1951 stream.
+    Raw,
+}
+
+/// Reusable complete-member inflater with no allocator in its state.
 /// The caller owns this value and the full non-wrapping output workspace.
 /// Stream state is reset before each operation, including retries after errors.
 pub struct Inflate {
@@ -27,39 +36,62 @@ impl Inflate {
             state: DecompressorOxide::new(),
         }
     }
-}
-impl Default for Inflate {
-    fn default() -> Self {
-        Self::new()
+
+    /// Inflate one complete member into the supplied non-wrapping workspace.
+    pub fn inflate_member(
+        &mut self,
+        format: DeflateFormat,
+        input: &[u8],
+        output: &mut [u8],
+    ) -> Result<Progress, CodecError> {
+        let progress = self.inflate_prefix(format, input, output)?;
+        if progress.consumed != input.len() {
+            return Err(CodecError::Trailing);
+        }
+        Ok(progress)
     }
-}
-impl Inflater for Inflate {
-    fn inflate(&mut self, input: &[u8], output: &mut [u8]) -> Result<Progress, CodecError> {
+
+    /// Inflate the first complete member and report where its enclosing format resumes.
+    /// Use [`Self::inflate_member`] when the input must contain exactly one member.
+    pub fn inflate_prefix(
+        &mut self,
+        format: DeflateFormat,
+        input: &[u8],
+        output: &mut [u8],
+    ) -> Result<Progress, CodecError> {
         self.state.init();
-        // Full input is supplied; HAS_MORE_INPUT is deliberately absent.
-        // PARSE_ZLIB_HEADER also makes miniz verify the stream's Adler32.
-        let flags = inflate_flags::TINFL_FLAG_PARSE_ZLIB_HEADER
-            | inflate_flags::TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF
-            | inflate_flags::TINFL_FLAG_COMPUTE_ADLER32;
+        let flags = inflate_flags::TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF
+            | match format {
+                DeflateFormat::Zlib => {
+                    inflate_flags::TINFL_FLAG_PARSE_ZLIB_HEADER
+                        | inflate_flags::TINFL_FLAG_COMPUTE_ADLER32
+                }
+                DeflateFormat::Raw => 0,
+            };
         let (status, consumed, produced) = decompress(&mut self.state, input, output, 0, flags);
         if consumed > input.len() || produced > output.len() {
             return Err(CodecError::Invalid);
         }
         match status {
-            TINFLStatus::Done => {
-                if consumed != input.len() {
-                    return Err(CodecError::Trailing);
-                }
-                // Actual output length is returned. The metadata envelope core
-                // separately requires that it equal the declared plain length.
-                Ok(Progress { consumed, produced })
-            }
+            TINFLStatus::Done => Ok(Progress { consumed, produced }),
             TINFLStatus::HasMoreOutput => Err(CodecError::Capacity),
             TINFLStatus::FailedCannotMakeProgress | TINFLStatus::NeedsMoreInput => {
                 Err(CodecError::Truncated)
             }
             _ => Err(CodecError::Invalid),
         }
+    }
+}
+
+impl Default for Inflate {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Inflater for Inflate {
+    fn inflate(&mut self, input: &[u8], output: &mut [u8]) -> Result<Progress, CodecError> {
+        self.inflate_member(DeflateFormat::Zlib, input, output)
     }
 }
 

@@ -8,7 +8,8 @@ license.workspace = true
 [features]
 default = []
 providers = ["dep:gnunet-http-host", "dep:quick-xml", "dep:gnunet-nat-helper-host"]
-program = ["providers", "dep:gnunet-program-host", "dep:gnunet-resolver-broker", "dep:gnunet-service-startup"]
+service = ["providers", "dep:gnunet-resolver-broker"]
+program = ["service", "dep:gnunet-program-host", "dep:gnunet-service-startup"]
 
 [dependencies]
 gnunet-nat-helper-host = { workspace = true, features = ["supervisor"], optional = true }

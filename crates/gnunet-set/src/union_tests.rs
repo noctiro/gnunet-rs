@@ -302,10 +302,18 @@ fn symmetric_full_initiator_receives_complete_peer_set_and_reports_both_directio
 
 // Each native write below is an explicit synthetic settled observation. No
 // execution of this transcript is claimed during source preparation.
-fn mutual_pair(av: &[u8], bv: &[u8], am: ResultMode, bm: ResultMode) -> Result<(), Error> {
+fn mutual_pair(
+    av: &[u8],
+    bv: &[u8],
+    am: ResultMode,
+    bm: ResultMode,
+    minimum_shared: u8,
+) -> Result<(), Error> {
     let abi = Abi::native();
     let options = Options {
-        force_full: 1,
+        force_full: u8::from(minimum_shared == 0),
+        byzantine: u8::from(minimum_shared != 0),
+        byzantine_lower_bound: minimum_shared,
         ..Options::default()
     };
     let mut a = Union::new(
@@ -408,15 +416,26 @@ fn one_reciprocal_full_request_completes_both_modes_roles_and_empty_sets() -> Re
         for bm in [ResultMode::Added, ResultMode::Symmetric] {
             // A>B makes an ADDED evaluator request B as well; equal/smaller
             // exercises the direct first-leg path, with the same public modes.
-            mutual_pair(&[1, 2, 4], &[2, 3], am, bm)?;
-            mutual_pair(&[1, 2], &[2, 3], am, bm)?;
-            mutual_pair(&[], &[2, 3], am, bm)?;
-            mutual_pair(&[1, 2], &[], am, bm)?;
-            mutual_pair(&[], &[], am, bm)?;
+            mutual_pair(&[1, 2, 4], &[2, 3], am, bm, 0)?;
+            mutual_pair(&[1, 2], &[2, 3], am, bm, 0)?;
+            mutual_pair(&[], &[2, 3], am, bm, 0)?;
+            mutual_pair(&[1, 2], &[], am, bm, 0)?;
+            mutual_pair(&[], &[], am, bm, 0)?;
         }
     }
     Ok(())
 }
+
+#[test]
+fn byzantine_minimum_selects_full_union_and_checks_both_sides() -> Result<(), Error> {
+    use ResultMode::{Added, Symmetric};
+    mutual_pair(&[1, 2], &[2, 3], Symmetric, Added, 1)?;
+    // The advertised size meets the bound in both cases. Disjoint snapshots
+    // or too few distinct shared members must fail at the full-set boundary.
+    check(mutual_pair(&[1, 2], &[3, 4], Symmetric, Added, 1) == Err(Error::Malformed))?;
+    check(mutual_pair(&[1, 2], &[2, 3], Symmetric, Added, 2) == Err(Error::Malformed))
+}
+
 fn mutual_before_local_send() -> Result<Union, Error> {
     let abi = Abi::native();
     let mut a = Union::new(
@@ -499,7 +518,7 @@ fn early_peer_full_done_does_not_settle_local_send_or_retry_a_request() -> Resul
     check(!lost.can_finish_locally() && lost.outcome() == Some(Err(Error::Unavailable)))
 }
 #[test]
-fn explicit_strategy_conflicts_fail_before_processing_the_other_strategy() -> Result<(), Error> {
+fn required_strategy_conflicts_fail_before_processing_the_other_strategy() -> Result<(), Error> {
     let abi = Abi::native();
     let mut delta = Union::new(
         snapshot(&[1], abi)?,
@@ -520,38 +539,48 @@ fn explicit_strategy_conflicts_fail_before_processing_the_other_strategy() -> Re
     }
     check(delta.receive(PeerMessage::UnionRequestFull, &mut Scripted) == Err(Error::Unsupported))?;
     check(!delta.full_request_sent && delta.phase == Phase::ExpectIbf)?;
-    let mut full = Union::new(
-        snapshot(&[1], abi)?,
-        Role::Acceptor,
-        ResultMode::Added,
+    for options in [
         Options {
             force_full: 1,
             ..Options::default()
         },
-        Limits::default(),
-    )?;
-    full.activate();
-    for _ in 0..100_000 {
-        full.progress(&mut Scripted)?;
-        if full.strata_ready {
-            break;
+        Options {
+            byzantine: 1,
+            byzantine_lower_bound: 1,
+            ..Options::default()
+        },
+    ] {
+        let mut full = Union::new(
+            snapshot(&[1], abi)?,
+            Role::Acceptor,
+            ResultMode::Added,
+            options,
+            Limits::default(),
+        )?;
+        full.activate();
+        for _ in 0..100_000 {
+            full.progress(&mut Scripted)?;
+            if full.strata_ready {
+                break;
+            }
         }
+        let buckets = [0; 13];
+        check(
+            full.receive(
+                PeerMessage::UnionIbf {
+                    order: 0,
+                    reserved1: 0,
+                    reserved2: 0,
+                    offset: 0,
+                    salt: 42,
+                    buckets: wire::IbfSlice::decode(&buckets)?,
+                },
+                &mut Scripted,
+            ) == Err(Error::Unsupported),
+        )?;
+        check(full.remote_ibf.is_none() && full.build.is_none())?;
     }
-    let buckets = [0; 13];
-    check(
-        full.receive(
-            PeerMessage::UnionIbf {
-                order: 0,
-                reserved1: 0,
-                reserved2: 0,
-                offset: 0,
-                salt: 42,
-                buckets: wire::IbfSlice::decode(&buckets)?,
-            },
-            &mut Scripted,
-        ) == Err(Error::Unsupported),
-    )?;
-    check(full.remote_ibf.is_none() && full.build.is_none())
+    Ok(())
 }
 
 #[test]

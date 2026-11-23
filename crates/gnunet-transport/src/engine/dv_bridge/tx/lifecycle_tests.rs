@@ -138,7 +138,7 @@ fn withdrawal_closes_visibility_but_original_admitted_claim_still_retires() -> R
             None,
             peer,
             &payload,
-            0,
+            PacketTiming::unbound(0),
             Times::shared_coordinate(0),
             &mut NoSigning(local)
         ),
@@ -165,6 +165,7 @@ fn replacement_preserves_connection_jobs_budgets_and_original_callback_debt() ->
     engine.dv_virtual_queued(&first)?;
     engine.pump(0, &mut Random(2), false)?;
     let staged = engine.dv_virtual_packet().ok_or(Error::NotFound)?.id;
+    let staging_claim = engine.dv_claim_virtual(&staged)?;
     let original_job_until = engine
         .jobs
         .iter()
@@ -205,7 +206,7 @@ fn replacement_preserves_connection_jobs_budgets_and_original_callback_debt() ->
                 .find(|p| p.id == peer)
                 .is_some_and(|p| p.outbound_used == used)
             && engine.dv_source_debts(&source) == 2
-            && engine.dv_virtual_canceled(&first)
+            && !engine.dv_virtual_canceled(&first)
             && engine.dv_virtual_canceled(&staged)
             && engine
                 .dv_bridge
@@ -213,7 +214,7 @@ fn replacement_preserves_connection_jobs_budgets_and_original_callback_debt() ->
                 .virtuals
                 .iter()
                 .find(|row| row.id == first)
-                .is_some_and(|row| row.expires == original_until.0),
+                .is_some_and(|row| row.path == old && row.expires == original_until.0),
     )?;
     check(
         matches!(engine.dv_withdraw_path(&old), Err(Error::Stale))
@@ -221,6 +222,10 @@ fn replacement_preserves_connection_jobs_budgets_and_original_callback_debt() ->
     )?;
     engine
         .dv_finish_virtual(claim)
+        .map_err(|refused| refused.reason)?;
+    check(matches!(engine.dv_virtual_get(&staged), Err(Error::Stale)))?;
+    engine
+        .dv_reject_virtual(staging_claim)
         .map_err(|refused| refused.reason)?;
     engine.dv_discard_unadmitted(&staged)?;
     check(engine.dv_source_debts(&source) == 0)?;
@@ -231,6 +236,60 @@ fn replacement_preserves_connection_jobs_budgets_and_original_callback_debt() ->
             && next.until.0 <= original_job_until
             && engine.jobs.iter().any(|j| j.id == job),
     )
+}
+
+#[test]
+fn withdrawal_revokes_superseded_admission_for_the_original_peer_only() -> Result<(), Error> {
+    let local = PeerId([1; 32]);
+    let peer = PeerId([2; 32]);
+    let other = PeerId([3; 32]);
+    let (mut engine, source, core, old) = fixture(local, peer, 64)?;
+    let _ = announcements(&mut engine, &core, peer)?;
+    let payload = message(64, 20)?;
+    send(&mut engine, &core, peer, &payload)?;
+    let first = engine.dv_virtual_packet().ok_or(Error::NotFound)?.id;
+    let original = engine.dv_claim_virtual(&first)?;
+    engine.dv_virtual_queued(&first)?;
+
+    let new = engine.dv_install_path(
+        &source,
+        peer,
+        128,
+        Duration(2_000),
+        Times::shared_coordinate(10),
+    )?;
+    let other_path = engine.dv_install_path(
+        &source,
+        other,
+        64,
+        Duration(2_000),
+        Times::shared_coordinate(10),
+    )?;
+    let _ = announcements(&mut engine, &core, other)?;
+    send(&mut engine, &core, other, &payload)?;
+    let untouched = engine
+        .dv_virtual_packet_where(|packet| packet.target == other)
+        .ok_or(Error::NotFound)?
+        .id;
+    let unrelated = engine.dv_claim_virtual(&untouched)?;
+    engine.dv_virtual_queued(&untouched)?;
+
+    check(matches!(engine.dv_withdraw_path(&old), Err(Error::Stale)))?;
+    check(!engine.dv_virtual_canceled(&first) && !engine.dv_virtual_canceled(&untouched))?;
+    engine.dv_withdraw_path(&new)?;
+    check(
+        engine.dv_virtual_canceled(&first)
+            && !engine.dv_virtual_canceled(&untouched)
+            && engine.dv_bridge.virtual_path(other, 10) == Some((other_path, 64))
+            && announcements(&mut engine, &core, peer)? == (0, 1),
+    )?;
+    engine
+        .dv_finish_virtual(original)
+        .map_err(|refused| refused.reason)?;
+    engine
+        .dv_finish_virtual(unrelated)
+        .map_err(|refused| refused.reason)?;
+    check(engine.dv_source_debts(&source) == 0)
 }
 
 #[test]
@@ -315,7 +374,7 @@ fn exchange_acknowledgements(payload_bytes: usize, mtu: usize) -> Result<(), Err
             None,
             a,
             &bytes,
-            0,
+            PacketTiming::unbound(0),
             Times::shared_coordinate(received_at),
             &mut NoSigning(b),
         )?;
@@ -342,7 +401,7 @@ fn exchange_acknowledgements(payload_bytes: usize, mtu: usize) -> Result<(), Err
             None,
             b,
             &ack_bytes,
-            0,
+            PacketTiming::unbound(0),
             Times::shared_coordinate(acknowledged_at),
             &mut NoSigning(a),
         )?;
@@ -419,7 +478,7 @@ fn oversized_old_ack_batch_expires_without_canceling_another_original_claim() ->
             None,
             remote,
             &wire,
-            0,
+            PacketTiming::unbound(0),
             Times::shared_coordinate(at),
             &mut NoSigning(local),
         )?;
@@ -461,7 +520,7 @@ fn oversized_old_ack_batch_expires_without_canceling_another_original_claim() ->
         None,
         other,
         &wire,
-        0,
+        PacketTiming::unbound(0),
         Times::shared_coordinate(100),
         &mut NoSigning(local),
     )?;

@@ -8,7 +8,7 @@
 //! Bloom-filter operations, block validation and routing belong to their owners.
 /// Official local DHT application and monitor IPC.
 pub mod ipc;
-use super::{AbsoluteTime, Frame, MessageHeader, message_type};
+use super::{AbsoluteTime, Frame, HEADER_LEN, MessageHeader, message_type};
 mod cursor;
 use cursor::{Reader, Writer};
 use gnunet_types::Error;
@@ -285,7 +285,25 @@ impl<'a> PutMessage<'a> {
     /// Encode complete official bytes, without an extra native envelope.
     pub fn encode(self, output: &mut [u8]) -> Result<usize, Error> {
         let size = self.encoded_len()?;
-        let mut writer = start(output, size, message_type::DHT_P2P_PUT)?;
+        let output = output.get_mut(..size).ok_or(Error::Capacity)?;
+        let prefix = self.write_prefix(output, size)?;
+        output[prefix..].copy_from_slice(self.payload);
+        Ok(size)
+    }
+    /// Encode the header and metadata for a separately retained payload.
+    /// The header declares the complete frame size. The returned prefix
+    /// length excludes the payload, which must follow unchanged on the wire.
+    ///
+    /// # Errors
+    /// Rejects invalid metadata, an oversized complete frame or insufficient
+    /// prefix storage before writing output.
+    pub fn encode_prefix(self, output: &mut [u8]) -> Result<usize, Error> {
+        self.write_prefix(output, self.encoded_len()?)
+    }
+
+    fn write_prefix(self, output: &mut [u8], size: usize) -> Result<usize, Error> {
+        let prefix = size - self.payload.len();
+        let mut writer = start_prefix(output, size, prefix, message_type::DHT_P2P_PUT)?;
         writer.u32(self.block_type)?;
         writer.u16(self.options.bits())?;
         writer.u16(self.hop_count)?;
@@ -300,8 +318,7 @@ impl<'a> PutMessage<'a> {
             self.put_path,
             self.sender_signature,
         )?;
-        writer.put(self.payload)?;
-        Ok(size)
+        Ok(prefix)
     }
 }
 
@@ -384,7 +401,25 @@ impl<'a> ResultMessage<'a> {
     /// New result originators must supply zero explicitly.
     pub fn encode(self, output: &mut [u8]) -> Result<usize, Error> {
         let size = self.encoded_len()?;
-        let mut writer = start(output, size, message_type::DHT_P2P_RESULT)?;
+        let output = output.get_mut(..size).ok_or(Error::Capacity)?;
+        let prefix = self.write_prefix(output, size)?;
+        output[prefix..].copy_from_slice(self.payload);
+        Ok(size)
+    }
+    /// Encode the header and metadata for a separately retained payload.
+    /// The header includes the complete frame size and the returned length
+    /// excludes the original payload.
+    ///
+    /// # Errors
+    /// Rejects invalid metadata, an oversized complete frame or insufficient
+    /// prefix storage before writing output.
+    pub fn encode_prefix(self, output: &mut [u8]) -> Result<usize, Error> {
+        self.write_prefix(output, self.encoded_len()?)
+    }
+
+    fn write_prefix(self, output: &mut [u8], size: usize) -> Result<usize, Error> {
+        let prefix = size - self.payload.len();
+        let mut writer = start_prefix(output, size, prefix, message_type::DHT_P2P_RESULT)?;
         writer.u32(self.block_type)?;
         writer.u16(self.reserved)?;
         writer.u16(self.options.bits())?;
@@ -400,8 +435,7 @@ impl<'a> ResultMessage<'a> {
         if let Some(signature) = self.sender_signature {
             writer.put(signature)?;
         }
-        writer.put(self.payload)?;
-        Ok(size)
+        Ok(prefix)
     }
 }
 
@@ -467,11 +501,18 @@ fn total_len(fixed: usize, fields: &[&[u8]]) -> Result<usize, Error> {
     Ok(size)
 }
 fn start(output: &mut [u8], size: usize, kind: super::MessageType) -> Result<Writer<'_>, Error> {
-    if output.len() < size {
-        return Err(Error::Capacity);
-    }
+    start_prefix(output, size, size, kind)
+}
+
+fn start_prefix(
+    output: &mut [u8],
+    size: usize,
+    prefix: usize,
+    kind: super::MessageType,
+) -> Result<Writer<'_>, Error> {
+    let output = output.get_mut(..prefix).ok_or(Error::Capacity)?;
     MessageHeader::from_total_size(kind, size)?.encode(output)?;
-    Ok(Writer::new(&mut output[super::HEADER_LEN..size]))
+    Ok(Writer::new(&mut output[HEADER_LEN..]))
 }
 
 /// Official CORE158 wrapper around one original complete DHT network frame.
@@ -484,7 +525,7 @@ impl<'a> CoreEnvelope<'a> {
     /// Validate one complete inner frame; no private fields are inserted.
     pub fn new(inner: &'a [u8]) -> Result<Self, Error> {
         Frame::decode(inner)?;
-        total_len(4, &[inner])?;
+        total_len(HEADER_LEN, &[inner])?;
         Ok(Self { inner })
     }
     /// Decode exactly one outer wrapper and its complete inner frame.
@@ -502,7 +543,7 @@ impl<'a> CoreEnvelope<'a> {
     }
     /// Outer size includes its four-byte official header.
     pub fn encoded_len(self) -> Result<usize, Error> {
-        total_len(4, &[self.inner])
+        total_len(HEADER_LEN, &[self.inner])
     }
     /// Encode only after full validation, preserving original bytes exactly.
     pub fn encode(self, output: &mut [u8]) -> Result<usize, Error> {
@@ -510,5 +551,89 @@ impl<'a> CoreEnvelope<'a> {
         let mut writer = start(output, size, message_type::DHT_CORE)?;
         writer.put(self.inner)?;
         Ok(size)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "check exact wire extents and untouched buffers"
+    )]
+    fn check_prefix(
+        payload: &[u8],
+        encode: impl Fn(&mut [u8]) -> Result<usize, Error>,
+        encode_prefix: impl Fn(&mut [u8]) -> Result<usize, Error>,
+    ) -> Result<(), Error> {
+        let mut frame = [0; 512];
+        let size = encode(&mut frame)?;
+        let prefix_size = size - payload.len();
+        let mut prefix = [0x5a; 512];
+        assert_eq!(
+            encode_prefix(&mut prefix[..prefix_size - 1]),
+            Err(Error::Capacity)
+        );
+        assert_eq!(encode(&mut prefix[..size - 1]), Err(Error::Capacity));
+        assert_eq!(prefix, [0x5a; 512]);
+        assert_eq!(encode_prefix(&mut prefix[..prefix_size])?, prefix_size);
+        assert_eq!(MessageHeader::decode(&prefix)?.size(), size);
+        assert_eq!(&prefix[..prefix_size], &frame[..prefix_size]);
+        assert_eq!(&frame[prefix_size..size], payload);
+        assert!(prefix[prefix_size..].iter().all(|&byte| byte == 0x5a));
+        Ok(())
+    }
+
+    #[test]
+    fn tracked_put_and_result_prefixes_preserve_the_complete_wire_extent() -> Result<(), Error> {
+        let put = PutMessage::decode(include_bytes!(
+            "../../tests/official_vectors/dht-put-tracked.bin"
+        ))?;
+        let result = ResultMessage::decode(include_bytes!(
+            "../../tests/official_vectors/dht-result-tracked.bin"
+        ))?;
+        check_prefix(
+            put.payload,
+            |out| put.encode(out),
+            |out| put.encode_prefix(out),
+        )?;
+        check_prefix(
+            result.payload,
+            |out| result.encode(out),
+            |out| result.encode_prefix(out),
+        )?;
+
+        let monitor_put = ipc::MonitorPut {
+            options: u32::from(put.options.bits()),
+            block_type: put.block_type,
+            hop_count: u32::from(put.hop_count),
+            replication: u32::from(put.desired_replication_level),
+            expiration: put.expiration,
+            key: put.key,
+            truncated_peer: put.truncated_peer,
+            put_path: put.put_path,
+            payload: put.payload,
+        };
+        let monitor_result = ipc::MonitorResult {
+            block_type: result.block_type,
+            options: u32::from(result.options.bits()),
+            put_path: result.put_path,
+            get_path: result.get_path,
+            expiration: result.expiration,
+            key: result.key,
+            truncated_peer: result.truncated_peer,
+            payload: result.payload,
+        };
+        check_prefix(
+            monitor_put.payload,
+            |out| monitor_put.encode(out),
+            |out| monitor_put.encode_prefix(out),
+        )?;
+        check_prefix(
+            monitor_result.payload,
+            |out| monitor_result.encode(out),
+            |out| monitor_result.encode_prefix(out),
+        )
     }
 }

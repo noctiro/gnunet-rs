@@ -17,39 +17,44 @@ pub enum RecipientEvidence {
     /// The same real encryption key was bound to distinct recipient identities.
     AmbiguousKey,
 }
+/// Original member identity shared by key evidence and prepared PRIVATE work.
 #[derive(Clone, Copy)]
-enum Fact<'id> {
-    Member {
-        owner: Owner<'id>,
-        public: PublicKey,
-    },
-    Zone {
-        public: PublicKey,
-        hpke: [u8; 32],
-    },
-    Transcript {
-        public: PublicKey,
-    },
+pub(crate) struct MemberRecipient {
+    owner: Owner,
+    public: PublicKey,
+}
+
+impl MemberRecipient {
+    pub(crate) const fn new(owner: Owner, public: PublicKey) -> Self {
+        Self { owner, public }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Fact {
+    Member(MemberRecipient),
+    Zone { public: PublicKey, hpke: [u8; 32] },
+    Transcript { public: PublicKey },
     Ambiguous,
 }
 /// Original recipient identity/evidence snapshot. A historical zone record may
 /// have no corresponding authenticated member yet; that is explicitly distinct
 /// from a resolved Contact and never substitutes the current selected identity.
 #[derive(Clone, Copy)]
-pub struct RecipientAttribution<'id> {
-    fact: Fact<'id>,
+pub struct RecipientAttribution {
+    fact: Fact,
 }
-impl core::fmt::Debug for RecipientAttribution<'_> {
+impl core::fmt::Debug for RecipientAttribution {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("RecipientAttribution([REDACTED])")
             .field("evidence", &self.evidence())
             .finish()
     }
 }
-impl<'id> RecipientAttribution<'id> {
-    pub(crate) fn member(owner: Owner<'id>, public: PublicKey) -> Self {
+impl RecipientAttribution {
+    pub(crate) const fn member(member: MemberRecipient) -> Self {
         Self {
-            fact: Fact::Member { owner, public },
+            fact: Fact::Member(member),
         }
     }
     pub(crate) fn transcript(public: PublicKey) -> Self {
@@ -57,9 +62,9 @@ impl<'id> RecipientAttribution<'id> {
             fact: Fact::Transcript { public },
         }
     }
-    pub(crate) fn from_key(key: &RecipientKey<'id>) -> Self {
+    pub(crate) fn from_key(key: &RecipientKey) -> Self {
         match key.origin {
-            RecipientKeyOrigin::Member { owner, public } => Self::member(owner, public),
+            RecipientKeyOrigin::Member(member) => Self::member(member),
             RecipientKeyOrigin::Zone(public) => Self {
                 fact: Fact::Zone {
                     public,
@@ -75,7 +80,7 @@ impl<'id> RecipientAttribution<'id> {
     /// Ambiguous reuse of the same encryption key yields no guessed identity.
     pub const fn public_key(&self) -> Option<&PublicKey> {
         match &self.fact {
-            Fact::Member { public, .. }
+            Fact::Member(MemberRecipient { public, .. })
             | Fact::Zone { public, .. }
             | Fact::Transcript { public } => Some(public),
             Fact::Ambiguous => None,
@@ -84,7 +89,7 @@ impl<'id> RecipientAttribution<'id> {
     /// Original evidence class; a zone record is not a live member assertion.
     pub const fn evidence(&self) -> RecipientEvidence {
         match self.fact {
-            Fact::Member { .. } => RecipientEvidence::LocalMember,
+            Fact::Member(_) => RecipientEvidence::LocalMember,
             Fact::Zone { .. } => RecipientEvidence::RecoveredZone,
             Fact::Transcript { .. } => RecipientEvidence::OwnTranscript,
             Fact::Ambiguous => RecipientEvidence::AmbiguousKey,
@@ -94,13 +99,13 @@ impl<'id> RecipientAttribution<'id> {
     /// present at key retention or outgoing admission. Not a current capability.
     pub const fn member_lineage(&self) -> Option<(u64, u64)> {
         match self.fact {
-            Fact::Member { owner, .. } => Some((owner.lineage, owner.generation)),
+            Fact::Member(MemberRecipient { owner, .. }) => Some((owner.lineage, owner.generation)),
             _ => None,
         }
     }
-    pub(crate) fn contact(&self, room: &RoomRow<'id>) -> Option<Contact<'id>> {
+    pub(crate) fn contact_slot(&self, room: &RoomRow<'_>) -> Option<Slot> {
         match self.fact {
-            Fact::Member { owner, .. } => return Some(owner.contact),
+            Fact::Member(MemberRecipient { owner, .. }) => return Some(owner.contact),
             Fact::Ambiguous => return None,
             _ => {}
         }
@@ -111,7 +116,7 @@ impl<'id> RecipientAttribution<'id> {
                     session.public == public && session.hpke[4..] == hpke
                 }
                 Fact::Transcript { public } => session.public == public,
-                Fact::Member { .. } | Fact::Ambiguous => false,
+                Fact::Member(_) | Fact::Ambiguous => false,
             };
             if !matches {
                 continue;
@@ -126,33 +131,26 @@ impl<'id> RecipientAttribution<'id> {
         contact
     }
 }
-impl<'id> RecipientKey<'id> {
+impl RecipientKey {
     /// A key reused across distinct real identities has no unique recipient in
     /// the PRIVATE ciphertext. Preserve decryption without guessing an owner.
-    pub(crate) fn merge_origin(&mut self, incoming: RecipientKeyOrigin<'id>) {
+    pub(crate) fn merge_origin(&mut self, incoming: RecipientKeyOrigin) {
         let next = match (self.origin, incoming) {
-            (
-                RecipientKeyOrigin::Member { owner, public },
-                RecipientKeyOrigin::Member {
-                    owner: other,
-                    public: other_public,
-                },
-            ) if owner.contact == other.contact && public == other_public => return,
-            (RecipientKeyOrigin::Member { public, .. }, RecipientKeyOrigin::Zone(other))
-                if public == other =>
+            (RecipientKeyOrigin::Member(member), RecipientKeyOrigin::Member(other))
+                if member.owner.contact == other.owner.contact && member.public == other.public =>
             {
                 return;
             }
-            (
-                RecipientKeyOrigin::Zone(public),
-                RecipientKeyOrigin::Member {
-                    owner,
-                    public: other,
-                },
-            ) if public == other => RecipientKeyOrigin::Member {
-                owner,
-                public: other,
-            },
+            (RecipientKeyOrigin::Member(member), RecipientKeyOrigin::Zone(public))
+                if member.public == public =>
+            {
+                return;
+            }
+            (RecipientKeyOrigin::Zone(public), RecipientKeyOrigin::Member(member))
+                if member.public == public =>
+            {
+                RecipientKeyOrigin::Member(member)
+            }
             (RecipientKeyOrigin::Zone(public), RecipientKeyOrigin::Zone(other))
                 if public == other =>
             {

@@ -213,6 +213,9 @@ impl Book {
     pub(crate) fn records(&self) -> impl Iterator<Item = LocalAddress<'_>> {
         records(&self.entries)
     }
+    pub(crate) const fn revision(&self) -> u64 {
+        self.revision
+    }
     pub(crate) fn snapshot(&self) -> Result<Publication<'_>, Error> {
         if self.poisoned {
             return Err(Error::Capacity);

@@ -1,0 +1,24 @@
+[package]
+name = "gnunet-node"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+gnunet-config.workspace = true
+gnunet-node-host.workspace = true
+gnunet-service-runtime.workspace = true
+tokio = { workspace = true, features = ["rt", "time", "net"] }
+
+[target.'cfg(windows)'.dependencies]
+tokio = { workspace = true, features = ["sync"] }
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_EventLog",
+    "Win32_System_Services",
+] }
+
+[lints]
+workspace = true

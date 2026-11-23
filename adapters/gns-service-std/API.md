@@ -95,11 +95,10 @@ starting the next native step. That observation is still not GET completion.
 
 ## Ordinary auxiliary dependencies
 
-`auxiliary::Auxiliary` composes DNS-only recursive operations, actual
-shared Resolver forward subscriptions, and an explicit prepared files registry. It is the concrete auxiliary argument for `native::NativeProvider`. It creates no
-second Resolver broker, runtime, thread or hidden background service. The standard
-GNS SERVICE listener/foreground composes this provider through the same original
-Manager, clock and Resolver.
+`auxiliary::Auxiliary` composes DNS-only recursion, shared Resolver forward
+subscriptions, and a protocol and service registry. The standard GNS service
+uses this auxiliary as part of `native::NativeProvider` under its existing
+manager, clock, and Resolver broker.
 
 System redirection uses the original foreground `Context::ip_get`/`Query` and
 actual `Delivery` callbacks. Only `Completion::End` returns a complete record set;
@@ -110,24 +109,31 @@ revokes only the original subscription's receipt; its report explicitly leaves
 any shared wire/tombstone/partial IO with the same foreground Driver. The service
 must actually disconnect that Driver before reporting whole-service closure.
 
-The registry combines bounded `/etc/protocols` and `/etc/services` files (or
-explicit caller-supplied bytes) with the official GNS-specific GANA assignments.
-Windows defaults use `protocol` and `services` in the native configured
-`DatabasePath`; explicit paths bypass discovery when both files are selected.
-An absent registry location selects the native system-directory default, while
-query and file failures remain errors. File entries take precedence, followed by GANA and then numeric service ports. The pinned official resolver first calls libc `getprotobyname` and
-`getservbyname`, then uses the same GANA/numeric fallback order. This Rust files
-profile does not consult independently configured NSS backends for those two
-lookups; that boundary does not imply missing lookups of unrelated OS databases. The pure `gnunet_gns::assigned` table contains all
-currently published GNS protocol/service assignments, with ASCII-insensitive
-names. It does not duplicate the IANA or system NSS databases. A complete GANA
-match remains usable if files preparation failed; other requests retain that
-original preparation error. Genuine unknown names remain `None` for literal
-SBOX handling. Preparation reads are synchronous and may block. Their byte and
-row bounds are checked before any live service resource needs this table.
+The default BOX/SBOX registry checks the operating system's protocol and service
+databases first, then the corresponding GNS GANA assignments. A decimal port
+within `1..=65535` is the last service fallback. A confirmed miss keeps the
+literal SBOX selector. A resolved `BoxSelector` carries both a nonzero protocol
+number and a nonzero port. Only candidate BOX records need a registry query.
+Other native query errors propagate. If the platform uses musl, protocol lookup
+matches its fixed built-in table and the system service lookup accepts lowercase
+`tcp` and `udp`.
 
-Ordinary DNS keeps numeric bootstrap servers explicit and never sends a DNS name
-back into GNS. The original selected GNS2DNS namespace is preserved as the pure
+One service-owned thread performs native lookups, with up to 32 queued requests.
+Cancellation and the original hard deadline stop queued requests before they enter
+the next native call. An entered call stays owned by its worker until it returns.
+The service confirms worker exit by joining it during shutdown.
+
+An explicit `PROTOCOLS_FILE` or `SERVICES_FILE` selects the prepared file registry.
+The unset counterpart comes from the system directory. Windows uses `protocol`
+and `services` under `DatabasePath`. The file profile checks byte and row bounds
+during preparation and uses the same fallback order. A complete GANA mapping
+remains usable when file preparation fails. Other requests retain the preparation
+error.
+
+GNS2DNS nameserver hostnames go through the shared Resolver by default;
+`NameserverLookup::WireDns` selects the explicit numeric bootstrap source.
+Raw DNS and DNSSEC use a numeric bootstrap snapshot per operation when needed
+and never route through GNS. The original selected GNS2DNS namespace is preserved as the pure
 `Dns` effect's `authority`, before unresolved labels are prepended. It binds
 referral/bailiwick scope without guessing from the full question. DNS replies are
 matched to the source, original wire ID/opcode and complete IN question,
@@ -136,7 +142,7 @@ requiring its intentionally truncated RR body to parse. UDP and TCP share the
 same already-fixed exchange and whole-query boundaries. TCP prefixes/bodies retain
 partial byte counts; expiry never becomes a successful empty answer.
 
-Referrals, glue and recursive nameserver address resolution use only DNS. CNAME
+Referrals, glue and addresses discovered within a DNS exchange use only wire DNS. CNAME
 chains already present in a complete answer can produce their target RRset
 without an unnecessary second lookup; alias expiration bounds the result. Names,
 record counts, DNS bytes, rejected packets, depth and total exchanges are bounded. The receive buffer needs its configured datagram cap to distinguish truncation;
@@ -144,7 +150,7 @@ parser records use header counts, and decompression storage grows only as
 needed up to its declared cap. DNS TXT character strings are decoded into the
 canonical GNS plain octets, preserving empty strings and embedded NUL bytes.
 
-recoverable DNS errors retain one owned original cause and an omitted
+Recoverable DNS errors retain one owned original cause and an omitted
 count, while the last terminal cause is returned separately. Native socket byte
 counts and callback/operation closure are independent of DNSSEC authentication. `failed_counted` and `NativeFailure::spent` charge already performed recursive work
 even when a DNS/TCP attempt fails; fallback cannot silently recover that original
@@ -155,12 +161,16 @@ Security-required GNS2DNS remains an explicit capability boundary. A real
 authority/security records and bounds. No fake validator is provided. Without one,
 nonempty authenticated security records fail as `SecurityUnavailable` before native
 DNS work instead of silently trusting AD or downgrading the request. The standard
-SERVICE installs `with_dnssec`, which verifies the supplied DS anchor through the
-DNSKEY and RRSIG chain, including bounded authenticated denial proofs. Supported
-algorithms and resource profiles remain explicit; current mixed-node acceptance
-and complete DNSSEC coverage are still outstanding. The pinned C's rejection of
-all co-located GNS2DNS security records is recorded as a source difference, not
-copied as a claim about the standard's full behavior.
+SERVICE installs `with_dnssec`, which accepts authenticated DS and DNSKEY
+anchors. A matching DNSKEY must verify a signature on the complete apex
+DNSKEY RRset before any key in that set can validate responses or bounded denial
+proofs. The Rust
+verifier supports RSA/SHA-1, RSA/SHA-256, RSA/SHA-512, ECDSA/P-256,
+ECDSA/P-384 and Ed25519. RSA accepts 1024- to 8192-bit moduli and checks the
+complete PKCS#1 v1.5 encoding. Ed25519 rejects noncanonical encodings and
+small-order points. DS supports SHA-1, SHA-256 and SHA-384. NSEC3 uses bounded
+SHA-1. The interoperability limits for co-located security records are tracked
+in [implementation status](../../IMPLEMENTATION_STATUS.md).
 
 Standalone DNS QTYPE=RRSIG remains explicitly `Unsupported` in this
 required-security interface. [RFC 4035 section 2.2](https://www.rfc-editor.org/rfc/rfc4035.html#section-2.2)
@@ -207,6 +217,8 @@ SharedClock/broker, bounded source recovery, dependency construction,
 selected Reporter and unconditional original-owner cleanup. It consumes the
 separately implemented validating DNS factory rather than a placeholder security
 success. Source construction/static checks do not constitute runtime acceptance.
+
+## Background cache refresh
 
 `Manager::new_with_refresh` adds an independent near-expiry cache refresh owner. It never retains or completes an old caller QueryId/EffectId. A single optional
 pure hint feeds a preallocated table (default8, configurable through64), deduped

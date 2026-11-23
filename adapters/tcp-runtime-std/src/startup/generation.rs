@@ -7,7 +7,6 @@ use crate::statistics::StatisticsFactory;
 use crate::{
     Pool, PoolProgress, Setup, addresses, dial::Dial, listeners::Listeners, settings::Settings,
 };
-use gnunet_client_host::EndpointSource;
 use gnunet_config::Configuration;
 use gnunet_crypto::Entropy;
 use gnunet_nat_client_host as nat;
@@ -18,6 +17,7 @@ use gnunet_service_runtime::{
     accepted::{AcceptState, SocketEvent},
     clock::RuntimeClock,
     connection::Connection,
+    network_change::NetworkChanges,
     service::PeerAddress,
 };
 use gnunet_tcp_communicator_core::{
@@ -39,28 +39,30 @@ use std::{
     time::Duration,
 };
 
-pub(super) struct Input<'run, 'id, S: ?Sized, F: StatisticsFactory> {
+pub(super) struct Input<'run, 'id, 'nat, 'listen, S: ?Sized, F: StatisticsFactory> {
     pub config: &'run Configuration,
     pub settings: &'run Settings,
-    pub listeners: &'run Listeners,
+    pub listeners: &'listen Listeners,
     pub namespace: &'run replay::Namespace,
     pub continuity: &'run mut identity::Continuity<'id>,
     pub limits: Limits,
     pub identity: pc::Identity<'id>,
-    pub connections: [Connection; 2],
+    pub connections: Option<[Connection; 2]>,
+    pub retained: &'run mut Option<publication::Owner<'nat, 'static, 'listen>>,
+    pub nat_instance: &'nat nat::Instance,
     pub transport: &'run mut Dial,
     pub pils: &'run mut Client<'id>,
     pub resolver: &'run mut gnunet_resolver_broker::Driver<128, 256>,
     pub shutdown: Pin<&'run mut S>,
     pub ready: &'run mut dyn FnMut(&Listeners, [u8; 32]) -> io::Result<()>,
     pub observers: Observers<'run>,
-    pub endpoint: &'run dyn Fn(&'static [u8]) -> EndpointSource,
     pub source: Arc<dyn RuntimeClock>,
     pub live: &'run LiveConfiguration,
     pub context: &'run gnunet_resolver_broker::Context<128, 256>,
     pub statistics: &'run mut Option<observation::Owner<F::Driver>>,
     pub statistics_factory: &'run mut Option<F>,
     pub last_metrics: &'run mut Option<crate::statistics::Metrics>,
+    pub network_changes: &'run mut NetworkChanges,
 }
 
 pub(super) struct Exit {
@@ -71,18 +73,22 @@ pub(super) struct Exit {
 enum Phase {
     Active,
     Replacing,
+    Recovering,
     Stopping,
 }
 impl Phase {
     fn active(self) -> bool {
         matches!(self, Self::Active)
     }
-    fn replacing(self) -> bool {
+    fn retaining_resources(self) -> bool {
         matches!(self, Self::Replacing)
+    }
+    fn replacing(self) -> bool {
+        matches!(self, Self::Replacing | Self::Recovering)
     }
 }
 
-pub(super) async fn run<S, F>(input: Input<'_, '_, S, F>) -> Result<Exit, Failure>
+pub(super) async fn run<S, F>(input: Input<'_, '_, '_, '_, S, F>) -> Result<Exit, Failure>
 where
     S: Future<Output = io::Result<()>> + ?Sized,
     F: StatisticsFactory,
@@ -96,19 +102,21 @@ where
         limits,
         identity,
         connections,
+        retained,
+        nat_instance,
         transport: tr,
         pils,
         resolver,
         mut shutdown,
         ready,
         observers,
-        endpoint,
         source,
         live,
         context,
         statistics,
         statistics_factory,
         last_metrics,
+        network_changes,
     } = input;
     let Observers {
         socket: observe_socket,
@@ -130,14 +138,34 @@ where
         .checked_mul(REPLAY_CAPACITY)
         .ok_or(Error::Overflow)?;
     poll_fn(|cx| Poll::Ready(continuity.guard(cx))).await?;
-    let mut poll_observation = |step: replay::Observation<'_, '_>| {
+    let resource_failed = std::cell::Cell::new(false);
+    let mut resource_failure = None;
+    let bootstrap_failed = || failed() || resource_failed.get();
+    let mut poll_observation = |mut step: replay::Observation<'_, '_>| {
+        let resources = match &mut step {
+            replay::Observation::Abort => {
+                drop(retained.take());
+                false
+            }
+            replay::Observation::Poll(cx) if !resource_failed.get() && !failed() => {
+                match publication::poll_retained(retained, cx, network_changes, observe_addresses) {
+                    Ok(progressed) => progressed,
+                    Err(error) => {
+                        resource_failure = Some(error);
+                        resource_failed.set(true);
+                        false
+                    }
+                }
+            }
+            _ => false,
+        };
         statistics.as_mut().is_some_and(|owner| match step {
             replay::Observation::Poll(cx) => owner.poll(cx, failed()),
             replay::Observation::Abort => {
                 owner.abort();
                 true
             }
-        })
+        }) || resources
     };
     let prepared = replay::bootstrap(replay::Bootstrap {
         config,
@@ -151,7 +179,7 @@ where
         observe_pils,
         observe_resolver,
         diagnose,
-        failed,
+        failed: &bootstrap_failed,
         entries,
         poll_observation: &mut poll_observation,
     })
@@ -159,6 +187,9 @@ where
     let mut clock = match prepared {
         replay::Prepared::Ready(clock) => clock,
         replay::Prepared::Stop => {
+            if let Some(error) = resource_failure {
+                return Err(error);
+            }
             let _original = pils.close();
             return Ok(Exit {
                 report: Report::default(),
@@ -166,6 +197,9 @@ where
             });
         }
         replay::Prepared::Superseded => {
+            if let Some(error) = resource_failure {
+                return Err(error);
+            }
             return Ok(Exit {
                 report: Report::default(),
                 replacing: true,
@@ -179,6 +213,24 @@ where
     let mut cleanup_hard = None;
     let mut replacing = false;
     let outcome = async {
+        if let Some(error) = resource_failure { return Err(error); }
+        if retained.is_some() {
+            let mut resolving = std::pin::pin!(resolver.drive_waiting(None, &mut *observe_resolver));
+            let stopped = poll_fn(|cx| {
+                if failed() { drop(retained.take()); return Poll::Ready(Ok(true)); }
+                if let Poll::Ready(result) = shutdown.as_mut().poll(cx) {
+                    drop(retained.take());
+                    return Poll::Ready(result.map(|()| true).map_err(|error| Box::new(error) as Failure));
+                }
+                continuity.guard(cx)?;
+                if let Poll::Ready(result) = resolving.as_mut().poll(cx) { result?; }
+                let progressed = publication::poll_retained(retained, cx, network_changes, observe_addresses)?;
+                if retained.as_ref().is_some_and(publication::Owner::retained_input_idle) { return Poll::Ready(Ok(false)); }
+                if progressed { cx.waker().wake_by_ref(); }
+                Poll::Pending
+            }).await?;
+            if stopped { cleanup_hard = Some(tokio::time::Instant::now() + Duration::from_secs(30)); return Ok(Report::default()); }
+        }
         let mut storage = Vec::new();
         storage
             .try_reserve_exact(limits.sessions)
@@ -188,9 +240,9 @@ where
         slots.try_reserve_exact(registry_slots).map_err(|_|Error::Capacity)?;
         slots.resize_with(registry_slots,Slot::new);
         for _ in 0..limits.sessions {
-            let stopped = poll_fn(|cx| Poll::Ready(if failed() { Ok(true) } else {
+            let stopped = poll_fn(|cx| Poll::Ready(if failed() { drop(retained.take()); Ok(true) } else {
                 match shutdown.as_mut().poll(cx) {
-                    Poll::Ready(result) => result.map(|()| true), Poll::Pending => Ok(false),
+                    Poll::Ready(result) => { drop(retained.take()); result.map(|()| true) }, Poll::Pending => Ok(false),
                 }
             })).await?;
             if stopped { cleanup_hard=Some(tokio::time::Instant::now()+Duration::from_secs(30)); return Ok(Report::default()); }
@@ -203,47 +255,49 @@ where
             .map_err(|_| Error::Capacity)?;
         buffers.extend(storage.iter_mut().map(Storage::buffers));
         let mut scope = Scope::new();
-        let services = connections;
-        let mut pool = Pool::new(Setup {
-            services,
-            identity: Identity::from_keys(&keys),
-            scope: &mut scope,
-            slots: &mut slots,
-            buffers,
-            policy: settings.policy,
-            ipc: limits.ipc,
-            capacity: ManagerCapacity {
-                sessions: limits.sessions,
-                pending_sends: limits.pending_sends,
-                commands: limits.commands,
-            },
-            disable_v6: settings.disable_v6,
-        })?;
-        *last_metrics=Some(continuity.combine(pool.metrics()));
-        let stopped = poll_fn(|cx| Poll::Ready(if failed() { Ok(true) } else {
-            match shutdown.as_mut().poll(cx) {
-                Poll::Ready(result) => result.map(|()| true), Poll::Pending => Ok(false),
-            }
-        })).await?;
-        if stopped { cleanup_hard=Some(tokio::time::Instant::now()+Duration::from_secs(30)); return Ok(Report::default()); }
-        let epoch = clock.begin_epoch(identity.peer())?;
-        epoch_started = true;
-        pool.bind_epoch(epoch).map_err(|r| r.reason)?;
-        let _first_actual = clock.read()?;
-        let nat_instance = nat::Instance::new();
-        let mut reversals = reversal::Driver::new(clock.source(), limits.sessions)?;
-        let mut original_pool = Some(pool);
-        let adopted = publication::Owner::try_adopt(
-            &mut original_pool, listeners, &nat_instance, endpoint(b"nat"),
-            clock.source(), settings.disable_v6,
-        );
-        let (mut publication, initial_failure) = match adopted {
-            Ok(owner) => (owner,None),
-            Err(error) => (
-                publication::Owner::unpublished(original_pool.take().ok_or(Error::Conflict)?),
-                Some(Box::new(error) as Failure),
-            ),
+        let setup = Setup {
+            services: (), identity: Identity::from_keys(&keys), scope: &mut scope,
+            slots: &mut slots, buffers, policy: settings.policy, ipc: limits.ipc,
+            capacity: ManagerCapacity { sessions: limits.sessions,
+                pending_sends: limits.pending_sends, commands: limits.commands },
+            disable_v6: settings.disable_v6(),
         };
+        let (mut publication, initial_failure) = if let Some(original) = retained.take() {
+            (original.resume_identity(setup)?, None)
+        } else {
+            let mut pool = Pool::new(Setup {
+                services: connections.ok_or(Error::NotReady)?, identity: setup.identity,
+                scope: setup.scope, slots: setup.slots, buffers: setup.buffers,
+                policy: setup.policy, ipc: setup.ipc, capacity: setup.capacity,
+                disable_v6: setup.disable_v6,
+            })?.with_socket_policy(listeners.socket_policy().clone());
+            let epoch = clock.begin_epoch(identity.peer())?;
+            epoch_started = true;
+            pool.bind_epoch(epoch).map_err(|rejected| rejected.reason)?;
+            let _first_actual = clock.read()?;
+            let mut original_pool = Some(pool);
+            let nat_source = match listeners.mode() {
+                super::PeerMode::Listening => publication::configured_nat_source(
+                    nat_instance, live, context.resolution_context(),
+                ),
+                super::PeerMode::OutboundOnly => Ok(None),
+            };
+            let adopted = nat_source.and_then(|source| publication::Owner::try_adopt(
+                &mut original_pool, listeners, source, clock.source(), settings.disable_v6(),
+            ));
+            match adopted {
+                Ok(owner) => (owner, None),
+                Err(error) => (publication::Owner::unpublished(original_pool.take().ok_or(Error::Conflict)?), Some(Box::new(error) as Failure)),
+            }
+        };
+        if !epoch_started {
+            let epoch = clock.begin_epoch(identity.peer())?;
+            epoch_started = true;
+            publication.pool_mut().ok_or(Error::NotReady)?.bind_epoch(epoch).map_err(|rejected| rejected.reason)?;
+            let _first_actual = clock.read()?;
+        }
+        *last_metrics=Some(continuity.combine(publication.pool_mut().ok_or(Error::NotReady)?.metrics()));
+        let mut reversals = reversal::Driver::new(clock.source(), limits.sessions)?;
         let mut generation_ready = false;
         let mut result: Result<(), Failure> = initial_failure.map_or(Ok(()),Err);
         let mut phase = if result.is_err() { Phase::Stopping } else { Phase::Active };
@@ -295,7 +349,7 @@ where
                                 diagnose(Diagnostic::Identity(IdentityEvent::Retiring {
                                     previous: *identity.peer().as_bytes(), next: *next.peer().as_bytes(),
                                 }));
-                                phase = Phase::Replacing;
+                                phase = if next.epoch() == identity.epoch() { Phase::Replacing } else { Phase::Recovering };
                                 force = true;
                             }
                             Err(error) => { result = Err(independent(result, error)); phase = Phase::Stopping; force = true; }
@@ -328,7 +382,7 @@ where
                 cleanup_started = true;
                 cleanup_hard = Some(cleanup_deadline.deadline());
                 clock.begin_stop();
-                publication.begin_close();
+                if !phase.retaining_resources() { publication.begin_close(); }
             }
             if matches!(phase, Phase::Stopping) && pils_live {
                 let _original = pils.close();
@@ -343,7 +397,7 @@ where
                 };
                 let closing = if force {
                     pool_retired = true;
-                    pool.retire_epoch(last)
+                    if phase.retaining_resources() { pool.retire_identity_epoch() } else { pool.retire_epoch(last) }
                 } else {
                     match clock.read() {
                         Ok(time) => pool.begin_shutdown(time),
@@ -383,10 +437,10 @@ where
                     diagnose(Diagnostic::Identity(IdentityEvent::Ready { peer: *identity.peer().as_bytes() }));
                 }
             }
-            if !phase.active() && pool_closing && publication.is_returned()
+            if !phase.active() && pool_closing && (publication.is_returned() || phase.retaining_resources())
                 && pending.is_none() && reversals.is_empty()
                 && let Some(pool) = publication.pool_mut()
-                && pool.is_empty() && pool.is_quiescent()
+                && pool.is_empty() && (if phase.retaining_resources() { pool.identity_quiescent() } else { pool.is_quiescent() })
             {
                 break;
             }
@@ -486,7 +540,7 @@ where
                                 }
                             }
                             2 => {
-                                if let Poll::Ready(event) = publication.poll(cx, phase.active() && !failed()) {
+                                if let Poll::Ready(event) = publication.poll(cx, (phase.active() || phase.retaining_resources()) && !failed(), network_changes) {
                                     cursor = 3;
                                     return Poll::Ready(Ok(Running::Addresses(event)));
                                 }
@@ -589,7 +643,14 @@ where
                 report.creates = report.creates.saturating_add(1);
                 let reverse = valid && gnunet_tcp_communicator_core::registry::Address::parse(&address[..size])
                     .and_then(|address| address.reversal()).unwrap_or(false);
-                if reverse {
+                if reverse && listeners.mode() == super::PeerMode::OutboundOnly {
+                    // A port-zero hint needs a real incoming listener. Keep the
+                    // original CREATE result negative without a NAT request or
+                    // fictitious local connectback address.
+                    report.rejected=report.rejected.saturating_add(1);
+                    diagnose(Diagnostic::Admission(crate::AdmissionError::Core(Error::Unsupported)));
+                    pending=Some((id,false));
+                } else if reverse {
                     match reversals.start(pool,id,peer,&address[..size]) {
                         Ok(())=>{},
                         Err(rejected)=>{
@@ -668,7 +729,7 @@ where
                         // Stop original peer IO without new clock/provider work.
                         // The same Pool debts, address owner and replay worker
                         // must still finish before a successor is polled.
-                        phase=Phase::Replacing;force=true;pils_live=false;
+                        phase=Phase::Recovering;force=true;pils_live=false;
                         if !pool_retired && let Some(pool)=publication.pool_mut() {
                             if let Some(last)=clock.last_time() {
                                 if let Err(error)=pool.retire_epoch(last) {
@@ -770,11 +831,17 @@ where
             }
             tokio::task::yield_now().await;
         }
-        let pool = publication.take_pool().ok_or(Error::Closed)?;
-        *last_metrics=Some(continuity.combine(pool.metrics()));
-        let proof = match pool.into_quiescent() {
-            Ok(proof) => proof,
-            Err(original) => return Err(independent(result, original.reason.into())),
+        let proof = if phase.retaining_resources() && result.is_ok() {
+            let (resources, proof) = publication.retain_identity_resources()?;
+            *retained = Some(resources);
+            proof
+        } else {
+            let pool = publication.take_pool().ok_or(Error::Closed)?;
+            *last_metrics=Some(continuity.combine(pool.metrics()));
+            match pool.into_quiescent() {
+                Ok(proof) => proof,
+                Err(original) => return Err(independent(result, original.reason.into())),
+            }
         };
         quiescent = Some(proof);
         result?;
@@ -783,6 +850,7 @@ where
         Ok(report)
         }.await;
     if outcome.is_err() || !replacing {
+        drop(retained.take());
         let _original = pils.close();
     }
     if (!replacing || outcome.is_err())
@@ -790,6 +858,25 @@ where
     {
         owner.begin_close(*last_metrics, outcome.is_ok() && !failed());
     }
+    let mut stop_seen = false;
+    let mut poll_resources = |cx: &mut std::task::Context<'_>| {
+        if failed() {
+            drop(retained.take());
+            return Ok(false);
+        }
+        if retained.is_none() {
+            return Ok(false);
+        }
+        if !stop_seen && let Poll::Ready(result) = shutdown.as_mut().poll(cx) {
+            stop_seen = true;
+            // This is the original physical EOF, without a successor ADD or a
+            // second poll of an already completed stop future.
+            drop(retained.take());
+            result?;
+            return Ok(false);
+        }
+        publication::poll_retained(retained, cx, network_changes, observe_addresses)
+    };
     let finishing = replay::finish(
         &mut clock,
         quiescent,
@@ -797,6 +884,7 @@ where
         outcome,
         cleanup_hard,
         diagnose,
+        &mut poll_resources,
     );
     let report = if let Some(owner) = statistics.as_mut() {
         owner
@@ -805,6 +893,9 @@ where
     } else {
         finishing.await?
     };
+    if stop_seen {
+        replacing = false;
+    }
     Ok(Exit { report, replacing })
 }
 
@@ -852,7 +943,7 @@ impl Entropy for Random {
 }
 
 #[derive(Debug)]
-struct NatClockFailure(nat::Cause);
+pub(super) struct NatClockFailure(pub(super) nat::Cause);
 impl std::fmt::Display for NatClockFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "original NAT clock/source: {:?}", self.0)

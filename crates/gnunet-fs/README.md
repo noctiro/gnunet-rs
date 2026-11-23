@@ -67,9 +67,13 @@ GET Bloom hints contain a four-byte native nonce followed by the complete
 power-of-two filter, from8 through32768 bytes. Small groups are inline. Optional
 `alloc` enables fallible larger filters with an aggregate actual-capacity budget;
 the default remains allocation-free and returns Capacity for oversized groups. Existing route merges do not allocate, and retained/retiring groups remain
-charged until release. Ordinary local search IPC uses 64-byte seen hashes
-instead. Normal outgoing peer hints are empty to accommodate the pinned C
-checker's contradictory whole-tail length test.
+charged until release. Normal outgoing peer hints are empty to accommodate the
+pinned C checker's contradictory whole-tail length test.
+
+Ordinary local search IPC uses 64-byte seen hashes of complete signed blocks.
+Before connecting, a streaming search can add authenticated historical hashes
+to its fixed-capacity seen list. Recent historical hints are evictable.
+Configured hashes and newly accepted live hashes remain reserved for the search.
 
 ## Content trees
 

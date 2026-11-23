@@ -67,25 +67,9 @@ pub fn auto_source(
 ) -> EndpointSource {
     EndpointSource::live(live, b"nat-auto", resolution)
 }
-/// Explicit local build ABI helper; constructors still require Profiles. Other
-/// platforms are Unsupported rather than guessed from address data.
+/// Match the local SDK socket ABI to an official NAT IPC profile.
 pub fn native_profile() -> Result<ipc::Profile, Error> {
-    let order = if cfg!(target_endian = "little") {
-        ipc::Endian::Little
-    } else {
-        ipc::Endian::Big
-    };
-    if cfg!(windows) {
-        Ok(ipc::Profile::windows(order))
-    } else if cfg!(target_os = "linux") {
-        Ok(ipc::Profile::linux(order))
-    } else if cfg!(target_os = "macos") || cfg!(target_os = "ios") {
-        Ok(ipc::Profile::darwin(order))
-    } else if cfg!(target_os = "freebsd") {
-        Ok(ipc::Profile::freebsd(order))
-    } else {
-        Err(Fault::Unsupported.into())
-    }
+    gnunet_service_runtime::network::native_sockaddr_profile().map_err(Into::into)
 }
 fn encoded(request: ipc::Request<'_>, profile: ipc::Profile) -> Result<OwnedFrame, Error> {
     let n = request.encoded_len(profile)?;

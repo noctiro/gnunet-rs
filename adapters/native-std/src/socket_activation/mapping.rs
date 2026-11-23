@@ -1,10 +1,12 @@
-//! Anonymous section handles and uniquely owned bounded views.
+//! Section handles and uniquely owned bounded views.
+use crate::{identity::PrivateSecurityDescriptor, process::Process};
 use std::{
     io,
-    os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle},
+    os::windows::io::{AsHandle, AsRawHandle, BorrowedHandle, FromRawHandle, OwnedHandle},
 };
 use windows_sys::Win32::{
-    Foundation::{DuplicateHandle, HANDLE, INVALID_HANDLE_VALUE},
+    Foundation::{DUPLICATE_SAME_ACCESS, DuplicateHandle, HANDLE, INVALID_HANDLE_VALUE},
+    Storage::FileSystem::READ_CONTROL,
     System::{
         Memory::{
             CreateFileMappingW, FILE_MAP, FILE_MAP_READ, FILE_MAP_WRITE,
@@ -77,21 +79,24 @@ impl Drop for View {
 pub(super) struct Writable {
     // View retirement precedes handle closure on every path.
     pub(super) view: View,
-    _write: OwnedHandle,
+    write: Option<OwnedHandle>,
     pub(super) read: OwnedHandle,
 }
 impl Writable {
     #[expect(
         unsafe_code,
-        reason = "An anonymous pagefile-backed section and a read-only duplicate receive unique owners; native constructors copy no caller pointer beyond their synchronous calls"
+        reason = "A new pagefile-backed section and a read-only duplicate receive unique owners; native constructors retain no caller pointers"
     )]
     pub(super) fn new(bytes: usize) -> io::Result<Self> {
         let bytes = u32::try_from(bytes).map_err(|_| io::ErrorKind::InvalidInput)?;
-        // SAFETY: anonymous pagefile section, no external pointer or name, exact nonzero size.
+        let security = PrivateSecurityDescriptor::owner_only()?;
+        let mut attributes = security.attributes();
+        // SAFETY: unnamed section with the exact nonzero size and a borrowed
+        // descriptor. No caller pointer is retained.
         let handle = unsafe {
             CreateFileMappingW(
                 INVALID_HANDLE_VALUE,
-                std::ptr::null(),
+                attributes.as_mut_ptr().cast(),
                 PAGE_READWRITE,
                 0,
                 bytes,
@@ -101,17 +106,18 @@ impl Writable {
         if handle.is_null() {
             return Err(io::Error::last_os_error());
         }
-        // SAFETY: successful constructor supplies this sole real section owner.
+        // SAFETY: successful constructor supplies this sole real handle owner.
         let write = unsafe { OwnedHandle::from_raw_handle(handle) };
         let mut read = std::ptr::null_mut();
-        // SAFETY: live original section; only FILE_MAP_READ rights are duplicated.
+        // SAFETY: live original section. The child can map read-only and query
+        // the section security, with no mapping or security write access.
         if unsafe {
             DuplicateHandle(
                 GetCurrentProcess(),
                 handle,
                 GetCurrentProcess(),
                 &mut read,
-                FILE_MAP_READ,
+                FILE_MAP_READ | READ_CONTROL,
                 0,
                 0,
             )
@@ -124,8 +130,44 @@ impl Writable {
         let view = View::new(write.as_raw_handle(), FILE_MAP_WRITE, bytes as usize)?;
         Ok(Self {
             view,
-            _write: write,
+            write: Some(write),
             read,
         })
+    }
+
+    pub(super) fn seal(&mut self) -> io::Result<Sealed<'_>> {
+        self.view.close()?;
+        self.write = None;
+        Ok(Sealed(self.read.as_handle()))
+    }
+}
+
+pub(super) struct Sealed<'a>(BorrowedHandle<'a>);
+
+impl Sealed<'_> {
+    #[expect(
+        unsafe_code,
+        reason = "DuplicateHandle borrows a sealed read-only section and the original pinned child, returning a scalar valid only in that child's table"
+    )]
+    pub(super) fn duplicate_into(self, target: &Process) -> io::Result<u64> {
+        let mut target_handle = std::ptr::null_mut();
+        // SAFETY: both original handles and the exclusive output stay live.
+        // The new handle has the same read and security-query rights as the
+        // sealed source and cannot be inherited by another process.
+        if unsafe {
+            DuplicateHandle(
+                GetCurrentProcess(),
+                self.0.as_raw_handle(),
+                target.as_handle().as_raw_handle(),
+                &mut target_handle,
+                0,
+                0,
+                DUPLICATE_SAME_ACCESS,
+            )
+        } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(target_handle as usize as u64)
     }
 }

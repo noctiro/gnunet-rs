@@ -17,6 +17,11 @@ import time
 PACKAGE = Path(__file__).resolve().parents[1]
 REPOSITORY = PACKAGE.parents[1]
 APP = REPOSITORY/'apps/gnunet-service-resolver'
+TOOLS = REPOSITORY/'tools'
+sys.dont_write_bytecode=True
+sys.path.insert(0,str(TOOLS))
+from cargo_artifacts import CargoArtifacts
+from rust_toolchain import rust_channel
 REQUIRED = {
     'actual_wall_clock_timer_wakes_no_upstream_lookup_after_thirty_seconds',
     'queued_start_never_mints_after_deadline_and_unrelated_buffered_eof_is_cleaned',
@@ -38,12 +43,13 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     for name in ['build-receipt','output']:
         parser.add_argument('--'+name,type=Path,required=True)
-    a=parser.parse_args();out=a.output.resolve()
+    parser.add_argument('--toolchain')
+    a=parser.parse_args();out=a.output.resolve();channel=rust_channel(REPOSITORY,a.toolchain)
     for source in [PACKAGE,APP]:
         if out.is_relative_to(source) or source.is_relative_to(out):
             parser.error('output and source must be disjoint')
     out.mkdir(parents=True,exist_ok=False);started=time.monotonic()
-    target=out/'target';cargo=['cargo','+1.99.1'];base=['--manifest-path',str(REPOSITORY/'Cargo.toml'),'--target-dir',str(target),'--offline','--locked']
+    target=out/'target';cargo=['cargo','+'+channel];base=['--manifest-path',str(REPOSITORY/'Cargo.toml'),'--target-dir',str(target),'--offline','--locked']
     report={'status':'failed','scope':'Integrated real Resolver Unix/TCP/UDP host and foreground app; generic startup/full owner acceptance remain separate','commands':[]}
     def run(label,argv,timeout=180,env=None):
         before=time.monotonic();p=subprocess.run(list(map(str,argv)),cwd=REPOSITORY,env=env,capture_output=True,timeout=timeout)
@@ -63,15 +69,17 @@ def main():
             if directory==PACKAGE:
                 paths.extend(p for sub in ['tools','tests','examples'] for p in (directory/sub).rglob('*') if p.is_file())
             inputs.update({str(p):sha(p) for p in paths if '__pycache__' not in p.parts})
-        for p in [REPOSITORY/'Cargo.toml',REPOSITORY/'Cargo.lock',REPOSITORY/'rust-toolchain.toml',a.build_receipt.resolve()]:inputs[str(p)]=sha(p)
+        for p in [REPOSITORY/'Cargo.toml',REPOSITORY/'Cargo.lock',REPOSITORY/'rust-toolchain.toml',TOOLS/'cargo_artifacts.py',TOOLS/'rust_toolchain.py',a.build_receipt.resolve()]:inputs[str(p)]=sha(p)
         report['source_inputs']=inputs
         names=[name for source in sorted((PACKAGE/'tests').glob('*.rs')) for name in re.findall(r'#\[test\]\s*fn\s+(\w+)',source.read_text())]
         assert len(names)==16 and len(set(names))==16 and REQUIRED<=set(names),'actual test obligations changed; re-review coverage'
         run('format',cargo+['fmt','--all','--','--check'])
         run('clippy',cargo+['clippy',*base,'-p','gnunet-resolver-host','-p','gnunet-service-resolver','--all-targets','--','-D','warnings'])
-        run('build-app',cargo+['build',*base,'-p','gnunet-service-resolver'])
-        run('build-fixture',cargo+['build',*base,'-p','gnunet-resolver-host','--example','fixture'])
-        built={str(p):sha(p) for p in [target/'debug/gnunet-service-resolver',target/'debug/examples/fixture']}
+        app_build=run('build-app',cargo+['build',*base,'-p','gnunet-service-resolver','--message-format=json'])
+        fixture_build=run('build-fixture',cargo+['build',*base,'-p','gnunet-resolver-host','--example','fixture','--message-format=json'])
+        binary=CargoArtifacts(app_build).binary('gnunet-service-resolver',APP/'Cargo.toml')
+        fixture=CargoArtifacts(fixture_build).example('fixture',PACKAGE/'Cargo.toml')
+        built={str(p):sha(p) for p in (binary,fixture)}
         report['fresh_build_artifacts']=built
         text=run('actual-socket-tests',cargo+['test',*base,'-p','gnunet-resolver-host','--tests','--','--test-threads=1'],timeout=90)
         passed=re.findall(r'^test (\w+) \.\.\. ok$',text,re.M)
@@ -84,14 +92,14 @@ def main():
         cbuild=json.loads((cdir/'result.json').read_text());assert cbuild['exit_code']==0 and cbuild['inputs_unchanged']
         built[str(cdir/'public-client')]=sha(cdir/'public-client')
         assert all(sha(p)==h for p,h in built.items()),'fresh artifacts changed before execution'
-        run('normal-c-process',[sys.executable,'-B',PACKAGE/'tools/process_oracle.py','--package',PACKAGE,'--build-receipt',a.build_receipt,'--client',cdir/'public-client','--service',target/'debug/examples/fixture','--output',out/'process'],timeout=60)
+        run('normal-c-process',[sys.executable,'-B',PACKAGE/'tools/process_oracle.py','--package',PACKAGE,'--build-receipt',a.build_receipt,'--client',cdir/'public-client','--service',fixture,'--output',out/'process'],timeout=60)
         proof=json.loads((out/'process/result.json').read_text());assert proof['status']=='passed' and len(proof['cases'])==15 and all(c['passed'] for c in proof['cases'])
-        assert proof['binaries']=={p:h for p,h in built.items() if p in {str(target/'debug/examples/fixture'),str(cdir/'public-client')}},'executed process inputs differ from fresh artifacts'
+        assert proof['binaries']=={p:h for p,h in built.items() if p in {str(fixture),str(cdir/'public-client')}},'executed process inputs differ from fresh artifacts'
         report['normal_c_process']={'checks':15,'receipt':'process/result.json','sha256':sha(out/'process/result.json'),'normal_library':proof['normal_C_library']}
-        binary=target/'debug/gnunet-service-resolver';env={k:v for k,v in os.environ.items() if not k.startswith('LISTEN_')}
+        env={k:v for k,v in os.environ.items() if not k.startswith('LISTEN_')}
         for name in ['help','version']:run('foreground-'+name,[binary,'--'+name],env=env)
         assert all(sha(p)==h for p,h in built.items()),'fresh artifacts changed during execution'
-        run('production-app-smoke',[sys.executable,'-B',PACKAGE/'tools/app_smoke.py','--repository',REPOSITORY,'--output',out/'production-app-smoke'],timeout=180)
+        run('production-app-smoke',[sys.executable,'-B',PACKAGE/'tools/app_smoke.py','--repository',REPOSITORY,'--output',out/'production-app-smoke','--toolchain',channel],timeout=180)
         production=json.loads((out/'production-app-smoke/result.json').read_text());assert production['status']=='passed' and len(production['checks'])==15 and production['inputs_unchanged']
         report['production_app_process']={'checks':15,'receipt':'production-app-smoke/result.json','sha256':sha(out/'production-app-smoke/result.json'),'fresh_app':production['fresh_app']}
         report['artifacts']=built

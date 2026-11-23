@@ -216,23 +216,11 @@ impl<'id, J> Pils<'id, J> {
             closed: false,
         })
     }
-    /// Cancel this original epoch's admitted jobs without replacing its healthy
-    /// physical PILS source or its actual ordered identity observations. Copied
-    /// suffixes remain under the original bounds until real quiescence/loss.
-    pub fn cancel_all(&mut self) -> Result<(), Failure> {
-        for i in 0..self.rows.len() {
-            if !self.rows[i].cancelled {
-                let operation = self.rows[i].operation;
-                self.cancel(operation)?;
-            }
-        }
-        Ok(())
-    }
     /// Original native job metadata still awaiting a terminal observation.
     pub fn pending_jobs(&self) -> usize {
         self.rows.len()
     }
-    /// A genuine source failure cannot be cleared by a core epoch rotation.
+    /// Whether the original PILS connection remains usable.
     pub fn reusable(&self) -> bool {
         !self.closed
     }

@@ -43,10 +43,10 @@ failure through its error source.
 
 ## Configuration
 
-`configured_user(config, section)` reads `USERNAME` through official dollar and
-filename expansion. Missing configuration means retain the selected account;
-invalid present configuration returns its original error. It does not perform
-account lookup or change process identity.
+`configured_user(config, section)` reads `USERNAME` through dollar expansion.
+Unix also applies the official filename expansion. Missing configuration
+keeps the selected account. Present values are resolved by the platform's
+account lookup during identity preparation.
 
 ## Windows identity
 
@@ -56,6 +56,19 @@ or a configuration, Win32 query or identity-mismatch error. Mismatch retains bot
 observed SIDs. It does not map identities to Unix UID/GID numbers, impersonate a
 thread or change the invoking process account. A supervisor must launch under the
 required account before constructing the service.
+
+ARM can start a service under a verified Windows batch-logon
+token. It builds the target environment from the loaded Windows profile and
+starts a detached child with closed standard streams. It grants access to the
+private control pipe to the target SID and qualifies the connection against the
+original child process. The native process handle governs profile retirement.
+The original child can receive managed IPv4 and IPv6 TCP listeners and
+AF_UNIX listeners protected for its verified account before listen. A
+same-session launch inherits the read-only section and verifies its
+publisher before importing protected AF_UNIX listeners. For a launch into
+another session, the parent duplicates the sealed read-only handle into the
+original suspended process and sends a signed grant after resume.
+[Windows activation](../native-std/SOCKET-ACTIVATION.md#ownership-and-startup-order)
 
 The native SID owner retains only validated identifier bytes. Token handles close
 through unique ownership; the SID can outlive the query handle without retaining
@@ -78,12 +91,17 @@ endpoint; it declares the one-shot launcher role without granting identity,
 readiness or console authority. Nonempty Unix `LISTEN_FDS`/`LISTEN_FDNAMES`
 declarations are refused on Windows.
 
-`CapturedStartup::activation` owns optional read-only native activation metadata.
+`CapturedStartup::activation` owns optional read-only native activation metadata
+from an inherited handle or a cross-session grant. During a session crossing
+the child reads a bounded startup prefix with a 30-second deadline. It
+authenticates the grant with the original launch's verification key and
+checks the target PID and kernel section owner before adopting the handle.
 After any managed console detachment, materialize and validate the original
 sockets before reactor registration. Capture/import failure or abandonment
 requires startup exit; the [native transfer contract](../native-std/SOCKET-ACTIVATION.md)
-defines ownership and provider reservations. `ParentControl::register()` opens a
-fresh overlapped client under an entered I/O-enabled Tokio runtime.
+defines ownership and provider reservations. `ParentControl::register()`
+registers the original early client if the child received a grant. Otherwise
+it opens a fresh overlapped client under an entered I/O-enabled Tokio runtime.
 
 The parent's `ParentBootstrap` binds its listener to the registry's original
 child token and process-object identity lease. The kernel-observed connected PID
@@ -95,9 +113,10 @@ pending. Pre-connect exit returns the real full-width exit code instead of
 waiting indefinitely; it consumes no registry reap receipt. Terminal connect
 failures are sticky and release the original listener/identity/wait owners.
 
-The duplex directions carry exact signed control bytes toward the child and
-official `.` / `I` / `S` startup bytes toward the parent. Unknown status, failure
-status and EOF cannot become readiness. EOF on child control is not termination.
+After any activation grant, the parent direction carries signed 8-bit
+control values and the child direction carries the official `.` / `I` / `S`
+startup bytes. Only an actual `.` reports readiness. Child control closes
+when the parent disconnects.
 Canceled waits retain their original connection, reader and admitted byte.
 Readiness permits only its first immutable intent; same-status resumption does
 not send again. Control admission requires a live record in the exact registry.

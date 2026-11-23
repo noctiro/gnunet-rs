@@ -11,6 +11,19 @@ The [command reference](commands.md) contains examples, configuration selection,
 JSON fields and completion/error behavior for STATISTICS, FS, NAMESTORE,
 IDENTITY, VPN, REGEX and TRANSPORT.
 
+The `statistics` feature also builds [gnunet-statistics](commands.md#statistics).
+The `identity` feature builds [gnunet-identity](commands.md#identity-keys).
+The `namestore` feature builds [gnunet-namestore](commands.md#namestore-delegation-import)
+for GNS URI import and [gnunet-namestore-zonefile](commands.md#namestore-zone-files)
+for zonefile import.
+The `fs` feature builds the [installed file-sharing commands](commands.md#installed-file-sharing-commands).
+The `regex` and `revocation` features build the installed
+[gnunet-regex](commands.md#regex) and [gnunet-revocation](commands.md#revocation) commands.
+The `did`, `transport` and `vpn` features build the installed
+[gnunet-did](commands.md#did), [gnunet-transport](commands.md#transport-monitoring)
+and [gnunet-vpn](commands.md#vpn) commands.
+The `reclaim` feature builds [gnunet-reclaim](commands.md#reclaim).
+
 An explicit socket path selects that service endpoint. Commands supporting `-`
 resolve the endpoint from normal configuration. Service commands require a
 listening service; local FS/crypto operations use their documented local inputs.

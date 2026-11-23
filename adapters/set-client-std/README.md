@@ -99,14 +99,10 @@ failed before ReadStep::Progress. It takes the maximum of the observed head
 counter and the retained head extent, rather than adding two views of
 the same bytes. Loss capture samples no clock and performs no I/O.
 
-Focused private Unix timer fixtures prepare CREATE/Evaluate/Iterate writes
-and keep the peer silent under a fixed logical clock. They cover a later operation
-with the earliest hard target, cancellation that removes the old operation target
-while retaining its CANCEL write bound, and iteration cleanup that replaces
-an already elapsed original target. Whole writes, physical EOF and original receipt
-fields remain separate from remote SET results; no peer DONE or agreement is
-fabricated. The owner-alarm refactor requires the selected checks for its current
-source before it can claim verification.
+The client checks each write against its original target before clearing that
+target. If the check fails, the client closes the connection before returning
+the actual write progress. The next progress poll, native guard or explicit
+close returns the original loss. Whole writes report local transport exposure.
 
 Loss provenance is supplied by the boundary. `Cause::origin()` and
 `Error::origin()` expose `LossOrigin::{Bounds, Source, Clock, Selector}` without
@@ -124,10 +120,7 @@ error into `Set::retire_after(error)`. The SDK physically closes that MQ before
 returning all original mutation/operation/iteration/copy and transport facts;
 it does not replace the failure with Requested, clone an I/O error, extend a
 deadline, replay writes or claim a remote result. A composed owner can isolate
-Source/Bounds loss while independently fencing a refused shared Clock/Selector. Focused cases cover direct sample, subscription and notification failures,
-canonical/native expiry, retained native framing errors and a admitted
-operation plus an unwritten mutation at synchronous expiry. They require the
-current source's selected checks before receiving verification credit.
+Source/Bounds loss while independently fencing a refused shared Clock/Selector.
 
 Exact deadline facts remain a fixed `Copy` value carried in one cold box by
 `Error::Deadline(context)` and `SetLoss::deadline`/`ListenerLoss::deadline`. The deadline check allocates that box once. Error-to-loss conversion

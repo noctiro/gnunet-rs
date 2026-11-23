@@ -1,0 +1,29 @@
+#!/bin/sh
+
+# PROVIDE: gnunet_node
+# REQUIRE: LOGIN
+# KEYWORD: shutdown
+
+. /etc/rc.subr
+
+name=gnunet_node
+desc="GNUnet peer"
+rcvar=gnunet_node_enable
+
+load_rc_config "$name"
+: "${gnunet_node_enable:=NO}"
+: "${gnunet_node_args=--outbound-tcp}"
+
+command=/usr/sbin/daemon
+pidfile=/var/run/gnunet-node.pid
+node=@GNUNET_EXECUTABLE@
+bootstrap_data=@GNUNET_BOOTSTRAP_DATA@
+state_directory=/var/db/gnunet-node/state
+ipc_directory=/var/db/gnunet-node/ipc
+required_files="$node"
+required_dirs="$state_directory $ipc_directory"
+command_args="-c -f -S -T gnunet-node -P $pidfile -u gnunet $node \
+    --state-directory $state_directory --ipc-directory $ipc_directory \
+    --bootstrap-data-directory $bootstrap_data $gnunet_node_args"
+
+run_rc_command "$1"

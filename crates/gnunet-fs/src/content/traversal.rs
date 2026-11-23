@@ -155,6 +155,25 @@ impl<'a> RangeTraversal<'a> {
     pub const fn next(&self) -> Option<NodeRef> {
         self.pending
     }
+    /// Consecutive selected data children already authorized by one open index.
+    /// Starts with the pending lookup when it is a leaf. These references are
+    /// read-ahead only, and `accept` still requires exact traversal order.
+    pub fn ready_leaves(&self) -> impl Iterator<Item = NodeRef> + '_ {
+        let head = self.pending.filter(|node| node.node.level() == 0);
+        head.into_iter().chain(
+            self.frames[0]
+                .filter(|_| head.is_some())
+                .into_iter()
+                .flat_map(move |frame| {
+                    let start = self.layout.slots(1).start;
+                    (usize::from(frame.next_child)..frame.node.child_count()).filter_map(move |i| {
+                        let node = frame.node.child_at(i);
+                        node.intersects(&self.range)
+                            .then(|| NodeRef::new(node, self.keys[start + i]))
+                    })
+                }),
+        )
+    }
     fn next_from_frames(&mut self) -> Option<NodeRef> {
         for level in 1..=self.layout.root_level() {
             let group = usize::from(level - 1);

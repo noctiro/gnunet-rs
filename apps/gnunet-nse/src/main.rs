@@ -48,7 +48,7 @@ fn run() -> Result<u8, Failure> {
         helpers::{self, Target},
         logging::Logger,
         policy::Level,
-        program::{self, Defaults, Invocation, NlsDisabled, Preparation},
+        program::{self, Defaults, Invocation, Preparation},
         reporting::Reporter,
         shared_clock::SharedClock,
     };
@@ -73,7 +73,7 @@ fn run() -> Result<u8, Failure> {
         monitor.clone(),
     ));
     let mut logger = Logger::new(b"gnunet-nse", std::process::id(), false)?;
-    let prepared=program::prepare(config,Invocation{binary_name:b"gnunet-nse",help:Some(b"Show network size estimates from NSE service. Default: print first real estimate and disconnect. -m/--monitor: print continuous estimates until signal or optional finite configured monitor target. Values are statistical observations, not authenticated peer counts. No positional arguments."),select_default_filename:true,defaults:Defaults::Native},options,std::env::args_os(),&program::Environment::capture(),&mut NlsDisabled,&mut logger,&clock,&mut io::stdout().lock(),&mut io::stderr().lock());
+    let prepared=program::prepare_installed(config,Invocation{binary_name:b"gnunet-nse",help:Some(b"Show network size estimates from NSE service. Default: print first real estimate and disconnect. -m/--monitor: print continuous estimates until signal or optional finite configured monitor target. Values are statistical observations, not authenticated peer counts. No positional arguments."),select_default_filename:true,defaults:Defaults::Native},options,std::env::args_os(),&program::Environment::capture(),&mut logger,&clock,&mut io::stdout().lock(),&mut io::stderr().lock());
     let reporter = Reporter::new(logger, clock.clone());
     #[cfg(unix)]
     if let Some(notice) = inherited.notice {

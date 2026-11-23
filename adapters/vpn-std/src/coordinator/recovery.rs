@@ -1,8 +1,16 @@
-//! Caller-selected same-adapter recovery with one original outage budget.
-use super::{Coordinator, Device, Error, Fault, Report, tun};
+//! Packet-session replacement with an original interface and outage budget.
+#[cfg(windows)]
+use super::Device;
+use super::{Coordinator, Error, Fault, Report, tun};
 use std::time::Duration;
 use tokio::time::Instant;
+#[cfg(target_os = "freebsd")]
+mod freebsd;
+#[cfg(target_os = "freebsd")]
+pub(super) use freebsd::PacketRecovery;
+#[cfg(windows)]
 mod physical;
+#[cfg(windows)]
 pub use physical::WintunPhysicalFailure;
 
 #[derive(Default)]
@@ -11,10 +19,16 @@ pub(super) struct Recovery {
     budget: tun::RecoveryBudget,
     pub(super) hard: Option<Instant>,
     configuring: bool,
+    #[cfg(windows)]
     retired: Option<tun::Epoch>,
+    #[cfg(target_os = "freebsd")]
+    pub(super) packet: Option<PacketRecovery>,
+    #[cfg(target_os = "freebsd")]
+    pub(super) retry_at: Option<Instant>,
 }
 
 /// Recovery refusal preserves the actual owner at the stage that failed.
+#[cfg(windows)]
 pub enum WintunRecoveryFailure {
     /// No native restart was attempted; the caller still owns the original adapter.
     Retained {
@@ -37,6 +51,7 @@ pub enum WintunRecoveryFailure {
     /// verification workflow could not be prepared. No owner is transferred twice.
     Installed(Error),
 }
+#[cfg(windows)]
 impl std::fmt::Debug for WintunRecoveryFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -58,30 +73,28 @@ impl std::fmt::Debug for WintunRecoveryFailure {
 impl<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy>
     Coordinator<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy>
 {
-    /// Select caller-driven Wintun recovery before the first drive. The caller
-    /// must consume returned recovery owners and continue driving old flow/debt
-    /// retirement. The coordinator still enforces its original finite budget.
-    ///
-    /// # Errors
-    /// Refuses policy changes after startup, shutdown, or close.
-    pub fn enable_wintun_recovery(&mut self) -> Result<(), Error> {
-        if self.source.is_some() || self.closed.is_some() || self.stopping.is_some() {
-            return Err(Fault::Conflict.into());
-        }
-        self.recovery.enabled = true;
-        Ok(())
-    }
     pub(super) fn arm_recovery(&mut self, loss: &tun::Loss) -> Result<bool, Error> {
+        #[cfg(windows)]
+        let owner = loss
+            .recovery
+            .as_deref()
+            .map(tun::WintunRecovery::original_epoch);
+        #[cfg(target_os = "freebsd")]
+        let owner = loss
+            .freebsd_recovery
+            .as_deref()
+            .map(tun::FreeBsdRecovery::original_epoch);
         if !self.recovery.enabled
             || self.closed.is_some()
             || self.stopping.is_some()
             || loss.close_error.is_some()
             || self.control.unconfirmed_control_closes != 0
-            || loss
-                .recovery
-                .as_ref()
-                .is_none_or(|owner| *owner.original_epoch() != loss.epoch)
+            || owner != Some(&loss.epoch)
         {
+            return Ok(false);
+        }
+        #[cfg(target_os = "freebsd")]
+        if !self.recovery.configuring && !self.tun_ready()? {
             return Ok(false);
         }
         let now = Instant::now();
@@ -91,13 +104,20 @@ impl<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy>
             (self.report.tun_read, self.report.tun_written),
             Duration::from_secs(1),
         );
-        self.recovery.hard = Some(self.recovery.budget.begin(
-            now,
-            self.limits.control_timeout,
-            Duration::from_secs(1),
-        )?);
+        let hard =
+            self.recovery
+                .budget
+                .begin(now, self.limits.control_timeout, Duration::from_secs(1))?;
+        self.recovery.hard = Some(hard);
+        #[cfg(target_os = "freebsd")]
+        {
+            self.recovery.retry_at = Some(Self::deadline(freebsd::RETRY_INTERVAL)?.min(hard));
+        }
         self.recovery.configuring = false;
-        self.recovery.retired = None;
+        #[cfg(windows)]
+        {
+            self.recovery.retired = None;
+        }
         Ok(true)
     }
     pub(super) fn observe_recovery(&mut self) -> Result<(), Error> {
@@ -118,6 +138,25 @@ impl<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy>
         self.recovery
             .budget
             .observe(now, (tun_read, tun_written), Duration::from_secs(1));
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
+impl<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy>
+    Coordinator<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy>
+{
+    /// Select caller-driven Wintun recovery before the first drive. The caller
+    /// must consume returned recovery owners and continue driving old flow/debt
+    /// retirement. The coordinator still enforces its original finite budget.
+    ///
+    /// # Errors
+    /// Refuses policy changes after startup, shutdown, or close.
+    pub fn enable_wintun_recovery(&mut self) -> Result<(), Error> {
+        if self.source.is_some() || self.closed.is_some() || self.stopping.is_some() {
+            return Err(Fault::Conflict.into());
+        }
+        self.recovery.enabled = true;
         Ok(())
     }
     /// Restart the retained original adapter and prepare read-only verification.
@@ -169,7 +208,8 @@ impl<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy>
             if !self.recovery.enabled || self.closed.is_some() || self.stopping.is_some() {
                 return Err(Fault::Closed.into());
             }
-            if *recovery.original_epoch() != self.device.epoch() || !self.control.dead {
+            if self.device.epoch().as_ref() != Some(recovery.original_epoch()) || !self.control.dead
+            {
                 return Err(Fault::StaleGeneration.into());
             }
             if self.control.unconfirmed_control_closes != 0 {

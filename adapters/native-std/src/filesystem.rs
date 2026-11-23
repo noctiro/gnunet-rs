@@ -1,5 +1,7 @@
 //! Original directories, native access checks and explicit naming barriers.
 mod close;
+#[cfg(target_os = "freebsd")]
+mod freebsd;
 mod identity;
 pub use close::close;
 mod info;
@@ -7,12 +9,17 @@ mod links;
 mod lock;
 #[cfg(windows)]
 mod mapping;
+#[cfg(all(target_os = "linux", not(target_env = "ohos")))]
+mod mount;
+mod open;
 mod private_data;
 pub mod publication;
 mod reader;
 mod special;
 pub use links::file_links;
 pub use lock::ExclusiveFile;
+#[cfg(all(target_os = "linux", not(target_env = "ohos")))]
+pub use mount::MountPoint;
 pub use private_data::private_data_file_info;
 mod readonly;
 mod times;
@@ -20,11 +27,13 @@ pub use identity::{FileIdentity, FileIdentityParts, InvalidIdentity};
 pub use info::{EntryInfo, FileInfo, file_info};
 #[cfg(windows)]
 pub use mapping::ReadMapping;
+pub use open::open_regular;
 pub use reader::FileReader;
 pub use readonly::validate_readonly;
 mod entries;
 pub use entries::Entries;
 mod directories;
+pub use directories::CreateDirectoryError;
 #[cfg(unix)]
 mod unix;
 #[cfg(windows)]

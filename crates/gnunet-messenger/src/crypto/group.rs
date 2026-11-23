@@ -8,6 +8,8 @@ use gnunet_session_crypto::{hpke, transcript::hmac512};
 use gnunet_types::Error as Fault;
 use subtle::ConstantTimeEq;
 use zeroize::Zeroizing;
+mod authorization;
+pub use authorization::{Authorization, open_authorization, verify_authorization};
 /// Actual C sizeof(string) salt, including its final NUL.
 pub const ANNOUNCEMENT_SALT: &[u8] = b"gnunet-messenger-announcement-key-k*d-p!80\0";
 /// Actual C sizeof(string) salt, including its final NUL.
@@ -20,7 +22,7 @@ pub const HPKE_INFO: &[u8] = b"messenger";
 /// Fixed field concatenation equals their actual C struct prefix, including
 /// the original BE8 timeout bytes. It excludes the final HMAC64. No portable
 /// wire hash is silently substituted for the official independent body coverage.
-/// AUTHORIZATION fails because its actual wire has no required separate MAC16.
+/// AUTHORIZATION needs its group key as well; use [`verify_authorization`].
 pub fn message_mac(body: Body<'_>, key: &AeadKey) -> Result<[u8; 64], Error> {
     let mut auth = Zeroizing::new([0; 64]);
     match body {
@@ -61,7 +63,7 @@ pub fn message_mac(body: Body<'_>, key: &AeadKey) -> Result<[u8; 64], Error> {
             )?;
             Ok(hmac512(auth.as_ref(), &[identifier, nonce]))
         }
-        Body::Authorization { .. } => Err(Error::AuthorizationMacOmitted),
+        Body::Authorization { .. } => Err(Error::GroupKeyRequired),
         _ => Err(Fault::InvalidInput.into()),
     }
 }
@@ -82,14 +84,14 @@ impl<'a> MacChecked<'a> {
     }
 }
 /// Derive and verify the actual carried body HMAC in constant time. Missing
-/// authorization MAC fails explicitly; no default zero or Verified event exists.
+/// group-key input fails explicitly; AUTHORIZATION uses [`verify_authorization`].
 pub fn verify_mac<'a>(message: Message<'a>, key: &AeadKey) -> Result<MacChecked<'a>, Error> {
     let body = message.body();
     let expected = match body {
         Body::Announcement { hmac, .. }
         | Body::Access { hmac, .. }
         | Body::Revolution { hmac, .. } => hmac,
-        Body::Authorization { .. } => return Err(Error::AuthorizationMacOmitted),
+        Body::Authorization { .. } => return Err(Error::GroupKeyRequired),
         _ => return Err(Fault::InvalidInput.into()),
     };
     let computed = message_mac(body, key)?;
@@ -162,74 +164,4 @@ pub fn open_access(message: Message<'_>, recipient: &EcdheSecret) -> Result<Aead
     let key = AeadKey::from_bytes(*raw);
     verify_mac(message, &key)?;
     Ok(key)
-}
-/// Actual outgoing AUTHORIZATION producer. The generated MAC is used locally
-/// in its HMAC calculation, then omitted by the official192-byte body codec.
-/// This mirrors the active producer but cannot make the receiver recover that
-/// absent MAC. It conveys no interoperable key-recovery or Verified guarantee.
-pub struct Authorization {
-    identifier: [u8; 32],
-    event: [u8; 64],
-    encrypted_key: [u8; 32],
-    hmac: [u8; 64],
-}
-impl fmt::Debug for Authorization {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("Authorization([REDACTED], official MAC omission)")
-    }
-}
-impl Authorization {
-    /// Execute the actual C producer's nonce KDF, group-key AEAD and transported
-    /// shared-key HMAC. The original event/identifier must be unique and admitted
-    /// by the caller's group state. No missing received MAC is defaulted to zero.
-    pub fn seal(
-        identifier: &[u8; 32],
-        event: &[u8; 64],
-        group_key: &AeadKey,
-        shared_key: &AeadKey,
-    ) -> Result<Self, Error> {
-        let mut nonce = Zeroizing::new([0; 24]);
-        hkdf_gnunet(
-            GROUP_SALT,
-            group_key.0.as_ref(),
-            &[identifier, event],
-            nonce.as_mut(),
-        )?;
-        let mut ciphertext = Zeroizing::new(*shared_key.0);
-        let actual_mac = gnunet_session_crypto::aead::xchacha20poly1305_seal(
-            &group_key.0,
-            &nonce,
-            &[],
-            ciphertext.as_mut(),
-        )?;
-        let mut auth = Zeroizing::new([0; 64]);
-        // The actual producer signs using the transported new shared key,
-        // independently of the group key that encrypted that shared key.
-        hkdf_gnunet(
-            GROUP_SALT,
-            shared_key.0.as_ref(),
-            &[identifier, event],
-            auth.as_mut(),
-        )?;
-        let hmac = hmac512(
-            auth.as_ref(),
-            &[identifier, event, ciphertext.as_ref(), &actual_mac],
-        );
-        Ok(Self {
-            identifier: *identifier,
-            event: *event,
-            encrypted_key: *ciphertext,
-            hmac,
-        })
-    }
-    /// Exact192-byte transmitted fields. The discarded actual MAC cannot be
-    /// recovered from this view and no private wire extension is appended.
-    pub fn body(&self) -> Body<'_> {
-        Body::Authorization {
-            identifier: &self.identifier,
-            event: &self.event,
-            encrypted_key: &self.encrypted_key,
-            hmac: &self.hmac,
-        }
-    }
 }

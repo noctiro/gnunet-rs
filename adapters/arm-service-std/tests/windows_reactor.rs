@@ -7,7 +7,7 @@ mod windows {
     };
     use gnunet_arm_service_host::{
         addresses::Address,
-        listeners::ManagedListeners,
+        listeners::{Failure as ListenerFailure, ManagedListeners, Preparation},
         process::{ChildRegistry, EnvironmentSnapshot, LaunchContext},
         reactor::{Activity, Driver, Limits, State, SystemClock},
         registry::{self, Registry},
@@ -15,7 +15,10 @@ mod windows {
     use gnunet_config::{BinaryPathCache, Configuration, ProcessEnvironment, ProjectData};
     use gnunet_service_runtime::{
         Activation, BoundListeners, LocalListenerAccess,
-        service::{Listener, ServiceOptions},
+        connection::Connection,
+        credentials::UnixAccess,
+        local,
+        service::{PeerAddress, ServiceOptions},
     };
     use gnunet_service_startup::{
         CapturedStartup, ReadyStatus, StopSignals, capture_from_environment,
@@ -61,6 +64,87 @@ mod windows {
             let _cleanup = fs::remove_dir_all(&self.0);
         }
     }
+    async fn invalid_local_policy_preserves_alternative_listeners() -> Result<(), Failure> {
+        let directory = Directory::new()?;
+        let executable = std::env::current_exe()?;
+        let image = gnunet_native::os_bytes::encode(executable.as_os_str());
+        let bad = directory.0.join("invalid");
+        let good = directory.0.join("valid");
+        let mut config = Configuration::default();
+        config.set_value(b"arm", b"START_USER_SERVICES", Some(b"YES"))?;
+        config.set_value(b"arm", b"START_SYSTEM_SERVICES", Some(b"NO"))?;
+        for (section, path) in [(b"bad", &bad), (b"ok!", &good)] {
+            let path = gnunet_native::os_bytes::encode(path.as_os_str());
+            for (key, value) in [
+                (b"TYPE".as_slice(), b"SIMPLE".as_slice()),
+                (b"PREFIX", image.as_ref()),
+                (b"BINARY", b"gnunet-arm-native-child"),
+                (b"RUN_PER_USER", b"YES"),
+                (b"START_ON_DEMAND", b"YES"),
+                (b"DISABLEV6", b"YES"),
+                (b"UNIXPATH", path.as_ref()),
+                (b"UNIX_MATCH_GID", b"YES"),
+            ] {
+                config.set_value(section, key, Some(value))?;
+            }
+        }
+        config.set_value(b"bad", b"UNIX_MATCH_UID", Some(b"malformed"))?;
+        config.set_value(b"bad", b"BINDTO", Some(b"127.0.0.1"))?;
+        let port = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
+        let tcp = port.local_addr()?;
+        config.set_number(b"bad", b"PORT", u64::from(tcp.port()))?;
+        let registry = Registry::from_config(
+            &config,
+            &ProcessEnvironment,
+            &ProjectData::default(),
+            &mut BinaryPathCache::new(),
+            registry::Limits::default(),
+        )?;
+        let bad_index = registry
+            .services()
+            .iter()
+            .position(|service| service.name == b"bad")
+            .ok_or("missing service with invalid policy")?;
+        let bad = gnunet_service_runtime::network::shorten_unixpath(&bad)?;
+        let good = gnunet_service_runtime::network::shorten_unixpath(&good)?;
+        drop(port);
+
+        let mut managed = ManagedListeners::new(2);
+        managed
+            .bind_registry(&config, &registry, &ProcessEnvironment, 2)
+            .await?;
+        check(
+            managed.preparation() == Preparation::Complete && managed.len() == 2,
+            "one invalid local policy stopped independent listeners",
+        )?;
+        let [
+            ListenerFailure::Bind {
+                service,
+                address: Address::Unix(path),
+                error,
+            },
+        ] = managed.failures()
+        else {
+            return Err("invalid local policy did not produce one local bind diagnostic".into());
+        };
+        check(
+            *service == bad_index
+                && path == &bad
+                && error.kind() == io::ErrorKind::InvalidInput
+                && error
+                    .get_ref()
+                    .and_then(|source| source.downcast_ref::<gnunet_config::Error>())
+                    .is_some_and(|error| matches!(error, gnunet_config::Error::InvalidValue))
+                && !bad.try_exists()?,
+            "malformed owner restriction was not rejected before binding",
+        )?;
+        check(
+            (0..managed.len()).any(|index| managed.address(index) == Some(&Address::Tcp(tcp)))
+                && gnunet_native::local_path::is_socket(&good)?,
+            "valid TCP or independent AF_UNIX listener was lost",
+        )?;
+        Ok(())
+    }
     struct Children(ChildRegistry);
     impl Drop for Children {
         fn drop(&mut self) {
@@ -78,16 +162,43 @@ mod windows {
     }
     async fn child(captured: CapturedStartup, activation: Activation) -> Result<(), Failure> {
         check(activation.len() == 1, "original managed listener was lost")?;
-        let bound = BoundListeners::from_activation(activation)?;
-        let Listener::Tcp(listener) = bound
+        let role = std::env::var(ROLE)?;
+        let owner = UnixAccess {
+            match_uid: true,
+            match_gid: true,
+        };
+        let group = UnixAccess {
+            match_uid: false,
+            match_gid: true,
+        };
+        let required = if role == "group-child" { group } else { owner };
+        let bound = BoundListeners::from_activation_with_access(activation, required)?;
+        let listener = bound
             .listeners()
             .into_iter()
             .next()
-            .ok_or("missing imported listener")?
-        else {
-            return Err("managed TCP listener changed family".into());
-        };
-        let (mut stream, _) = listener.accept().await?;
+            .ok_or("missing imported listener")?;
+        let accepted = poll_fn(|cx| listener.poll_canonical_connection(cx)).await?;
+        let (mut stream, peer, _) = accepted.into_parts();
+        if role == "tcp-child" {
+            check(
+                matches!(peer, PeerAddress::Tcp(_)),
+                "managed TCP listener changed family",
+            )?;
+        } else {
+            check(
+                peer == PeerAddress::Unix,
+                "managed local listener changed family",
+            )?;
+            check(
+                group.allows(&stream)?,
+                "inherited listener lost its original group access",
+            )?;
+            check(
+                owner.allows(&stream)? == (role == "owner-child"),
+                "inherited listener changed its original owner access",
+            )?;
+        }
         let mut payload = [0; 3];
         stream.read_exact(&mut payload).await?;
         check(payload == *b"ARM", "original queued payload changed")?;
@@ -144,7 +255,12 @@ mod windows {
         )?;
         check(registry.services().len() == 1, "fixture registry changed")?;
         let mut values: Vec<_> = std::env::vars_os().collect();
-        values.push((ROLE.into(), OsString::from("child")));
+        let role = match route {
+            StopRoute::Pipe => "owner-child",
+            StopRoute::Native => "group-child",
+            StopRoute::BeforeImport => "tcp-child",
+        };
+        values.push((ROLE.into(), OsString::from(role)));
         if matches!(route, StopRoute::BeforeImport) {
             values.push((
                 "GNUNET_ARM_IMPORT_GATE".into(),
@@ -165,17 +281,21 @@ mod windows {
             EnvironmentSnapshot::from_values(values, directory.0.clone(), Default::default())?;
         let mut children = Children(ChildRegistry::new(1)?);
         let mut managed = ManagedListeners::new(2);
-        let _bound = managed
-            .bind_address(
-                0,
+        let (address, access) = match route {
+            StopRoute::Pipe => (
+                Address::Unix(directory.0.join("ipc")),
+                LocalListenerAccess::Owner,
+            ),
+            StopRoute::Native => (
+                Address::Unix(directory.0.join("ipc")),
+                LocalListenerAccess::Group,
+            ),
+            StopRoute::BeforeImport => (
                 Address::Tcp((Ipv4Addr::LOCALHOST, 0).into()),
                 LocalListenerAccess::Owner,
-            )
-            .await?;
-        let Address::Tcp(address) = managed.address(0).ok_or("missing original listener")? else {
-            return Err("listener family changed".into());
+            ),
         };
-        let address = *address;
+        let _bound = managed.bind_address(0, address, access).await?;
         if matches!(route, StopRoute::BeforeImport) {
             let _second = managed
                 .bind_address(
@@ -185,7 +305,17 @@ mod windows {
                 )
                 .await?;
         }
-        let mut queued = tokio::net::TcpStream::connect(address).await?;
+        let address = managed
+            .address(0)
+            .ok_or("missing original listener")?
+            .clone();
+        let mut queued = match &address {
+            Address::Unix(path) => Connection::from_unix(local::Stream::connect(path).await?),
+            Address::Tcp(address) => {
+                Connection::from_tcp(tokio::net::TcpStream::connect(address).await?)
+            }
+            Address::Abstract(_) => return Err("listener family changed".into()),
+        };
         queued.write_all(b"ARM").await?;
         let specs = registry.specs();
         let mut scope = OwnerScope::new();
@@ -310,6 +440,9 @@ mod windows {
             )?;
             // A private publisher descriptor must still own the exact endpoint
             // while the target is blocked before provider materialization.
+            let Address::Tcp(address) = address else {
+                return Err("before-import listener changed family".into());
+            };
             let _retained_endpoint = tokio::net::TcpStream::connect(address).await?;
         }
         {
@@ -396,6 +529,7 @@ mod windows {
                     if let Some(captured) = captured {
                         child(captured, activation).await
                     } else {
+                        invalid_local_policy_preserves_alternative_listeners().await?;
                         parent(StopRoute::Pipe).await?;
                         parent(StopRoute::Native).await?;
                         parent(StopRoute::BeforeImport).await

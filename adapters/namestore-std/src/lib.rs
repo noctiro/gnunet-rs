@@ -4,6 +4,10 @@
 #![cfg(any(unix, windows))]
 #![forbid(unsafe_code)]
 pub use gnunet_snapshot_host::{backend, worker};
-mod critical;
+/// Open and maintain the same authoritative snapshot used by the service.
+pub mod database;
+mod error;
+pub use error::Error;
 pub mod server;
-pub use critical::critical_type;
+mod snapshot;
+pub use gnunet_namestore::critical_type;

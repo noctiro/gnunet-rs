@@ -3,13 +3,23 @@
 #![forbid(unsafe_code)]
 pub use gnunet_dns_interception as core;
 const UPSTREAM_SOCKETS: usize = 16;
-/// Bounded upstream profile shared by source preparation and gateway ownership.
-pub type Upstream = gnunet_dnsstub_host::DnsStub<UPSTREAM_SOCKETS, { core::MAX_DNS_BYTES }, 4>;
+/// Standard or provider-native DNSSTUB I/O over the shared bounded owner.
+pub mod upstream;
+pub use upstream::{Upstream, UpstreamRetirement};
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+pub mod flow_relay;
 mod gateway;
+pub mod packet;
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+pub use packet_source::{FlowLimits, FlowRetirement, RejectedFlow};
 mod packet_source;
 #[cfg(windows)]
-pub use packet_source::CaptureRetirement;
+pub use packet_source::{CaptureRetirement, WfpLimits, WfpRetirement};
 pub use packet_source::{PacketExposure, PacketSource, Retirement};
+#[cfg(target_os = "linux")]
+pub use packet_source::{
+    TransparentFamilies, TransparentInterfaces, TransparentPort, TransparentRetirement,
+};
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 pub mod platform;
 mod server;

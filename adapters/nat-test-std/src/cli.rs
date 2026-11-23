@@ -46,10 +46,20 @@ pub struct NatOptions {
     pub section: Vec<u8>,
     /// Exactly TCP6 or UDP17.
     pub protocol: u8,
-    /// Actual --stun bound socket/transactions.
-    pub stun: bool,
+    /// Selected STUN socket behavior.
+    pub stun: StunMode,
     /// Actual --watch reversal callbacks.
     pub watch: bool,
+}
+/// How the NAT monitor uses a bound UDP socket for STUN.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StunMode {
+    /// No STUN socket.
+    Disabled,
+    /// Forward genuine incoming STUN packets, as in the official command.
+    Receive,
+    /// Probe configured endpoints and forward only matching responses.
+    Probe,
 }
 /// Official gnunet-nat-auto inputs.
 #[derive(Clone, Debug)]

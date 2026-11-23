@@ -10,10 +10,6 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 static NEXT: AtomicU64 = AtomicU64::new(0);
-#[cfg(unix)]
-const SYNC: crate::DirectorySync = crate::DirectorySync::Synchronized;
-#[cfg(windows)]
-const SYNC: crate::DirectorySync = crate::DirectorySync::Unavailable;
 struct Cleanup(std::path::PathBuf);
 impl Cleanup {
     fn new() -> io::Result<Self> {
@@ -434,6 +430,7 @@ fn commit_intent_observer_failure_vetoes_link_and_retains_real_read_receipt() ->
         &mut Buffers::new(),
         Limits::default(),
         |_| Control::Continue,
+        None,
         |event| {
             let code = match event {
                 OutputObservation::TempOwned(_) => 0,
@@ -478,6 +475,7 @@ fn committed_observer_failure_preserves_durable_output_and_exact_cleanup() -> Re
         &mut Buffers::new(),
         Limits::default(),
         |_| Control::Continue,
+        None,
         |event| {
             if matches!(event, OutputObservation::FileCommitted { .. }) {
                 Err("commit record failed")
@@ -490,7 +488,8 @@ fn committed_observer_failure_preserves_durable_output_and_exact_cleanup() -> Re
         Err(error) => error,
         Ok(_) => return Err(Error::Corrupt),
     };
-    assert_eq!(error.stage, CommitStage::FileSynchronized(SYNC));
+    let barrier = Directory::open(&directory.0)?.sync()?;
+    assert_eq!(error.stage, CommitStage::FileSynchronized(barrier));
     assert!(error.operation.is_none());
     assert_eq!(error.observer, Some("commit record failed"));
     assert!(error.cleanup.is_none());

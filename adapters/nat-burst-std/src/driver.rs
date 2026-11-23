@@ -4,6 +4,7 @@ use crate::{
     wire::{BurstMessage, MESSAGE_BYTES},
 };
 use gnunet_service_runtime::clock::{ClockSample, ClockSubscription, RuntimeClock};
+use gnunet_service_runtime::network::{SocketOpenError, SocketPolicy};
 use gnunet_types::Error as Fault;
 use std::{
     future::{Future, poll_fn},
@@ -24,19 +25,55 @@ use zeroize::{Zeroize, Zeroizing};
 // filling this buffer is explicitly classified as possibly truncated, never as
 // a 36-byte burst and never as a complete ordinary application datagram.
 const RECEIVE_BYTES: usize = 65_536;
-fn bind_scan_socket(address: SocketAddr) -> io::Result<std::net::UdpSocket> {
-    let socket = socket2::Socket::new(
-        socket2::Domain::for_address(address),
-        socket2::Type::DGRAM,
-        Some(socket2::Protocol::UDP),
-    )?;
+fn bind_scan_socket(
+    address: SocketAddr,
+    socket_policy: &SocketPolicy,
+) -> Result<std::net::UdpSocket, (IoAction, io::Error)> {
+    let socket = socket_policy
+        .open_udp(address)
+        .map_err(|error| match error {
+            SocketOpenError::Create(error) => (IoAction::Bind, error),
+            SocketOpenError::Protection(error) => (IoAction::Prepare, error),
+        })?;
     #[cfg(windows)]
     {
         use std::os::windows::io::AsSocket;
-        gnunet_native::network::set_exclusive_address_use(socket.as_socket())?;
+        gnunet_native::network::set_exclusive_address_use(socket.as_socket())
+            .map_err(|error| (IoAction::Bind, error))?;
     }
-    socket.bind(&address.into())?;
+    socket
+        .bind(&address.into())
+        .map_err(|error| (IoAction::Bind, error))?;
     Ok(socket.into())
+}
+
+#[cfg(all(test, unix))]
+mod socket_policy_tests {
+    use super::*;
+
+    #[test]
+    fn preparation_refusal_cannot_be_an_occupied_scan_port() -> io::Result<()> {
+        let policy = SocketPolicy::protected(|socket| {
+            if !socket2::SockRef::from(&socket)
+                .local_addr()?
+                .as_socket()
+                .is_some_and(|address| address.port() == 0)
+            {
+                return Err(io::Error::other(
+                    "burst policy observed an already-bound socket",
+                ));
+            }
+            Err(io::ErrorKind::AddrInUse.into())
+        });
+        let result = bind_scan_socket(SocketAddr::from(([127, 0, 0, 1], 0)), &policy);
+        if !matches!(result, Err((IoAction::Prepare, error)) if error.kind() == io::ErrorKind::AddrInUse)
+        {
+            return Err(io::Error::other(
+                "protection refusal was reclassified as bind occupancy",
+            ));
+        }
+        Ok(())
+    }
 }
 
 struct Slot<'id> {
@@ -70,6 +107,7 @@ pub struct Burst<'id> {
     parameters: BoundParameters,
     limits: Limits,
     clock: Arc<dyn RuntimeClock>,
+    socket_policy: SocketPolicy,
     subscription: Option<Box<dyn ClockSubscription>>,
     revision: u64,
     start_at: u64,
@@ -102,6 +140,25 @@ impl<'id> Burst<'id> {
         limits: Limits,
         clock: Arc<dyn RuntimeClock>,
     ) -> Result<Self, Error> {
+        Self::new_with_socket_policy(
+            instance,
+            default,
+            parameters,
+            limits,
+            clock,
+            SocketPolicy::default(),
+        )
+    }
+    /// Reserve a scan with the original caller's pre-bind native socket policy.
+    /// The already-bound default socket remains its caller's responsibility.
+    pub fn new_with_socket_policy(
+        instance: &'id Instance,
+        default: Arc<UdpSocket>,
+        parameters: Parameters,
+        limits: Limits,
+        clock: Arc<dyn RuntimeClock>,
+        socket_policy: SocketPolicy,
+    ) -> Result<Self, Error> {
         let delay = parameters
             .remote_sync
             .delay(parameters.local_rtt_micros)
@@ -119,6 +176,7 @@ impl<'id> Burst<'id> {
             Schedule { delay, hard: None },
             limits,
             clock,
+            socket_policy,
         )
     }
 
@@ -131,6 +189,25 @@ impl<'id> Burst<'id> {
         parameters: ReadyParameters,
         limits: Limits,
         clock: Arc<dyn RuntimeClock>,
+    ) -> Result<Self, Error> {
+        Self::start_ready_with_socket_policy(
+            instance,
+            default,
+            parameters,
+            limits,
+            clock,
+            SocketPolicy::default(),
+        )
+    }
+    /// Start the synchronized scan with the original default owner's socket
+    /// policy. Each fresh scan socket is prepared before its first bind.
+    pub fn start_ready_with_socket_policy(
+        instance: &'id Instance,
+        default: Arc<UdpSocket>,
+        parameters: ReadyParameters,
+        limits: Limits,
+        clock: Arc<dyn RuntimeClock>,
+        socket_policy: SocketPolicy,
     ) -> Result<Self, Error> {
         let hard = Instant::from_std(parameters.hard);
         if Instant::now() >= hard {
@@ -152,6 +229,7 @@ impl<'id> Burst<'id> {
             },
             limits,
             clock,
+            socket_policy,
         )
     }
 
@@ -162,6 +240,7 @@ impl<'id> Burst<'id> {
         schedule: Schedule,
         limits: Limits,
         clock: Arc<dyn RuntimeClock>,
+        socket_policy: SocketPolicy,
     ) -> Result<Self, Error> {
         let limits = limits.validate()?;
         let delay = schedule.delay;
@@ -227,6 +306,7 @@ impl<'id> Burst<'id> {
             parameters,
             limits,
             clock,
+            socket_policy,
             subscription: Some(subscription),
             revision: sample.revision,
             start_at,
@@ -574,18 +654,18 @@ impl<'id> Burst<'id> {
             return;
         };
         self.report.ports_attempted += 1;
-        let std_socket = match bind_scan_socket(local) {
+        let std_socket = match bind_scan_socket(local, &self.socket_policy) {
             Ok(socket) => socket,
-            Err(error) if error.kind() == io::ErrorKind::AddrInUse => {
+            Err((IoAction::Bind, error)) if error.kind() == io::ErrorKind::AddrInUse => {
                 observe(Event::Occupied {
                     port,
                     error: &error,
                 });
                 return;
             }
-            Err(error) => {
+            Err((action, error)) => {
                 self.finish(Cause::Io {
-                    action: IoAction::Bind,
+                    action,
                     port,
                     error,
                 });

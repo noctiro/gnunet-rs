@@ -1,12 +1,14 @@
 //! One PROGRAM task drives original UNIX providers, shared Producer and Resolver.
-use crate::{Failure, control::Signals, early::Inherited, settings::Settings, statistics};
+use crate::{Failure, control::Signals, early::Inherited, statistics};
 use gnunet_client_host::{EndpointSource, LiveConfiguration, resolution::SharedResolution};
 use gnunet_config::Configuration;
 use gnunet_ipc_unix::producer;
 use gnunet_program_host::{program::Prepared, shared_clock::SharedClock};
 use gnunet_resolver_broker::Driver;
 use gnunet_service_runtime::clock::RuntimeClock;
-use gnunet_unix_communicator_host::{Close, Event, Progress, Runtime, Statistics};
+use gnunet_unix_communicator_host::{
+    Close, Event, Progress, Runtime, Statistics, embedded::Configured,
+};
 use std::{
     cell::RefCell,
     future::{Future, poll_fn},
@@ -198,7 +200,7 @@ impl Drop for Owners<'_> {
 pub(super) async fn scheduled(
     prepared: Prepared,
     clock: SharedClock,
-    settings: Settings,
+    settings: Configured,
     inherited: Inherited,
 ) -> Result<(), Failure> {
     let config = prepared.main().config.duplicate()?;
@@ -206,7 +208,11 @@ pub(super) async fn scheduled(
     let live = LiveConfiguration::new(config.duplicate()?);
     let (mut program_context, resolver) = gnunet_resolver_broker::broker::<64, 256>(
         live.clone(),
-        settings.resolver,
+        gnunet_resolver_broker::Limits {
+            max_frame_bytes: 65535,
+            io_chunk_bytes: settings.limits().io_slice,
+            max_queued_frames: 8,
+        },
         gnunet_resolver_broker::native_profile()?,
         source.clone(),
     )?;
@@ -292,7 +298,7 @@ enum Turn {
 }
 struct RunInputs {
     config: Configuration,
-    settings: Settings,
+    settings: Configured,
     inherited: Inherited,
     live: LiveConfiguration,
     resolution: SharedResolution,
@@ -330,8 +336,8 @@ async fn run_owned(resolver: ResolverOwner, inputs: RunInputs) -> Result<(), Fai
             transport: endpoint(b"transport"),
             pils: endpoint(b"pils"),
         },
-        &settings.path,
-        settings.limits,
+        settings.path(),
+        settings.limits(),
     )?;
     let initial = runtime.statistics();
     owners.runtime = Some(runtime);
@@ -343,7 +349,7 @@ async fn run_owned(resolver: ResolverOwner, inputs: RunInputs) -> Result<(), Fai
         initial,
     )?);
     let startup = Instant::now()
-        .checked_add(settings.limits.startup)
+        .checked_add(settings.limits().startup)
         .ok_or("UNIX communicator startup bound overflow")?;
     let mut ready = false;
     let mut cursor = 0usize;

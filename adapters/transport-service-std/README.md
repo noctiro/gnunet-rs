@@ -60,9 +60,12 @@ Every child guard runs before an outer logical-clock observation. Source lifetim
 
 The STATISTICS handle shares the process Resolver. Only the directly observed official nonpersistent foreign-address STORE failure counter is exported in this stage. Unexposed C internal counters are not fabricated. Post-admission statistics errors fence/destroy/drop their original owner without retrying relative mutations. This owner retires before Resolver shutdown.
 
-## Limitations
+## Clock and DV ownership
 
-This stage composes direct queues and the DV actor in the standard SERVICE foreground; it does not establish full TRANSPORT interoperability. Actual PID changes use a controlled Engine epoch rebuild on the same healthy PILS connection. Old local Server MQs close first; original SIGN/FEED/STORE/HELLO/validated work and its public timestamp receipt settle under their original bounds before a new Engine allocation can become ready. The old Engine is dropped and the new Arc brand cannot accept old callbacks. An unusable native dependency instead closes the entire old native session, drains its worker job and allocates fresh native brands after finite supervised backoff. No old mutation/frame/callback is replayed. The Owner passes typed independent Times through Server receive/tick/retry/discovery/signature completion into Engine. One immutable native anchor supplies nondecreasing elapsed scheduling microseconds; RuntimeClock supplies the GNUnet absolute sample. Revisions and absolute corrections are accepted without projecting UTC into scheduling time. Validated STORE expiration is the exact original absolute output, with no remaining-lease rebasing or now+TTL renewal. Original native hard bounds are still captured once. Standalone own certificate/HELLO preparation currently retains its explicit actual-UTC policy; it is never fed a mono value. Sender-monotime uses durable bounded intervals described below; broader own-publication time-policy refinement remains separate.
+One immutable native anchor supplies monotonic scheduling time. The runtime
+clock supplies absolute UTC for expiry and publication. Validated PEERSTORE
+writes retain their original absolute expiration and native deadline. FLOW
+sender-monotime uses a separate durable reservation.
 
 The standard session drives the DV Runtime, Bridge and Scheduler. One independent PILS client and the independently marked `DV_STORE` provider belong to each DV source. The caller owns branded instances, fixed metadata and a small shared zeroizing plaintext pool; storage is lent once rather than placed in a self-referential owner. Bootstrap retains its original source/partial-input bounds and checks the same public peer and clock as Owner without equating their independent PILS MQ epochs.
 
@@ -70,19 +73,41 @@ Confirmed Actor routes enter the existing Engine transmit path. CORE payloads re
 
 Source retirement closes business admission while preserving Owner's old Engine gate. Original sends, ingress/FC owners and shared range receipts settle, the provider drains/joins, then Bridge releases the gate. Clock failure does not require a new sample to perform physical cleanup. Direct byte charging is preserved; virtual final-peer charging uses the inner network frame and carrier charging uses BOX/transport frames. This conservative local policy never trusts unverified `orig_size` as a measured length or turns sender-reported loss into a write acknowledgement. `USE_BURST_NAT=YES` uses the confirmed-route and native communicator burst ports. The official PILS/HELLO profile is selected once from `[PILS] PROFILE`: `reference029` (also `reference-0.29.1`) is the unchanged metadata-only default, while `deterministic` selects the official conditional address-covered profile. A supplied `[transport-rust] PILS_PROFILE` must name the same profile. PILS verification, public HELLO publication/STORE and discovery all use that typed choice; verification never falls back to another profile. External services and communicators must be running/configured; their absence produces errors. Other C internal statistics require exposed matching events before forwarding.
 
-Synchronous standard diagnostics and genuine disk fsync/join are OS operations and are not claimed cancelable by a socket hard deadline. No runtime or official-C interoperability acceptance is claimed here.
+## Local identity rotation
 
-## Controlled PID and source epochs
+PILS sends its initial signed HELLO on connection. On a peer change through
+the same PILS connection, TRANSPORT fences the old signing authority and keeps
+the communicator IPC streams, address leases and native queue identities.
+The DV bridge retires its original source, CORE clients reattach, and admitted
+FEED and PEERSTORE operations settle under their original identifiers and
+deadlines. Incomplete input keeps its original connection and deadline until
+the complete frame identifies its protocol. An old DV wrapper or fragment must
+settle before a replacement DV source attaches.
 
-PILS already creates an initial identity and sends its current signed HELLO on connection. Disconnect removes only its subscriber. The service therefore never submits an empty bootstrap FEED. During a healthy PID change it retains the same PILS source, cancels old original signing/FEED jobs and drains copied suffixes without inventing CANCEL/ACK. A late FEED remains only an original local whole-write/unknown-application fact; subsequent identity changes remain genuine ordered observations. The most recent same-source identity is checked again after original debt retirement before Engine::new constructs a fresh brand.
+A complete unsigned FEED write settles its local publication revision. A
+verified PILS announcement can publish a HELLO when its addresses match the
+live address book. Published PEERSTORE records retain their original expiration.
 
-Old URI bytes are retained only as a bounded comparison barrier while new communicator sources reconstruct their ADD set. They never populate the new book or authorize a route. An exact new set or finite stabilization of new ADD/DEL observations releases the comparison barrier. Completing it does not synthesize a publication revision. An empty new book without ADD/DEL evidence cannot reset PILS due to a timer. All new publication bytes still come from current resource leases.
+The reservation worker matches each receipt to its original request, identity
+and consumer. A late commit still consumes its value. The service drains the
+worker independently of Resolver shutdown. An unconfirmed, mismatched or
+fenced worker state prevents the next session from starting.
 
-Public stamp retirement retains the original PILS observation/address lease/worker Request and compares the genuine committed receipt. Its original deadline may expire while fsync/rename still runs: the value remains durably consumed and is reported only as old history, never as a new publication capability. A Resolver failure cannot cause this mandatory drain to be abandoned; the disk worker is independent and remains polled until its completion/error. Unknown/mismatched/fenced worker state prevents a new native session. Shared error wrappers retain the exact original error in both callback metadata and terminal failure.
+The session supervisor retains listeners, Resolver, the clock anchor, the
+reservation worker and statistics across reconnects. When a native source fails,
+the supervisor retires the session and drains outstanding work before reconnecting.
+Retry delays range from 100 ms to 25.6 s. The supervisor retains up to 32
+consecutive failures and resets the budget after a stable session. Signals remain
+active during backoff. Disk synchronization and worker join can block beyond
+socket deadlines.
 
-A native-source factory holds configured/inherited listeners, one Resolver, one clock anchor, the reservation worker and the same statistics owner outside its session loop. Each unusable session physically closes and returns all original metadata before its branded instances drop. Only then are fresh instances allocated; future requests can use them. Healthy PID changes use the in-place path and do not reconnect PILS. Native retry retains at most32 old consecutive errors, uses finite100ms..25.6s native delays and stops after that restart budget; stable original sessions reset the budget. Signals work during backoff, and SOFT shutdown remains finite for sockets. Standard diagnostics and disk fsync/join retain their explicit synchronous OS blocking boundary.
-
-FLOW sender-monotime requires an exact original Engine demand and an exclusive numeric interval whose upper bound was committed by the shared reservation worker. Without a usable interval, FLOW enqueue and sequence advancement defer. Exhausted or passed intervals cannot revive on clock rollback. The existing eight-byte highwater format remains; FLOW, DV and own-address consumers receive nonoverlapping values through one worker and typed completions. Original fixed targets survive queue wait, and late retired ranges burn rather than authorize a new Engine. DV range scopes include a private allocation per Engine so A-to-B-to-A identity changes cannot reuse old grants. SENDER_MONOTIME_HORIZON defaults to five minutes, with a checked one-minute to one-day numeric span; unused tails are discarded. The standard foreground consumes the DV scheduler/relay and burst ports. Broader own-publication time-policy refinement remains separate work. Live exact-nonce history and persisted sender floors keep their existing scopes; this stage adds no cross-restart exact-nonce guarantee.
+FLOW sender-monotime requires an exact Engine demand and an exclusive range
+committed by the shared reservation worker. FLOW, DV and own-address
+consumers receive nonoverlapping values. Identity rotation discards
+unused values and keeps the committed high-water mark. DV scope branding
+distinguishes repeated visits to the same peer identity.
+`SENDER_MONOTIME_HORIZON` defaults to five minutes and accepts spans from one
+minute to one day.
 
 External interoperability and platform qualification follow the central
 [compatibility contract](../../spec/gnunet/compatibility.md).

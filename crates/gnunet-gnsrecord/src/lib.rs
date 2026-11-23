@@ -16,7 +16,9 @@
 
 mod base32;
 mod policy;
-pub use policy::{is_gns2dns_security_type, validate_authoritative_records};
+pub use policy::{
+    is_gns2dns_security_type, validate_authoritative_iter, validate_authoritative_records,
+};
 mod records;
 mod registry;
 mod zone;

@@ -1,6 +1,6 @@
 use gnunet_gnsrecord::ZoneKey;
 use gnunet_reclaim::{
-    AttributeList, Credential, Identifier, Presentation,
+    Identifier, Presentation, PresentationRequest,
     business::{Action, Completion, Job, Source},
 };
 use gnunet_types::Error;
@@ -91,10 +91,7 @@ impl SystemProviders {
                     }
                 }
             }
-            Action::Presentation {
-                credential,
-                selected,
-            } => match present(credential, selected) {
+            Action::Presentation(request) => match present(request) {
                 Ok(bytes) => Done::Presentation(bytes),
                 Err(error) => {
                     let cause = error.cause;
@@ -126,10 +123,10 @@ impl SystemProviders {
     }
 }
 fn present(
-    credential: Credential<'_>,
-    selected: AttributeList<'_>,
+    request: PresentationRequest<'_>,
 ) -> Result<Zeroizing<Vec<u8>>, gnunet_reclaim_credentials::Failure> {
-    let p = gnunet_reclaim_credentials::presentation(credential, selected)?;
+    let credential = request.credential();
+    let p = gnunet_reclaim_credentials::presentation(request)?;
     gnunet_reclaim_credentials::check_binding(p, credential)?;
     let local = |cause| gnunet_reclaim_credentials::Failure {
         family: gnunet_reclaim_credentials::Family::Credential,

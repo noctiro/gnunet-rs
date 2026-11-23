@@ -290,9 +290,20 @@ async fn run(input: Inputs) -> Result<Report, Failure> {
         gnunet_client_host::EndpointSource::snapshot_all([&monitor, &inventory, &cache, &dht])?;
     // Normal SERVICE semantics, with no invented domain commands. Readiness
     // from this boundary attests local listener ownership alone.
+    #[cfg(unix)]
     let bound =
         gnunet_service_runtime::BoundListeners::bind(&config, b"zonemaster", inherited.activation)
             .await?;
+    #[cfg(windows)]
+    let bound = if inherited.activation.is_empty() {
+        gnunet_service_runtime::BoundListeners::bind(&config, b"zonemaster", inherited.activation)
+            .await?
+    } else {
+        gnunet_service_runtime::BoundListeners::from_activation_with_access(
+            inherited.activation,
+            settings.unix,
+        )?
+    };
     for error in bound.failures() {
         diagnostic(
             &reports,

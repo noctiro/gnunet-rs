@@ -11,9 +11,12 @@ interface coverage and the recovery journal in the separate
 absolute `std::time::Instant` and explicit `Limits`. It reads and validates the
 complete state table before returning a mutation owner. Selection uses the
 original stack-side endpoints, including NAT and NAT64 mappings. It requires a
-local source address and UDP destination port 53; IPv6 link-local sources follow
-the DNS policy's exclusion. Ordinary incoming replies, remote-origin forwarding,
-TCP and other destination ports are outside this scope.
+local source address and UDP destination port 53. Both endpoints must be usable
+as raw unicast addresses: multicast, unspecified, limited IPv4 broadcast and
+IPv4-mapped IPv6 addresses are excluded. IPv6 link-local and legacy site-local
+endpoints (`fe80::/9`) are excluded because these records provide no independent
+native zone. Ordinary incoming replies, remote-origin forwarding, TCP and other
+destination ports are outside this scope.
 
 PF direction determines how to recover the original source/destination tuple.
 Every native state for a selected local-source DNS flow belongs to the scope,

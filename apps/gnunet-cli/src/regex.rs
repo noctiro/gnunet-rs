@@ -15,6 +15,8 @@ use std::{
     time::Duration,
 };
 use tokio::time::Instant;
+mod standalone;
+pub(crate) use standalone::run as run_standalone;
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum Action {

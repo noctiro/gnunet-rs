@@ -182,7 +182,7 @@ jobs:
 
   embedded:
     needs: checks
-    name: Official no_std Cortex-M0 and Cortex-M4
+    name: GNUnet no_std Cortex-M0, Cortex-M4 and RV32IMAC
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -191,7 +191,7 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/setup-rust
         with:
-          targets: thumbv6m-none-eabi, thumbv7em-none-eabi
+          targets: thumbv6m-none-eabi, thumbv7em-none-eabi, riscv32imac-unknown-none-elf
       - run: cargo xtask verify embedded --log-dir target/ci/embedded
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: failure()
@@ -200,6 +200,146 @@ jobs:
           path: target/ci/embedded
           if-no-files-found: ignore
           retention-days: 7
+
+  node-sdk:
+    needs: checks
+    name: Node SDK (${{ matrix.platform }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: Android
+            os: ubuntu-24.04
+          - platform: iOS
+            os: macos-15
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Read the Android Rust targets
+        if: matrix.platform == 'Android'
+        id: android-profile
+        shell: bash
+        run: |
+          targets=$(bash platform/android/tools/build-sdk.sh --rust-targets)
+          printf 'targets=%s\n' "$(paste -sd, - <<< "$targets")" >> "$GITHUB_OUTPUT"
+      - name: Read the iOS Rust targets
+        if: matrix.platform == 'iOS'
+        id: ios-profile
+        shell: bash
+        run: |
+          targets=$(sh platform/ios/build-sdk.sh --intel-simulator --rust-targets)
+          printf 'targets=%s\n' "$(paste -sd, - <<< "$targets")" >> "$GITHUB_OUTPUT"
+      - uses: ./.github/actions/setup-rust
+        with:
+          targets: ${{ steps.android-profile.outputs.targets || steps.ios-profile.outputs.targets }}
+      - name: Install the Android native SDK profile
+        if: matrix.platform == 'Android'
+        shell: bash
+        run: |
+          export JAVA_HOME="$JAVA_HOME_17_X64"
+          printf 'JAVA_HOME=%s\n' "$JAVA_HOME" >> "$GITHUB_ENV"
+          printf '%s/bin\n' "$JAVA_HOME" >> "$GITHUB_PATH"
+          logs="$PWD/target/ci/node-sdk-android"
+          mkdir -p "$logs"
+          sdkmanager="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          sdk_packages=$(bash platform/android/tools/build-sdk.sh --sdk-packages)
+          mapfile -t packages <<< "$sdk_packages"
+          "$sdkmanager" --install "${packages[@]}" </dev/null 2>&1 | tee "$logs/sdk-install.log"
+      - name: Link and package the Android AAR for all supported ABIs
+        if: matrix.platform == 'Android'
+        shell: bash
+        env:
+          GNUNET_ANDROID_OUTPUT: ${{ github.workspace }}/target/ci/node-sdk-android
+          GNUNET_ANDROID_BUILD_JOBS: ${{ env.CARGO_BUILD_JOBS }}
+        run: bash platform/android/tools/build-sdk.sh
+      - name: Package the iOS SDK and link the app and network extensions
+        if: matrix.platform == 'iOS'
+        id: ios-sdk
+        shell: bash
+        run: |
+          logs="$PWD/target/ci/node-sdk-ios"
+          mkdir -p "$logs"
+          if ! package=$(GNUNET_IOS_BUILD_JOBS="$CARGO_BUILD_JOBS" sh platform/ios/build-sdk.sh \
+            --intel-simulator 2>"$logs/package.log"); then
+            cat "$logs/package.log" >&2
+            exit 1
+          fi
+          test -n "$package"
+          test -f "$package/Package.swift"
+          test -f "$package/GNUnetNodeNative.xcframework/Info.plist"
+          test -f "$package/LICENSE"
+          test -f "$package/NOTICE.md"
+          test -s "$package/THIRD_PARTY_LICENSES.txt"
+          printf 'path=%s\n' "$package" >> "$GITHUB_OUTPUT"
+          consumer=$(mktemp -d "$PWD/target/ios/consumer.XXXXXXXX")
+          cp -R tools/ci/ios-sdk-consumer/. "$consumer/"
+          ln -s "$package" "$consumer/GNUnetNode"
+          verify_extension() {
+            local bundle="$1/PlugIns/$2.appex"
+            test -x "$bundle/$2"
+            test "$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' \
+              "$bundle/Info.plist")" = "com.apple.networkextension.$3"
+            test "$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPrincipalClass' \
+              "$bundle/Info.plist")" = "$2.$4"
+          }
+          configurations=$(sh platform/ios/build-sdk.sh --intel-simulator --link-profiles)
+          while read -r sdk arch; do
+            case "$sdk" in
+              iphonesimulator) destination='generic/platform=iOS Simulator' ;;
+              iphoneos) destination='generic/platform=iOS' ;;
+              *) exit 2 ;;
+            esac
+            derived="$consumer/build-$sdk-$arch"
+            xcodebuild -project "$consumer/Consumer.xcodeproj" -scheme Consumer -configuration Debug \
+              -destination "$destination" -derivedDataPath "$derived" -jobs "$CARGO_BUILD_JOBS" \
+              ARCHS="$arch" CODE_SIGNING_ALLOWED=NO build </dev/null 2>&1 | tee "$logs/link-$sdk-$arch.log"
+            app="$derived/Build/Products/Debug-$sdk/Consumer.app"
+            test -x "$app/Consumer"
+            verify_extension "$app" TunnelProvider packet-tunnel PacketTunnelProvider
+            verify_extension "$app" DnsProxyProvider dns-proxy DnsProxyProvider
+          done <<< "$configurations"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: success() && matrix.platform == 'iOS'
+        with:
+          name: node-sdk-ios-swift-package
+          path: ${{ steps.ios-sdk.outputs.path }}
+          if-no-files-found: error
+          retention-days: 7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: failure() && matrix.platform == 'iOS'
+        with:
+          name: node-sdk-ios-logs
+          path: target/ci/node-sdk-ios
+          if-no-files-found: ignore
+          retention-days: 7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: success() && matrix.platform == 'Android'
+        with:
+          name: node-sdk-android
+          path: |
+            target/ci/node-sdk-android/gnunet-node-android.aar
+            target/ci/node-sdk-android/gnunet-node-android-maven.zip
+            target/ci/node-sdk-android/artifact.json
+          if-no-files-found: error
+          retention-days: 7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: failure() && matrix.platform == 'Android'
+        with:
+          name: node-sdk-android-logs
+          path: |
+            target/ci/node-sdk-android/*.log
+            target/ci/node-sdk-android/build.*/logs/*.log
+            target/ci/node-sdk-android/build.*/logs/*.libs
+          if-no-files-found: ignore
+          retention-days: 7
+
+  openharmony-sdk:
+    name: Node SDK (OpenHarmony)
+    needs: checks
+    uses: ./.github/workflows/openharmony-sdk.yml
 
   reference:
     needs: [checks, tools]
@@ -214,16 +354,28 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/setup-rust
       - name: Set private reference paths
-        run: printf 'GNUNET_REFERENCE_SOURCE=%s/gnunet-reference-0.29.1\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+        run: |
+          printf 'GNUNET_REFERENCE_SOURCE=%s/gnunet-reference\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+          printf 'GNUNET_CONFIG_REFERENCE_SOURCE=%s/gnunet-config-reference\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
       - name: Install independent reference tools
         run: |
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y build-essential git python3 openssl
       - name: Fetch and verify the fixed official release
         run: |
-          git clone --depth 1 --branch v0.29.1 https://git.gnunet.org/gnunet.git "$GNUNET_REFERENCE_SOURCE"
-          test "$(git -C "$GNUNET_REFERENCE_SOURCE" rev-parse HEAD)" = 346358e26d4dcc2dc4f51bef5d52dca29c7d8165
+          release=$(python3 -B tools/reference/build_reference.py --print-target release)
+          revision=$(python3 -B tools/reference/build_reference.py --print-target revision)
+          git clone --depth 1 --branch "$release" https://git.gnunet.org/gnunet.git "$GNUNET_REFERENCE_SOURCE"
+          test "$(git -C "$GNUNET_REFERENCE_SOURCE" rev-parse HEAD)" = "$revision"
           git -C "$GNUNET_REFERENCE_SOURCE" diff --exit-code HEAD --
+      - name: Fetch and verify the fixed configuration source
+        run: |
+          git init "$GNUNET_CONFIG_REFERENCE_SOURCE"
+          git -C "$GNUNET_CONFIG_REFERENCE_SOURCE" remote add origin https://git.gnunet.org/gnunet.git
+          git -C "$GNUNET_CONFIG_REFERENCE_SOURCE" fetch --depth 1 origin 7e0f9c3640310fd406fcf32c271ab583ef83d6c9
+          git -C "$GNUNET_CONFIG_REFERENCE_SOURCE" checkout --detach FETCH_HEAD
+          test "$(git -C "$GNUNET_CONFIG_REFERENCE_SOURCE" rev-parse HEAD)" = 7e0f9c3640310fd406fcf32c271ab583ef83d6c9
+          git -C "$GNUNET_CONFIG_REFERENCE_SOURCE" diff --exit-code HEAD --
       - name: Run implemented official boundaries against the fixed reference
         run: cargo xtask verify reference --log-dir target/ci/reference
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -250,7 +402,7 @@ jobs:
       - uses: ./.github/actions/setup-rust
       - name: Set private reference paths
         run: |
-          printf 'GNUNET_REFERENCE_SOURCE=%s/gnunet-daemon-reference-0.29.1\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+          printf 'GNUNET_REFERENCE_SOURCE=%s/gnunet-daemon-reference\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
           printf 'GNUNET_REFERENCE_BUILD=%s/gnunet-daemon-reference-build/build-result.json\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
       - name: Install compiler and normal reference development dependencies
         run: |
@@ -261,9 +413,11 @@ jobs:
         run: python3 -B tools/reference/bootstrap_dependencies.py --output "$RUNNER_TEMP/gnunet-reference-dependencies" --jobs 4
       - name: Fetch the pinned unmodified release and official submodule
         run: |
-          git clone --depth 1 --branch v0.29.1 https://git.gnunet.org/gnunet.git "$GNUNET_REFERENCE_SOURCE"
+          release=$(python3 -B tools/reference/build_reference.py --print-target release)
+          revision=$(python3 -B tools/reference/build_reference.py --print-target revision)
+          git clone --depth 1 --branch "$release" https://git.gnunet.org/gnunet.git "$GNUNET_REFERENCE_SOURCE"
+          test "$(git -C "$GNUNET_REFERENCE_SOURCE" rev-parse HEAD)" = "$revision"
           git -C "$GNUNET_REFERENCE_SOURCE" -c url.https://git.gnunet.org/.insteadOf=git://git.gnunet.org/ submodule update --init --recursive
-          test "$(git -C "$GNUNET_REFERENCE_SOURCE" rev-parse HEAD)" = 346358e26d4dcc2dc4f51bef5d52dca29c7d8165
           git -C "$GNUNET_REFERENCE_SOURCE" diff --exit-code --ignore-submodules=none HEAD --
       - name: Build actual upstream STATISTICS executables and libraries
         run: |
@@ -288,7 +442,7 @@ jobs:
   ci-complete:
     name: ci-complete
     if: always()
-    needs: [checks, tools, native, freebsd, embedded, reference, daemon-reference, security]
+    needs: [checks, tools, native, freebsd, embedded, node-sdk, openharmony-sdk, reference, daemon-reference, security]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:

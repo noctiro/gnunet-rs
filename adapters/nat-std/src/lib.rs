@@ -25,6 +25,9 @@ pub mod resolve;
 pub mod server;
 #[cfg(feature = "providers")]
 pub mod settings;
+/// Caller-driven NAT service startup, protocol work and retirement.
+#[cfg(feature = "service")]
+pub mod startup;
 /// Actual bound-socket STUN request and received-result owner.
 pub mod stun;
 /// Actual Rust SSDP/HTTP/SOAP IGD port mapping, with bounded mature XML parsing.

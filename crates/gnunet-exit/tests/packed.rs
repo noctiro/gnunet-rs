@@ -6,7 +6,7 @@
     reason = "One focused model checks packed receipt scope and atomic bounded refusal"
 )]
 use gnunet_exit::{
-    Address, AfProfile, Family,
+    Address, AfProfile, Family, PeerProfiles,
     engine::{Config, Effect, Engine, Limits, Target},
     nat::{Entropy, Pool},
     policy::{Policy, Prefix},
@@ -54,7 +54,7 @@ fn packed_inner_ready_is_not_outer_ack_and_capacity_preserves_original() -> Resu
         ipv6: None,
         services: &[],
         dns: false,
-        af: AfProfile::LINUX,
+        peer_profiles: &PeerProfiles::LINUX,
     };
     let mut engine = Engine::new(
         config,

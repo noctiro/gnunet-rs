@@ -3,19 +3,18 @@
 use crate::{
     manager::Failure,
     server::{self, Event, Mode, Progress, Server},
+    startup::{Drive, Turn, turn},
 };
 use gnunet_config::Configuration;
 use gnunet_program_host::{program::Prepared, reporting::Reporter, shared_clock::SharedClock};
 use gnunet_resolver_broker::LiveConfiguration;
 use gnunet_service_runtime::{
-    Activation, BoundListeners,
-    clock::RuntimeClock,
-    service::{Listener, ShutdownMode},
+    Activation, BoundListeners, clock::RuntimeClock, service::ShutdownMode,
 };
 use gnunet_service_startup::ParentControl;
 use std::{
     cell::RefCell,
-    future::{Future, poll_fn},
+    future::poll_fn,
     io::{self, Write},
     rc::Rc,
     sync::Arc,
@@ -24,11 +23,10 @@ use std::{
 use tokio::time::Instant;
 mod process;
 mod resolver;
-mod settings;
 mod signals;
+pub use crate::startup::Settings;
 pub use process::main;
 use resolver::Resolver;
-pub use settings::Settings;
 use signals::Signals;
 /// Once-adopted parent descriptors supplied by the first operation in binary main.
 pub struct Inherited {
@@ -234,51 +232,6 @@ pub async fn scheduled(
     }
     .finish()
 }
-enum Turn {
-    Signal,
-    Logger,
-    Resolver,
-    Server(Progress),
-}
-async fn turn(
-    owners: &mut Owners,
-    signals: &mut Signals,
-    listeners: &[Listener<'_>],
-    until: Option<Instant>,
-    resolver_first: bool,
-) -> Result<Turn, Failure> {
-    let (server, resolver) = (&mut owners.server, &mut owners.resolver.driver);
-    let reports = &owners.reports;
-    let mut resolving = std::pin::pin!(resolver.drive_waiting(until, |e| diagnostic(
-        reports,
-        format_args!("NAT Resolver: {e:?}")
-    )));
-    poll_fn(|cx| {
-        reports.register(cx);
-        if reports.failed() {
-            return Poll::Ready(Ok(Turn::Logger));
-        }
-        if let Poll::Ready(r) = signals.stop.poll_stop(cx) {
-            return Poll::Ready(r.map(|()| Turn::Signal).map_err(Into::into));
-        }
-        for n in 0..2 {
-            if reports.failed() {
-                return Poll::Ready(Ok(Turn::Logger));
-            }
-            if (n == 0) == resolver_first {
-                if let Poll::Ready(r) = resolving.as_mut().poll(cx) {
-                    return Poll::Ready(r.map(|_| Turn::Resolver).map_err(Into::into));
-                }
-            } else if let Poll::Ready(r) =
-                server.poll(cx, listeners, until, &mut |event| observe(event, reports))
-            {
-                return Poll::Ready(r.map(Turn::Server));
-            }
-        }
-        Poll::Pending
-    })
-    .await
-}
 struct Inputs {
     config: Configuration,
     settings: Settings,
@@ -313,6 +266,7 @@ async fn run(input: Inputs) -> Result<(), Failure> {
                 resolver: shared,
             },
             mode,
+            Default::default(),
         )?;
         Ok((signals, server))
     })();
@@ -334,7 +288,16 @@ async fn run(input: Inputs) -> Result<(), Failure> {
         reports: reports.clone(),
         done: false,
     };
-    let bound = match BoundListeners::bind(&config, mode.service(), inherited.activation).await {
+    #[cfg(unix)]
+    let binding = BoundListeners::bind(&config, mode.service(), inherited.activation).await;
+    #[cfg(windows)]
+    let binding = if inherited.activation.is_empty() {
+        BoundListeners::bind(&config, mode.service(), inherited.activation).await
+    } else {
+        BoundListeners::from_activation_with_access(inherited.activation, settings.unix)
+            .map_err(Into::into)
+    };
+    let bound = match binding {
         Ok(b) => b,
         Err(e) => {
             owners.server.abort(&mut |event| observe(event, &reports));
@@ -392,10 +355,30 @@ async fn run(input: Inputs) -> Result<(), Failure> {
             let mut until = None;
             let mut resolver_first = false;
             loop {
-                let next = turn(&mut owners, &mut signals, &listeners, until, resolver_first).await;
+                let next = turn(
+                    Drive {
+                        server: &mut owners.server,
+                        resolver: &mut owners.resolver.driver,
+                        listeners: &listeners,
+                        until,
+                        resolver_first,
+                    },
+                    |cx| {
+                        reports.register(cx);
+                        if reports.failed() {
+                            return Poll::Ready(Err(
+                                "NAT selected Logger failed during service operation".into(),
+                            ));
+                        }
+                        signals.stop.poll_stop(cx).map_err(Into::into)
+                    },
+                    |event| observe(event, &reports),
+                    |event| diagnostic(&reports, format_args!("NAT Resolver: {event:?}")),
+                )
+                .await;
                 resolver_first = !resolver_first;
                 match next {
-                    Ok(Turn::Signal)
+                    Ok(Turn::Stop)
                         if until.is_none() && settings.options.shutdown == ShutdownMode::Soft =>
                     {
                         owners.server.request_shutdown(ShutdownMode::Soft);
@@ -405,10 +388,7 @@ async fn run(input: Inputs) -> Result<(), Failure> {
                                 .ok_or("NAT shutdown bound overflow")?,
                         );
                     }
-                    Ok(Turn::Logger) => {
-                        break Err("NAT selected Logger failed during service operation".into());
-                    }
-                    Ok(Turn::Signal | Turn::Server(Progress::WaitDeadline)) => {
+                    Ok(Turn::Stop | Turn::Server(Progress::WaitDeadline)) => {
                         owners.server.abort(&mut |event| observe(event, &reports));
                         break Ok(());
                     }

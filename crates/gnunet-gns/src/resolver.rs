@@ -1,5 +1,9 @@
-use crate::records::{bytes, cstring, filled, join, rewrite, text};
-use crate::{Error, Record, RecordData, RecordFlags, RecordType, ZoneKey, validate_name};
+use crate::rdata::cstring;
+use crate::records::{bytes, filled, join, rewrite, text};
+use crate::{
+    BoxSelector, DnsPolicy, Error, Failure, Lookup, Policy, Record, RecordData, RecordFlags,
+    RecordType, ZoneKey, boxed, policy::supported, validate_name,
+};
 use alloc::{string::String, vec::Vec};
 use core::net::IpAddr;
 use gnunet_dns::{Idna, Name};
@@ -45,29 +49,6 @@ token!(
     EffectId,
     "Original dependency attempt, tied to its resolver instance."
 );
-/// Where authenticated zone records may be obtained.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Policy {
-    /// Local authenticated cache first, remote storage on miss/invalid data.
-    CacheThenRemote,
-    /// Every authority, including DNS-server GNS children, stays cache-only.
-    LocalOnly,
-    /// Initial authority cache-only; subsequent authority lookups may be remote.
-    LocalMaster,
-}
-impl Policy {
-    /// Interpret the pinned GNS IPC enum without mistaking it for combinable
-    /// bit flags. The client codec may preserve unknown bits; domain policy
-    /// rejects an option value it cannot enforce.
-    pub fn from_local_options(value: u16) -> Result<Self, Error> {
-        match value {
-            0 => Ok(Self::CacheThenRemote),
-            1 => Ok(Self::LocalOnly),
-            2 => Ok(Self::LocalMaster),
-            _ => Err(Error::Unsupported),
-        }
-    }
-}
 /// Finite admission, storage, recursion and externally visible dependency limits.
 #[derive(Clone, Copy, Debug)]
 pub struct Limits {
@@ -89,7 +70,7 @@ pub struct Limits {
     /// blocks and children; a stream of bad signatures cannot run unbounded.
     pub steps: u32,
     /// Enable DNS/OS resolution; direct requested GNS2DNS data still works.
-    pub dns: bool,
+    pub dns: DnsPolicy,
     /// Enable namecache reads and validated remote-block cache writes.
     pub cache: bool,
     /// Match GNUnet C's DNS address-following treatment of stored CNAME.
@@ -106,47 +87,11 @@ impl Default for Limits {
             frames: 16,
             servers: 32,
             steps: 256,
-            dns: true,
+            dns: DnsPolicy::Allow,
             cache: true,
             follow_cname: true,
         }
     }
-}
-/// Explicit-zone lookup intent. Raw original name is copied on admission.
-#[derive(Clone, Copy, Debug)]
-pub struct Lookup<'a> {
-    /// Initial authoritative zone.
-    pub zone: ZoneKey,
-    /// Relative name; empty means apex.
-    pub name: &'a str,
-    /// Full32-bit requested type; zero requests any type.
-    pub record_type: RecordType,
-    /// Cache/remote policy propagated to nested GNS dependencies.
-    pub policy: Policy,
-    /// Global work ceiling, further restricted by Resolver limits.
-    pub recursion_limit: u16,
-}
-/// Semantic terminal failure; never an invented successful record set.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Failure {
-    /// No usable records or no applicable continuation.
-    NotFound,
-    /// Authoritative zone is revoked, including cache hits.
-    Revoked,
-    /// Unknown critical record type.
-    Critical(RecordType),
-    /// Malformed or mutually exclusive authoritative records.
-    Records,
-    /// Delegation or redirection illegally stored at apex.
-    Apex,
-    /// DNS transition disabled by configuration.
-    DnsDisabled,
-    /// Recursion or aggregate work budget exhausted.
-    Recursion,
-    /// Original logical query explicitly canceled.
-    Cancelled,
-    /// Dependency, validation or resource failure.
-    Fault(Error),
 }
 /// Original immutable dependency action. Re-reading it does not generate a new
 /// attempt. Only the matching receipt method can retire this effect.
@@ -228,8 +173,8 @@ pub enum EffectKind {
         /// Shared remaining work allowance.
         remaining_steps: u32,
     },
-    /// Resolve symbolic protocol/service using configured GANA/OS registry;
-    /// None means use the literal prefix as SBOX, never guess a numeric value.
+    /// Resolve the protocol and service through the provider, including decimal
+    /// service labels. An unmapped pair can still match a literal SBOX prefix.
     Service {
         /// Original service component without underscore.
         service: String,
@@ -678,12 +623,7 @@ impl<'a> Resolver<'a> {
         if name.len() > self.limits.name_bytes {
             return Err(Error::TooLarge);
         }
-        let (remaining, label) = match name.rsplit_once('.') {
-            Some((_, last)) if last.starts_with('_') => (name, "@"),
-            Some((rest, last)) => (rest, last),
-            None if name.starts_with('_') => (name, "@"),
-            None => ("", if name.is_empty() { "@" } else { name }),
-        };
+        let (remaining, label) = crate::names::split_authority(name);
         let mut scalars = Vec::new();
         scalars
             .try_reserve_exact(
@@ -896,9 +836,13 @@ impl<'a> Resolver<'a> {
             }
         })
     }
-    /// Symbolic protocol/service receipt for BOX selection. None retains the
-    /// literal SBOX prefix; zero-valued protocol/service is not a BOX match.
-    pub fn service(&mut self, id: EffectId<'_>, selector: Option<(u16, u16)>) -> Result<(), Error> {
+    /// Protocol and service receipt for BOX selection. A `None` receipt keeps
+    /// literal SBOX selection.
+    pub fn service(
+        &mut self,
+        id: EffectId<'_>,
+        selector: Option<BoxSelector>,
+    ) -> Result<(), Error> {
         let i = self.effect_index(id, |k| matches!(k, EffectKind::Service { .. }))?;
         self.run(i, |s, e| {
             e.effect = None;
@@ -906,7 +850,7 @@ impl<'a> Resolver<'a> {
             s.boxes(e, records, selector)
         })
     }
-    /// DNS-only nameserver address receipt. Every configured server is tried
+    /// Nameserver address receipt. Every configured server is tried
     /// serially until an actual successful recursive DNS result is received.
     pub fn addresses(
         &mut self,
@@ -1175,8 +1119,8 @@ impl<'a> Resolver<'a> {
                 let rest = text(rest)?;
                 return self.transition(e, target, &rest);
             }
-            if !self.limits.dns {
-                return self.complete(e, Err(Failure::DnsDisabled));
+            if let Err(failure) = self.limits.dns.check() {
+                return self.complete(e, Err(failure));
             }
             let name = dns_ascii(&combined)?;
             return self.issue(
@@ -1199,8 +1143,8 @@ impl<'a> Resolver<'a> {
             if apex {
                 return self.complete(e, Err(Failure::Apex));
             }
-            if !self.limits.dns {
-                return self.complete(e, Err(Failure::DnsDisabled));
+            if let Err(failure) = self.limits.dns.check() {
+                return self.complete(e, Err(failure));
             }
             return self.start_bridge(e, records);
         }
@@ -1209,8 +1153,8 @@ impl<'a> Resolver<'a> {
             && primary[0].record_type == RecordType::CNAME
             && desired != RecordType::CNAME
         {
-            if !self.limits.dns {
-                return self.complete(e, Err(Failure::DnsDisabled));
+            if let Err(failure) = self.limits.dns.check() {
+                return self.complete(e, Err(failure));
             }
             let name = Name::from_wire(&primary[0].data)?;
             let mut dotted = [0; 255];
@@ -1229,28 +1173,19 @@ impl<'a> Resolver<'a> {
             );
         }
         if !empty {
-            if let Some((service, protocol)) = box_prefix(&f.remaining) {
-                let numeric = match (protocol, service.parse::<u16>()) {
-                    ("tcp", Ok(p)) => Some((6, p)),
-                    ("udp", Ok(p)) => Some((17, p)),
-                    ("sctp", Ok(p)) => Some((132, p)),
-                    _ => None,
-                };
-                if numeric.is_some() {
-                    return self.boxes(e, records, numeric);
+            if let Some(prefix) = boxed::Prefix::new(&f.remaining) {
+                if let Some((service, protocol)) = prefix.service_names()
+                    && records
+                        .iter()
+                        .any(|record| record.record_type == RecordType::BOX)
+                {
+                    let kind = EffectKind::Service {
+                        service: text(service)?,
+                        protocol: text(protocol)?,
+                    };
+                    e.frames.last_mut().ok_or(Error::NotReady)?.pending = records;
+                    return self.issue(e, kind);
                 }
-                let kind = EffectKind::Service {
-                    service: text(service)?,
-                    protocol: text(protocol)?,
-                };
-                e.frames.last_mut().ok_or(Error::NotReady)?.pending = records;
-                return self.issue(e, kind);
-            }
-            if f.remaining
-                .rsplit('.')
-                .next()
-                .is_some_and(|s| s.starts_with('_'))
-            {
                 return self.boxes(e, records, None);
             }
             return self.complete(e, Err(Failure::NotFound));
@@ -1284,60 +1219,26 @@ impl<'a> Resolver<'a> {
         &mut self,
         e: &mut Entry<'a>,
         records: Vec<Record>,
-        selector: Option<(u16, u16)>,
+        selector: Option<BoxSelector>,
     ) -> Result<(), Error> {
         let f = e.frames.last().ok_or(Error::NotReady)?;
-        let prefix = &f.remaining;
+        let prefix = boxed::Prefix::new(&f.remaining).ok_or(Error::InvalidInput)?;
         let mut result = Vec::new();
         result
             .try_reserve_exact(records.len())
             .map_err(|_| Error::Capacity)?;
         for mut r in records {
-            let payload = if r.record_type == RecordType::BOX {
-                if let Some((proto, service)) = selector {
-                    if proto == 0 || service == 0 {
-                        continue;
-                    }
-                    if r.data.len() < 8 {
-                        return Err(Error::Malformed);
-                    }
-                    if r.data[..2] != proto.to_be_bytes() || r.data[2..4] != service.to_be_bytes() {
-                        continue;
-                    }
-                    8
-                } else {
-                    continue;
-                }
-            } else if r.record_type == RecordType::SBOX {
-                if r.data.len() < 5 {
-                    return Err(Error::Malformed);
-                }
-                let n = r.data[4..]
-                    .iter()
-                    .position(|&b| b == 0)
-                    .ok_or(Error::Malformed)?;
-                if &r.data[4..4 + n] != prefix.as_bytes() {
-                    continue;
-                }
-                4 + n + 1
-            } else {
+            let Some(selected) = prefix.select(selector, r.as_data())? else {
                 continue;
             };
-            let at = if r.record_type == RecordType::BOX {
-                4
-            } else {
-                0
-            };
-            r.record_type = RecordType::new(u32::from_be_bytes(
-                r.data[at..at + 4]
-                    .try_into()
-                    .map_err(|_| Error::Malformed)?,
-            ));
-            r.data = bytes(&r.data[payload..])?;
-            r.as_data().validate_fixed_size()?;
-            if r.flags.contains(RecordFlags::CRITICAL) && !supported(r.record_type) {
-                return self.complete(e, Err(Failure::Critical(r.record_type)));
+            selected.validate_fixed_size()?;
+            let kind = selected.record_type;
+            if selected.flags.contains(RecordFlags::CRITICAL) && !supported(kind) {
+                return self.complete(e, Err(Failure::Critical(kind)));
             }
+            let payload = bytes(selected.data)?;
+            r.record_type = kind;
+            r.data = payload;
             result.push(r);
         }
         if result.is_empty() {
@@ -1465,52 +1366,6 @@ impl<'a> Resolver<'a> {
             );
         }
     }
-}
-fn box_prefix(input: &str) -> Option<(&str, &str)> {
-    let (service, protocol) = input.split_once('.')?;
-    if protocol.contains('.') {
-        return None;
-    }
-    Some((service.strip_prefix('_')?, protocol.strip_prefix('_')?))
-}
-fn supported(kind: RecordType) -> bool {
-    matches!(
-        kind.value(),
-        1 | 2
-            | 5
-            | 6
-            | 12
-            | 15
-            | 16
-            | 28
-            | 33
-            | 37
-            | 39
-            | 43
-            | 44
-            | 46
-            | 47
-            | 48
-            | 50
-            | 51
-            | 52
-            | 53
-            | 59
-            | 60
-            | 61
-            | 63
-            | 64
-            | 65
-            | 99
-            | 108
-            | 109
-            | 249
-            | 250
-            | 255
-            | 256
-            | 257
-            | 65536..=65545 | 65547..=65561 | 65563 | 65564 | 4294901760
-    )
 }
 fn dns_ascii(input: &str) -> Result<String, Error> {
     let mut workspace = gnunet_idna::Workspace::new();

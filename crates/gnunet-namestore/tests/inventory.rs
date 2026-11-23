@@ -87,6 +87,126 @@ fn admitted_monitor(m: &mut Monitor) -> Result<(), Error> {
     m.exposed(&write)?;
     m.written(&write)
 }
+
+#[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "Fixed synthetic records verify the authoritative and published views"
+)]
+fn maintenance_lookup_preserves_apex_nickname_through_record_replacement() -> Result<(), Error> {
+    let key = mock()?;
+    let mut core = Core::new(limits(), Vec::new(), critical)?;
+    let nickname = RecordData {
+        expiration_time: 600,
+        record_type: RecordType::NICK,
+        flags: RecordFlags::PRIVATE,
+        data: b"test nickname\0",
+    };
+    let address = RecordData {
+        expiration_time: 1200,
+        record_type: RecordType::A,
+        flags: RecordFlags::NONE,
+        data: &[192, 0, 2, 1],
+    };
+    let decision = batch(&mut core, &key, &[(b"@", &[address, nickname])], true)?;
+    generic(&committed(&mut core, decision)?.reply, Code::NONE)?;
+    let normal = core.lookup(key.view()?, b"@", Filter::NONE, 100)?;
+    assert_eq!(normal.records()?.count(), 1);
+    let view = core.lookup(key.view()?, b"@", Filter::INCLUDE_MAINTENANCE, 100)?;
+    assert_eq!(view.expires(), normal.expires());
+    let mut retained = view.records()?.records().iter();
+    assert_eq!(retained.next().ok_or(Error::NotFound)??, address);
+    let retained = retained.next().ok_or(Error::NotFound)??;
+    assert_eq!(retained, nickname);
+    let remove_private =
+        Filter::from_bits(Filter::INCLUDE_MAINTENANCE.bits() | Filter::OMIT_PRIVATE.bits());
+    let public = core.lookup(key.view()?, b"@", remove_private, 100)?;
+    assert_eq!(public.records()?.count(), 1);
+    let mut cursor = ZoneIterator::new(
+        &core,
+        1,
+        Some(key.view()?),
+        Filter::INCLUDE_MAINTENANCE,
+        StreamLimits::default(),
+    )?;
+    assert_eq!(cursor.prepare(&core, 100)?, StreamProgress::Prepared);
+    let Item::Record { query, .. } = cursor.prepared().ok_or(Error::NotReady)?.item else {
+        return Err(Error::Malformed);
+    };
+    assert_eq!(query.records()?.count(), 1);
+    drop(cursor);
+    let replacement = RecordData {
+        data: &[192, 0, 2, 2],
+        ..address
+    };
+    let decision = batch(&mut core, &key, &[(b"@", &[replacement, retained])], true)?;
+    generic(&committed(&mut core, decision)?.reply, Code::NONE)?;
+    let lookup = core.lookup(key.view()?, b"@", Filter::INCLUDE_MAINTENANCE, 100)?;
+    let mut records = lookup.records()?.records().iter();
+    assert_eq!(records.next().ok_or(Error::NotFound)??, replacement);
+    assert_eq!(records.next().ok_or(Error::NotFound)??, nickname);
+    assert!(records.next().is_none());
+    Ok(())
+}
+
+#[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "Committed and no-op edit responses preserve exact apex metadata"
+)]
+fn edit_begin_returns_original_apex_nickname_without_maintenance_records() -> Result<(), Error> {
+    let key = mock()?;
+    let mut core = Core::new(limits(), Vec::new(), critical)?;
+    let address = RecordData {
+        expiration_time: 900,
+        record_type: RecordType::A,
+        flags: RecordFlags::NONE,
+        data: &[192, 0, 2, 1],
+    };
+    let nickname = RecordData {
+        expiration_time: 5000,
+        record_type: RecordType::NICK,
+        flags: RecordFlags::from_bits_preserve(
+            RecordFlags::PRIVATE.bits() | RecordFlags::RELATIVE_EXPIRATION.bits(),
+        ),
+        data: b"original nickname\0",
+    };
+    let tombstone = RecordData {
+        expiration_time: 2000,
+        record_type: RecordType::TOMBSTONE,
+        flags: RecordFlags::from_bits_preserve(
+            RecordFlags::PRIVATE.bits() | RecordFlags::MAINTENANCE.bits(),
+        ),
+        data: &[],
+    };
+    let store = batch(
+        &mut core,
+        &key,
+        &[(b"@", &[address, nickname, tombstone])],
+        true,
+    )?;
+    generic(&committed(&mut core, store)?.reply, Code::NONE)?;
+    let edit = core.edit_begin(key.view()?, b"@", b"first editor", 100)?;
+    let opened = committed(&mut core, edit)?.reply;
+    let Decision::Immediate(unchanged) =
+        core.edit_begin(key.view()?, b"@", b"first editor", 100)?
+    else {
+        return Err(Error::Conflict);
+    };
+    for response in [opened, unchanged] {
+        let Reply::Edit { code, query } = response else {
+            return Err(Error::Malformed);
+        };
+        assert_eq!(code, Code::NONE);
+        assert_eq!(query.expires(), tombstone.expiration_time);
+        let mut records = query.records()?.records().iter();
+        assert_eq!(records.next().ok_or(Error::NotFound)??, address);
+        assert_eq!(records.next().ok_or(Error::NotFound)??, nickname);
+        assert!(records.next().is_none());
+    }
+    Ok(())
+}
+
 #[test]
 #[expect(
     clippy::panic_in_result_fn,

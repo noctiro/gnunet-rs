@@ -7,18 +7,20 @@ use std::{io, time::Duration};
 #[derive(Clone, Copy, Debug)]
 pub struct Deadlines {
     /// Absolute first whole-request send deadline, including endpoint selection.
-    /// A completed first send discharges this bound; restoration still obeys
-    /// the unchanged first-result and whole-job targets.
+    /// A completed first send discharges this bound. A non-expiring job uses
+    /// this initial finite send budget for each restoration episode.
     pub send_until: u64,
     /// Required for searches, forbidden for announcements. Ends local interest
-    /// if no complete valid RESULT was observed by this absolute time.
+    /// if no complete valid RESULT was observed by this absolute time. `u64::MAX`
+    /// disables the first-result deadline for an open-ended search.
     pub first_result_until: Option<u64>,
-    /// Finite absolute original job lifetime, never refreshed by results.
+    /// Original absolute job lifetime, never refreshed by results. `u64::MAX`
+    /// keeps a subscription active until cancellation or terminal failure.
     pub until: u64,
 }
 impl Deadlines {
     pub(crate) fn validate(self, now: u64, search: bool) -> Result<(), ProtocolError> {
-        if self.send_until <= now || self.send_until > self.until || self.until == u64::MAX {
+        if self.send_until <= now || self.send_until > self.until || self.send_until == u64::MAX {
             return Err(ProtocolError::Deadline);
         }
         match (search, self.first_result_until) {
@@ -26,6 +28,42 @@ impl Deadlines {
             (false, None) => Ok(()),
             _ => Err(ProtocolError::InvalidInput),
         }
+    }
+}
+
+#[cfg(test)]
+mod deadline_tests {
+    use super::*;
+
+    #[test]
+    fn indefinite_subscriptions_still_require_a_finite_send() -> Result<(), ProtocolError> {
+        let search = Deadlines {
+            send_until: 10,
+            first_result_until: Some(u64::MAX),
+            until: u64::MAX,
+        };
+        search.validate(1, true)?;
+        Deadlines {
+            first_result_until: None,
+            ..search
+        }
+        .validate(1, false)?;
+        if (Deadlines {
+            send_until: u64::MAX,
+            ..search
+        })
+        .validate(1, true)
+            != Err(ProtocolError::Deadline)
+            || (Deadlines {
+                until: 20,
+                ..search
+            })
+            .validate(1, true)
+                != Err(ProtocolError::InvalidInput)
+        {
+            return Err(ProtocolError::InvalidInput);
+        }
+        Ok(())
     }
 }
 /// One RX frame, one retained TX frame and bounded native syscall quanta.

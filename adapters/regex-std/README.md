@@ -77,6 +77,10 @@ provider retirement remain distinct.
 DHT client/reader and stable caller-owned Instance. The standard SERVICE frontend
 and official STATISTICS publisher live in `adapters/regex-program-std`;
 its production `NativeFactory` is installed by `gnunet-service-regex`.
+Embedded callers use `startup::serve_embedded` with private REGEX, DHT and
+PILS paths and the same clock as those dependencies. Ready means the original
+DHT connection is attached and PILS supplied the current peer identity.
+Keep both dependencies active through REGEX retirement.
 
 Persistent GETs keep their original JobId/GetId across readonly MQ replacement. GET registration/STOP, queued PUT, source connection and partial-input phases
 have fixed native bounds; those bounds never invent a full-search TTL. A new

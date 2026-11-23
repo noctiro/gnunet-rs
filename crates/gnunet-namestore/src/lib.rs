@@ -2,7 +2,11 @@
 //! No database, IPC owner, entropy, key file, resolver or scheduler is created.
 #![no_std]
 #![forbid(unsafe_code)]
+mod code;
 mod policy;
+pub use code::Code;
+/// Bounded authoritative NAMESTORE inventory with caller-owned storage.
+pub mod fixed;
 pub use gnunet_gnsrecord::{RecordData, RecordFlags, RecordSet, RecordType, ZoneKey};
 pub use gnunet_identity::{SecretKey, SecretKeyView};
 pub use policy::*;

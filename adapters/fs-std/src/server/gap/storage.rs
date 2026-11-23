@@ -4,7 +4,7 @@ use super::super::{IndexResolver, Resolution, cadet_server::source};
 use gnunet_datastore_host::{self as ds, Client, Interruption, Operation, Outcome, Step};
 use gnunet_fs::gap::{self as gap, storage as pure};
 use gnunet_service_runtime::{clock::RuntimeClock, framing::OwnedFrame};
-use gnunet_types::{Duration as Timeout, Error};
+use gnunet_types::{AbsoluteTime, Duration as Timeout, Error, MonoInstant};
 use gnunet_wire::official::datastore::{Request, Response};
 use std::{
     error::Error as StdError,
@@ -14,6 +14,14 @@ use std::{
     task::{Context, Poll},
 };
 use tokio::time::Instant;
+
+// This driver schedules against its qualified logical runtime clock.
+fn logical_time(now: u64) -> pure::Time {
+    pure::Time {
+        absolute: AbsoluteTime::from_micros(now),
+        elapsed: MonoInstant(now),
+    }
+}
 /// Original actual port/source failure, retaining native certainty and cause.
 pub type Failure = Box<dyn StdError + Send + Sync>;
 /// Original native terminal, including a real late reply and interrupted outcome.
@@ -456,10 +464,13 @@ impl<'id, 'slots, 'bytes> Driver<'id, 'slots, 'bytes> {
         interest: gap::CacheInterest,
         now: u64,
     ) -> Result<(), Error> {
-        if let pure::CacheAdmission::Declined(reason) =
-            self.owner
-                .receive_checked(n, checked, interest.priority, interest.requested, now)?
-        {
+        if let pure::CacheAdmission::Declined(reason) = self.owner.receive_checked(
+            n,
+            checked,
+            interest.priority,
+            interest.requested,
+            logical_time(now),
+        )? {
             if self.report.first_rejected.is_none() {
                 let original = Self::copy(checked.bytes())?;
                 self.rejected(
@@ -513,7 +524,7 @@ impl<'id, 'slots, 'bytes> Driver<'id, 'slots, 'bytes> {
             }
             return Ok(());
         }
-        match self.owner.selected(token, Some(data), now) {
+        match self.owner.selected(token, Some(data), logical_time(now)) {
             Ok(()) => {
                 if self.report.first_selected.is_none() {
                     self.report.first_selected = Some(record)
@@ -557,10 +568,13 @@ impl<'id, 'slots, 'bytes> Driver<'id, 'slots, 'bytes> {
                 if status.code != code {
                     return Err(Box::new(terminal));
                 }
-                if let Err(error) =
-                    self.owner
-                        .cache_status(token, code, status.min_expiration, now, entropy)
-                {
+                if let Err(error) = self.owner.cache_status(
+                    token,
+                    code,
+                    status.min_expiration,
+                    logical_time(now),
+                    entropy,
+                ) {
                     let mut original = terminal;
                     original.cause = Some(error.into());
                     return Err(Box::new(original));
@@ -580,7 +594,7 @@ impl<'id, 'slots, 'bytes> Driver<'id, 'slots, 'bytes> {
                 if !matches!(Response::decode(frame.bytes())?, Response::End) {
                     return Err(Box::new(terminal));
                 }
-                self.owner.selected(token, None, now)?
+                self.owner.selected(token, None, logical_time(now))?
             }
             _ => {
                 self.owner.failed(token, false, now)?;
@@ -616,10 +630,12 @@ impl<'id, 'slots, 'bytes> Driver<'id, 'slots, 'bytes> {
                         self.owner.failed(resolving.token, false, now)?;
                         self.rejected(resolving.record, Error::Closed.into());
                     } else {
-                        match self
-                            .owner
-                            .selected_resolved(resolving.token, data, &value, now)
-                        {
+                        match self.owner.selected_resolved(
+                            resolving.token,
+                            data,
+                            &value,
+                            logical_time(now),
+                        ) {
                             Ok(()) => {
                                 if self.report.first_selected.is_none() {
                                     self.report.first_selected = Some(resolving.record)
@@ -658,7 +674,7 @@ impl<'id, 'slots, 'bytes> Driver<'id, 'slots, 'bytes> {
             return Poll::Ready(Err(Error::Closed.into()));
         }
         let admitted = {
-            let Some(command) = self.owner.next_command(now)? else {
+            let Some(command) = self.owner.next_command(logical_time(now))? else {
                 return Poll::Pending;
             };
             match command {
@@ -686,7 +702,7 @@ impl<'id, 'slots, 'bytes> Driver<'id, 'slots, 'bytes> {
         router: &mut gap::Router<'id, '_, '_>,
         now: u64,
     ) -> Result<bool, Error> {
-        let Some(push) = self.owner.next_push(now)? else {
+        let Some(push) = self.owner.next_push(logical_time(now))? else {
             return Ok(false);
         };
         let token = push.token;
@@ -808,10 +824,9 @@ impl<'id, 'slots, 'bytes> Driver<'id, 'slots, 'bytes> {
 
 // Native CORE scheduling remains in the original Router; this child impl keeps
 // the optional storage/control composition separate from query/source routing.
-use super::{Error as RouterError, Router};
+use super::{CORE_QUEUE_OPTIONS, Error as RouterError, Router};
 use gnunet_core_client_host::{self as core, ConnectionEpoch, Message, PayloadState, Peer, SendId};
 use gnunet_service_runtime::clock::Deadline;
-use gnunet_types::AbsoluteTime;
 use std::pin::Pin;
 pub(super) struct Control<'c, 'g> {
     offer: pure::StopOffer<'g>,
@@ -821,10 +836,18 @@ pub(super) struct Control<'c, 'g> {
     bytes: [u8; 16],
     message: Option<Message>,
     deadline: Option<Deadline>,
+    queued_us: u64,
     written: usize,
     total: usize,
     canceling: bool,
 }
+
+impl<'c> Control<'c, '_> {
+    pub(super) fn owns_peer(&self, epoch: ConnectionEpoch<'c>, peer: Peer<'c>) -> bool {
+        self.epoch == epoch && self.peer == peer
+    }
+}
+
 impl<
     'c,
     'g,
@@ -861,7 +884,11 @@ impl<
     pub(super) fn control_matches(&self, send: SendId<'c>) -> bool {
         self.control.as_ref().is_some_and(|c| c.send == Some(send))
     }
-    pub(super) fn control_payload(&mut self, state: PayloadState<'c>) -> Result<bool, RouterError> {
+    pub(super) fn control_payload(
+        &mut self,
+        state: PayloadState<'c>,
+        now: u64,
+    ) -> Result<bool, RouterError> {
         let Some(c) = self
             .control
             .as_mut()
@@ -876,6 +903,10 @@ impl<
         {
             return Err(Error::Authentication.into());
         }
+        if state.complete() && c.written < c.total {
+            self.gap
+                .record_handoff(c.offer.neighbor, c.queued_us, now)?;
+        }
         c.written = state.written();
         Ok(true)
     }
@@ -886,9 +917,10 @@ impl<
         send: SendId<'c>,
         payload: Option<PayloadState<'c>>,
         completion: core::SendCompletion<Message>,
+        now: u64,
     ) -> Result<(), RouterError> {
         if let Some(state) = payload {
-            self.control_payload(state)?;
+            self.control_payload(state, now)?;
         }
         let c = self.control.as_ref().ok_or(Error::StaleGeneration)?;
         if c.epoch != epoch
@@ -1050,6 +1082,7 @@ impl<
                 bytes,
                 message: None,
                 deadline: Some(deadline),
+                queued_us: self.last_now,
                 written: 0,
                 total: gnunet_wire::official::core::SEND_PREFIX + 16,
                 canceling: false,
@@ -1082,7 +1115,14 @@ impl<
                     let loss = self.native.reconnect()?;
                     self.native_event(loss, self.last_now)?;
                 } else if let Some(completion) = self.native.cancel(send)? {
-                    self.finish_control(original.1, original.2, send, None, completion)?;
+                    self.finish_control(
+                        original.1,
+                        original.2,
+                        send,
+                        None,
+                        completion,
+                        self.last_now,
+                    )?;
                 }
             } else {
                 self.storage
@@ -1110,7 +1150,10 @@ impl<
         let delay =
             u64::try_from(self.limits.send_timeout.as_micros()).map_err(|_| Error::Overflow)?;
         let target = self.last_now.checked_add(delay).ok_or(Error::Overflow)?;
-        match self.native.send(c.peer, u32::MAX, target, message) {
+        match self
+            .native
+            .send(c.peer, CORE_QUEUE_OPTIONS, target, message)
+        {
             Ok(send) => {
                 c.send = Some(send);
                 Ok(true)

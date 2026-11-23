@@ -2,6 +2,7 @@ use crate::{Peer, Port};
 use alloc::vec::Vec;
 use core::marker::PhantomData;
 use gnunet_types::Error;
+use gnunet_wire::official::{MessageHeader, message_type};
 
 /// Exclusive brand root for one real local IPC Line. No native work is hidden.
 #[derive(Default)]
@@ -198,7 +199,8 @@ pub enum RequestOutcome<'id> {
     Admitted,
     /// The actual outgoing call owner was created.
     Calling(CallId<'id>),
-    /// A stale local CID or already closing call was ignored as in the C API.
+    /// A stale CID, closing call or media frame without queue capacity was
+    /// ignored. No native write or acknowledgement is created.
     Ignored,
 }
 /// One actual operation for the native owner. Frames contain only original
@@ -295,8 +297,9 @@ impl<'id> Action<'id> {
         }
     }
 }
-/// Original pending effect. Its metadata and bytes survive cancellation until
-/// the native owner settles the actual original physical outcome.
+/// Original pending effect. An admitted effect retains its metadata and bytes
+/// until the native owner settles. Unadmitted outgoing audio may be discarded
+/// on expiry or superseded at the tail of its call's send queue.
 #[derive(Debug)]
 pub struct Effect<'id> {
     pub(super) id: EffectId<'id>,
@@ -307,6 +310,13 @@ pub struct Effect<'id> {
     pub(super) predecessors: [Option<EffectId<'id>>; 2],
 }
 impl<'id> Effect<'id> {
+    pub(super) fn unadmitted_audio(&self) -> bool {
+        !self.admitted
+            && matches!(&self.action, Action::PeerFrame { frame, .. }
+                if MessageHeader::decode(frame).is_ok_and(|header|
+                    header.message_type() == message_type::CONVERSATION_CADET_AUDIO))
+    }
+
     /// Original unforgeable in-process lease.
     pub const fn id(&self) -> EffectId<'id> {
         self.id

@@ -98,10 +98,14 @@ impl Reports {
             Event::Identity { .. }
             | Event::IdentityRetiring { .. }
             | Event::IdentityRestored { .. }
-            | Event::IdentityDriverRetired { .. }
             | Event::Attached(_) => {
                 self.log("quic.identity", Level::INFO, format_args!("{event:?}"))
             }
+            Event::DriverRetired { .. } => self.log(
+                "quic.driver.retired",
+                Level::INFO,
+                format_args!("{event:?}"),
+            ),
             Event::QueueRetired { .. } | Event::SendRetired { .. } => {
                 self.log("quic.retired", Level::DEBUG, format_args!("{event:?}"))
             }

@@ -114,8 +114,8 @@ fn convert(
     arithmetic.add(total, last)
 }
 
-/// Official fancy-size parser. Units and unsigned wrapping match the pinned C
-/// table, including its historical 1024 factor in decimal TB/PB/EB entries.
+/// Official fancy-size parser. Decimal units use powers of 1000, binary units
+/// use powers of 1024, and unsigned products and sums wrap as in C.
 pub fn parse_size(input: &[u8]) -> Result<u64, Error> {
     parse_size_in(input, &CaseSnapshot::C)
 }
@@ -131,11 +131,11 @@ pub(crate) fn parse_size_in(input: &[u8], profile: &CaseSnapshot) -> Result<u64,
             (b"GiB", 1024 * 1024 * 1024),
             (b"GB", 1000 * 1000 * 1000),
             (b"TiB", 1024u64.pow(4)),
-            (b"TB", 1000u64.pow(3) * 1024),
+            (b"TB", 1000u64.pow(4)),
             (b"PiB", 1024u64.pow(5)),
-            (b"PB", 1000u64.pow(4) * 1024),
+            (b"PB", 1000u64.pow(5)),
             (b"EiB", 1024u64.pow(6)),
-            (b"EB", 1000u64.pow(5) * 1024),
+            (b"EB", 1000u64.pow(6)),
         ],
         profile,
         Arithmetic::OfficialWrapping,
@@ -227,8 +227,8 @@ pub(crate) fn parse_float(input: &[u8], case: &CaseSnapshot) -> Result<f32, Erro
     }
 
     // Explicit immutable/pure-C profiles use stable C conversion rules. The
-    // CurrentThread branch above implements the source's actual native mixed
-    // locale and failure effect, including ABI-specific NULL-base categories.
+    // CurrentThread branch above temporarily applies numeric C rules while
+    // retaining the native locale's other categories.
     // Global comma numeric conventions never silently replace numeric C.
     let profile = LocaleSnapshot::named(b"C").map_err(native_value_error)?;
     let scan = profile.scan_float(input).map_err(native_value_error)?;

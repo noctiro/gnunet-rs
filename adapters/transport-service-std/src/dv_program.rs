@@ -7,7 +7,7 @@ use crate::{
     dv_driver::{Driver, Signal},
     dv_epoch::Bootstrap,
     dv_schedule::Scheduler,
-    generation::Reservations,
+    generation::{Reservations, retirement},
     owner::{Owner, TransportContext},
     sender::DvScope,
 };
@@ -810,7 +810,7 @@ fn poll_stopped_reservation<'owner, E: Entropy>(
     owner: &mut Owner<'owner, E>,
     reservations: &mut Reservations,
     notes: &mut Receipts<'owner>,
-    drain: &mut Option<crate::epoch::Drain<'owner>>,
+    drain: &mut Option<retirement::Drain<'owner>>,
     captured: &mut bool,
     cleanup: &mut Vec<Failure>,
 ) -> Poll<bool> {
@@ -833,13 +833,10 @@ fn poll_stopped_reservation<'owner, E: Entropy>(
     match original.poll(cx, reservations) {
         Poll::Pending => Poll::Pending,
         Poll::Ready(Ok(outcome)) => {
-            if let crate::epoch::ReservationOutcome::Failed { error, .. } = &outcome {
+            if let retirement::ReservationOutcome::Failed { error, .. } = &outcome {
                 cleanup.push(error.boxed());
             }
-            if matches!(
-                &outcome,
-                crate::epoch::ReservationOutcome::Mismatched { .. }
-            ) {
+            if matches!(&outcome, retirement::ReservationOutcome::Mismatched { .. }) {
                 cleanup.push(Box::new(Error::Stale));
             }
             notes.observe(crate::owner::Event::ReservationRetired(outcome));

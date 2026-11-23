@@ -39,8 +39,8 @@ pub enum LocalListenerAccess {
 }
 impl From<crate::credentials::UnixAccess> for LocalListenerAccess {
     /// Select creation permissions corresponding to a configured Unix policy.
-    /// UID takes precedence over GID. The driver must still authenticate peers;
-    /// this mapping does not make Unix UID/GID checks available on Windows.
+    /// UID takes precedence over GID. On Unix the driver separately checks
+    /// peer credentials. Windows admission uses the configured listener's DACL.
     fn from(access: crate::credentials::UnixAccess) -> Self {
         if access.match_uid {
             Self::Owner
@@ -142,10 +142,9 @@ impl BoundListeners {
     }
     /// Bind configured UNIXPATH and TCP addresses without adopting activation.
     /// Local paths use official GNUnet shortening; partial endpoint failures are
-    /// retained. Call during startup with namespace/ACL mutation excluded. Unix
-    /// also requires exclusion of unrelated file creators during its brief umask
-    /// change. Windows validates the parent ACL and protects the new node before
-    /// listening. No endpoint binding grants peer credential authority.
+    /// retained. Call during startup with namespace and ACL mutation excluded.
+    /// Unix commits node permissions before listen without changing process
+    /// umask. Windows validates the parent ACL before listening.
     #[cfg(any(unix, windows))]
     pub async fn bind_configured(
         config: &Configuration,
@@ -282,8 +281,7 @@ fn configured_tcp_addresses(
     if port != 0 {
         if let Some(host) = config.get(section, b"BINDTO") {
             let host = std::str::from_utf8(host)?;
-            // Like C service startup, resolve synchronously here. No Tokio
-            // blocking worker is created before the private Unix bind/umask.
+            // Like C service startup, resolve synchronously here.
             for address in (host, port).to_socket_addrs()? {
                 if disable6 && address.is_ipv6() {
                     continue;

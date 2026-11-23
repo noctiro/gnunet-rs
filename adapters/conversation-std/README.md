@@ -38,6 +38,11 @@ EOF or a classified connection error retires the actual MQ and its calls while
 preserving the local IPC Line. Each old native effect keeps its actual exposure
 result; Ring, audio and receive-credit frames never replay. An admitted local
 notification finishes on its original IPC before the call's local HangUp.
+An expired incomplete CADET frame also retires its original MQ and uses the
+same listening-port recovery. Its missing bytes receive no processing credit.
+A complete DATA frame keeps that receive deadline through processing. Expiry
+ends its original call and discards unwritten receive credit. An exposed credit
+prefix requires retirement of the MQ before listening can resume.
 
 The CADET client retains the logical listening port. Its complete announcement
 on a replacement MQ restores listening under a fresh source; an attached socket
@@ -87,6 +92,10 @@ longer permits that drain, the host retires the CADET MQ and recovers listening.
 An unsafe local IPC drain requires closing that Line. Known whole writes stay Written during later retirement;
 unknown or partial operations retain their original Lost/Unsent outcome. Per-call invalid input is rejected through its native channel when safe. EOF/source close does not manufacture peer Pickup or successful wire HangUp. Clock-free shutdown attempts every original Line and records undrained debts;
 undrained cleanup is fatal to new admission.
+
+Outgoing media that cannot enter the effect queue is consumed without waiting
+for CADET send credit. The [core media policy](../../crates/gnunet-conversation/README.md#controls-and-media)
+governs supersession and unadmitted expiry.
 
 Call setup and peer-output failures retain a standard local HangUp notice until
 its original close bound. Temporary core queue pressure parks the notice; it

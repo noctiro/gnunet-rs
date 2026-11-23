@@ -73,9 +73,15 @@ struct Offer<'id> {
     id: OfferId<'id>,
     key: RoundContext,
     peer: usize,
+    deadline: u64,
     claimed: bool,
     reject_requested: bool,
     retire: bool,
+}
+impl Offer<'_> {
+    fn available(&self, now: u64) -> bool {
+        !self.claimed && !self.reject_requested && !self.retire && now < self.deadline
+    }
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum LeaderStage {
@@ -129,8 +135,6 @@ pub struct Session<'id> {
     pending: Option<Effect<'id>>,
     listener: bool,
     concluded: bool,
-    lower_bound: u8,
-    sizes: Vec<u64>,
     first_size: u64,
     blacklisted: Vec<u8>,
     early: u8,
@@ -175,8 +179,9 @@ impl<'id> Session<'id> {
         if count > limits.peers {
             return Err(Error::Capacity);
         }
+        let peer_bytes = size_of::<[u8; 32]>() + size_of::<u8>();
         let minimum = size_of::<Self>()
-            .checked_add(count.checked_mul(41).ok_or(Error::Overflow)?)
+            .checked_add(count.checked_mul(peer_bytes).ok_or(Error::Overflow)?)
             .ok_or(Error::Overflow)?;
         if minimum > limits.retained_bytes {
             return Err(Error::Capacity);
@@ -208,17 +213,6 @@ impl<'id> Session<'id> {
             .checked_sub(size_of::<Self>())
             .and_then(|n| state::charge(&peers).ok().and_then(|m| n.checked_sub(m)))
             .ok_or(Error::Capacity)?;
-        let sizes_bytes = count.checked_mul(size_of::<u64>()).ok_or(Error::Overflow)?;
-        let mut sizes = Vec::new();
-        sizes
-            .try_reserve_exact(count)
-            .map_err(|_| Error::Capacity)?;
-        let actual = state::charge(&sizes)?;
-        if actual > free || actual < sizes_bytes {
-            return Err(Error::Capacity);
-        }
-        free -= actual;
-        sizes.resize(count, 0);
         let blacklisted = state::bytes(count, &mut free)?;
         let mut this = Self {
             brand,
@@ -250,8 +244,6 @@ impl<'id> Session<'id> {
             pending: None,
             listener: false,
             concluded: false,
-            lower_bound: 0,
-            sizes,
             first_size: 0,
             blacklisted,
             early: 0,
@@ -308,7 +300,6 @@ impl<'id> Session<'id> {
             state::charge(&self.sets)?,
             state::charge(&self.offers)?,
             state::charge(&self.inputs)?,
-            state::charge(&self.sizes)?,
             self.blacklisted.capacity(),
         ] {
             n = n.checked_add(charge).ok_or(Error::Overflow)?;
@@ -374,34 +365,6 @@ impl<'id> Session<'id> {
         } else {
             Ok(())
         }
-    }
-    fn payload(
-        &mut self,
-        raw: &[u8],
-        now: u64,
-        validator: &mut impl Validator,
-    ) -> Result<u32, Error> {
-        if raw.len()
-            > self
-                .limits
-                .element_bytes
-                .checked_add(3)
-                .ok_or(Error::Overflow)?
-        {
-            return Err(Error::TooLarge);
-        }
-        let block = Block::decode(raw)?;
-        if block.marker == 0 {
-            if block.payload_type > wire::USER_TYPE_MAX {
-                return Err(Error::InvalidInput);
-            }
-            // Opaque is a real public policy outcome, not authenticated success.
-            let _fact = validator.check(block.payload_type, block.data, self.now.max(now))?;
-        } else if block.marker == 2 {
-            block.size_marker()?;
-        }
-        let mut free = self.available()?;
-        self.pool.intern(raw, self.abi, self.limits, &mut free)
     }
     /// Insert an original opaque application element before conclude. User labels
     /// are not implicitly a BLOCK namespace; the actual selected policy is explicit.
@@ -518,7 +481,8 @@ impl<'id> Session<'id> {
         } else {
             context.repetition as usize
         };
-        if self.now >= self.window_deadline(kind, repetition) {
+        let deadline = self.window_deadline(kind, repetition);
+        if self.now >= deadline {
             return Err(Error::Deadline);
         }
         if self.sets.iter().any(|set| {
@@ -593,6 +557,7 @@ impl<'id> Session<'id> {
             id,
             key: context,
             peer: p,
+            deadline,
             claimed: false,
             reject_requested: false,
             retire: false,
@@ -820,7 +785,11 @@ impl<'id> Session<'id> {
         let mut changed = false;
         for _ in 0..budget.min(64) {
             if !self.cancelling
-                && let Some(offer) = self.offers.iter().find(|o| o.retire && !o.reject_requested)
+                && let Some(offer) = self.offers.iter().find(|offer| {
+                    !offer.claimed
+                        && !offer.reject_requested
+                        && (offer.retire || self.now >= offer.deadline)
+                })
             {
                 let offer = offer.id;
                 self.publish(Action::RejectOffer { offer })?;
@@ -864,7 +833,7 @@ impl<'id> Session<'id> {
     /// Original next start/phase/session deadline; no retry creates a new bound.
     #[must_use]
     pub fn next_deadline(&self) -> Option<u64> {
-        match self.stage {
+        let phase = match self.stage {
             Stage::Stopped | Stage::Closing => None,
             Stage::Collect => Some(self.schedule.deadline()),
             Stage::WaitStart if self.now < self.schedule.start() => Some(self.schedule.start()),
@@ -898,7 +867,21 @@ impl<'id> Session<'id> {
             Stage::Run if self.schedule.deadline() > self.now => Some(self.schedule.deadline()),
             Stage::Run => None,
             _ => Some(self.schedule.deadline()),
+        };
+        // Future requests are accepted while the caller is still collecting
+        // inputs. A delayed CONCLUDE cannot extend their original windows.
+        // A pending effect already owns the slot required to publish a
+        // rejection, so its actual receipt must wake this owner first.
+        if self.pending.is_some() {
+            return phase;
         }
+        phase.map(|original| {
+            self.offers
+                .iter()
+                .filter(|offer| !offer.claimed && !offer.reject_requested)
+                .map(|offer| offer.deadline)
+                .fold(original, u64::min)
+        })
     }
     /// Whether the original operation may still receive ordinary native results.
     /// The host also validates its actual source/epoch and original native bound.
@@ -924,11 +907,9 @@ impl<'id> Session<'id> {
     #[must_use]
     pub fn offer_live(&self, id: OfferId<'id>) -> bool {
         !self.cancelling
-            && self.offer_at(id).is_ok_and(|i| {
-                !self.offers[i].claimed
-                    && !self.offers[i].retire
-                    && !self.offers[i].reject_requested
-            })
+            && self
+                .offer_at(id)
+                .is_ok_and(|i| self.offers[i].available(self.now))
     }
     /// Whether original listener IO remains useful. A qualified final result
     /// stops new offers before the actual listener retirement action is settled.

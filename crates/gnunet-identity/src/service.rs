@@ -1,12 +1,10 @@
 //! Pure business state. The native owner supplies original-MQ FIFO ordering,
 //! subscription cursors, bounded outputs, physical close, and actual persistence.
-use crate::{Code, SecretKey, SecretKeyView, names};
+use crate::{ChangeKind, Code, MAX_NAME_BYTES, Mutation, SecretKey, names};
 use alloc::{rc::Rc, vec::Vec};
 use core::{cell::Cell, fmt, mem};
 use gnunet_types::Error;
 
-/// Largest name fitting an official UPDATE with a serialized private key.
-pub const MAX_NAME_BYTES: usize = 65535 - 12 - 36 - 1;
 /// Explicit process limits. Held historical snapshots share one aggregate budget.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Limits {
@@ -129,30 +127,6 @@ fn copy_ego(ego: &Ego, name: Option<&[u8]>) -> Result<Ego, Error> {
         key: ego.key.try_clone_secret(),
     })
 }
-/// Requested mutation. A returned Prepared transaction has no external effect
-/// until the provider actually admits and durably commits its staged snapshot.
-#[derive(Clone, Copy, Debug)]
-pub enum Mutation<'a> {
-    /// Create/import one key and normalize its supplied name.
-    Create {
-        /// Requested name before normalization.
-        name: &'a [u8],
-        /// Structurally validated supplied private key.
-        key: SecretKeyView<'a>,
-    },
-    /// Normalize both names, then rename the old ego.
-    Rename {
-        /// Existing name before normalization.
-        old: &'a [u8],
-        /// New name before normalization.
-        new: &'a [u8],
-    },
-    /// Normalize the name, then remove the ego.
-    Delete {
-        /// Existing name before normalization.
-        name: &'a [u8],
-    },
-}
 /// Immutable process-domain transaction token. It is never a wire request ID or
 /// a secret-derived identifier and cannot be forged outside this module.
 #[derive(Clone)]
@@ -180,17 +154,6 @@ pub enum Decision {
     Immediate(Code),
     /// Fully prepared immutable after-image and its original transaction token.
     Prepared(Transaction),
-}
-/// Inventory change kind. CREATE replies before UPDATE; RENAME/DELETE update
-/// before their success reply. The native owner preserves that original-MQ order.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ChangeKind {
-    /// New ego at index zero of the after snapshot.
-    Create,
-    /// Existing ego renamed in place.
-    Rename,
-    /// Ego removed from the after snapshot.
-    Delete,
 }
 struct Staged {
     transaction: Transaction,
@@ -316,30 +279,7 @@ impl Core {
     /// aware. Lookup requests are not normalized by the official service.
     pub fn lookup(&self, name: &[u8], suffix: bool) -> Result<Option<usize>, Error> {
         self.live()?;
-        if name.len() > 65530 || name.contains(&0) {
-            return Err(Error::InvalidInput);
-        }
-        if !suffix {
-            return Ok(self
-                .current
-                .egos()
-                .iter()
-                .position(|e| e.name().eq_ignore_ascii_case(name)));
-        }
-        let mut found = None;
-        let mut longest = None;
-        for (index, ego) in self.current.egos().iter().enumerate() {
-            let length = ego.name().len();
-            if length <= name.len()
-                && name.ends_with(ego.name())
-                && (length == name.len() || name[name.len() - length - 1] == b'.')
-                && longest.is_none_or(|n| length > n)
-            {
-                found = Some(index);
-                longest = Some(length);
-            }
-        }
-        Ok(found)
+        names::lookup(name, suffix, self.current.egos().iter().map(Ego::name))
     }
     /// Normalize a mutation and prepare its complete after-image. Capacity or
     /// an existing transaction is backpressure, never a fabricated success.

@@ -1,6 +1,6 @@
 //! Original marked root, lock/counter fencing and native publication ownership.
 use crate::*;
-use gnunet_native::filesystem::{self, Directory as NativeDirectory, FileIdentity};
+use gnunet_native::filesystem::{self, Directory as NativeDirectory, FileIdentity, FileInfo};
 use std::{ffi::OsStr, fs::File, io::Read};
 mod publication;
 mod removal;
@@ -36,7 +36,16 @@ fn read_small(
     let mut file = directory
         .open_file(OsStr::new(name))
         .map_err(|error| Failure::io("open metadata", path, error))?;
-    let result = read_original(&mut file, maximum, path);
+    let result: Result<Vec<u8>, Failure> = (|| {
+        let (bytes, _) = read_original(&mut file, maximum, path)?;
+        if !directory
+            .same_file(OsStr::new(name), &file)
+            .map_err(|error| Failure::io("recheck metadata name", path, error))?
+        {
+            return Err(Cause::Changed.into());
+        }
+        Ok(bytes)
+    })();
     let close = filesystem::close(file);
     match (result, close) {
         (Ok(bytes), Ok(())) => Ok(bytes),
@@ -52,11 +61,13 @@ fn read_small(
         (Ok(_), Err(error)) => Err(Failure::io("close metadata", path, error)),
     }
 }
-fn read_original(file: &mut File, maximum: usize, path: &Path) -> Result<Vec<u8>, Failure> {
-    filesystem::validate_private_file(file)
+fn read_original(
+    file: &mut File,
+    maximum: usize,
+    path: &Path,
+) -> Result<(Vec<u8>, FileInfo), Failure> {
+    let before = filesystem::private_data_file_info(file)
         .map_err(|error| Failure::io("qualify metadata", path, error))?;
-    let before =
-        filesystem::file_info(file).map_err(|error| Failure::io("metadata", path, error))?;
     let mut bytes = Vec::new();
     let extent = maximum.checked_add(1).ok_or(Fault::Overflow)?;
     bytes
@@ -69,12 +80,12 @@ fn read_original(file: &mut File, maximum: usize, path: &Path) -> Result<Vec<u8>
     if bytes.len() > maximum {
         return Err(Fault::TooLarge.into());
     }
-    if filesystem::file_info(file).map_err(|error| Failure::io("recheck metadata", path, error))?
-        != before
-    {
+    let after = filesystem::private_data_file_info(file)
+        .map_err(|error| Failure::io("recheck metadata", path, error))?;
+    if after != before || bytes.len() as u64 != before.bytes {
         return Err(Cause::Changed.into());
     }
-    Ok(bytes)
+    Ok((bytes, before))
 }
 pub(crate) struct Directory {
     pub path: PathBuf,
@@ -82,7 +93,7 @@ pub(crate) struct Directory {
     name: OsString,
     original: NativeDirectory,
     marker: File,
-    marker_info: filesystem::EntryInfo,
+    marker_info: FileInfo,
     lock: File,
     limits: Limits,
     pub fenced: bool,
@@ -159,11 +170,11 @@ impl Directory {
         let mut marker = original
             .open_file(OsStr::new(MARK))
             .map_err(|error| Failure::io("capture marker", &path, error))?;
-        if read_original(&mut marker, MAGIC.len(), &path.join(MARK))? != MAGIC {
+        let (marker_bytes, marker_info) =
+            read_original(&mut marker, MAGIC.len(), &path.join(MARK))?;
+        if marker_bytes != MAGIC {
             return Err(Cause::ForeignDirectory.into());
         }
-        let marker_info = filesystem::file_info(&marker)
-            .map_err(|error| Failure::io("marker identity", &path, error))?;
         let lock = match original.create_private_file(OsStr::new(LOCK)) {
             Ok(file) => file,
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => original
@@ -235,18 +246,27 @@ impl Directory {
     }
     fn check_identity(&self) -> io::Result<()> {
         self.original.validate_private()?;
-        filesystem::validate_private_file(&self.marker)?;
         filesystem::private_single_file_identity(&self.lock)?;
-        if !self.parent.same_directory(&self.name, &self.original)?
-            || FileIdentity::of(NativeDirectory::open(&self.path)?.as_file())?
-                != FileIdentity::of(self.original.as_file())?
-            || filesystem::file_info(&self.marker)? != self.marker_info
-            || !self.original.same_file(OsStr::new(MARK), &self.marker)?
-            || !self.original.same_file(OsStr::new(LOCK), &self.lock)?
+        if !self.parent.same_directory(&self.name, &self.original)? {
+            return Err(io::Error::other("original TESTBED root name changed"));
+        }
+        if FileIdentity::of(NativeDirectory::open(&self.path)?.as_file())?
+            != FileIdentity::of(self.original.as_file())?
         {
-            return Err(io::Error::other(
-                "original TESTBED root/marker/lock changed",
-            ));
+            return Err(io::Error::other("original TESTBED root path changed"));
+        }
+        let marker_info = filesystem::private_data_file_info(&self.marker)?;
+        if marker_info != self.marker_info {
+            return Err(io::Error::other(format!(
+                "held TESTBED marker snapshot changed (expected {:?}, observed {marker_info:?})",
+                self.marker_info,
+            )));
+        }
+        if !self.original.same_file(OsStr::new(MARK), &self.marker)? {
+            return Err(io::Error::other("original TESTBED marker name changed"));
+        }
+        if !self.original.same_file(OsStr::new(LOCK), &self.lock)? {
+            return Err(io::Error::other("original TESTBED lock name changed"));
         }
         Ok(())
     }

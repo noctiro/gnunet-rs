@@ -1,7 +1,13 @@
 //! FreeBSD if_tun.h and in6_var.h ABI. No shell commands or device surrogates.
 use super::*;
 use crate::Mode;
-use std::{mem::size_of, net::Ipv6Addr, os::unix::fs::OpenOptionsExt};
+use gnunet_native::filesystem::FileIdentity;
+use std::{
+    mem::size_of,
+    net::Ipv6Addr,
+    os::unix::fs::{FileTypeExt, OpenOptionsExt},
+    path::Path,
+};
 mod lifetime;
 pub(crate) mod recovery;
 pub use lifetime::InterfaceCleanupError;
@@ -74,6 +80,7 @@ fn enable_header(fd: &OwnedFd) -> io::Result<()> {
 pub(super) struct NativeIdentity {
     pub name: String,
     pub index: u32,
+    file: FileIdentity,
     header: bool,
 }
 fn identity(fd: &OwnedFd) -> io::Result<NativeIdentity> {
@@ -95,6 +102,7 @@ fn identity(fd: &OwnedFd) -> io::Result<NativeIdentity> {
     Ok(NativeIdentity {
         name,
         index,
+        file: FileIdentity::unix(stat.st_dev, stat.st_ino),
         header,
     })
 }
@@ -110,30 +118,61 @@ pub(crate) fn verify(fd: &OwnedFd) -> io::Result<Info> {
     })
 }
 
+fn listed_device_identity(path: &Path) -> io::Result<FileIdentity> {
+    observe_listed_device(path)?.ok_or_else(|| io::ErrorKind::NotFound.into())
+}
+
+fn observe_listed_device(path: &Path) -> io::Result<Option<FileIdentity>> {
+    let name = path.file_name().ok_or(io::ErrorKind::InvalidInput)?;
+    let parent = path.parent().ok_or(io::ErrorKind::InvalidInput)?;
+    // devfs can clone during lookup of an absent name. Inventory the directory
+    // before looking up the selected entry under caller-serialized device access.
+    for entry in std::fs::read_dir(parent)? {
+        let entry = entry?;
+        if entry.file_name() == name {
+            let metadata = entry.metadata()?;
+            if !metadata.file_type().is_char_device() {
+                return Err(invalid("FreeBSD TUN node is not a character device"));
+            }
+            return Ok(Some(FileIdentity::from_metadata(&metadata)));
+        }
+    }
+    Ok(None)
+}
+
 pub(crate) fn open_existing(interface: &str) -> io::Result<OwnedFd> {
-    let suffix = interface
-        .strip_prefix("tun")
-        .filter(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()))
-        .ok_or_else(|| invalid("expected a named FreeBSD tunN interface"))?;
-    let _checked_name = name(interface)?;
-    // Refuse an absent unit before opening its named device. The caller must
-    // serialize interface administration: concurrent destruction can invoke
-    // named devfs cloning before the second identity check detects replacement.
+    if !crate::recovery::canonical_unit(interface) {
+        return Err(invalid("expected a named FreeBSD tunN interface"));
+    }
     let expected = index(interface)?;
-    let path = format!("/dev/tun{suffix}");
+    let path = format!("/dev/{interface}");
+    // An unrelated interface can have the same name as a missing devfs unit.
+    let device = listed_device_identity(Path::new(&path))?;
     let fd: OwnedFd = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .custom_flags(libc::O_CLOEXEC | libc::O_NONBLOCK | libc::O_NOFOLLOW)
         .open(path)?
         .into();
-    enable_header(&fd)?;
-    let info = verify(&fd)?;
-    if info.name != interface || info.index != expected {
-        return Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            "FreeBSD TUN identity changed during open",
-        ));
+    let check_identity = |actual_name: &str, actual_index| {
+        if actual_name != interface || actual_index != expected {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "FreeBSD TUN identity changed during open",
+            ));
+        }
+        Ok(())
+    };
+    // Read the opened descriptor's identity before changing its framing.
+    let opened = identity(&fd)?;
+    if opened.file != device {
+        return Err(invalid("original FreeBSD TUN node changed during open"));
+    }
+    check_identity(&opened.name, opened.index)?;
+    if !opened.header {
+        enable_header(&fd)?;
+        let configured = verify(&fd)?;
+        check_identity(&configured.name, configured.index)?;
     }
     Ok(fd)
 }
@@ -322,6 +361,37 @@ mod tests {
         reason = "Assert actual kernel descriptor refusal and independently compiled native ABI values"
     )]
     use super::*;
+
+    #[test]
+    fn device_inventory_requires_a_listed_character_node_before_lookup() -> io::Result<()> {
+        use std::{ffi::OsString, os::unix::ffi::OsStringExt};
+        let null = Path::new("/dev/null");
+        let fd: OwnedFd = std::fs::File::open(null)?.into();
+        let stat = nix::sys::stat::fstat(&fd)?;
+        assert_eq!(
+            listed_device_identity(null)?,
+            FileIdentity::unix(stat.st_dev, stat.st_ino)
+        );
+
+        let executable = std::env::current_exe()?;
+        let Err(ordinary) = listed_device_identity(&executable) else {
+            return Err(io::Error::other(
+                "regular file entered the character-node inventory",
+            ));
+        };
+        assert_eq!(ordinary.kind(), io::ErrorKind::InvalidInput);
+
+        // A native pathname lookup would reject this leaf as InvalidInput.
+        // Enumeration observes its definite absence without submitting it.
+        let absent = executable.with_file_name(OsString::from_vec(b"absent\0leaf".to_vec()));
+        let Err(missing) = listed_device_identity(&absent) else {
+            return Err(io::Error::other(
+                "absent leaf entered the character-node inventory",
+            ));
+        };
+        assert_eq!(missing.kind(), io::ErrorKind::NotFound);
+        Ok(())
+    }
 
     #[test]
     fn ordinary_descriptors_cannot_be_adopted_as_tun() -> io::Result<()> {

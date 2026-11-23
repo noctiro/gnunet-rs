@@ -8,6 +8,7 @@ use crate::statistics::{NoStatistics, StatisticsFactory};
 pub use observation::{Failure as StatisticsFailure, Report as StatisticsReport};
 mod replay;
 mod reversal;
+pub use crate::settings::PeerMode;
 use crate::{addresses, dial::Dial, listeners::Listeners, settings::Settings};
 use gnunet_client_host::EndpointSource;
 pub use gnunet_config::ProcessEnvironment;
@@ -20,6 +21,7 @@ use gnunet_service_runtime::{
     accepted::SocketEvent,
     clock::{RuntimeClock, SystemClock},
     connection::Connection,
+    network_change::NetworkChanges,
 };
 use gnunet_tcp_communicator_host::{Capacity, CreateId, OwnedFailure};
 use gnunet_types::Error;
@@ -76,6 +78,12 @@ pub struct LocalStartup<'a> {
     pub local_key: LocalKeyCapability,
     /// Finite caller bounds.
     pub limits: Limits,
+    /// Coalesced host hints for the original communicator's interface scan.
+    pub network_changes: NetworkChanges,
+    /// Explicit peer ingress policy. OutboundOnly rejects inherited listeners.
+    pub peer_mode: PeerMode,
+    /// Original native egress admission, applied before each new bind/connect.
+    pub socket_policy: gnunet_service_runtime::network::SocketPolicy,
 }
 /// Actual original listeners prepared before the enclosing process applies
 /// USERNAME. This entry never changes process identity inside async polling.
@@ -163,11 +171,16 @@ pub struct Services {
     context: gnunet_resolver_broker::Context<128, 256>,
     resolver: gnunet_resolver_broker::Driver<128, 256>,
     source: Arc<dyn RuntimeClock>,
+    network_changes: NetworkChanges,
 }
 impl Services {
     /// Reserve one original broker and subscription. No connection, worker,
     /// private key or peer protocol effect is created by this constructor.
-    pub fn new(config: &Configuration, source: Arc<dyn RuntimeClock>) -> Result<Self, Failure> {
+    pub fn new(
+        config: &Configuration,
+        source: Arc<dyn RuntimeClock>,
+        network_changes: NetworkChanges,
+    ) -> Result<Self, Failure> {
         let native = gnunet_resolver_broker::native_profile()?;
         let family = FamilyProfile::new(
             native.encode(gnunet_resolver_broker::Family::V4),
@@ -181,6 +194,7 @@ impl Services {
             context,
             resolver,
             source,
+            network_changes,
         })
     }
     /// A clone of this same broker for PROGRAM's actual ResolverConnect call.
@@ -198,7 +212,7 @@ impl Services {
         shutdown: std::pin::Pin<&mut S>,
         observers: crate::bind_resolution::Observers<'_>,
     ) -> Result<Option<crate::listeners::PreparedListeners>, Failure> {
-        if settings.hostname.is_some() && activation.is_empty() {
+        if settings.hostname().is_some() && activation.is_empty() {
             self.context.connect_live(self.live.clone())?;
         }
         crate::bind_resolution::prepare(
@@ -382,16 +396,30 @@ pub async fn foreground_local_with_clock(
         state_directory,
         local_key,
         limits,
+        network_changes,
+        peer_mode,
+        socket_policy,
     } = setup;
     if config.get(b"communicator-tcp", b"USERNAME").is_some() {
         return Err("use the process-prepared TCP entry for configured USERNAME".into());
     }
-    let settings = Settings::parse(config)?;
-    let listeners = Listeners::bind(&settings, activation)?;
+    let settings = Settings::parse_for(config, peer_mode)?;
+    let listeners = match peer_mode {
+        PeerMode::Listening => {
+            Listeners::bind_with_socket_policy(&settings, activation, socket_policy)?
+        }
+        PeerMode::OutboundOnly => {
+            if !activation.is_empty() {
+                return Err("outbound-only TCP refuses inherited listeners".into());
+            }
+            Listeners::outbound_only_with_socket_policy(socket_policy)
+        }
+    };
+    let services = Services::new(config, source, network_changes)?;
     let mut resolver = |_| {};
     let mut addresses = |_: &addresses::Event<'_>| {};
     let failed = || false;
-    foreground_prepared_with_clock(
+    let report = foreground_prepared_with_services_and_statistics(
         PreparedStartup {
             config,
             listeners,
@@ -409,9 +437,11 @@ pub async fn foreground_local_with_clock(
             addresses: &mut addresses,
             failed: &failed,
         },
-        source,
+        services,
+        NoStatistics,
     )
-    .await
+    .await?;
+    Ok(report.tcp)
 }
 /// Run a prepared embedding with one newly reserved explicit process broker.
 /// The normal PROGRAM path instead constructs Services once and supplies the
@@ -423,7 +453,7 @@ pub async fn foreground_prepared_with_clock(
     observers: Observers<'_>,
     source: Arc<dyn RuntimeClock>,
 ) -> Result<Report, Failure> {
-    let services = Services::new(setup.config, source)?;
+    let services = Services::new(setup.config, source, NetworkChanges::default())?;
     foreground_prepared_with_services(setup, ready, shutdown, observers, services).await
 }
 /// Run the original pool after the enclosing, single-threaded process prepared
@@ -485,6 +515,7 @@ pub async fn foreground_prepared_with_services_and_statistics<F: StatisticsFacto
         context,
         mut resolver,
         source,
+        network_changes: mut changes,
     } = services;
     let mut statistics: Option<observation::Owner<F::Driver>> = None;
     let mut statistics_factory = Some(statistics_factory);
@@ -498,7 +529,7 @@ pub async fn foreground_prepared_with_services_and_statistics<F: StatisticsFacto
         {
             return Err(Error::Capacity.into());
         }
-        let settings = Settings::parse(config)?;
+        let settings = Settings::parse_for(config, listeners.mode())?;
         let endpoint = |section: &'static [u8]| {
             EndpointSource::live(live.clone(), section, context.resolution_context())
         };
@@ -522,6 +553,8 @@ pub async fn foreground_prepared_with_services_and_statistics<F: StatisticsFacto
         let mut continuity: Option<identity::Continuity<'_>> = None;
         let mut namespace = None;
         let mut total = Report::default();
+        let nat_instance = gnunet_nat_client_host::Instance::new();
+        let mut retained = None;
         loop {
         let identity = loop {
             if failed() { let _original = pils.close(); return Ok(total); }
@@ -549,7 +582,7 @@ pub async fn foreground_prepared_with_services_and_statistics<F: StatisticsFacto
                         return Err(Error::Authentication.into());
                     }
                 }
-                if connections.iter().all(Option::is_some) {
+                if retained.is_some() || connections.iter().all(Option::is_some) {
                     break identity;
                 }
             }
@@ -606,7 +639,7 @@ pub async fn foreground_prepared_with_services_and_statistics<F: StatisticsFacto
                             }
                             index => {
                                 let n = index - 1;
-                                if connections[n].is_some() || continuity.as_ref().is_some_and(identity::Continuity::paused) {
+                                if retained.is_some() || connections[n].is_some() || continuity.as_ref().is_some_and(identity::Continuity::paused) {
                                     continue;
                                 }
                                 let dial = if n == 0 { &mut ps } else { &mut tr };
@@ -671,21 +704,26 @@ pub async fn foreground_prepared_with_services_and_statistics<F: StatisticsFacto
         let exit = generation::run(generation::Input {
             config, settings: &settings, listeners: &listeners,
             namespace: namespace.as_ref().ok_or(Error::Conflict)?, continuity: original, limits, identity,
-            connections: [connections[0].take().ok_or(Error::NotReady)?, connections[1].take().ok_or(Error::NotReady)?],
+            connections: if retained.is_some() { None } else { Some([connections[0].take().ok_or(Error::NotReady)?, connections[1].take().ok_or(Error::NotReady)?]) },
+            retained: &mut retained,
+            nat_instance: &nat_instance,
             transport: &mut tr,
             pils: &mut pils, resolver: &mut resolver, shutdown: shutdown.as_mut(), ready: &mut ready,
             observers: Observers { socket: &mut *observe_socket, pils: &mut *observe_pils, diagnostic: &mut *diagnose,
                 resolver: &mut *observe_resolver, addresses: &mut *observe_addresses, failed },
-            endpoint: &endpoint, source: source.clone(), live: &live, context: &context,
+            source: source.clone(), live: &live, context: &context,
             statistics: &mut statistics, statistics_factory: &mut statistics_factory,
             last_metrics: &mut last_metrics,
+            network_changes: &mut changes,
         }).await?;
         total.merge(exit.report);
         if !exit.replacing { return Ok(total); }
-        original.retire(last_metrics);
         poll_fn(|cx| Poll::Ready(original.guard(cx))).await?;
-        ps.restart()?;
-        tr.restart()?;
+        if retained.is_none() {
+            original.retire(last_metrics);
+            ps.restart()?;
+            tr.restart()?;
+        }
         }
     }.await;
     if let Some(owner) = &mut statistics {

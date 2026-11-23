@@ -106,16 +106,17 @@ pub(super) fn run<A: Application>(
         )?;
         clock.testing_skew(&config)?;
         let settings = A::settings(&config)?;
+        let access = A::access(&settings);
         gnunet_service_startup::verify_configured_identity(&config, A::SECTION)?;
         let listeners = if activation.is_empty() {
             runtime.block_on(BoundListeners::bind_configured(
                 &config,
                 A::SECTION,
-                A::access(&settings).into(),
+                access.into(),
             ))?
         } else {
             let _entered = runtime.enter();
-            BoundListeners::from_activation(activation)?
+            BoundListeners::from_activation_with_access(activation, access)?
         };
         for error in listeners.failures() {
             reports.warning(

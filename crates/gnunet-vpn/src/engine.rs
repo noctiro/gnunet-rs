@@ -26,7 +26,6 @@ impl<'id, 'store, 'bytes> Engine<'id, 'store, 'bytes> {
         limits: Limits,
     ) -> Result<Self, Error> {
         limits.ipc_af.validate()?;
-        limits.peer_af.validate()?;
         if limits.packet_bytes < 48
             || limits.packet_bytes > 65575
             || limits.idle_micros == 0
@@ -223,20 +222,20 @@ impl<'id, 'store, 'bytes> Engine<'id, 'store, 'bytes> {
         let f = self.store.flows[r.row]
             .state
             .ok_or(Error::StaleGeneration)?;
-        if f.source != Some(peer.serial) || f.peer != Some(peer.identity) {
+        if f.peer
+            .bound()
+            .is_none_or(|source| source.serial != peer.serial || source.identity != peer.identity)
+        {
             return Err(Error::StaleGeneration);
         }
         Ok(r)
     }
-    fn peer(&self, r: Reference) -> Result<Peer<'id>, Error> {
-        let f = self.store.flows[r.row]
-            .state
-            .ok_or(Error::StaleGeneration)?;
-        Ok(Peer {
+    fn peer(&self, r: Reference, source: &PeerSource) -> Peer<'id> {
+        Peer {
             flow: self.flow(r),
-            serial: f.source.ok_or(Error::NotReady)?,
-            identity: f.peer.ok_or(Error::NotReady)?,
-        })
+            serial: source.serial,
+            identity: source.identity,
+        }
     }
     fn packet_slot(&self, len: usize) -> Result<usize, Error> {
         self.store
@@ -632,10 +631,25 @@ impl<'id, 'store, 'bytes> Engine<'id, 'store, 'bytes> {
             .ok_or(Error::StaleGeneration)?;
         Ok(FlowInfo {
             tuple: f.tuple,
-            target: f.target,
+            target: f.route.target(),
             phase: f.phase,
             last_used: f.used,
             failure: f.failure,
+        })
+    }
+    /// Observe the flow's selected or bound peer identity, if still retained.
+    /// This does not require a live channel and grants no authority to open or
+    /// bind one.
+    pub fn flow_peer(&self, flow: Flow<'id>) -> Result<Option<[u8; 32]>, Error> {
+        let r = self.flow_ref(flow)?;
+        let f = self.store.flows[r.row]
+            .state
+            .as_ref()
+            .ok_or(Error::StaleGeneration)?;
+        Ok(match f.peer {
+            FlowPeer::Unselected => None,
+            FlowPeer::Selected(peer) => Some(peer),
+            FlowPeer::Bound(source) => Some(source.identity),
         })
     }
     /// Original allocation facts; an expired/reused lease token is stale.

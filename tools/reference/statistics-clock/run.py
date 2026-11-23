@@ -14,7 +14,9 @@ sys.dont_write_bytecode = True
 from comparison import compare
 
 ROOT = Path(__file__).resolve().parent
-TOOLCHAIN = '1.99.1'
+TOOLS = ROOT.parents[1]
+sys.path.insert(0, str(TOOLS))
+from rust_toolchain import rust_channel
 
 
 def digest(path):
@@ -22,7 +24,7 @@ def digest(path):
 
 
 def package_inputs():
-    return {str(p): digest(p) for p in sorted(ROOT.rglob('*')) if p.is_file() and '__pycache__' not in p.parts}
+    return {str(p): digest(p) for p in [TOOLS/'rust_toolchain.py', *sorted(ROOT.rglob('*'))] if p.is_file() and '__pycache__' not in p.parts}
 
 
 def snapshot(repository):
@@ -52,7 +54,7 @@ def registry_packages(lock):
     return packages
 
 
-def generate(repository, output):
+def generate(repository, output, toolchain):
     crate = output/'rust'
     (crate/'src').mkdir(parents=True)
     (crate/'tests').mkdir()
@@ -67,7 +69,7 @@ def generate(repository, output):
     # Seed the throwaway crate from the real dependency resolution. Cargo may add
     # this new package, but all registry package identities are checked below.
     shutil.copyfile(repository/'Cargo.lock', crate/'Cargo.lock')
-    (crate/'rust-toolchain.toml').write_text('[toolchain]\nchannel = "'+TOOLCHAIN+'"\nprofile = "minimal"\n')
+    (crate/'rust-toolchain.toml').write_text('[toolchain]\nchannel = "'+toolchain+'"\nprofile = "minimal"\n')
     for name in ['lib.rs', 'ports.rs', 'stream.rs', 'connection.rs']:
         shutil.copyfile(ROOT/'templates'/str(name+'.in'), crate/'src'/name)
     shutil.copyfile(ROOT/'templates/clock.rs.in', crate/'tests/clock.rs')
@@ -94,24 +96,26 @@ def main():
     parser.add_argument('--reference', type=Path)
     parser.add_argument('--rust-only', action='store_true', help='Generate/check real Rust owners and ports only; no C comparison or conformance credit')
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--toolchain')
     args = parser.parse_args()
     if not args.rust_only and (args.source is None or args.reference is None):
         parser.error('--source and --reference are required unless --rust-only is selected')
     repository = args.repository.resolve()
+    toolchain = rust_channel(repository, args.toolchain)
     output = args.output.resolve()
     if output.is_relative_to(ROOT):
         parser.error('--output must be outside this read-only tool package')
     if output.is_relative_to(repository) and not output.is_relative_to(repository/'target'):
         parser.error('an output inside the repository must be below target/')
     output.mkdir(parents=True, exist_ok=False)
-    record = {'kind': 'statistics-clock-mq-io-source-bound-component', 'status': 'failed', 'toolchain': TOOLCHAIN,
+    record = {'kind': 'statistics-clock-mq-io-source-bound-component', 'status': 'failed', 'toolchain': toolchain,
               'mode': 'rust-only-generated' if args.rust_only else 'c-rust-component',
               'fresh_c_comparison': False, 'full_daemon_oracle': False, 'whole_statistics_complete': False, 'commands': [],
               'repository_inputs': snapshot(repository), 'tool_inputs': package_inputs()}
     env = {**os.environ, 'CARGO_TARGET_DIR': str(output/'target'), 'RUSTDOCFLAGS': '-Dwarnings',
-           'RUSTUP_TOOLCHAIN': TOOLCHAIN, 'PYTHONDONTWRITEBYTECODE': '1', 'CARGO_BUILD_JOBS': '2'}
+           'RUSTUP_TOOLCHAIN': toolchain, 'PYTHONDONTWRITEBYTECODE': '1', 'CARGO_BUILD_JOBS': '2'}
     try:
-        crate, source, prefix, staged, docs = generate(repository, output)
+        crate, source, prefix, staged, docs = generate(repository, output, toolchain)
         record['staged_driver'] = {'original': str(source), 'path': str(staged), 'byte_count': len(prefix),
                                     'original_sha256': digest(source), 'staged_sha256': digest(staged),
                                     'unchanged_entire_source_prefix': True, 'copied_include_str_files': docs,
@@ -127,7 +131,7 @@ def main():
             c = json.loads((output/'c/result.json').read_text())
             assert c['status'] == 'passed' and c['trace_rows'] == 73 and c['source_unchanged'] and c['normal_reference_unchanged'] and c['dependencies_unchanged']
             record['c_result'] = {'path': str(output/'c/result.json'), 'sha256': digest(output/'c/result.json'), 'two_profiles_equal': True, 'trace_rows': 73}
-        cargo = ['cargo', '+'+TOOLCHAIN]
+        cargo = ['cargo', '+'+toolchain]
         manifest = ['--manifest-path', str(crate/'Cargo.toml'), '--offline']
         command([*cargo, 'check', *manifest], output, env, record, 'rust-prepare', crate)
         assert registry_packages(crate/'Cargo.lock') <= registry_packages(repository/'Cargo.lock'), 'generated dependency identities differ from real workspace lock'
@@ -152,7 +156,7 @@ def main():
             record['c_comparison_not_run'] = 'Rust-only interface/behavior checks supply no new C interoperability evidence.'
         command([*cargo, 'clippy', *locked, '--all-targets', '--', '-D', 'warnings'], output, env, record, 'rust-clippy', crate)
         command([*cargo, 'doc', *locked, '--no-deps'], output, env, record, 'rust-doc', crate)
-        record['versions'] = {'rustc': subprocess.check_output(['rustc', '+'+TOOLCHAIN, '-vV'], cwd=repository, env=env, text=True),
+        record['versions'] = {'rustc': subprocess.check_output(['rustc', '+'+toolchain, '-vV'], cwd=repository, env=env, text=True),
                                'cargo': subprocess.check_output([*cargo, '-V'], cwd=repository, env=env, text=True)}
         record['repository_inputs_unchanged'] = snapshot(repository) == record['repository_inputs']
         record['tool_inputs_unchanged'] = package_inputs() == record['tool_inputs']

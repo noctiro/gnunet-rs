@@ -10,10 +10,18 @@ extern crate alloc;
 pub mod addresses;
 pub mod application;
 pub mod communicator;
+pub mod direct;
+pub mod direct_discovery;
+pub mod direct_flow;
+mod direct_fragment;
+mod direct_fragment_send;
+pub mod direct_routes;
+pub mod direct_validation;
 /// Official DV framing, real signature checks and bounded caller-storage routing.
 pub mod dv;
 #[cfg(feature = "alloc")]
 mod engine;
+mod flow_timing;
 #[cfg(feature = "alloc")]
 mod fragment;
 #[cfg(feature = "alloc")]

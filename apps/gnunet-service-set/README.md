@@ -25,9 +25,9 @@ remain separate errors.
 
 `[set]` selects the official listeners and service options. `[set-rust]` selects
 resource bounds and the explicit native SET ABI. Missing `UNIX_MATCH_UID` and
-`UNIX_MATCH_GID` default to YES on Unix and NO on Windows. Explicit Unix
-credential checks remain unsupported on Windows; native endpoint ACLs and
-configured process identity use their own platform mechanisms.
+`UNIX_MATCH_GID` default to YES on Unix and NO on Windows. On Windows
+both options use the
+[configured listener's DACL](../../adapters/service-runtime/README.md#configured-local-listeners).
 
 Run `gnunet-service-set -c service.conf`; use `-d` to select native detachment.
 

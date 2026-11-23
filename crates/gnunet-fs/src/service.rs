@@ -97,6 +97,7 @@ enum Local {
     Assembling,
     Ready(u64),
     Pending { attempt: u64, next_uid: u64 },
+    Interrupted,
     Exhausted,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -204,7 +205,7 @@ impl<'id> Lookup<'id> {
     }
 }
 /// Original active peer-route authority. One route may produce many UBLOCKs.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Route<'id> {
     query: QueryId<'id>,
     descriptor: Descriptor<'id>,
@@ -322,6 +323,23 @@ pub struct OnDemand {
     pub file_id: [u8; 64],
     /// Big-endian decoded byte offset within that original indexed file.
     pub offset: u64,
+}
+
+impl OnDemand {
+    /// Official DATASTORE block type of a file-backed DBLOCK.
+    pub const KIND: u32 = 6;
+    /// Exact bytes in the official `OnDemandBlock` value.
+    pub const BYTES: usize = 72;
+
+    /// Decode the original file hash and the big-endian plaintext offset.
+    pub fn decode(value: &[u8]) -> Result<Self, Error> {
+        let original: &[u8; Self::BYTES] = value.try_into().map_err(|_| Error::Malformed)?;
+        let (file, position) = original.split_at(64);
+        Ok(Self {
+            file_id: file.try_into().map_err(|_| Error::Malformed)?,
+            offset: u64::from_be_bytes(position.try_into().map_err(|_| Error::Malformed)?),
+        })
+    }
 }
 /// Pure preparation result for one original actual local datastore DATA.
 #[derive(Clone, Copy, Debug)]
@@ -644,10 +662,21 @@ impl<'id, 'slots, 'seen> Service<'id, 'slots, 'seen> {
         self.queries[lookup.query.slot].state = Some(state);
         Ok(())
     }
-    /// Stop this local phase after an actual dependency error while preserving
-    /// peer-routing opportunity. The native diagnostic remains the host's cause.
+    /// Stop this local phase after a permanent dependency failure while
+    /// preserving peer-routing opportunity.
     pub fn local_unavailable(&mut self, lookup: Lookup<'id>) -> Result<(), Error> {
         self.local_end(lookup)
+    }
+    /// Settle an interrupted read without treating it as DATA_END. The host
+    /// may schedule a new sweep after the original native operation retires.
+    pub fn local_interrupted(&mut self, lookup: Lookup<'id>) -> Result<(), Error> {
+        let mut state = self.lookup_state(lookup)?;
+        state.local = Local::Interrupted;
+        if !state.local_only && state.network == Network::None {
+            state.network = Network::Ready;
+        }
+        self.queries[lookup.query.slot].state = Some(state);
+        Ok(())
     }
     /// Prepare explicit advancement for a native on-demand failure, retaining the
     /// actual candidate UID. No cursor or seen state changes until skip().
@@ -692,19 +721,11 @@ impl<'id, 'slots, 'seen> Service<'id, 'slots, 'seen> {
         if !bool::from(record.key.ct_eq(&state.query)) {
             return Ok(invalid(SkipReason::Invalid(Error::Authentication)));
         }
-        if record.kind == 6 {
-            if !matches!(state.block_type.value(), 0 | 1) || record.value.len() != 72 {
+        if record.kind == OnDemand::KIND {
+            if !matches!(state.block_type.value(), 0 | 1) || record.value.len() != OnDemand::BYTES {
                 return Ok(invalid(SkipReason::Invalid(Error::Malformed)));
             }
-            let file_id = record.value[..64]
-                .try_into()
-                .map_err(|_| Error::Malformed)?;
-            let offset = u64::from_be_bytes(
-                record.value[64..72]
-                    .try_into()
-                    .map_err(|_| Error::Malformed)?,
-            );
-            return Ok(LocalResult::OnDemand(OnDemand { file_id, offset }));
+            return Ok(LocalResult::OnDemand(OnDemand::decode(record.value)?));
         }
         let result = ClientPut {
             block_type: BlockType::new(record.kind),
@@ -925,15 +946,21 @@ impl<'id, 'slots, 'seen> Service<'id, 'slots, 'seen> {
             Preparation::Skip(reason) => Ok(PeerResult::Ignored(reason)),
         }
     }
-    /// Start another explicit local sweep for an ongoing query without losing its
-    /// whole-block seen set or original peer route. No hidden timer is created.
+    /// Start an explicit local sweep for an interrupted query or an ongoing
+    /// multi-result query. A replacement backend may use different UIDs.
+    /// Preserve the whole-block seen set and any original peer route.
     pub fn rescan(&mut self, query: QueryId<'id>) -> Result<(), Error> {
         let mut state = self.state(query)?;
-        if state.complete || !matches!(state.block_type.value(), 0 | 9) {
+        if state.complete {
             return Err(Error::InvalidInput);
         }
-        if state.local != Local::Exhausted {
-            return Err(Error::WouldBlock);
+        match state.local {
+            Local::Interrupted => {}
+            _ if !matches!(state.block_type, BlockType::ANY | BlockType::UBLOCK) => {
+                return Err(Error::InvalidInput);
+            }
+            Local::Exhausted => {}
+            _ => return Err(Error::WouldBlock),
         }
         state.local = Local::Ready(0);
         self.queries[query.slot].state = Some(state);

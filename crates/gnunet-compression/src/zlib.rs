@@ -1,4 +1,5 @@
 //! Real Rust complete-member zlib with bounded caller output and reusable state.
+use crate::inflate::Inflater;
 use gnunet_types::Error;
 use miniz_oxide::{
     DataFormat,
@@ -6,16 +7,12 @@ use miniz_oxide::{
         CompressionLevel,
         core::{CompressorOxide, TDEFLFlush, TDEFLStatus, compress},
     },
-    inflate::{
-        TINFLStatus,
-        core::{DecompressorOxide, decompress, inflate_flags},
-    },
 };
 /// Explicit allocation-backed compression state and fixed inflater state. This
 /// capability is caller-owned/shared across sequential pure operations, not per peer.
 pub struct Zlib {
     compressor: CompressorOxide,
-    inflater: DecompressorOxide,
+    inflater: Inflater,
 }
 impl Zlib {
     /// Allocate miniz's fixed local state once. No input/output allocation or IO.
@@ -26,7 +23,7 @@ impl Zlib {
                 DataFormat::Zlib,
                 CompressionLevel::BestCompression,
             ),
-            inflater: DecompressorOxide::new(),
+            inflater: Inflater::new(),
         }
     }
 }
@@ -77,19 +74,19 @@ impl Zlib {
     /// Decode exactly one whole zlib member; reject trailing and truncated data.
     /// The returned length never exceeds the caller-provided output.
     pub fn decompress(&mut self, input: &[u8], output: &mut [u8]) -> Result<usize, Error> {
-        self.inflater.init();
-        let flags = inflate_flags::TINFL_FLAG_PARSE_ZLIB_HEADER
-            | inflate_flags::TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF
-            | inflate_flags::TINFL_FLAG_COMPUTE_ADLER32;
-        let (status, read, written) = decompress(&mut self.inflater, input, output, 0, flags);
-        match status {
-            TINFLStatus::Done if read == input.len() => Ok(written),
-            TINFLStatus::Done => Err(Error::Malformed),
-            TINFLStatus::HasMoreOutput => Err(Error::Capacity),
-            TINFLStatus::NeedsMoreInput | TINFLStatus::FailedCannotMakeProgress => {
-                Err(Error::Truncated)
-            }
-            _ => Err(Error::Malformed),
-        }
+        self.inflater.member(input, output)
+    }
+
+    /// Visit one complete zlib member using a caller-owned DEFLATE history.
+    /// Returns the exact bytes decoded, bounded by `limit`. The visitor must
+    /// keep effects provisional until the whole member and checksum pass.
+    pub fn visit_decompressed(
+        &mut self,
+        input: &[u8],
+        workspace: &mut [u8],
+        limit: usize,
+        visit: &mut dyn FnMut(&[u8]) -> Result<(), Error>,
+    ) -> Result<usize, Error> {
+        self.inflater.visit_member(input, workspace, limit, visit)
     }
 }

@@ -240,16 +240,7 @@ fn insert_hash(values: &mut Vec<[u8; 64]>, hash: [u8; 64], limit: usize) -> Resu
         }
     }
 }
-pub(crate) fn validate_options(options: Options) -> Result<(), Error> {
-    if options.force_delta != 0 && options.force_full != 0
-        || options.hashes == 0
-        || options.hashes > 255
-        || options.bucket_factor == 0
-    {
-        return Err(Error::InvalidInput);
-    }
-    Ok(())
-}
+pub(crate) use crate::mode::validate_options;
 impl Union {
     fn new(
         snapshot: Snapshot,

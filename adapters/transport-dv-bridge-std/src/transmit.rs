@@ -140,8 +140,8 @@ impl<'id> Bridge<'id> {
                 Err(e) => return Err(e.into()),
             };
             // Install the replacement before changing this bridge's ledger.
-            // Engine replaces visibility atomically, retaining original Jobs
-            // and canceled old Actor leases without a false CORE disconnect.
+            // The replacement fences unadmitted staging. Admitted outputs
+            // keep their original Actor leases and native completion paths.
             let id = server.dv_install_path(
                 &self.source,
                 target,

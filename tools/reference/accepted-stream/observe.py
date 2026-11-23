@@ -4,6 +4,10 @@ import argparse,hashlib,itertools,json,os,re,shlex,shutil,subprocess,sys,time
 from pathlib import Path
 sys.dont_write_bytecode=True
 PACKAGE=Path(__file__).resolve().parent
+TOOLS=PACKAGE.parents[1]
+sys.path.insert(0,str(TOOLS))
+from cargo_artifacts import CargoArtifacts
+from rust_toolchain import rust_channel
 PIN='346358e26d4dcc2dc4f51bef5d52dca29c7d8165'
 def sha(p):return hashlib.sha256(Path(p).read_bytes()).hexdigest()
 def files(root):return {p.resolve()for p in root.rglob('*')if p.is_file()and not {'target','.git','__pycache__'}.intersection(p.relative_to(root).parts)}
@@ -33,6 +37,7 @@ def main():
  p=argparse.ArgumentParser(description=__doc__)
  for key in ['repository','source','reference','output']:p.add_argument('--'+key,type=Path,required=True)
  p.add_argument('--workspace',type=Path,required=True)
+ p.add_argument('--toolchain')
  a=p.parse_args();workspace=a.workspace.resolve();repo,source,refpath,out=[getattr(a,k).resolve()for k in ['repository','source','reference','output']]
  normal=json.loads(refpath.read_text());assert normal['upstream']['revision']==PIN
  for protected in [PACKAGE,workspace,repo,source,refpath.parent,Path(normal['prefix']),Path(normal['build'])]:
@@ -42,7 +47,7 @@ def main():
  setups=[r for r in normal['commands']if r['name']=='meson-setup'];assert len(setups)==1 and setups[0]['exit_code']==0 and setups[0]['argv'][1]=='setup'and Path(setups[0]['argv'][2]).resolve()==Path(normal['build']).resolve()
  if 'source'in normal:assert Path(normal['source']).resolve()==source
  if sys.platform!='darwin':raise ValueError('the eight raw-option difference controls require this observed Darwin profile; other Unix execution is pending')
- commands=[];artifacts={};cargo=['cargo','+1.99.1'];env={k:v for k,v in os.environ.items()if not k.startswith(('GNUNET_','LISTEN_'))};env.update(normal['runtime_environment'],CARGO_BUILD_JOBS='1',CARGO_TARGET_DIR=str(out/'target'),LC_ALL='C')
+ commands=[];artifacts={};cargo=['cargo','+'+rust_channel(repo,a.toolchain)];env={k:v for k,v in os.environ.items()if not k.startswith(('GNUNET_','LISTEN_'))};env.update(normal['runtime_environment'],CARGO_BUILD_JOBS='1',CARGO_TARGET_DIR=str(out/'target'),LC_ALL='C')
  def command(label,argv,cwd=repo,timeout=180):
   if any(sha(path)!=expected for path,expected in artifacts.items()):raise ValueError('fresh binary changed before process')
   started=time.monotonic();done=subprocess.run(list(map(str,argv)),cwd=cwd,env=env,capture_output=True,timeout=timeout);(out/(label+'.stdout')).write_bytes(done.stdout);(out/(label+'.stderr')).write_bytes(done.stderr);commands.append({'label':label,'argv':list(map(str,argv)),'cwd':str(cwd),'exit':done.returncode,'seconds':time.monotonic()-started,'stdout_sha256':sha(out/(label+'.stdout')),'stderr_sha256':sha(out/(label+'.stderr'))})
@@ -53,7 +58,7 @@ def main():
   metadata=json.loads(command('root-metadata',cargo+['metadata','--manifest-path',repo/'Cargo.toml','--offline','--locked','--format-version=1']).stdout)
   def discover():
    ref,inputs=reference.load(refpath,source,repo);assert ref==normal and inputs==normal_inputs
-   paths=files(PACKAGE)|files(workspace)|{repo/'Cargo.toml',repo/'Cargo.lock',repo/'rust-toolchain.toml',repo/'rustfmt.toml',repo/'adapters/arm-std/tools/reference.py',source/'src/lib/util/network.c',source/'src/include/gnunet_network_lib.h'}|{Path(x)for x in normal_inputs}
+   paths=files(PACKAGE)|files(workspace)|{repo/'Cargo.toml',repo/'Cargo.lock',repo/'rust-toolchain.toml',repo/'rustfmt.toml',repo/'adapters/arm-std/tools/reference.py',TOOLS/'cargo_artifacts.py',TOOLS/'rust_toolchain.py',source/'src/lib/util/network.c',source/'src/include/gnunet_network_lib.h'}|{Path(x)for x in normal_inputs}
    for package in metadata['packages']:
     if package['source']is None:paths|=files(Path(package['manifest_path']).resolve().parent)
    return {str(path):sha(path)for path in sorted(paths,key=lambda x:os.fsencode(x))}
@@ -63,9 +68,9 @@ def main():
   command('rust-format',cargo+['fmt','--manifest-path',crate/'Cargo.toml','-p','gnunet-native','-p','gnunet-service-runtime','-p','gnunet-ipc-unix','-p','canonical-accept-probe','--check'])
   # Formatting belongs to generation; freeze those exact bytes before build.
   generated={str(x):sha(x)for x in files(crate)}
-  command('rust-build',cargo+['build','--manifest-path',crate/'Cargo.toml','--offline','--locked','-p','canonical-accept-probe','-j','1'])
+  build=command('rust-build',cargo+['build','--manifest-path',crate/'Cargo.toml','--offline','--locked','-p','canonical-accept-probe','-j','1','--message-format=json'])
   command('rust-clippy',cargo+['clippy','--manifest-path',crate/'Cargo.toml','--offline','--locked','-p','gnunet-native','-p','gnunet-service-runtime','-p','gnunet-ipc-unix','-p','gnunet-resolver-broker','-p','canonical-accept-probe','--all-targets','-j','2','--','-D','warnings'])
-  binary=out/'target/debug/canonical-accept-probe';artifacts[str(binary)]=sha(binary)
+  binary=CargoArtifacts(build.stdout).binary('canonical-accept-probe',crate/'tools/reference/accepted-stream/probe/Cargo.toml');artifacts[str(binary)]=sha(binary)
   db=json.loads(Path(normal['compile_commands']['path']).read_text());entry=next(r for r in db if r['file'].endswith('/network.c'));original=entry.get('arguments')or shlex.split(entry['command']);actual_source=Path(entry['file']);actual_source=(actual_source if actual_source.is_absolute()else Path(entry['directory'])/actual_source).resolve();assert actual_source==(source/'src/lib/util/network.c').resolve(),'compiler source must match validated pinned tree';base=[];index=1
   while index<len(original):
    value=original[index]

@@ -1,0 +1,27 @@
+{
+  "jobs": [
+    {
+      "name": "gnunet-node-start",
+      "cmds": [
+        "mkdir @STATE_DIRECTORY@ 0700 @UID@ @GID@",
+        "mkdir @IPC_DIRECTORY@ 0700 @UID@ @GID@",
+        "start gnunet-node"
+      ]
+    }
+  ],
+  "services": [
+    {
+      "name": "gnunet-node",
+      "path": @ARGUMENTS@,
+      "uid": @UID@,
+      "gid": [@GID@],
+      "secon": "@SELINUX_CONTEXT@",
+      "permission": ["ohos.permission.INTERNET"],
+      "caps": [],
+      "apl": "normal",
+      "start-mode": "condition",
+      "once": 1,
+      "importance": 0
+    }
+  ]
+}

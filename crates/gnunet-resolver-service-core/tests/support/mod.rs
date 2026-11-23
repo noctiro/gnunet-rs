@@ -29,7 +29,7 @@ pub struct Store {
     buckets: Vec<Option<BucketMeta>>,
     records: Vec<Option<RecordEntry>>,
     effects: Vec<real::EffectSlot>,
-    cleanups: Vec<Option<StubId>>,
+    cleanups: Vec<Option<real::QueryCancellation>>,
     blobs: Vec<BlobSlot>,
     bytes: Vec<u8>,
 }
@@ -74,7 +74,7 @@ impl Store {
             + self.buckets.capacity() * core::mem::size_of::<Option<BucketMeta>>()
             + self.records.capacity() * core::mem::size_of::<Option<RecordEntry>>()
             + self.effects.capacity() * core::mem::size_of::<real::EffectSlot>()
-            + self.cleanups.capacity() * core::mem::size_of::<Option<StubId>>()
+            + self.cleanups.capacity() * core::mem::size_of::<Option<real::QueryCancellation>>()
             + self.blobs.capacity() * core::mem::size_of::<BlobSlot>()
             + self.bytes.capacity()
     }
@@ -221,6 +221,11 @@ fn copied<const N: usize, const B: usize>(v: real::Effect<'_>) -> Result<Effect<
             })
         }
         real::Effect::CancelQuery(t) => Effect::CancelQuery(t),
+        real::Effect::StartSystemQuery(_)
+        | real::Effect::CancelSystemQuery(_)
+        | real::Effect::CancelNativeDns(_) => {
+            return Err(Error::Unsupported);
+        }
         real::Effect::DropClient { client, reason } => Effect::DropClient { client, reason },
         real::Effect::Stop => Effect::Stop,
     })

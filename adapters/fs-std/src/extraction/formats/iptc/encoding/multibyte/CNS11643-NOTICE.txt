@@ -1,0 +1,70 @@
+CNS 11643-1992 mapping data
+
+Ministry of Digital Affairs, Taiwan, 2026. CNS 11643 Chinese Standard
+Interchange Code Full Character Set (CNS11643中文標準交換碼全字庫), Unicode
+mapping tables dated 2026-10-27. The source is made available to the public
+under the Open Government Data License, version 1.0.
+
+Source: https://www.cns11643.gov.tw/
+Dataset: https://data.gov.tw/dataset/5961
+License: https://data.gov.tw/en/license
+Archive: https://data.cns11643.gov.tw/opendata/MapingTables.zip
+Archive SHA-256: 605cadc2074cb5399bf03a268ab1f66a52384f08acb27021178c13d041cb87d2
+
+cns11643.bin packs all registered graphic positions as three-byte
+little-endian Unicode scalars in ascending plane, row and cell order.
+Plane 1 packs assigned ranges only. Planes 2 through 7 each begin at
+21/21 and end at the last position registered in ISO-IR 172 and 183–187.
+Later allocations beyond those boundaries are omitted.
+
+The Ministry's duplicate-closure report supplies the retained Unicode
+values for original codes 4-2361, 4-276A, 4-287D, 4-2A6E, 4-3042, 4-385C,
+4-4458, 4-6339, 5-234B, 5-756C, 6-2A21, 6-5C2F and 7-4159.
+https://www.cns11643.gov.tw/files/files/CNS11643_CLOSE1111103.pdf
+
+The mapping retains three Ministry private-use values at 3-6168, 4-225B
+and 4-655F. Their appearance depends on the font.
+
+Unihan_IRGSources.txt from the Unicode Character Database 17.0.0 supplies
+the kIRG_TSource mappings for 5-5351, 6-2963 and 6-345D.
+https://www.unicode.org/Public/17.0.0/ucd/Unihan.zip
+
+UNICODE LICENSE V3
+
+COPYRIGHT AND PERMISSION NOTICE
+
+Copyright © 1991-2025 Unicode, Inc.
+
+NOTICE TO USER: Carefully read the following legal agreement. BY
+DOWNLOADING, INSTALLING, COPYING OR OTHERWISE USING DATA FILES, AND/OR
+SOFTWARE, YOU UNEQUIVOCALLY ACCEPT, AND AGREE TO BE BOUND BY, ALL OF THE
+TERMS AND CONDITIONS OF THIS AGREEMENT. IF YOU DO NOT AGREE, DO NOT
+DOWNLOAD, INSTALL, COPY, DISTRIBUTE OR USE THE DATA FILES OR SOFTWARE.
+
+Permission is hereby granted, free of charge, to any person obtaining a
+copy of data files and any associated documentation (the "Data Files") or
+software and any associated documentation (the "Software") to deal in the
+Data Files or Software without restriction, including without limitation
+the rights to use, copy, modify, merge, publish, distribute, and/or sell
+copies of the Data Files or Software, and to permit persons to whom the
+Data Files or Software are furnished to do so, provided that either (a)
+this copyright and permission notice appear with all copies of the Data
+Files or Software, or (b) this copyright and permission notice appear in
+associated Documentation.
+
+THE DATA FILES AND SOFTWARE ARE PROVIDED "AS IS", WITHOUT WARRANTY OF ANY
+KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT
+OF THIRD PARTY RIGHTS.
+
+IN NO EVENT SHALL THE COPYRIGHT HOLDER OR HOLDERS INCLUDED IN THIS NOTICE
+BE LIABLE FOR ANY CLAIM, OR ANY SPECIAL INDIRECT OR CONSEQUENTIAL DAMAGES,
+OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS,
+WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION,
+ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THE DATA
+FILES OR SOFTWARE.
+
+Except as contained in this notice, the name of a copyright holder shall
+not be used in advertising or otherwise to promote the sale, use or other
+dealings in these Data Files or Software without prior written
+authorization of the copyright holder.

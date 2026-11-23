@@ -350,7 +350,9 @@ impl<'id> Server<'id> {
             observe(Event::Socket(SocketEvent::Diagnostic(d)))
         }
         let allowed = match address {
-            PeerAddress::Unix => self.unix.allows(&connection)?,
+            PeerAddress::Unix => self
+                .unix
+                .admits(&connection, |event| observe(Event::Socket(event))),
             PeerAddress::Tcp(peer) => self.options.access.allows(peer.ip()),
         };
         if !allowed || self.stopped {

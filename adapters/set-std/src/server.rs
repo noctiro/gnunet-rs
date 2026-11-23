@@ -9,7 +9,8 @@ use gnunet_service_runtime::{
     service::{Listener, PeerAddress, ServiceOptions, ShutdownMode},
 };
 use gnunet_set::{
-    Action, Client, Completion, EffectId, EffectScan, EffectScanStep, PeerOwner, Service, Terminal,
+    Action, Client, Completion, EffectId, EffectScan, EffectScanStep, Operation, PeerOwner,
+    Service, Terminal,
 };
 use gnunet_types::Error as Fault;
 use gnunet_wire::official::{
@@ -85,6 +86,8 @@ struct Channel<'id> {
     retire_reason: Fault,
     first: Option<Instant>,
     input: Option<Input<'id>>,
+    // Frozen once at native open/adoption from the original core operation.
+    operation_hard: Option<Instant>,
     hard: Option<Instant>,
 }
 impl Channel<'_> {
@@ -105,7 +108,6 @@ struct Send<'id> {
     channel: cadet::Channel<'id>,
     frame: OwnedFrame,
     charge: usize,
-    hard: Instant,
 }
 struct Closing<'id> {
     id: EffectId<'id>,
@@ -281,6 +283,14 @@ impl<'id, 'slots> Server<'id, 'slots> {
             .checked_add(self.limits.retirement_grace)
             .ok_or(Fault::Overflow.into())
     }
+    fn operation_hard(&self, operation: Operation<'id>) -> Result<Option<Instant>, Error> {
+        let native = Instant::now();
+        let remaining = self.core.operation_remaining(operation, self.now()?)?;
+        let hard = native
+            .checked_add(Duration::from_micros(remaining))
+            .ok_or(Fault::Overflow)?;
+        Ok((Instant::now() < hard).then_some(hard))
+    }
     fn core_result<T>(&mut self, result: Result<T, Fault>) -> Result<T, Error> {
         result.map_err(|error| match self.ports_provider.take_error() {
             Some(original) => Error::Entropy(original),
@@ -442,12 +452,7 @@ impl<'id, 'slots> Server<'id, 'slots> {
                     .into_iter()
                     .chain(p.first)
                     .chain(p.input.as_ref().and_then(|i| i.hard))
-            }))
-            .chain(self.sends.iter().filter_map(|send| {
-                self.channel_index(send.channel)
-                    .and_then(|index| self.channels[index].as_ref())
-                    .filter(|channel| !channel.closing && !channel.remote_closed)
-                    .map(|_| send.hard)
+                    .chain(p.operation_hard.filter(|_| !p.closing))
             }))
             .chain(self.apps.iter().flatten().flat_map(|a| {
                 a.first
@@ -639,7 +644,25 @@ impl<'id, 'slots> Server<'id, 'slots> {
                 bound.hard.get_or_insert(hard);
             }
         }
+        let pending_operation = self
+            .pending
+            .as_ref()
+            .and_then(|pending| match pending.kind {
+                PendingKind::Open(channel) | PendingKind::Send(channel) => Some(channel),
+                _ => None,
+            });
         for channel in self.channels.iter_mut().flatten() {
+            // An already admitted local write owns a hard bound no later than
+            // its operation. Let PendingHard classify its expiry directly.
+            let operation_expired = !channel.closing
+                && pending_operation != Some(channel.channel)
+                && channel.operation_hard.is_some_and(|at| now >= at);
+            let expired = channel.first.is_some_and(|at| now >= at)
+                || channel
+                    .input
+                    .as_ref()
+                    .is_some_and(|i| i.hard.is_some_and(|at| now >= at))
+                || operation_expired;
             if (channel.owner.is_none()
                 && channel.listener.is_some_and(|l| !self.core.client_live(l)))
                 || (channel
@@ -649,18 +672,9 @@ impl<'id, 'slots> Server<'id, 'slots> {
                         .adopted
                         .as_ref()
                         .is_some_and(|a| a.channel == Some(channel.channel)))
-                || channel.first.is_some_and(|at| now >= at)
-                || channel
-                    .input
-                    .as_ref()
-                    .is_some_and(|i| i.hard.is_some_and(|at| now >= at))
+                || expired
             {
-                if channel.first.is_some_and(|at| now >= at)
-                    || channel
-                        .input
-                        .as_ref()
-                        .is_some_and(|i| i.hard.is_some_and(|at| now >= at))
-                {
+                if expired {
                     channel.retire_reason = Fault::Deadline;
                 }
                 channel.mark_closing(hard);
@@ -668,17 +682,6 @@ impl<'id, 'slots> Server<'id, 'slots> {
         }
         if self.retire_unannounced_ports(Fault::Cancelled, observe)? {
             return Ok(true);
-        }
-        for send in &self.sends {
-            if now >= send.hard
-                && let Some(index) = self.channel_index(send.channel)
-            {
-                let channel = self.channels[index].as_mut().ok_or(Fault::Stale)?;
-                if !channel.closing && !channel.remote_closed {
-                    channel.retire_reason = Fault::Deadline;
-                    channel.mark_closing(hard);
-                }
-            }
         }
         let cancelled = self
             .pending

@@ -10,6 +10,17 @@ pub struct Report<R = ()> {
     pub host: HostReport,
     /// Original producer epoch, local writes, unknowns and actual destruction.
     pub statistics: Option<R>,
+    /// Optional original receive-timestamp output and its independent failures.
+    pub histogram: Option<super::HistogramReport>,
+}
+impl<R> Default for Report<R> {
+    fn default() -> Self {
+        Self {
+            host: HostReport::default(),
+            statistics: None,
+            histogram: None,
+        }
+    }
 }
 pub(super) struct StatisticsErrors<E> {
     pub(super) first: Option<E>,

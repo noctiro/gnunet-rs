@@ -6,6 +6,8 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+gnunet-config.workspace = true
+gnunet-hello.workspace = true
 gnunet-peerstore.workspace = true
 gnunet-service-runtime.workspace = true
 gnunet-types.workspace = true
@@ -16,6 +18,7 @@ sha2.workspace = true
 tokio = { workspace = true, features = ["rt", "net", "time", "sync"] }
 
 [dev-dependencies]
+gnunet-crypto.workspace = true
 tokio = { workspace = true, features = ["io-util"] }
 
 [lints]

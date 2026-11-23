@@ -15,6 +15,7 @@ gnunet-idna.workspace = true
 gnunet-identity.workspace = true
 gnunet-types.workspace = true
 gnunet-wire.workspace = true
+subtle.workspace = true
 zeroize.workspace = true
 
 [lints]

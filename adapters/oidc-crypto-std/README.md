@@ -1,5 +1,15 @@
 # Explicit OIDC signing bridge
 
-`Rsa::{generate,from_pkcs8,from_jwk,export_pkcs8,public,sign,sign_jwt}`, `Public::{from_jwk,write_jwk,verify,verify_jwt}` and `Hs512::{new,sign_jwt,verify_jwt}` are callable production functions. Only explicit caller-owned bytes/providers are accepted; no file, key discovery, service, network, encryption/decryption or production libgnunet FFI exists. Successful verification returns a redacted VerifiedPayload view with explicit exposure; issuer, audience, nonce, replay and time authorization remain separate. Rust private raw buffers, HMAC key and JWK/JSON scratch are zeroizing; the native backend owns/frees its RSA private allocations. Public modulus/exponent exports use existing library accessors, not a homemade DER parser.
+The bridge provides RS256 and HS512 signing and verification for caller-owned
+keys and messages. `Rsa` generates or imports RSA keys and exposes PKCS#8 export,
+public-key export and JWT signing. `Public` imports or writes a public JWK and
+verifies signatures. `Hs512` signs and verifies JWTs with a supplied HMAC key.
 
-Exact approved host-only dependency: aws-lc-rs=1.19.0, default-features=false, features alloc/non-fips/ring-io, aws-lc-sys0.47.0. There is no std feature and ring-sig-verify is unnecessary. The mature AWS-LC native/asm RSA primitive is not claimed as pure Rust or FIPS. No RustCrypto rsa dependency/custom private RSA arithmetic/padding/decryption is introduced to evade RUSTSEC-2023-0071.
+Verification returns a redacted payload view with explicit access to its bytes.
+The caller validates issuer, audience, nonce, time and replay policy. RS256 uses
+RustCrypto RSA with OS entropy for key generation and signature blinding.
+PKCS#8 and JWK imports verify all two-prime RSA components, including the CRT
+values. Imported keys use the public modulus width for private operations,
+including when the two factors have different widths. Private key owners and
+adapter buffers erase their contents on drop.
+[OpenID Connect flow](../rest-std/API.md#conditional-oidc)

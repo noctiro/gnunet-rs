@@ -1,0 +1,5 @@
+module GNUnetNodeNative {
+    header "gnunet_node.h"
+    header "gnunet_dns_proxy.h"
+    export *
+}

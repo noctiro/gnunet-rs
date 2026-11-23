@@ -1,10 +1,10 @@
-//! One fresh native allocation session. Healthy PID changes rotate Engine inside
-//! Owner and retain the actual PILS source. A genuine unusable native source
-//! returns only after every old physical owner and public stamp has retired.
+//! One native service session. A local identity change retains the PILS source.
+//! A native source failure returns after the session's resources and admitted
+//! reservations have retired.
 use crate::{
     Failure, Failures,
     foreground::{Entropy, Signals},
-    generation::Reservations,
+    generation::{Reservations, retirement},
     owner::{self, Owner, Sources},
     settings::Settings,
     statistics::Publisher,
@@ -217,10 +217,10 @@ pub(crate) async fn run(input: Inputs<'_, '_, '_>) -> End {
                         match actual {
                             Ok(outcome) => {
                                 let failure = match &outcome {
-                                    crate::epoch::ReservationOutcome::Failed { error, .. } => {
+                                    retirement::ReservationOutcome::Failed { error, .. } => {
                                         Some(error.boxed())
                                     }
-                                    crate::epoch::ReservationOutcome::Mismatched { .. } => {
+                                    retirement::ReservationOutcome::Mismatched { .. } => {
                                         Some(Box::new(gnunet_types::Error::Stale) as Failure)
                                     }
                                     _ => None,

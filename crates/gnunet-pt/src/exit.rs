@@ -1,7 +1,11 @@
 //! Official DNS advertisement and DNS-over-CADET application frames.
 use gnunet_crypto::{EddsaPublicKey, EddsaSignature, hash512};
 use gnunet_types::Error;
-use gnunet_wire::official::{Frame, MessageHeader, message_type as mt};
+use gnunet_wire::official::{Frame, MessageType, message_type as mt, vpn::PeerMessage};
+
+#[cfg(test)]
+mod tests;
+
 /// Exact signed DNS advertisement length: signature64+purpose8+expiry8+peer32.
 pub const ADVERTISEMENT_BYTES: usize = 112;
 /// Public signed purpose GNUNET_SIGNATURE_PURPOSE_DNS_RECORD.
@@ -79,30 +83,47 @@ pub fn discovery_key() -> [u8; 64] {
 pub fn port_hash() -> [u8; 64] {
     hash512(PORT)
 }
+
 /// Encode one real DNS query as the official VPN_DNS_TO_INTERNET application
 /// message. Size/type header is GNUnet BE16; the DNS body is unchanged.
 pub fn encode_query(dns: &[u8], out: &mut [u8]) -> Result<usize, Error> {
-    if dns.len() < 12 {
-        return Err(Error::Truncated);
+    PeerMessage::Dns {
+        reply: false,
+        packet: dns,
     }
-    let n = dns.len().checked_add(4).ok_or(Error::Overflow)?;
-    let header = MessageHeader::from_total_size(mt::VPN_DNS_TO_INTERNET, n)?;
-    if out.len() < n {
-        return Err(Error::Capacity);
-    }
-    header.encode(out)?;
-    out[4..n].copy_from_slice(dns);
-    Ok(n)
+    .encode(out)
 }
+
+/// Borrow the DNS datagram from one complete VPN_DNS_TO_INTERNET frame.
+/// Query validation is the resolver owner's responsibility.
+pub fn decode_query(input: &[u8]) -> Result<&[u8], Error> {
+    decode_dns(input, mt::VPN_DNS_TO_INTERNET)
+}
+
+/// Encode an original DNS reply as VPN_DNS_FROM_INTERNET. The producer must
+/// correlate the reply and restore the client's transaction ID beforehand.
+pub fn encode_response(dns: &[u8], out: &mut [u8]) -> Result<usize, Error> {
+    PeerMessage::Dns {
+        reply: true,
+        packet: dns,
+    }
+    .encode(out)
+}
+
 /// Borrow an exact DNS reply from one application frame. Full DNS validation and
 /// original-channel/ID/question correlation remain the room-independent PT core.
 pub fn decode_response(input: &[u8]) -> Result<&[u8], Error> {
-    let f = Frame::decode(input)?;
-    if f.header().message_type() != mt::VPN_DNS_FROM_INTERNET {
+    decode_dns(input, mt::VPN_DNS_FROM_INTERNET)
+}
+
+fn decode_dns(input: &[u8], kind: MessageType) -> Result<&[u8], Error> {
+    let frame = Frame::decode(input)?;
+    if frame.header().message_type() != kind {
         return Err(Error::Unsupported);
     }
-    if input.len() < 16 {
+    let dns = frame.payload();
+    if dns.len() < gnunet_dns::HEADER_LEN {
         return Err(Error::Truncated);
     }
-    Ok(&input[4..])
+    Ok(dns)
 }

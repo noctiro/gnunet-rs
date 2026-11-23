@@ -6,7 +6,7 @@ use crate::{
 };
 use gnunet_config::Configuration;
 use gnunet_namestore_host::{
-    backend::{self, Store},
+    backend,
     server::{self, Event, Progress, Server},
     worker::{self, Worker},
 };
@@ -380,20 +380,10 @@ pub(super) async fn run(
     )?;
     let mut resolver = Resolver::new(original_resolver, cleanup.clone());
     // Main already finished every original listener under the target identity.
-    // No C path, private fixture or other namespace is adopted here.
-    gnunet_service_runtime::private_parents(&settings.directory)?;
-    let (mut store, loaded) = Store::open(
-        gnunet_snapshot_host::Namespace::Namestore,
-        &settings.directory,
-        settings.backend,
-    )?;
-    let recovered = loaded.recovered_temporaries();
-    let (core, generation) = Server::recover(
-        &mut store,
-        loaded,
-        settings.core,
-        gnunet_namestore_host::critical_type,
-    )?;
+    let database = settings.database.open()?.recover()?;
+    let recovered = database.recovered_temporaries();
+    let (core, store) = database.into_parts();
+    let generation = store.generation();
     let rows = core.snapshot()?.rows().len();
     let mut worker = Worker::start(store)?;
     let mut observations = Observations::default();

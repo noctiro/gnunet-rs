@@ -19,8 +19,11 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use aws_lc_rs::digest;
-use rcgen::{CertificateParams, DistinguishedName, DnType, Issuer, KeyPair, PublicKeyData};
+use gnunet_dns::{
+    Error as DnsError,
+    tlsa::{Association, Matching, Selector, Usage},
+};
+use gnunet_tls_crypto_host::certificate::{IssuanceError, P256Key, ServerIssuer};
 use rustls::client::WebPkiServerVerifier;
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::crypto::{CryptoProvider, verify_tls12_signature, verify_tls13_signature};
@@ -331,7 +334,7 @@ struct CachedLeaf {
 /// exactly one CA certificate and exactly one unencrypted PKCS#8, SEC1 or PKCS#1 key.
 /// The file is read only by load(), never from a default path or a trust-store API.
 pub struct Authority {
-    issuer: Mutex<Issuer<'static, KeyPair>>,
+    issuer: Mutex<ServerIssuer>,
     ca: CertificateDer<'static>,
     ca_validity: Validity,
     provider: Arc<CryptoProvider>,
@@ -400,7 +403,7 @@ impl Authority {
             }
             pem.extend_from_slice(&chunk[..count]);
         }
-        let (ca, key) = guarded(guard, || {
+        let (ca, mut key) = guarded(guard, || {
             let mut certs = CertificateDer::pem_slice_iter(&pem);
             let ca = certs
                 .next()
@@ -412,45 +415,32 @@ impl Authority {
                 ));
             }
             let mut keys = PrivateKeyDer::pem_slice_iter(&pem);
-            let key = keys
-                .next()
-                .ok_or(TlsError::Crypto("CA PEM private key missing"))?
-                .map_err(|_| TlsError::Crypto("CA PEM private key encoding"))?;
-            if keys.next().is_some() {
+            let key = Zeroizing::new(
+                keys.next()
+                    .ok_or(TlsError::Crypto("CA PEM private key missing"))?
+                    .map_err(|_| TlsError::Crypto("CA PEM private key encoding"))?,
+            );
+            if let Some(extra) = keys.next() {
+                if let Ok(extra) = extra {
+                    drop(Zeroizing::new(extra));
+                }
                 return Err(TlsError::Configuration(
                     "exactly one CA private key required",
                 ));
             }
-            Ok((ca, Zeroizing::new(key)))
+            Ok((ca, key))
         })?;
         let now = wall_now(guard)?;
         let ca_validity = ca_validity(ca.as_ref(), now, guard)?.validity;
-        let provider = guarded(guard, || {
-            Ok(Arc::new(rustls::crypto::aws_lc_rs::default_provider()))
-        })?;
-        let ca_signing_key = guarded(guard, || {
-            rustls::crypto::aws_lc_rs::sign::any_supported_type(&key)
-                .map_err(|_| TlsError::Crypto("CA private key decoding"))
-        })?;
-        let certified = CertifiedKey::new(vec![ca.clone()], ca_signing_key);
-        guarded(guard, || {
-            certified
-                .keys_match()
-                .map_err(|_| TlsError::Crypto("CA key match is not proven"))
-        })?;
-        let key_pair = guarded(guard, || {
-            KeyPair::try_from(&*key).map_err(|_| TlsError::Crypto("CA signing key unsupported"))
-        })?;
-        guarded(guard, || {
-            let cert = parse_certificate(ca.as_ref())?;
-            if key_pair.subject_public_key_info() != cert.public_key().raw {
-                return Err(TlsError::Crypto("CA public key mismatch"));
-            }
-            Ok(())
-        })?;
+        let provider = guarded(guard, || Ok(gnunet_tls_crypto_host::provider()))?;
         let issuer = guarded(guard, || {
-            Issuer::from_ca_cert_der(&ca, key_pair)
-                .map_err(|_| TlsError::Certificate("CA issuer import"))
+            let empty = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(&[][..]));
+            let key = std::mem::replace(&mut *key, empty);
+            ServerIssuer::load(&ca, key).map_err(|error| match error {
+                IssuanceError::Certificate => TlsError::Certificate("CA issuer import"),
+                IssuanceError::KeyMismatch => TlsError::Crypto("CA key match is not proven"),
+                _ => TlsError::Crypto("CA private key decoding or signing algorithm"),
+            })
         })?;
         if wall_now(guard)? >= ca_validity.not_after {
             return Err(TlsError::Expired);
@@ -500,35 +490,29 @@ impl Authority {
         let (key, expiry) = match cached {
             Some(cached) => cached,
             None => {
-                let mut params = guarded(guard, || {
-                    CertificateParams::new(vec![browser_domain.to_owned()])
-                        .map_err(|_| TlsError::InvalidInput("certificate SAN"))
-                })?;
-                params.distinguished_name = DistinguishedName::new();
-                params
-                    .distinguished_name
-                    .push(DnType::CommonName, browser_domain);
                 let not_before = now
                     .checked_sub(Duration::from_secs(60))
                     .unwrap_or(UNIX_EPOCH)
                     .max(self.ca_validity.not_before);
-                params.not_before = OffsetDateTime::from_unix_timestamp(to_seconds(not_before)?)
+                let not_before = OffsetDateTime::from_unix_timestamp(to_seconds(not_before)?)
                     .map_err(|_| TlsError::Clock)?;
-                params.not_after = OffsetDateTime::from_unix_timestamp(to_seconds(expiry)?)
+                let not_after = OffsetDateTime::from_unix_timestamp(to_seconds(expiry)?)
                     .map_err(|_| TlsError::Clock)?;
-                params.key_usages = vec![rcgen::KeyUsagePurpose::DigitalSignature];
-                params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ServerAuth];
-                params.use_authority_key_identifier_extension = true;
                 let leaf_key = guarded(guard, || {
-                    KeyPair::generate().map_err(|_| TlsError::Crypto("leaf key generation"))
+                    P256Key::generate().map_err(|_| TlsError::Crypto("leaf key generation"))
                 })?;
                 let leaf = guarded(guard, || {
                     let issuer = self.issuer.try_lock().map_err(|_| TlsError::Busy)?;
-                    params
-                        .signed_by(&leaf_key, &*issuer)
-                        .map_err(|_| TlsError::Crypto("leaf signing"))
+                    issuer
+                        .issue(browser_domain, not_before, not_after, &leaf_key)
+                        .map_err(|error| match error {
+                            IssuanceError::Leaf => {
+                                TlsError::InvalidInput("certificate SAN or validity")
+                            }
+                            _ => TlsError::Crypto("leaf signing"),
+                        })
                 })?;
-                if leaf.der().len() > MAX_CERT_BYTES {
+                if leaf.len() > MAX_CERT_BYTES {
                     return Err(TlsError::Limit("generated leaf"));
                 }
                 // This also enforces any name constraints in the configured CA.
@@ -536,7 +520,7 @@ impl Authority {
                     let anchor = webpki::anchor_from_trusted_cert(&self.ca)
                         .map_err(|_| TlsError::Certificate("CA trust anchor"))?;
                     let anchors = [anchor];
-                    let cert = webpki::EndEntityCert::try_from(leaf.der())
+                    let cert = webpki::EndEntityCert::try_from(&leaf)
                         .map_err(|_| TlsError::Certificate("generated leaf encoding"))?;
                     cert.verify_for_usage(
                         self.provider.signature_verification_algorithms.all,
@@ -553,23 +537,16 @@ impl Authority {
                         .map_err(|_| TlsError::Certificate("generated leaf hostname"))?;
                     Ok(())
                 })?;
-                let der_key = guarded(guard, || {
-                    Ok(Zeroizing::new(PrivateKeyDer::Pkcs8(
-                        PrivatePkcs8KeyDer::from(leaf_key.serialize_der()),
-                    )))
-                })?;
-                let signing_key = guarded(guard, || {
-                    rustls::crypto::aws_lc_rs::sign::any_supported_type(&der_key)
-                        .map_err(|_| TlsError::Crypto("leaf key import"))
-                })?;
-                let certified =
-                    CertifiedKey::new(vec![leaf.der().clone(), self.ca.clone()], signing_key);
-                guarded(guard, || {
+                let key = guarded(guard, || {
+                    let certified = CertifiedKey::new(
+                        vec![leaf, self.ca.clone()],
+                        leaf_key.into_tls_signing_key(),
+                    );
                     certified
                         .keys_match()
-                        .map_err(|_| TlsError::Crypto("leaf key match is not proven"))
+                        .map_err(|_| TlsError::Crypto("leaf key match is not proven"))?;
+                    Ok(Arc::new(certified))
                 })?;
-                let key = Arc::new(certified);
                 guarded(guard, || {
                     let mut cache = self.cache.try_lock().map_err(|_| TlsError::Busy)?;
                     cache.retain(|entry| entry.expires_at > now && entry.domain != browser_domain);
@@ -878,6 +855,23 @@ pub struct TlsaRecord {
     pub association: Vec<u8>,
 }
 
+impl TlsaRecord {
+    fn association(&self) -> Result<Association<'_>, DnsError> {
+        Association::from_fields(self.usage, self.selector, self.matching, &self.association)
+    }
+
+    fn checked_association(&self) -> Result<Association<'_>, TlsError> {
+        self.association().map_err(|error| match error {
+            DnsError::Unsupported => TlsError::UnsupportedTlsa {
+                usage: self.usage,
+                selector: self.selector,
+                matching: self.matching,
+            },
+            _ => TlsError::Certificate("TLSA association data"),
+        })
+    }
+}
+
 /// Construction is a trusted host boundary: DNS resolver results are not sufficient.
 /// hostname and port must be the same selected upstream hostname/SNI and TCP port.
 /// The caller retains the original authenticated answer and exact BOX provenance.
@@ -923,23 +917,19 @@ fn tlsa_unusable_reason(
     guard: &Guard,
 ) -> Result<Option<TlsaUnusableReason>, TlsError> {
     guard()?;
-    if record.usage > 3 || record.selector > 1 || record.matching > 2 {
-        return Ok(Some(TlsaUnusableReason::UnsupportedParameters));
-    }
-    let length = record.association.len();
-    if length == 0
-        || (record.matching == 1 && length != 32)
-        || (record.matching == 2 && length != 64)
-    {
-        return Ok(Some(TlsaUnusableReason::MalformedAssociation));
-    }
-    if record.matching == 0 {
+    let association = match record.association() {
+        Ok(association) => association,
+        Err(DnsError::Unsupported) => return Ok(Some(TlsaUnusableReason::UnsupportedParameters)),
+        Err(_) => return Ok(Some(TlsaUnusableReason::MalformedAssociation)),
+    };
+    if let Matching::Exact(data) = association.matching() {
         let well_formed = guarded(guard, || {
-            Ok(match record.selector {
-                0 => parse_certificate(&record.association).is_ok(),
-                1 => x509_parser::x509::SubjectPublicKeyInfo::from_der(&record.association)
-                    .is_ok_and(|(rest, _)| rest.is_empty()),
-                _ => false,
+            Ok(match association.selector() {
+                Selector::Certificate => parse_certificate(data).is_ok(),
+                Selector::SubjectPublicKeyInfo => {
+                    x509_parser::x509::SubjectPublicKeyInfo::from_der(data)
+                        .is_ok_and(|(rest, _)| rest.is_empty())
+                }
             })
         })?;
         if !well_formed {
@@ -1110,9 +1100,7 @@ pub fn upstream_config(
         }
     }
     let (config, proof) = guarded(&guard, || {
-        let provider = guarded(&guard, || {
-            Ok(Arc::new(rustls::crypto::aws_lc_rs::default_provider()))
-        })?;
+        let provider = guarded(&guard, || Ok(gnunet_tls_crypto_host::provider()))?;
         let pkix = guarded(&guard, || {
             WebPkiServerVerifier::builder_with_provider(roots.store.clone(), provider.clone())
                 .build()
@@ -1196,41 +1184,25 @@ fn bounded_chain(leaf: &CertificateDer<'_>, chain: &[CertificateDer<'_>]) -> Res
     Ok(())
 }
 
-fn matches_bytes(record: &TlsaRecord, bytes: &[u8], guard: &Guard) -> Result<bool, TlsError> {
-    guarded(guard, || {
-        Ok(match record.matching {
-            0 => bytes == record.association.as_slice(),
-            1 => digest::digest(&digest::SHA256, bytes).as_ref() == record.association.as_slice(),
-            2 => digest::digest(&digest::SHA512, bytes).as_ref() == record.association.as_slice(),
-            _ => {
-                return Err(TlsError::UnsupportedTlsa {
-                    usage: record.usage,
-                    selector: record.selector,
-                    matching: record.matching,
-                });
-            }
-        })
-    })
+fn matches_bytes(
+    association: Association<'_>,
+    bytes: &[u8],
+    guard: &Guard,
+) -> Result<bool, TlsError> {
+    guarded(guard, || Ok(association.matches_selected(bytes)))
 }
 
 fn matches_certificate(
-    record: &TlsaRecord,
+    association: Association<'_>,
     cert: &CertificateDer<'_>,
     guard: &Guard,
 ) -> Result<bool, TlsError> {
-    match record.selector {
-        0 => matches_bytes(record, cert.as_ref(), guard),
-        1 => {
-            let spki = guarded(guard, || {
-                Ok(parse_certificate(cert.as_ref())?.public_key().raw.to_vec())
-            })?;
-            matches_bytes(record, &spki, guard)
+    match association.selector() {
+        Selector::Certificate => matches_bytes(association, cert.as_ref(), guard),
+        Selector::SubjectPublicKeyInfo => {
+            let parsed = guarded(guard, || parse_certificate(cert.as_ref()))?;
+            matches_bytes(association, parsed.public_key().raw, guard)
         }
-        _ => Err(TlsError::UnsupportedTlsa {
-            usage: record.usage,
-            selector: record.selector,
-            matching: record.matching,
-        }),
     }
 }
 
@@ -1271,7 +1243,7 @@ fn dane_path_len_allows(
 impl UpstreamVerifier {
     fn pkix_ca_association(
         &self,
-        record: &TlsaRecord,
+        association: Association<'_>,
         leaf: &CertificateDer<'_>,
         chain: &[CertificateDer<'_>],
         now: UnixTime,
@@ -1279,17 +1251,19 @@ impl UpstreamVerifier {
         let mut matched_certificates = Vec::new();
         let mut matched_anchors = Vec::new();
         for root in &self.roots.full_der {
-            if matches_certificate(record, &root.certificate, &self.guard)? {
+            if matches_certificate(association, &root.certificate, &self.guard)? {
                 // Imported into this exact PKIX store; the callback below also
                 // requires this retained certificate's actual selected anchor.
                 matched_anchors.push(root.anchor.clone());
             }
         }
-        if record.selector == 0 && record.matching == 0 {
+        if let (Selector::Certificate, Matching::Exact(original)) =
+            (association.selector(), association.matching())
+        {
             // An exact full-DER association itself supplies the root certificate
             // omitted by many peers. It still has to identify the anchor of a
             // PKIX-valid path to this configured store; it establishes no new trust.
-            let der = CertificateDer::from(record.association.as_slice());
+            let der = CertificateDer::from(original);
             let candidate = guarded(&self.guard, || {
                 webpki::anchor_from_trusted_cert(&der)
                     .map(|anchor| anchor.to_owned())
@@ -1302,7 +1276,7 @@ impl UpstreamVerifier {
             }
         }
         for certificate in chain {
-            if matches_certificate(record, certificate, &self.guard)? {
+            if matches_certificate(association, certificate, &self.guard)? {
                 matched_certificates.push(certificate.as_ref());
                 let anchor = guarded(&self.guard, || {
                     webpki::anchor_from_trusted_cert(certificate)
@@ -1316,7 +1290,7 @@ impl UpstreamVerifier {
                 }
             }
         }
-        if record.selector == 1 {
+        if association.selector() == Selector::SubjectPublicKeyInfo {
             // Mozilla roots retain the SPKI SEQUENCE contents, rather than full
             // certificate DER. A standard DER encoder restores the SPKI wrapper.
             // Omitted root certificate hashes need retained configured full DER;
@@ -1331,7 +1305,7 @@ impl UpstreamVerifier {
                         });
                     }))
                 })?;
-                if matches_bytes(record, &spki, &self.guard)? {
+                if matches_bytes(association, &spki, &self.guard)? {
                     matched_anchors.push(anchor.clone());
                 }
             }
@@ -1371,7 +1345,7 @@ impl UpstreamVerifier {
 
     fn dane_trust_anchor(
         &self,
-        record: &TlsaRecord,
+        association: Association<'_>,
         leaf: &CertificateDer<'_>,
         chain: &[CertificateDer<'_>],
         now: UnixTime,
@@ -1382,14 +1356,15 @@ impl UpstreamVerifier {
         // RFC 7671 section 5.2.2: a 2/0/0 association supplies the complete
         // authenticated trust-anchor certificate even when the server omits it.
         // A certificate/public-key digest cannot supply a missing certificate.
-        let association_ca = if record.selector == 0 && record.matching == 0 {
-            Some(CertificateDer::from(record.association.as_slice()))
-        } else {
-            None
+        let association_ca = match (association.selector(), association.matching()) {
+            (Selector::Certificate, Matching::Exact(original)) => {
+                Some(CertificateDer::from(original))
+            }
+            _ => None,
         };
         for candidate in association_ca.iter().chain(chain.iter()) {
             (self.guard)()?;
-            if !matches_certificate(record, candidate, &self.guard)? {
+            if !matches_certificate(association, candidate, &self.guard)? {
                 continue;
             }
             // The CA must be supplied by the authenticated exact association or
@@ -1484,7 +1459,13 @@ impl UpstreamVerifier {
                 self.usable_tlsa.iter().any(|&index| {
                     set.records
                         .get(index)
-                        .is_some_and(|record| record.usage <= 1)
+                        .and_then(|record| record.association().ok())
+                        .is_some_and(|association| {
+                            matches!(
+                                association.usage(),
+                                Usage::PkixTrustAnchor | Usage::PkixEndEntity
+                            )
+                        })
                 })
             });
         let pkix_valid = if pkix_needed {
@@ -1503,45 +1484,40 @@ impl UpstreamVerifier {
             for &record_index in &self.usable_tlsa {
                 (self.guard)()?;
                 let record = set.records.get(record_index).ok_or(TlsError::Binding)?;
-                let accepted = match record.usage {
-                    0 if pkix_valid => self.pkix_ca_association(record, leaf, chain, now)?,
-                    1 if pkix_valid => matches_certificate(record, leaf, &self.guard)?,
-                    0 | 1 => false,
-                    2 => self.dane_trust_anchor(record, leaf, chain, now)?,
-                    3 => matches_certificate(record, leaf, &self.guard)?,
-                    _ => {
-                        return Err(TlsError::UnsupportedTlsa {
-                            usage: record.usage,
-                            selector: record.selector,
-                            matching: record.matching,
-                        });
+                let association = record.checked_association()?;
+                let accepted = match association.usage() {
+                    Usage::PkixTrustAnchor if pkix_valid => {
+                        self.pkix_ca_association(association, leaf, chain, now)?
                     }
+                    Usage::PkixEndEntity if pkix_valid => {
+                        matches_certificate(association, leaf, &self.guard)?
+                    }
+                    Usage::PkixTrustAnchor | Usage::PkixEndEntity => false,
+                    Usage::DaneTrustAnchor => {
+                        self.dane_trust_anchor(association, leaf, chain, now)?
+                    }
+                    Usage::DaneEndEntity => matches_certificate(association, leaf, &self.guard)?,
                 };
                 if accepted {
-                    method = Some(match record.usage {
-                        0 | 1 => AuthenticationMethod::PkixTlsa {
-                            record_index,
-                            usage: record.usage,
-                            selector: record.selector,
-                            matching: record.matching,
-                        },
-                        2 => AuthenticationMethod::DaneTrustAnchor {
-                            record_index,
-                            selector: record.selector,
-                            matching: record.matching,
-                        },
-                        3 => AuthenticationMethod::DaneEndEntity {
-                            record_index,
-                            selector: record.selector,
-                            matching: record.matching,
-                        },
-                        _ => {
-                            return Err(TlsError::UnsupportedTlsa {
+                    method = Some(match association.usage() {
+                        Usage::PkixTrustAnchor | Usage::PkixEndEntity => {
+                            AuthenticationMethod::PkixTlsa {
+                                record_index,
                                 usage: record.usage,
                                 selector: record.selector,
                                 matching: record.matching,
-                            });
+                            }
                         }
+                        Usage::DaneTrustAnchor => AuthenticationMethod::DaneTrustAnchor {
+                            record_index,
+                            selector: record.selector,
+                            matching: record.matching,
+                        },
+                        Usage::DaneEndEntity => AuthenticationMethod::DaneEndEntity {
+                            record_index,
+                            selector: record.selector,
+                            matching: record.matching,
+                        },
                     });
                     break;
                 }
@@ -1678,5 +1654,41 @@ impl ServerCertVerifier for UpstreamVerifier {
             return Vec::new();
         }
         schemes
+    }
+}
+
+#[cfg(test)]
+mod tlsa_tests {
+    use super::*;
+
+    #[test]
+    fn shared_association_preserves_host_der_and_cancellation_checks() -> Result<(), &'static str> {
+        let record = TlsaRecord {
+            usage: 3,
+            selector: 1,
+            matching: 0,
+            association: b"abc".to_vec(),
+        };
+        let association = record
+            .checked_association()
+            .map_err(|_| "structurally usable association refused")?;
+        let active: Guard = Arc::new(|| Ok(()));
+        if !matches!(matches_bytes(association, b"abc", &active), Ok(true)) {
+            return Err("association did not match its original bytes");
+        }
+        if !matches!(
+            tlsa_unusable_reason(&record, &active),
+            Ok(Some(TlsaUnusableReason::MalformedAssociation))
+        ) {
+            return Err("proxy accepted malformed public key DER");
+        }
+        let cancelled: Guard = Arc::new(|| Err(TlsError::Cancelled));
+        if !matches!(
+            matches_bytes(association, b"abc", &cancelled),
+            Err(TlsError::Cancelled)
+        ) {
+            return Err("association match ignored cancellation");
+        }
+        Ok(())
     }
 }

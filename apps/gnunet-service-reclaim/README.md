@@ -13,9 +13,10 @@ gnunet-service-reclaim -c gnunet.conf
 The Unix and Windows entries capture inherited listeners and parent control
 before other native owners. Unix applies `[reclaim] USERNAME` before completing
 local endpoints; Windows verifies the configured process token and imports native
-activation. `UNIX_MATCH_UID/GID` default to false; explicit checks are unsupported
-on Windows. Native endpoint ACLs and standard TCP ACL/TOLERANT policies govern
-access to key-bearing IPC. The pinned `OPTION_NONE` selects immediate shutdown.
+activation. `UNIX_MATCH_UID/GID` default to false. On Windows they require
+owner or primary-group access on the original AF_UNIX listener. Standard TCP
+ACL/TOLERANT policies govern TCP admission. The pinned `OPTION_NONE` selects
+immediate shutdown.
 
 The listener, Server, explicit OS provider and configured native clients
 are constructed before readiness notification. READY retains the accurate

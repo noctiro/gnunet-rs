@@ -18,7 +18,7 @@ use gnunet_types::Error;
 use link::Link;
 pub use manager::{
     Communicator, Connect, CreateId, CreateRequest, HandshakeBounds, ManagerCapacity,
-    NativeAdmission, OwnedFailure, Progress, SessionId,
+    NativeAdmission, OwnedFailure, Progress, Resources, SessionId,
 };
 use std::{
     future::poll_fn,

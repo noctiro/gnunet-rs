@@ -296,8 +296,15 @@ impl<'a> Block<'a> {
         out[3..n].copy_from_slice(self.data);
         Ok(n)
     }
-    /// Exact legacy12-byte size marker fields. Sender's actual source identity
-    /// must still be checked; an8-bit field cannot prove a larger participant index.
+    /// Validate the three-byte contested marker. The payload type is unused.
+    pub fn contested_marker(self) -> Result<(), Error> {
+        if self.marker != 1 || !self.data.is_empty() {
+            return Err(Error::Malformed);
+        }
+        Ok(())
+    }
+    /// Decode the 12-byte size marker. The caller checks the sender's identity
+    /// because the eight-bit index cannot identify larger participant indices.
     pub fn size_marker(self) -> Result<(u64, u8), Error> {
         if self.marker != 2 || self.data.len() != 9 {
             return Err(Error::Malformed);

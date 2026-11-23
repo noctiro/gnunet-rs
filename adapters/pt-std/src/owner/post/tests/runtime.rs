@@ -179,13 +179,13 @@ async fn peers(
     use_ip(&mut first, b, mapped).await?;
     reply(&mut dns, [1; 8], Some(mapped)).await?;
 
-    let lost = vpn_wire::Address::V4([203, 0, 113, 10]);
+    let lost = vpn_wire::Address::V6([0x20, 1, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 10]);
     notify(&mut dns, [3; 8], &packet(lost, false)).await?;
     let c = allocation(&mut first, lost).await?;
     drop(first);
     reply(&mut dns, [3; 8], None).await?;
 
-    let fresh = vpn_wire::Address::V4([203, 0, 113, 99]);
+    let fresh = vpn_wire::Address::V6([0x20, 1, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 99]);
     notify(&mut dns, [4; 8], &packet(fresh, false)).await?;
     let (mut second, _) = vpn.accept().await?;
     second.set_nodelay(true)?;
@@ -194,13 +194,9 @@ async fn peers(
     if [a, b, c].contains(&d) {
         return Err("successor VPN reused an old request ID".into());
     }
-    use_ip(&mut second, d, vpn_wire::Address::V4([10, 99, 0, 99])).await?;
-    reply(
-        &mut dns,
-        [4; 8],
-        Some(vpn_wire::Address::V4([10, 99, 0, 99])),
-    )
-    .await
+    let mapped = vpn_wire::Address::V6([0xfd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 99]);
+    use_ip(&mut second, d, mapped).await?;
+    reply(&mut dns, [4; 8], Some(mapped)).await
 }
 
 #[test]

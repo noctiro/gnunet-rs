@@ -67,6 +67,102 @@ fn hello_with_profile(
     Ok(value)
 }
 #[test]
+fn included_bootstrap_is_public_durable_and_survives_managed_replacement()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::discovery::{AddressSource, VisitControl};
+    use core::num::NonZeroUsize;
+    let directory = directory()?;
+    let resources = directory.0.join("hellos");
+    fs::create_dir(&resources)?;
+    let remote_key = EddsaPrivateKey::from_seed([81; 32]);
+    let remote = PeerId(*remote_key.public_key().as_bytes());
+    let local_key = EddsaPrivateKey::from_seed([83; 32]);
+    let local = PeerId(*local_key.public_key().as_bytes());
+    let message = hello(&remote_key, false)?;
+    let mut scratch = [0; 1024];
+    let parsed = gnunet_hello::Hello::parse_message(
+        &message,
+        None,
+        &mut scratch,
+        gnunet_hello::Limits {
+            maximum_input_bytes: 65535,
+            maximum_address_bytes: 1024,
+            maximum_addresses: 8,
+        },
+    )?;
+    let mut url = vec![0; parsed.url_len()?];
+    let length = parsed.write_url(&mut url)?.len();
+    url.truncate(length);
+    fs::write(resources.join("remote"), &url)?;
+    let selected = super::super::bootstrap::Directory::new(resources, 1)?;
+    let path = directory.0.join("journal");
+    {
+        let mut journal = Journal::open(&path)?;
+        journal.reserve_managed(ManagedQuota {
+            records: 1,
+            bytes: 8192,
+        })?;
+        // Identical managed bytes are not an existing public bootstrap record.
+        let mut initial = journal.prepare_managed(remote, &[], Some(&message), 100)?;
+        assert_eq!(journal.commit(&mut initial), CommitOutcome::Committed);
+        let prior = journal.commits();
+        let summary = journal.import_hellos(
+            Some(&selected),
+            gnunet_hello::AbsoluteTime::from_micros(100),
+            |_, _| {},
+        )?;
+        assert_eq!(
+            summary,
+            super::super::bootstrap::Summary {
+                stored: 1,
+                skipped: 0
+            }
+        );
+        assert_eq!(
+            journal.commits(),
+            prior + 1,
+            "one original URL must cause one actual store"
+        );
+        let mut replacement = journal.prepare_managed(local, &[], None, 100)?;
+        assert_eq!(journal.commit(&mut replacement), CommitOutcome::Committed);
+        assert_eq!(
+            journal.records().count(),
+            1,
+            "managed replacement removed a public bootstrap record"
+        );
+        assert_eq!(
+            journal
+                .records()
+                .next()
+                .ok_or("bootstrap record missing")?
+                .value,
+            message
+        );
+    }
+    let mut journal = Journal::open(&path)?;
+    let prior = journal.commits();
+    let repeated = journal.import_hellos(
+        Some(&selected),
+        gnunet_hello::AbsoluteTime::from_micros(100),
+        |_, _| {},
+    )?;
+    assert_eq!(repeated, super::super::bootstrap::Summary::default());
+    assert_eq!(journal.records().count(), 1);
+    assert_eq!(
+        journal.commits(),
+        prior,
+        "restart import committed an exact duplicate"
+    );
+    let mut addresses = Vec::new();
+    let visit = journal.visit(remote, 100, 0, NonZeroUsize::MIN, &mut |address| {
+        addresses.push(address.to_vec());
+        Ok(VisitControl::Continue)
+    })?;
+    assert!(visit.finished);
+    assert_eq!(addresses, vec![b"tcp-127.0.0.1:2086".to_vec()]);
+    Ok(())
+}
+#[test]
 fn profile_managed_reopen_and_public_remote_discovery_have_independent_authority()
 -> Result<(), Error> {
     use crate::discovery::{AddressSource, VisitControl};

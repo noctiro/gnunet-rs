@@ -14,6 +14,9 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
+sys.dont_write_bytecode = True
+sys.path.insert(0, str(ROOT / "tools"))
+from rust_toolchain import rust_channel
 FRAMED = "adapters/transport-std/src/framed.rs"
 TEST = "framed::performance_probe::unix_batch"
 
@@ -41,13 +44,14 @@ def run():
     parser.add_argument("--workspace", type=Path, default=ROOT)
     parser.add_argument("--admission", choices=("borrowed", "owned"), required=True)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--toolchain", default="1.99.1")
+    parser.add_argument("--toolchain")
     parser.add_argument("--repeats", type=int, default=3)
     args = parser.parse_args()
     if not 1 <= args.repeats <= 20:
         parser.error("repeats must be 1..20")
     runner_digest = sha(__file__)
     source = args.workspace.resolve()
+    toolchain = rust_channel(source, args.toolchain)
     output = args.output.resolve()
     if output == source or source in output.parents:
         parser.error("output must be outside the measured source workspace")
@@ -74,10 +78,10 @@ def run():
     target = output / "target"
     versions = {}
     for name in ("cargo", "rustc"):
-        command = [name, "+" + args.toolchain, "--version", "--verbose"]
+        command = [name, "+" + toolchain, "--version", "--verbose"]
         version = subprocess.run(command, cwd=snapshot, capture_output=True, check=True)
         versions[name] = dict(argv=command, stdout=version.stdout.decode(), stderr=version.stderr.decode())
-    argv = ["cargo", "+" + args.toolchain, "test", "-p", "gnunet-transport-host", "--lib", "--release", "--no-run", "--offline", "--locked", "--target-dir", str(target), "-j", "2"]
+    argv = ["cargo", "+" + toolchain, "test", "-p", "gnunet-transport-host", "--lib", "--release", "--no-run", "--offline", "--locked", "--target-dir", str(target), "-j", "2"]
     build_argv = list(argv)
     with (output / "build.log").open("wb") as log:
         built = subprocess.run(argv, cwd=snapshot, stdout=log, stderr=subprocess.STDOUT)

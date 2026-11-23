@@ -12,6 +12,8 @@ use std::task::{Context, Poll};
 #[cfg(test)]
 use std::{fs, path::PathBuf};
 mod journal;
+/// Shared bounded startup resource policy and canonical included-HELLO codec.
+pub use gnunet_peerstore_host::bootstrap;
 pub use journal::{
     HelloProfiles, Journal, JournalFailure, ManagedAddress, ManagedQuota,
     Transaction as JournalTransaction,

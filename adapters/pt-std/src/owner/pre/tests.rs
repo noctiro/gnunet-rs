@@ -19,6 +19,8 @@ use tokio::{
 
 const PACKET: usize = 128;
 
+mod source_loss;
+
 fn query(id: [u8; 2]) -> Vec<u8> {
     let mut bytes = vec![0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 16, 0, 1];
     bytes[..2].copy_from_slice(&id);
@@ -101,9 +103,10 @@ async fn dns_reply(stream: &mut TcpStream, id: [u8; 8], dns: Option<&[u8]>) -> R
 
 async fn peers(
     dns: TcpListener,
-    cadet: TcpListener,
+    cadet_listener: TcpListener,
     dht: TcpListener,
     now: u64,
+    canonical_input_expiry: bool,
 ) -> Result<(), Failure> {
     let key = EddsaPrivateKey::from_seed([0x19; 32]);
     let peer = *key.public_key().as_bytes();
@@ -140,7 +143,7 @@ async fn peers(
     let mut bytes = vec![0; result.encoded_len()?];
     result.encode(&mut bytes)?;
     dht.write_all(&bytes).await?;
-    let (mut cadet, _) = cadet.accept().await?;
+    let (mut cadet, _) = cadet_listener.accept().await?;
     let channel = match channel_wire::Request::decode(&frame(&mut cadet).await?)? {
         channel_wire::Request::ChannelCreate {
             channel,
@@ -179,6 +182,56 @@ async fn peers(
         },
     )
     .await?;
+    if canonical_input_expiry {
+        use tokio::io::AsyncReadExt;
+        if cadet.read(&mut [0; 1]).await? != 0 {
+            return Err("expired input received credit on the retired MQ".into());
+        }
+        let (mut replacement, _) = cadet_listener.accept().await?;
+        let successor = match channel_wire::Request::decode(&frame(&mut replacement).await?)? {
+            channel_wire::Request::ChannelCreate {
+                channel,
+                peer: actual,
+                port,
+                options: 0,
+            } if actual == peer && port == exit::port_hash() => channel,
+            _ => return Err("canonical expiry did not reopen the original exit".into()),
+        };
+        respond(
+            &mut replacement,
+            channel_wire::Response::Ack { channel: successor },
+        )
+        .await?;
+        let first = sent_query(&mut replacement, successor).await?;
+        respond(
+            &mut replacement,
+            channel_wire::Response::Ack { channel: successor },
+        )
+        .await?;
+        let second = sent_query(&mut replacement, successor).await?;
+        if first == second {
+            return Err("retried callbacks reused one channel DNS ID".into());
+        }
+        let mut messages = application(&answer(first))?;
+        messages.extend_from_slice(&application(&answer(second))?);
+        respond(
+            &mut replacement,
+            channel_wire::Response::Data {
+                channel: successor,
+                priority: 0,
+                messages: &messages,
+            },
+        )
+        .await?;
+        dns_reply(&mut dns, [1; 8], Some(&answer([0x12, 0x34]))).await?;
+        dns_reply(&mut dns, [2; 8], Some(&answer([0x56, 0x78]))).await?;
+        if channel_wire::Request::decode(&frame(&mut replacement).await?)?
+            != (channel_wire::Request::Ack { channel: successor })
+        {
+            return Err("retried input lost its original acknowledgement".into());
+        }
+        return Ok(());
+    }
     dns_reply(&mut dns, [1; 8], Some(&answer([0x12, 0x34]))).await?;
     dns_reply(&mut dns, [2; 8], Some(&answer([0x56, 0x78]))).await?;
     if channel_wire::Request::decode(&frame(&mut cadet).await?)?
@@ -264,6 +317,15 @@ async fn peers(
 
 #[test]
 fn native_pre_reuses_reserved_replies_and_retires_a_policy_violating_exit() -> Result<(), Failure> {
+    native_pre_case(false)
+}
+
+#[test]
+fn native_pre_canonical_input_expiry_retires_before_retry() -> Result<(), Failure> {
+    native_pre_case(true)
+}
+
+fn native_pre_case(canonical_input_expiry: bool) -> Result<(), Failure> {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?
@@ -321,7 +383,14 @@ fn native_pre_reuses_reserved_replies_and_retires_a_policy_violating_exit() -> R
                 limits,
                 vpn::AfProfile::native(),
             )?;
-            let mut actor = std::pin::pin!(peers(dns_listener, cadet_listener, dht_listener, now));
+            let mut actor = std::pin::pin!(peers(
+                dns_listener,
+                cadet_listener,
+                dht_listener,
+                now,
+                canonical_input_expiry,
+            ));
+            let mut expired_input = false;
             let result = tokio::time::timeout(
                 Duration::from_secs(20),
                 poll_fn(|cx| {
@@ -338,7 +407,35 @@ fn native_pre_reuses_reserved_replies_and_retires_a_policy_violating_exit() -> R
                         Poll::Ready(Ok(_)) => true,
                         Poll::Pending => false,
                     };
+                    if canonical_input_expiry && !expired_input && owner.received.is_some() {
+                        let now = owner.clock.sample()?.now.as_micros();
+                        let original_callbacks: Vec<_> = owner.callbacks.iter()
+                            .map(|row| (row.native, row.bounds.expires, row.bounds.hard)).collect();
+                        let received = owner.received.as_mut().ok_or(Fault::NotReady)?;
+                        if received.cursor != 0 || received.processed || !received.bounds.live(now) {
+                            return Poll::Ready(Err("fixture missed original unprocessed input".into()));
+                        }
+                        // Model a due canonical target while the independent
+                        // native target and original callbacks remain live.
+                        received.bounds.expires = now;
+                        owner.maintain(now)?;
+                        if !owner.channels.is_empty() || owner.received.is_some() || owner.transmit.is_some()
+                            || owner.cadet.as_ref().and_then(cadet::Client::epoch).is_some()
+                            || owner.cadet_lost || owner.core.next_work(now)?.is_some()
+                        {
+                            return Poll::Ready(Err("canonical expiry retained old tunnel authority for the next action".into()));
+                        }
+                        let retained_callbacks: Vec<_> = owner.callbacks.iter()
+                            .map(|row| (row.native, row.bounds.expires, row.bounds.hard)).collect();
+                        if original_callbacks != retained_callbacks || retained_callbacks.len() != 2 {
+                            return Poll::Ready(Err("canonical expiry changed original callback ownership or deadlines".into()));
+                        }
+                        expired_input = true;
+                    }
                     if let Poll::Ready(result) = actor.as_mut().poll(cx) {
+                        if canonical_input_expiry && !expired_input {
+                            return Poll::Ready(Err("canonical input expiry was not exercised".into()));
+                        }
                         return Poll::Ready(result);
                     }
                     if progress {

@@ -115,6 +115,25 @@ fn empty_hello_reply_is_distinct_from_empty_offered_url() -> Result<(), Error> {
     Ok(())
 }
 #[test]
+fn in_place_hello_url_preserves_original_text_and_adds_one_terminator() -> Result<(), Error> {
+    let url = b"gnunet://hello/example";
+    let mut frame = [0xA5; 64];
+    let end = 4 + url.len();
+    frame[4..end].copy_from_slice(url);
+    let length = encode_hello_url_in_place(&mut frame, url.len())?;
+    assert_eq!(length, end + 1);
+    assert_eq!(
+        Request::decode(&frame[..length])?,
+        Request::HelloUrl(Some(url))
+    );
+    assert_eq!(frame[length], 0xA5);
+    assert_eq!(
+        encode_hello_url_in_place(&mut frame[..end], url.len()),
+        Err(Error::Capacity)
+    );
+    Ok(())
+}
+#[test]
 fn no_put_ack_or_private_type_is_invented() {
     assert_eq!(Request::decode(&[0, 4, 0, 152]), Err(Error::Unsupported));
     assert_eq!(Request::decode(&[0, 4, 0, 145]), Err(Error::Unsupported));

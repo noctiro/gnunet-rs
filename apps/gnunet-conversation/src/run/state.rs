@@ -14,6 +14,7 @@ use std::{
     pin::Pin,
     task::{Context, Poll},
 };
+mod receipts;
 
 pub(super) enum Next {
     Continue,
@@ -32,6 +33,19 @@ enum Action {
     Resume,
     Cancel,
 }
+
+fn outgoing_loss_is_local(cause: &phone::Cause) -> bool {
+    use gnunet_client_host::{ConnectError, resolution::PortError};
+
+    match cause {
+        phone::Cause::Eof | phone::Cause::Deadline | phone::Cause::CallEnded(_) => true,
+        phone::Cause::Failure(
+            phone::Error::Io(error) | phone::Error::Native(ConnectError::Io(error)),
+        ) => PortError::from_io(error).is_none(),
+        phone::Cause::Failure(_) | phone::Cause::Cancelled => false,
+    }
+}
+
 struct Intent {
     action: Action,
     bounds: Bounds,
@@ -292,13 +306,8 @@ impl<'id, 'p> State<'id, 'p> {
                 if let Some(call) = call {
                     let info = self.line_mut(side)?.info(&call)?;
                     let number = self.update(side, info)?;
-                    if let Some(entry) = self.calls.iter_mut().find(|e| e.number == number)
-                        && entry
-                            .intent
-                            .as_ref()
-                            .is_some_and(|p| p.operation.as_ref() == Some(&receipt.operation))
-                    {
-                        entry.intent = None;
+                    if let Some(entry) = self.calls.iter_mut().find(|e| e.number == number) {
+                        receipts::complete(&mut entry.intent, &receipt.operation);
                     }
                     if matches!(kind, phone::Kind::PickUp | phone::Kind::Resume) {
                         // A second activation may have been queued before the
@@ -339,7 +348,7 @@ impl<'id, 'p> State<'id, 'p> {
                         .iter_mut()
                         .find(|e| e.side == side && e.info.call == call)
                 {
-                    e.intent = None;
+                    receipts::complete(&mut e.intent, &receipt.operation);
                 }
                 self.terminal.message(
                     b"Original control retired before any byte; no service processing result.\n",
@@ -408,35 +417,44 @@ impl<'id, 'p> State<'id, 'p> {
         }
         Ok(())
     }
+    fn retire_calls(&mut self, side: Side) {
+        if self.active.is_some_and(|number| {
+            self.calls
+                .iter()
+                .any(|e| e.number == number && e.side == side)
+        }) {
+            self.active = None;
+        }
+        self.calls.retain(|entry| entry.side != side);
+        self.audio.retain(|(binding, _)| binding.side != side);
+        if self
+            .media
+            .binding()
+            .is_some_and(|binding| binding.side == side)
+        {
+            self.media.begin_stop(self.settings.shutdown);
+        }
+    }
+
     fn source_lost(&mut self, side: Side, loss: phone::Loss) -> Result<(), Failure> {
-        let recover =
+        let outgoing_ended = side == Side::Outgoing && outgoing_loss_is_local(&loss.cause);
+        let recover_phone =
             side == Side::Phone && self.phone.as_ref().is_some_and(phone::Line::can_reregister);
         self.record_loss(loss);
-        if !recover {
+        if outgoing_ended {
+            self.outgoing = None;
+            self.retire_calls(Side::Outgoing);
+            return self
+                .terminal
+                .message(b"Outgoing call source ended. You can place a new call.\n");
+        }
+        if !recover_phone {
             self.stop_media();
             return Err(
                 "original Conversation source lost; old exposed controls are not replayed".into(),
             );
         }
-        // Withdraw only the old registered phone's calls. An independently
-        // owned outgoing Line and its media are neither resumed nor stopped.
-        if self.active.is_some_and(|number| {
-            self.calls
-                .iter()
-                .any(|e| e.number == number && e.side == Side::Phone)
-        }) {
-            self.active = None;
-        }
-        self.calls.retain(|entry| entry.side != Side::Phone);
-        self.audio
-            .retain(|(binding, _)| binding.side != Side::Phone);
-        if self
-            .media
-            .binding()
-            .is_some_and(|binding| binding.side == Side::Phone)
-        {
-            self.media.begin_stop(self.settings.shutdown);
-        }
+        self.retire_calls(Side::Phone);
         let line = self
             .phone
             .as_ref()
@@ -452,6 +470,23 @@ impl<'id, 'p> State<'id, 'p> {
         self.terminal
             .message(b"Phone service disconnected. Previous incoming calls ended; reconnecting.\n")
     }
+
+    fn admission_failed(
+        &mut self,
+        cx: &mut Context<'_>,
+        side: Side,
+        error: phone::Error,
+    ) -> Result<(), Failure> {
+        if matches!(error, phone::Error::Protocol(gnunet_types::Error::Closed))
+            && let Some(loss) = self.line_mut(side)?.poll_native_guard(cx)
+        {
+            self.source_lost(side, loss)?;
+            cx.waker().wake_by_ref();
+            return Ok(());
+        }
+        Err(error.into())
+    }
+
     fn recover_phone(&mut self, cx: &mut Context<'_>) -> Result<(), Failure> {
         let Some(alarm) = self.phone_recovery.as_mut() else {
             return Ok(());
@@ -517,7 +552,7 @@ impl<'id, 'p> State<'id, 'p> {
                         .operation = Some(op)
                 }
                 Err(phone::Error::Protocol(gnunet_types::Error::WouldBlock)) => {}
-                Err(e) => return Err(e.into()),
+                Err(e) => return self.admission_failed(cx, side, e),
             }
         }
         if let Some(number) = self.active
@@ -563,7 +598,7 @@ impl<'id, 'p> State<'id, 'p> {
                         self.media.consume_record(n)?;
                     }
                     Err(phone::Error::Protocol(gnunet_types::Error::WouldBlock)) => {}
-                    Err(e) => return Err(e.into()),
+                    Err(e) => return self.admission_failed(cx, side, e),
                 }
             }
         }
@@ -994,8 +1029,37 @@ impl<'id, 'p> State<'id, 'p> {
         facts.terminal = Some(report);
     }
 }
+
 impl Drop for State<'_, '_> {
     fn drop(&mut self) {
         self.finish();
+    }
+}
+
+#[cfg(test)]
+mod loss_tests {
+    use super::{outgoing_loss_is_local, phone};
+    use gnunet_client_host::{ConnectError, resolution::PortError};
+    use std::io;
+
+    #[test]
+    fn outgoing_transport_loss_does_not_share_the_clock_failure_scope() {
+        use phone::{Cause, Error};
+
+        assert!(outgoing_loss_is_local(&Cause::Eof));
+        assert!(outgoing_loss_is_local(&Cause::Deadline));
+        assert!(outgoing_loss_is_local(&Cause::Failure(Error::Io(
+            io::ErrorKind::ConnectionReset.into()
+        ))));
+        assert!(outgoing_loss_is_local(&Cause::Failure(Error::Native(
+            ConnectError::Io(io::ErrorKind::ConnectionRefused.into())
+        ))));
+        assert!(!outgoing_loss_is_local(&Cause::Failure(Error::Native(
+            ConnectError::Io(PortError::mark(io::Error::other("shared clock refused")))
+        ))));
+        assert!(!outgoing_loss_is_local(&Cause::Failure(Error::Protocol(
+            gnunet_types::Error::StaleGeneration
+        ))));
+        assert!(!outgoing_loss_is_local(&Cause::Cancelled));
     }
 }

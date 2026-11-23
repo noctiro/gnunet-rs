@@ -64,7 +64,7 @@
     14,
     15
   ],
-  "compiler_inventory": "/private/tmp/gnunet-api-inventory-20261026/headers/gnunet_arm_service.h/declarations.json",
+  "compiler_inventory": "data/compiler-arm.json",
   "scope": "Full ARM source-derived inventory plus first pure client/codec/monitor candidate; daemon/native/CLI/testing integration pending",
   "verification": null,
   "native_layout": {
@@ -75,7 +75,6 @@
     "actual_info_size": 28,
     "actual_status_size": 8,
     "evidence": "normal_bytes.c actual native C compile/run using unchanged headers; wire_trace actual Rust encode",
-    "profile_align4": "Implemented explicit20/20, synthetic codec-only; actual32-bit public interoperability pending",
-    "rejected_initial_inference": "/private/tmp/gnunet-arm-wrong-layout-draft-20261027/REJECTED.json"
+    "profile_align4": "Implemented explicit20/20, synthetic codec-only; actual32-bit public interoperability pending"
   }
 }

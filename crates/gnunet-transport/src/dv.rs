@@ -435,12 +435,25 @@ impl BoxHeader {
         ciphertext: &[u8],
         out: &mut [u8],
     ) -> Result<usize, Error> {
-        if route.len() > MAX_HOPS || ciphertext.len() < PAYLOAD_PREFIX + 4 {
+        let size = self.encode_prefix(route, ciphertext.len(), out)?;
+        out[size - ciphertext.len()..size].copy_from_slice(ciphertext);
+        Ok(size)
+    }
+
+    /// Encode the canonical BOX prefix around already-initialized ciphertext.
+    /// Returns the full wire length and leaves the ciphertext bytes untouched.
+    pub fn encode_prefix(
+        &self,
+        route: &[PeerId],
+        ciphertext_len: usize,
+        out: &mut [u8],
+    ) -> Result<usize, Error> {
+        if route.len() > MAX_HOPS || ciphertext_len < PAYLOAD_PREFIX + 4 {
             return Err(Error::InvalidInput);
         }
         let size = BOX_PREFIX
             .checked_add(route.len() * 32)
-            .and_then(|n| n.checked_add(ciphertext.len()))
+            .and_then(|n| n.checked_add(ciphertext_len))
             .ok_or(Error::Overflow)?;
         if size > u16::MAX as usize {
             return Err(Error::TooLarge);
@@ -459,7 +472,6 @@ impl BoxHeader {
         for (i, peer) in route.iter().enumerate() {
             out[BOX_PREFIX + i * 32..BOX_PREFIX + (i + 1) * 32].copy_from_slice(&peer.0);
         }
-        out[BOX_PREFIX + route.len() * 32..size].copy_from_slice(ciphertext);
         Ok(size)
     }
 }

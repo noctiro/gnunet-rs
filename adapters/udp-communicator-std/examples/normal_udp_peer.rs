@@ -107,6 +107,7 @@ async fn run(args: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
             "[::1]:0"
         }
         .parse()?,
+        Default::default(),
     )?;
     let configuration = Configuration {
         local,

@@ -2,7 +2,7 @@
 name="gnunet-arm-cli"
 version="0.1.0"
 edition="2024"
-rust-version="1.99.1"
+rust-version="1.100.0"
 license="MPL-2.0"
 [workspace]
 [features]
@@ -17,7 +17,7 @@ gnunet-resolver-broker={path="@REPOSITORY@/adapters/resolver-broker-std",default
 gnunet-program-host={path="@REPOSITORY@/adapters/program-std",default-features=false,features=["service-runtime"]}
 gnunet-service-runtime={path="@REPOSITORY@/adapters/service-runtime",default-features=false}
 gnunet-types={path="@REPOSITORY@/crates/gnunet-types",default-features=false}
-tokio={version="=1.54.1",default-features=false,features=["rt","net","time","io-util","signal","sync"]}
+tokio={version="1.54.1",default-features=false,features=["rt","net","time","io-util","signal","sync"]}
 
 [lints.rust]
 future_incompatible = { level = "deny", priority = -1 }

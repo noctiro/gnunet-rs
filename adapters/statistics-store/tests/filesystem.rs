@@ -5,6 +5,7 @@
     reason = "Fallible filesystem tests assert actual data and failure outcomes"
 )]
 
+use gnunet_native::filesystem::Directory as NativeDirectory;
 use gnunet_statistics::{Reply, Selector, Set, Statistics};
 use gnunet_statistics_store::{
     Cause, CommitBackend, CommitOutcome, DirectorySync, Limits, LoadSource, NativeCommit,
@@ -13,7 +14,9 @@ use gnunet_statistics_store::{
 use gnunet_types::Error;
 use std::{
     error::Error as StdError,
-    fs, io,
+    ffi::OsStr,
+    fs::{self, File},
+    io,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::atomic::{AtomicU64, Ordering},
@@ -31,15 +34,8 @@ const LIMITS: Limits = Limits {
     max_frame_bytes: 64,
 };
 
-fn native_directory_sync() -> DirectorySync {
-    #[cfg(unix)]
-    {
-        DirectorySync::Synchronized
-    }
-    #[cfg(windows)]
-    {
-        DirectorySync::Unavailable
-    }
+fn native_directory_sync(path: &Path) -> io::Result<DirectorySync> {
+    NativeDirectory::open(path)?.sync()
 }
 struct Directory(PathBuf);
 impl Directory {
@@ -126,7 +122,10 @@ fn snapshot_restart_uses_official_set_bytes_and_private_file() -> Result<(), Box
         fs::read(directory.file())?,
         b"\0\x14\0\xa8\0\0\0\x02\x01\x02\x03\x04\x05\x06\x07\x08s\0n\0"
     );
-    assert_eq!(saved.directory_sync, Some(native_directory_sync()));
+    assert_eq!(
+        saved.directory_sync,
+        Some(native_directory_sync(&directory.0)?)
+    );
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -351,13 +350,24 @@ fn an_unavailable_parent_barrier_is_not_replaced_by_a_later_sync_receipt()
 -> Result<(), Box<dyn StdError>> {
     struct FirstUnavailable(bool);
     impl CommitBackend for FirstUnavailable {
-        fn rename(&mut self, source: &Path, destination: &Path) -> io::Result<()> {
-            NativeCommit.rename(source, destination)
+        fn rename(
+            &mut self,
+            directory: &NativeDirectory,
+            source: &OsStr,
+            original: &File,
+            destination: &OsStr,
+        ) -> io::Result<()> {
+            NativeCommit.rename(directory, source, original, destination)
         }
-        fn remove(&mut self, destination: &Path) -> io::Result<()> {
-            NativeCommit.remove(destination)
+        fn remove(
+            &mut self,
+            directory: &NativeDirectory,
+            destination: &OsStr,
+            original: &File,
+        ) -> io::Result<()> {
+            NativeCommit.remove(directory, destination, original)
         }
-        fn sync_directory(&mut self, directory: &Path) -> io::Result<DirectorySync> {
+        fn sync_directory(&mut self, directory: &NativeDirectory) -> io::Result<DirectorySync> {
             if !std::mem::replace(&mut self.0, true) {
                 Ok(DirectorySync::Unavailable)
             } else {
@@ -410,7 +420,10 @@ fn native_wide_filename_keeps_its_identity_across_snapshot_replacement()
     for number in [19, 27] {
         update(&mut core, NAME, number, 2)?;
         let report = store.save(&core, &mut [0; 64])?;
-        assert_eq!(report.directory_sync, Some(DirectorySync::Unavailable));
+        assert_eq!(
+            report.directory_sync,
+            Some(native_directory_sync(&directory.0)?)
+        );
         let (mut loaded, report) = store.load::<4, 32, 1, 2, 4>()?;
         assert_eq!(report.source, LoadSource::Present);
         assert_eq!(value(&mut loaded, NAME)?, (number, true));
@@ -436,6 +449,44 @@ fn a_long_valid_database_basename_does_not_exceed_temporary_filename_limits()
     Ok(())
 }
 
+#[test]
+fn invalid_database_basename_is_refused_before_preparing_directories()
+-> Result<(), Box<dyn StdError>> {
+    let root = Directory::new()?;
+    for path in [
+        root.0.join("new/database/"),
+        root.0.join("new/database/."),
+        root.0.join("new").join("d".repeat(256)),
+    ] {
+        let error = Store::new(path, LIMITS)
+            .err()
+            .ok_or("invalid database basename accepted")?;
+        assert_eq!(error.stage(), Stage::Preflight);
+        assert_eq!(error.outcome(), CommitOutcome::DestinationUnchanged);
+    }
+    assert!(fs::read_dir(&root.0)?.next().is_none());
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn empty_snapshot_refuses_to_remove_a_non_database_entry() -> Result<(), Box<dyn StdError>> {
+    let root = Directory::new()?;
+    let target = root.0.join("target");
+    fs::write(&target, b"original target")?;
+    std::os::unix::fs::symlink(&target, root.file())?;
+    let error = root
+        .store()?
+        .save(&Core::new(), &mut [])
+        .err()
+        .ok_or("empty save removed a symbolic link")?;
+    assert_eq!(error.stage(), Stage::Inspect);
+    assert_eq!(error.outcome(), CommitOutcome::DestinationUnchanged);
+    assert_eq!(fs::read_link(root.file())?, target);
+    assert_eq!(fs::read(target)?, b"original target");
+    Ok(())
+}
+
 enum Failure {
     RenameBefore,
     RenameAfter,
@@ -444,24 +495,35 @@ enum Failure {
 }
 struct FailingCommit(Failure);
 impl CommitBackend for FailingCommit {
-    fn rename(&mut self, source: &Path, destination: &Path) -> io::Result<()> {
+    fn rename(
+        &mut self,
+        directory: &NativeDirectory,
+        source: &OsStr,
+        original: &File,
+        destination: &OsStr,
+    ) -> io::Result<()> {
         if matches!(self.0, Failure::RenameBefore) {
             return Err(io::Error::other("injected rename transport error"));
         }
-        fs::rename(source, destination)?;
+        NativeCommit.rename(directory, source, original, destination)?;
         if matches!(self.0, Failure::RenameAfter) {
             return Err(io::Error::other("injected response loss after rename"));
         }
         Ok(())
     }
-    fn remove(&mut self, destination: &Path) -> io::Result<()> {
-        fs::remove_file(destination)?;
+    fn remove(
+        &mut self,
+        directory: &NativeDirectory,
+        destination: &OsStr,
+        original: &File,
+    ) -> io::Result<()> {
+        NativeCommit.remove(directory, destination, original)?;
         if matches!(self.0, Failure::RemoveAfter) {
             return Err(io::Error::other("injected response loss after unlink"));
         }
         Ok(())
     }
-    fn sync_directory(&mut self, directory: &Path) -> io::Result<DirectorySync> {
+    fn sync_directory(&mut self, directory: &NativeDirectory) -> io::Result<DirectorySync> {
         if matches!(self.0, Failure::DirectorySync) {
             return Err(io::Error::other("injected directory sync failure"));
         }
@@ -497,6 +559,79 @@ fn rename_or_directory_sync_failure_reports_unknown_and_real_namespace_outcome()
             fs::remove_file(path)?;
         }
     }
+    Ok(())
+}
+
+// Windows restricts renaming a directory while a staged child is open.
+#[cfg(unix)]
+#[test]
+fn database_replacement_and_barrier_use_the_original_parent() -> Result<(), Box<dyn StdError>> {
+    use gnunet_native::filesystem::FileIdentity;
+
+    struct SwapParent {
+        selected: PathBuf,
+        moved: PathBuf,
+        synchronized: Option<FileIdentity>,
+    }
+
+    impl CommitBackend for SwapParent {
+        fn rename(
+            &mut self,
+            directory: &NativeDirectory,
+            source: &OsStr,
+            original: &File,
+            destination: &OsStr,
+        ) -> io::Result<()> {
+            fs::rename(&self.selected, &self.moved)?;
+            fs::create_dir(&self.selected)?;
+            fs::write(self.selected.join(destination), b"replacement database")?;
+            NativeCommit.rename(directory, source, original, destination)
+        }
+
+        fn remove(
+            &mut self,
+            directory: &NativeDirectory,
+            destination: &OsStr,
+            original: &File,
+        ) -> io::Result<()> {
+            NativeCommit.remove(directory, destination, original)
+        }
+
+        fn sync_directory(&mut self, directory: &NativeDirectory) -> io::Result<DirectorySync> {
+            self.synchronized = Some(FileIdentity::of(directory.as_file())?);
+            NativeCommit.sync_directory(directory)
+        }
+    }
+
+    let fixture = Directory::new()?;
+    let selected = fixture.0.join("selected");
+    let moved = fixture.0.join("moved");
+    fs::create_dir(&selected)?;
+    let directory = NativeDirectory::open(&selected)?;
+    let original_identity = FileIdentity::of(directory.as_file())?;
+    let database = selected.join("statistics.db");
+    fs::write(&database, frame(NAME, 2, 1)?)?;
+    let store = Store::new(&database, LIMITS)?;
+    let mut core = Core::new();
+    update(&mut core, NAME, 99, 2)?;
+    let mut commit = SwapParent {
+        selected,
+        moved,
+        synchronized: None,
+    };
+
+    let report = store.save_with(&core, &mut [0; 64], &mut commit)?;
+    assert_eq!(report.outcome, SaveOutcome::Stored);
+    assert_eq!(
+        report.directory_sync,
+        Some(native_directory_sync(&commit.moved)?)
+    );
+    assert_eq!(commit.synchronized, Some(original_identity));
+    assert_eq!(
+        fs::read(commit.moved.join("statistics.db"))?,
+        frame(NAME, 2, 99)?
+    );
+    assert_eq!(fs::read(database)?, b"replacement database");
     Ok(())
 }
 
@@ -548,17 +683,28 @@ impl PausingCommit {
     }
 }
 impl CommitBackend for PausingCommit {
-    fn rename(&mut self, source: &Path, destination: &Path) -> io::Result<()> {
+    fn rename(
+        &mut self,
+        directory: &NativeDirectory,
+        source: &OsStr,
+        original: &File,
+        destination: &OsStr,
+    ) -> io::Result<()> {
         if !self.after {
             return self.ready_and_park();
         }
-        fs::rename(source, destination)?;
+        NativeCommit.rename(directory, source, original, destination)?;
         self.ready_and_park()
     }
-    fn remove(&mut self, destination: &Path) -> io::Result<()> {
-        NativeCommit.remove(destination)
+    fn remove(
+        &mut self,
+        directory: &NativeDirectory,
+        destination: &OsStr,
+        original: &File,
+    ) -> io::Result<()> {
+        NativeCommit.remove(directory, destination, original)
     }
-    fn sync_directory(&mut self, directory: &Path) -> io::Result<DirectorySync> {
+    fn sync_directory(&mut self, directory: &NativeDirectory) -> io::Result<DirectorySync> {
         NativeCommit.sync_directory(directory)
     }
 }

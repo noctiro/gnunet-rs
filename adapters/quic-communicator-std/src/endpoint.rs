@@ -2,6 +2,7 @@
 use crate::{
     credentials::Tls,
     drivers::{Construct, Drivers, Id},
+    local_keys,
     socket::Gate,
 };
 use gnunet_types::Error as Protocol;
@@ -14,6 +15,25 @@ use std::{
     time::Duration,
 };
 use tokio::time::Instant;
+mod native;
+
+// The official numeric address has no interface zone or flow metadata.
+pub(crate) fn validate_address(address: SocketAddr) -> Result<(), Protocol> {
+    if address.ip().is_multicast()
+        || matches!(address, SocketAddr::V4(v4) if v4.ip().is_broadcast())
+    {
+        return Err(Protocol::InvalidInput);
+    }
+    if let SocketAddr::V6(v6) = address
+        && (v6.flowinfo() != 0
+            || v6.scope_id() != 0
+            || v6.ip().to_ipv4_mapped().is_some()
+            || v6.ip().is_unicast_link_local())
+    {
+        return Err(Protocol::Unsupported);
+    }
+    Ok(())
+}
 /// Caller resource policy for actual QUIC backend allocations/windows.
 #[derive(Clone, Copy, Debug)]
 pub struct Limits {
@@ -89,11 +109,21 @@ pub(crate) struct Endpoint {
     stopped: bool,
 }
 impl Endpoint {
+    #[cfg(test)]
     pub(crate) fn bind(
+        address: SocketAddr,
+        tls: Tls,
+        limits: Limits,
+        hard: Instant,
+    ) -> Result<Self, Failure> {
+        Self::bind_with_socket_policy(address, tls, limits, hard, &Default::default())
+    }
+    pub(crate) fn bind_with_socket_policy(
         address: SocketAddr,
         mut tls: Tls,
         limits: Limits,
         hard: Instant,
+        socket_policy: &gnunet_service_runtime::network::SocketPolicy,
     ) -> Result<Self, Failure> {
         if limits.connections == 0
             || limits.connections > 65535
@@ -109,6 +139,7 @@ impl Endpoint {
         if Instant::now() >= hard {
             return Err(Protocol::Deadline.into());
         }
+        validate_address(address)?;
         let mut transport = quinn::TransportConfig::default();
         transport.max_concurrent_bidi_streams(quinn::VarInt::from_u32(limits.bidi));
         transport.max_concurrent_uni_streams(quinn::VarInt::from_u32(3));
@@ -132,24 +163,15 @@ impl Endpoint {
                 .checked_mul(limits.connections as u64)
                 .ok_or(Protocol::Overflow)?,
         );
+        let config = local_keys::endpoint_config()?;
         let gate = Gate::new(hard);
         let mut drivers = Drivers::new(limits.connections, gate.clone())?;
         // No socket is created before all pool/limit reservations and TLS setup.
-        let socket = std::net::UdpSocket::bind(address)?;
-        #[cfg(windows)]
-        {
-            use std::os::windows::io::AsSocket;
-            gnunet_native::network::suppress_udp_connection_resets(socket.as_socket())?;
-        }
+        let socket = native::bind_with_socket_policy(address, socket_policy)?;
         socket.set_nonblocking(true)?;
         let driver = drivers.reserve()?;
         let inner = match drivers.construct(&driver, |runtime| {
-            quinn::Endpoint::new(
-                quinn::EndpointConfig::default(),
-                Some(tls.server),
-                socket,
-                runtime,
-            )
+            quinn::Endpoint::new(config, Some(tls.server), socket, runtime)
         }) {
             Ok(endpoint) => endpoint,
             Err(Construct::Backend(error)) => return Err(error.into()),
@@ -182,6 +204,15 @@ impl Endpoint {
     pub(crate) fn local_addr(&self) -> SocketAddr {
         self.local
     }
+    pub(crate) fn validate_peer(&self, remote: SocketAddr) -> Result<(), Protocol> {
+        if self.local.is_ipv4() != remote.is_ipv4() {
+            return Err(Protocol::Unsupported);
+        }
+        if remote.port() == 0 || remote.ip().is_unspecified() {
+            return Err(Protocol::InvalidInput);
+        }
+        validate_address(remote)
+    }
     /// A constructor created a real retained driver before returning its error.
     /// The whole source must retire it before another command is admitted.
     pub(crate) fn is_poisoned(&self) -> bool {
@@ -191,6 +222,7 @@ impl Endpoint {
         if self.stopped || Instant::now() >= self.hard {
             return Err(Protocol::Closed.into());
         }
+        self.validate_peer(address)?;
         let id = self.drivers.reserve()?;
         let endpoint = self.inner.as_ref().ok_or(Protocol::Closed)?;
         let config = self.client.clone();
@@ -235,6 +267,10 @@ impl Endpoint {
             }
         };
         let remote = incoming.remote_address();
+        if let Err(reason) = self.validate_peer(remote) {
+            incoming.refuse();
+            return Poll::Ready(Err(reason.into()));
+        }
         let id = match self.drivers.reserve() {
             Ok(id) => id,
             Err(e) => {
@@ -342,61 +378,5 @@ impl Endpoint {
 }
 
 #[cfg(all(test, feature = "fresh-tls"))]
-mod tests {
-    use super::*;
-    type Test = Result<(), Box<dyn std::error::Error>>;
-    #[test]
-    fn canceling_original_connection_driver_preserves_endpoint_and_rejects_old_ticket() -> Test {
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()?
-            .block_on(async {
-                let tls = Tls::fresh(crate::tls::Profile::Raw, vec!["gnunet".into()])?;
-                let mut endpoint = Endpoint::bind(
-                    "127.0.0.1:0".parse()?,
-                    tls,
-                    Limits::default(),
-                    Instant::now() + Duration::from_secs(30),
-                )
-                .map_err(|e| format!("{e:?}"))?;
-                let bound = endpoint.local_addr();
-                let peer = tokio::net::UdpSocket::bind("127.0.0.1:0").await?;
-                let original = endpoint
-                    .dial(peer.local_addr()?)
-                    .map_err(|e| format!("{e:?}"))?;
-                let id = original.driver.clone();
-                drop(original);
-                if endpoint
-                    .cancel_driver(&endpoint.endpoint_driver.clone())
-                    .is_ok()
-                {
-                    return Err("endpoint driver was canceled as a connection".into());
-                }
-                if !endpoint.cancel_driver(&id).map_err(|e| format!("{e:?}"))?
-                    || !endpoint.driver_done(&id).map_err(|e| format!("{e:?}"))?
-                {
-                    return Err("original driver did not actually retire".into());
-                }
-                endpoint.release_driver(&id).map_err(|e| format!("{e:?}"))?;
-                let fresh = endpoint
-                    .dial(peer.local_addr()?)
-                    .map_err(|e| format!("{e:?}"))?;
-                let next = fresh.driver.clone();
-                drop(fresh);
-                if next == id
-                    || endpoint.cancel_driver(&id).is_ok()
-                    || endpoint.local_addr() != bound
-                {
-                    return Err("driver ticket or native endpoint was reused".into());
-                }
-                endpoint
-                    .cancel_driver(&next)
-                    .map_err(|e| format!("{e:?}"))?;
-                endpoint
-                    .release_driver(&next)
-                    .map_err(|e| format!("{e:?}"))?;
-                endpoint.close().map_err(|e| format!("{e:?}"))?;
-                Ok(())
-            })
-    }
-}
+#[path = "endpoint/tests.rs"]
+mod tests;

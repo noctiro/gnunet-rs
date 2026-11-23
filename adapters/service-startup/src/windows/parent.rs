@@ -1,9 +1,9 @@
 //! Original-child qualification and actual parent readiness observations.
-use super::control::ControlSender;
+use super::{control::ControlSender, grant::SignedGrant};
 use crate::ReadyStatus;
 use gnunet_native::process::{ProcessIdentity, ProcessWait};
 use gnunet_service_runtime::{
-    pipe::{ByteReader, PipeError, PipeListener},
+    pipe::{ByteReader, PipeConnection, PipeError, PipeListener},
     process::{ChildRegistry, OriginalChild, RegistryError},
 };
 use std::{
@@ -64,6 +64,11 @@ enum ParentState {
         identity: ProcessIdentity,
         exit: ProcessWait,
     },
+    SendingGrant {
+        connection: Option<PipeConnection>,
+        grant: Box<SignedGrant>,
+        sent: usize,
+    },
     Reading {
         reader: ByteReader,
         control: Option<ControlSender>,
@@ -77,6 +82,7 @@ enum ParentState {
 pub struct ParentBootstrap {
     child: OriginalChild,
     state: ParentState,
+    grant: Option<Box<SignedGrant>>,
 }
 impl ParentBootstrap {
     /// Exact original registry incarnation this bootstrap qualifies.
@@ -95,12 +101,16 @@ impl ParentBootstrap {
         let exit = registry.exit_observer(child)?;
         Ok(Self {
             child: child.clone(),
+            grant: None,
             state: ParentState::Listening {
                 listener,
                 identity,
                 exit,
             },
         })
+    }
+    pub(super) fn set_activation_grant(&mut self, grant: Box<SignedGrant>) {
+        self.grant = Some(grant);
     }
     /// Accept and qualify the original peer. Cancellation retains the same
     /// listener/identity/exit observer. Actual pre-connect exit fails startup
@@ -114,6 +124,7 @@ impl ParentBootstrap {
             ParentState::Finished { .. } | ParentState::Reading { .. } => {
                 return Poll::Ready(Ok(()));
             }
+            ParentState::SendingGrant { .. } => return self.poll_grant(cx),
             ParentState::Listening {
                 listener,
                 identity,
@@ -136,21 +147,61 @@ impl ParentBootstrap {
         };
         match connection {
             Ok(connection) => {
-                let (reader, writer) = connection.split();
-                self.state = ParentState::Reading {
-                    reader,
-                    control: Some(ControlSender::new(self.child.clone(), writer)),
-                };
-                Poll::Ready(Ok(()))
+                if let Some(grant) = self.grant.take() {
+                    self.state = ParentState::SendingGrant {
+                        connection: Some(connection),
+                        grant,
+                        sent: 0,
+                    };
+                    self.poll_grant(cx)
+                } else {
+                    self.connected(connection)
+                }
             }
-            Err(error) => {
-                self.state = ParentState::Finished {
-                    result: Err(error.clone()),
-                    control: None,
-                };
-                Poll::Ready(Err(error))
-            }
+            Err(error) => self.fail(error),
         }
+    }
+    fn poll_grant(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), ParentFailure>> {
+        let ParentState::SendingGrant {
+            connection,
+            grant,
+            sent,
+        } = &mut self.state
+        else {
+            return self.fail(ParentFailure::NotConnected);
+        };
+        let Some(pipe) = connection.as_mut() else {
+            return self.fail(ParentFailure::NotConnected);
+        };
+        let bytes = grant.bytes();
+        match pipe.poll_startup_prefix(cx, &bytes[*sent..]) {
+            Poll::Pending => return Poll::Pending,
+            Poll::Ready(Err(error)) => return self.fail(ParentFailure::Pipe(error)),
+            Poll::Ready(Ok(count)) => *sent += count,
+        }
+        if *sent != bytes.len() {
+            cx.waker().wake_by_ref();
+            return Poll::Pending;
+        }
+        match connection.take() {
+            Some(connection) => self.connected(connection),
+            None => self.fail(ParentFailure::NotConnected),
+        }
+    }
+    fn connected(&mut self, connection: PipeConnection) -> Poll<Result<(), ParentFailure>> {
+        let (reader, writer) = connection.split();
+        self.state = ParentState::Reading {
+            reader,
+            control: Some(ControlSender::new(self.child.clone(), writer)),
+        };
+        Poll::Ready(Ok(()))
+    }
+    fn fail(&mut self, error: ParentFailure) -> Poll<Result<(), ParentFailure>> {
+        self.state = ParentState::Finished {
+            result: Err(error.clone()),
+            control: None,
+        };
+        Poll::Ready(Err(error))
     }
     /// Await original peer qualification. Dropping this future preserves the
     /// same endpoint, process identity and native exit observation.
@@ -164,7 +215,9 @@ impl ParentBootstrap {
         cx: &mut Context<'_>,
     ) -> Poll<Result<ReadyReceipt, ParentFailure>> {
         let (reader, control) = match &mut self.state {
-            ParentState::Listening { .. } => return Poll::Ready(Err(ParentFailure::NotConnected)),
+            ParentState::Listening { .. } | ParentState::SendingGrant { .. } => {
+                return Poll::Ready(Err(ParentFailure::NotConnected));
+            }
             ParentState::Finished { result, .. } => return Poll::Ready(result.clone()),
             ParentState::Reading { reader, control } => (reader, control),
         };
@@ -195,7 +248,7 @@ impl ParentBootstrap {
     /// Transfer the unique control sender once after connection qualification.
     pub fn take_control(&mut self) -> Option<ControlSender> {
         match &mut self.state {
-            ParentState::Listening { .. } => None,
+            ParentState::Listening { .. } | ParentState::SendingGrant { .. } => None,
             ParentState::Reading { control, .. } | ParentState::Finished { control, .. } => {
                 control.take()
             }

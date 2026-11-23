@@ -18,7 +18,7 @@ consumers; those mappings are separate from external protocol requirements.
 
 ## Reproduce against an unchanged normal C utility library
 
-Python3.9+, cached Rust1.99.1 dependencies and the two installed Rust targets
+Python3.9+, cached Rust1.100.0 dependencies and the two installed Rust targets
 `thumbv6m-none-eabi` / `thumbv7em-none-eabi` are sufficient. Supply the actual
 normal Meson build receipt, its unchanged source and dependency prefix:
 

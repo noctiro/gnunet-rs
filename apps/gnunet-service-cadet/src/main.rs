@@ -1,33 +1,38 @@
 //! Normal CADET service over the shared native process driver.
 #![deny(unsafe_code)]
-mod control;
-mod foreground;
-mod identity;
-mod local;
-mod peer;
-mod readiness;
-mod settings;
 mod statistics;
-use gnunet_program_host::service::native::{self, Application, Context};
-use std::error::Error;
-type Failure = Box<dyn Error>;
+
+use gnunet_cadet_host::startup::{self, Settings};
+use gnunet_program_host::service::native::{self, Application, Context, Failure};
 
 struct Service;
 impl Application for Service {
     const SECTION: &'static [u8] = b"cadet";
     const BINARY: &'static str = "gnunet-service-cadet";
-    const CLOCK_SLOTS: usize = 4096;
-    type Settings = settings::Settings;
+    const CLOCK_SLOTS: usize = startup::PROCESS_CLOCK_SLOTS;
+    type Settings = Settings;
+
     fn settings(config: &gnunet_config::Configuration) -> Result<Self::Settings, Failure> {
-        settings::Settings::read(config)
+        let settings = Settings::read(config)?;
+        statistics::limits(settings.statistics_timeout()).validate()?;
+        Ok(settings)
     }
+
     fn access(settings: &Self::Settings) -> gnunet_service_runtime::credentials::UnixAccess {
-        settings.unix
+        settings.unix_access()
     }
+
     async fn serve(context: Context<'_, Self::Settings>) -> Result<(), Failure> {
-        foreground::run(context).await
+        let mut instance = gnunet_ipc_unix::handle::Instance::new();
+        let instance = &mut instance;
+        let reports = context.reports.clone();
+        startup::serve_process(context, move |publication| {
+            statistics::publisher(instance, publication, reports)
+        })
+        .await
     }
 }
+
 fn main() -> std::process::ExitCode {
     #[expect(
         unsafe_code,

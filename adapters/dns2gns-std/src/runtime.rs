@@ -6,22 +6,19 @@ use crate::{
     request::{self, Completion},
 };
 use gnunet_types::Error as Fault;
-use socket2::{Domain, Protocol, Socket, Type};
+mod listener;
+use listener::{Listener, ReplyPath};
 use std::{
     cell::Cell,
     future::Future,
     io,
-    net::{SocketAddr, UdpSocket as StdSocket},
+    net::SocketAddr,
     pin::Pin,
     rc::Rc,
     sync::Arc,
     task::{Context, Poll},
 };
-use tokio::{
-    io::ReadBuf,
-    net::UdpSocket,
-    time::{Instant, Sleep},
-};
+use tokio::time::{Instant, Sleep};
 
 #[expect(
     clippy::large_enum_variant,
@@ -39,12 +36,13 @@ struct Task {
     hard: Instant,
     alarm: Pin<Box<Sleep>>,
     cancel: Rc<Cell<Option<StopReason>>>,
+    reply_path: ReplyPath,
     state: State,
 }
 /// One original gateway. Every active slot retains its exact original future
 /// through cancellation; diagnostic serials never reconstruct native authority.
 pub struct Runtime {
-    listeners: [Option<UdpSocket>; 2],
+    listeners: [Option<Listener>; 2],
     ports: Arc<Ports>,
     limits: Limits,
     tasks: Vec<Option<Task>>,
@@ -334,7 +332,7 @@ impl Runtime {
                 } else if let Some(socket) = self.listeners[report.listener].as_ref() {
                     // now() rechecks the original native bound after its clock
                     // sample; no new request/effect follows an elapsed hard.
-                    match socket.poll_send_to(cx, &bytes, report.peer) {
+                    match socket.poll_send(cx, &task.reply_path, &bytes) {
                         Poll::Pending => {
                             task.state = State::Sending {
                                 bytes,
@@ -376,12 +374,12 @@ impl Runtime {
             let Some(socket) = self.listeners[index].as_ref() else {
                 continue;
             };
-            let mut buffer = ReadBuf::new(&mut self.buffer);
-            let result = socket.poll_recv_from(cx, &mut buffer);
+            let result = socket.poll_recv(cx, &mut self.buffer);
             match result {
                 Poll::Pending => {}
                 Poll::Ready(Err(error))
-                    if gnunet_native::network::isolated_datagram_receive_error(&error) =>
+                    if error.kind() == io::ErrorKind::InvalidData
+                        || gnunet_native::network::isolated_datagram_receive_error(&error) =>
                 {
                     let errors = &mut self.report.datagram_errors[index];
                     errors.count = errors.count.saturating_add(1);
@@ -399,11 +397,11 @@ impl Runtime {
                     observer(Event::ListenerLost(index));
                     return Poll::Ready(Progress::Activity);
                 }
-                Poll::Ready(Ok(peer)) => {
+                Poll::Ready(Ok((bytes, reply_path))) => {
                     // Capture native hard before source sampling or name work.
                     let started = Instant::now();
                     let hard = started.checked_add(self.limits.request_lifetime);
-                    let filled = buffer.filled();
+                    let filled = &self.buffer[..bytes];
                     let id = filled.get(..2).and_then(|bytes| bytes.try_into().ok());
                     self.serial = match self.serial.checked_add(1) {
                         Some(serial) => serial,
@@ -415,7 +413,7 @@ impl Runtime {
                     let mut request_report = RequestReport {
                         serial: self.serial,
                         listener: index,
-                        peer,
+                        peer: reply_path.peer(),
                         id,
                         route: None,
                         gns_records: None,
@@ -488,6 +486,7 @@ impl Runtime {
                                 hard,
                                 alarm: Box::pin(tokio::time::sleep_until(hard)),
                                 cancel,
+                                reply_path,
                                 state: State::Running(Box::pin(future)),
                             });
                             cx.waker().wake_by_ref();
@@ -516,29 +515,8 @@ fn has_diagnostics(report: &RequestReport) -> bool {
                 || matches!(&facts.cancel, Some(Err(_)))
         })
 }
-fn bind(requested: SocketAddr) -> (Option<UdpSocket>, Binding) {
-    let result = (|| {
-        let domain = if requested.is_ipv4() {
-            Domain::IPV4
-        } else {
-            Domain::IPV6
-        };
-        let socket = Socket::new(domain, Type::DGRAM, Some(Protocol::UDP))?;
-        #[cfg(windows)]
-        {
-            use std::os::windows::io::AsSocket;
-            gnunet_native::network::suppress_udp_connection_resets(socket.as_socket())?;
-        }
-        if requested.is_ipv6() {
-            socket.set_only_v6(true)?;
-        }
-        socket.set_nonblocking(true)?;
-        socket.bind(&requested.into())?;
-        let socket = UdpSocket::from_std(StdSocket::from(socket))?;
-        let actual = socket.local_addr()?;
-        Ok::<_, io::Error>((socket, actual))
-    })();
-    match result {
+fn bind(requested: SocketAddr) -> (Option<Listener>, Binding) {
+    match Listener::bind(requested) {
         Ok((socket, actual)) => (
             Some(socket),
             Binding {

@@ -47,7 +47,7 @@ impl<'s, 'p, 'c, 'slots> State<'s, 'p, 'c, 'slots> {
         Ok(true)
     }
     pub(super) fn effect_step(&mut self) -> Result<bool, Error> {
-        if self.reject_step()? {
+        if self.expire_cadet_input()? || self.reject_step()? {
             return Ok(true);
         }
         if self.scan_end {
@@ -282,6 +282,7 @@ impl<'s, 'p, 'c, 'slots> State<'s, 'p, 'c, 'slots> {
                     return Ok(true);
                 }
                 let delivery = input.received.delivery();
+                let bound = bound.earlier(input.bound);
                 let transmit = match self.cadet.receive_done(delivery) {
                     Ok(tx) => tx,
                     Err(error) if blocked(&error) => return Ok(true),

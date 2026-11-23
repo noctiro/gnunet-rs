@@ -4,9 +4,23 @@ Pinned official production sources: v0.29.1 commit346358e26d4dcc2dc4f51bef5d52dc
 
 ## Wire profiles
 
-Native sockaddr producer ABI is explicit (Linux, Darwin, FreeBSD and integer order); original padding is retained in RawAddress. A canonical address writer clears padding. Wire headers/ports are network order. The active ADD_GLOBAL_ADDRESS producer assigns htons16 into native uint32; Profile reproduces its length bytes. REGISTER accepts the bounded section bytes permitted by C strndup; hosts should produce final NUL. No synthetic RID, ACK, UNREGISTER or CANCEL exists. A complete write reports local submission only.
+The listener selects the client’s native sockaddr layout (Linux, Darwin,
+FreeBSD or Windows) and byte order. `RawAddress` retains original padding;
+canonical address writers clear it. Frame headers and ports use network order.
+`ADD_GLOBAL_ADDRESS` stores a network-order 16-bit length in a native 32-bit
+field. The codec preserves the candidate bytes; a NAT provider decides which
+addresses it can use. `REGISTER` accepts the bounded section bytes permitted by
+C `strndup`; producers should append a NUL. There is no request ID, ACK,
+UNREGISTER or CANCEL. A complete write reports local submission only.
 
 ## Registration ownership
+
+`address::Advertised::interface` classifies a native unicast observation and
+preserves its IPv6 scope. `address::AddressPolicy` projects it onto one original
+registration binding without allocation. Each binding adopts its own port from
+the registration when the observation has no port. An explicitly zoned IPv6
+link-local binding matches observations only on its own zone. Service owners
+deduplicate projected addresses and publish their effective add/remove changes.
 
 state::Core owns original accepted Source and discovery Provider generations, registrations, effective addresses, provider snapshots, original freshness deadlines, and a finite notification queue. All snapshot changes preflight a bounded plan and downstream capacity before committed address mutation. Provider outputs require their original handle; source loss retires only its own bindings/providers/events. Native host ownership must be retained until close/cancel cleanup, must expire before draining notifications, and must stop resources on native/canonical clock failure. A provider intent or a sent packet never installs an address. STUN observations are unauthenticated server claims. Raw ICMP reversal observations are unauthenticated and remain subject to the original helper/interface/source lifetime.
 

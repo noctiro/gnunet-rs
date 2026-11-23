@@ -4,6 +4,8 @@ mod existing;
 mod observed;
 mod owned;
 mod path;
+#[cfg(feature = "service")]
+mod retained;
 pub(crate) use path::components;
 #[cfg(feature = "service")]
 pub(crate) use path::from_protocol_name;
@@ -23,12 +25,86 @@ pub use observed::{CommitStage, ObservedFailure};
 pub use owned::{DirectoryStage, OWNER_MARKER_NAME, OwnedDirectoryFailure};
 #[cfg(feature = "service")]
 pub use range::{RevalidateRangeFailure, RevalidatedRange};
+#[cfg(feature = "service")]
+pub use retained::IncompleteOutput;
 use std::{
+    collections::BTreeSet,
     ffi::{OsStr, OsString},
     fs::File,
     io,
     path::Path,
+    sync::atomic::{AtomicU64, Ordering},
 };
+
+#[derive(Clone, Copy)]
+pub(crate) struct TemporaryNames<'a> {
+    location: TemporaryLocation<'a>,
+    next: &'a AtomicU64,
+}
+
+#[derive(Clone, Copy)]
+#[cfg_attr(
+    not(feature = "service"),
+    expect(
+        dead_code,
+        reason = "Native tree extraction is enabled by the service feature"
+    )
+)]
+enum TemporaryLocation<'a> {
+    Parent(&'a BTreeSet<OsString>),
+    Stage(&'a Directory),
+}
+
+impl<'a> TemporaryNames<'a> {
+    #[cfg(feature = "service")]
+    pub(crate) fn in_parent(reserved: &'a BTreeSet<OsString>, next: &'a AtomicU64) -> Self {
+        Self {
+            location: TemporaryLocation::Parent(reserved),
+            next,
+        }
+    }
+    #[cfg(feature = "service")]
+    pub(crate) fn in_stage(directory: &'a Directory, next: &'a AtomicU64) -> Self {
+        Self {
+            location: TemporaryLocation::Stage(directory),
+            next,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct FilePlacement<'a> {
+    create_parents: bool,
+    temporary: Option<TemporaryNames<'a>>,
+}
+
+impl FilePlacement<'_> {
+    const CREATE_PARENTS: Self = Self {
+        create_parents: true,
+        temporary: None,
+    };
+    #[cfg(any(test, feature = "service"))]
+    const EXISTING_PARENT: Self = Self {
+        create_parents: false,
+        temporary: None,
+    };
+
+    fn temporary_parent<'a>(
+        self,
+        parent: &'a Directory,
+        identity: FileIdentity,
+    ) -> io::Result<(&'a Directory, FileIdentity)>
+    where
+        Self: 'a,
+    {
+        match self.temporary.map(|names| names.location) {
+            Some(TemporaryLocation::Stage(stage)) => {
+                Ok((stage, FileIdentity::of(stage.as_file())?))
+            }
+            _ => Ok((parent, identity)),
+        }
+    }
+}
 
 // An eight-digit DOS-compatible name needs neither case folding nor a generated
 // 8.3 alias. A matching final name is skipped before exclusive creation.
@@ -58,6 +134,30 @@ pub struct OutputDir {
     nonce: u64,
 }
 impl OutputDir {
+    #[cfg(feature = "service")]
+    pub(crate) fn stage_next_to(&self, relative: &Path) -> Result<FileStage> {
+        let parts = components(relative)?;
+        let (_, ancestors) = parts.split_last().ok_or_else(invalid_name)?;
+        let parent = self.parent_existing(ancestors)?;
+        for _ in 0..32 {
+            let mut random = [0; 8];
+            gnunet_native::entropy::fill(&mut random)?;
+            let name = OsString::from(format!(".gnunet-fs-{:016x}", u64::from_ne_bytes(random)));
+            match parent.create_private_directory(&name) {
+                Ok(directory) => {
+                    return Ok(FileStage {
+                        parent,
+                        name,
+                        directory,
+                        removed: false,
+                    });
+                }
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Err(Error::Limit)
+    }
     /// Duplicate the held directory descriptor, without reopening its pathname.
     #[cfg(feature = "service")]
     pub(crate) fn duplicate(&self) -> Result<Self> {
@@ -111,13 +211,35 @@ impl OutputDir {
         parent: &'a Directory,
         final_name: &OsStr,
     ) -> Result<Temporary<'a>> {
-        for _ in 0..1024 {
-            let nonce = self.nonce;
-            self.nonce = nonce.checked_add(1).ok_or(Error::Limit)?;
+        self.temporary_with_reservations(parent, final_name, None)
+    }
+    fn temporary_with_reservations<'a>(
+        &mut self,
+        parent: &'a Directory,
+        final_name: &OsStr,
+        names: Option<TemporaryNames<'_>>,
+    ) -> Result<Temporary<'a>> {
+        let reserved = match names.map(|names| names.location) {
+            Some(TemporaryLocation::Parent(reserved)) => Some(reserved),
+            _ => None,
+        };
+        let limit = 1024 + reserved.map_or(0, BTreeSet::len).min(10_000_000);
+        for _ in 0..limit {
+            let nonce = if let Some(names) = names {
+                names
+                    .next
+                    .try_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
+                    .map_err(|_| Error::Limit)?
+            } else {
+                let nonce = self.nonce;
+                self.nonce = nonce.checked_add(1).ok_or(Error::Limit)?;
+                nonce
+            };
             let name = temporary_name(nonce);
             // A legal metadata name may itself use this prefix. Creating our
             // temporary at that same name would expose an unauthenticated prefix.
-            if name.as_os_str() == final_name {
+            if name.as_os_str() == final_name || reserved.is_some_and(|names| names.contains(&name))
+            {
                 continue;
             }
             match parent.create_private_file(&name) {
@@ -175,7 +297,7 @@ impl OutputDir {
             buffers,
             limits,
             &mut control,
-            true,
+            FilePlacement::CREATE_PARENTS,
             observed::noop,
         )
         .map_err(observed::unobserved_failure)
@@ -217,11 +339,88 @@ impl OutputDir {
             cache,
             options,
             &mut control,
-            true,
+            FilePlacement::CREATE_PARENTS,
             observed::noop,
         )
         .await
         .map_err(observed::unobserved_failure)
+    }
+
+    #[cfg(feature = "service")]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Tree admission provides independent source, anchored output and sibling names"
+    )]
+    pub(crate) async fn download_tree_file(
+        &mut self,
+        path: &Path,
+        source: &gnunet_client_host::EndpointSource,
+        content: Content,
+        buffers: &mut Buffers,
+        cache: Option<&mut crate::Repository>,
+        options: crate::network::DownloadOptions,
+        inline: Option<&mut crate::network::tree_download::inline::InlineBlocks>,
+        temporary: TemporaryNames<'_>,
+        control: impl FnMut(Progress) -> Control,
+    ) -> Result<ReadFile> {
+        let placement = FilePlacement {
+            temporary: Some(temporary),
+            ..FilePlacement::EXISTING_PARENT
+        };
+        match inline {
+            Some(blocks) => self.write_file_inner(
+                path,
+                blocks,
+                content,
+                buffers,
+                options.limits,
+                control,
+                placement,
+                observed::noop,
+            ),
+            None => {
+                self.download_file_inner(
+                    path,
+                    source.duplicate().map_err(crate::network::Error::from)?,
+                    content,
+                    buffers,
+                    cache,
+                    options,
+                    control,
+                    placement,
+                    observed::noop,
+                )
+                .await
+            }
+        }
+        .map_err(observed::unobserved_failure)
+    }
+}
+
+#[cfg(feature = "service")]
+pub(crate) struct FileStage {
+    parent: Directory,
+    name: OsString,
+    pub directory: Directory,
+    removed: bool,
+}
+
+#[cfg(feature = "service")]
+impl FileStage {
+    pub(crate) fn cleanup(&mut self) -> io::Result<()> {
+        if !self.removed {
+            self.parent.remove_directory(&self.name, &self.directory)?;
+            self.removed = true;
+            self.parent.sync()?;
+        }
+        Ok(())
+    }
+}
+
+#[cfg(feature = "service")]
+impl Drop for FileStage {
+    fn drop(&mut self) {
+        let _cleanup = self.cleanup();
     }
 }
 

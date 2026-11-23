@@ -5,7 +5,7 @@ use crate::{
     EndpointSource, Error,
     time::{Sample, Timebase},
 };
-use gnunet_cadet::connection::{Book, Neighbor, ResetAuthority};
+use gnunet_cadet::connection::{Book, Neighbor, Phase as RoutePhase, ResetAuthority};
 use gnunet_core_client_host::{
     self as core, Client, ConnectionEpoch, Inbound, Message, OwnedTraffic, PayloadState, Peer,
     Progress, SendId, SendOutcome,
@@ -528,13 +528,32 @@ impl<'core, 'book, 'slots, const C: usize, const S: usize> Bridge<'core, 'book, 
         // can change neither this send's age nor the deadline already on wire.
         let sample = self.time_sample()?;
         let now = sample.monotonic;
+        let route_remaining = book
+            .create_deadline(frame)?
+            .map(|deadline| deadline.0.saturating_sub(now.0));
+        if route_remaining == Some(0) {
+            let route = queued.route.ok_or(ProtocolError::StaleGeneration)?;
+            book.close_route(route)?;
+            self.offer = true;
+            cx.waker().wake_by_ref();
+            return Ok(None);
+        }
         let budget = self
             .limits
             .send_budget
+            .or_else(|| {
+                route_remaining.map(|lifetime_micros| SendBudget {
+                    lifetime_micros,
+                    ..SendBudget::default()
+                })
+            })
             .map(|policy| -> Result<BudgetState, ProtocolError> {
+                let lifetime = route_remaining.map_or(policy.lifetime_micros, |remaining| {
+                    remaining.min(policy.lifetime_micros)
+                });
                 let expires = MonoInstant(
                     now.0
-                        .checked_add(policy.lifetime_micros)
+                        .checked_add(lifetime)
                         .filter(|v| *v != u64::MAX)
                         .ok_or(ProtocolError::Overflow)?,
                 );
@@ -549,9 +568,14 @@ impl<'core, 'book, 'slots, const C: usize, const S: usize> Bridge<'core, 'book, 
                 let wire_deadline = sample
                     .absolute
                     .as_micros()
-                    .checked_add(policy.lifetime_micros)
+                    .checked_add(lifetime)
                     .filter(|value| *value != u64::MAX)
                     .ok_or(ProtocolError::Overflow)?;
+                let wire_deadline = if self.limits.send_budget.is_none() {
+                    wire_deadline.min(self.limits.send_deadline)
+                } else {
+                    wire_deadline
+                };
                 Ok(BudgetState {
                     expires,
                     hard_stop,
@@ -693,7 +717,17 @@ impl<'core, 'book, 'slots, const C: usize, const S: usize> Bridge<'core, 'book, 
                 self.budget_timer = None;
                 return self.progress(actual, book, observer, now).map(Some);
             }
-            if budget.expired || now < budget.expires {
+            if budget.expired {
+                continue;
+            }
+            let retired_create = if book.create_deadline(original.frame)?.is_some()
+                && let Some(route) = book.frame_route(original.frame)?
+            {
+                book.route_info(route)?.phase == RoutePhase::Retired
+            } else {
+                false
+            };
+            if now < budget.expires && !retired_create {
                 continue;
             }
             self.sends[index]

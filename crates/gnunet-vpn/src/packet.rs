@@ -413,6 +413,18 @@ pub const fn icmp_error(family: Family, kind: u8) -> bool {
         Family::V6 => matches!(kind, 1..=4),
     }
 }
+/// Extract the identifier of an ICMP echo request or reply. The sequence
+/// number and other wire fields are independent of the identifier.
+#[must_use]
+pub fn echo_id(family: Family, header: &[u8; 8]) -> Option<u16> {
+    match (family, header[0]) {
+        (Family::V4, 0 | 8) | (Family::V6, 128 | 129) => {
+            Some(u16::from_be_bytes([header[4], header[5]]))
+        }
+        _ => None,
+    }
+}
+
 /// Translate the exact supported C ICMP family/type contract. Header code/rest
 /// remain opaque original fields, matching the wire behavior. Unsupported C
 /// cross-family error types are refused, never presented as successful routing.
@@ -503,6 +515,12 @@ pub struct Quoted {
 impl Quoted {
     /// Extract a quoted tuple without requiring a full original packet/checksum.
     pub fn parse(b: &[u8]) -> Result<Self, Error> {
+        Self::parse_with_echo_id(b).map(|(tuple, _)| tuple)
+    }
+
+    /// Extract the tuple and the identifier in an actual quoted ICMP echo
+    /// header. For TCP, UDP, and quoted non-echo ICMP, the identifier is absent.
+    pub fn parse_with_echo_id(b: &[u8]) -> Result<(Self, Option<u16>), Error> {
         let (source, destination, protocol, h) = match b.first().ok_or(Error::Truncated)? >> 4 {
             4 => {
                 if b.len() < 20 {
@@ -563,23 +581,23 @@ impl Quoted {
         if declared < h + 8 {
             return Err(Error::Malformed);
         }
-        let payload = b.get(h..).ok_or(Error::Truncated)?;
-        if payload.len() < 8 {
-            return Err(Error::Truncated);
-        }
-        let (a, z) = match protocol {
-            TCP | UDP => (short(payload, 0)?, short(payload, 2)?),
-            ICMP if source.family() == Family::V4 => (0, 0),
-            ICMPV6 if source.family() == Family::V6 => (0, 0),
+        let prefix = array::<8>(b, h)?;
+        let (a, z, echo) = match protocol {
+            TCP | UDP => (short(&prefix, 0)?, short(&prefix, 2)?, None),
+            ICMP if source.family() == Family::V4 => (0, 0, echo_id(Family::V4, &prefix)),
+            ICMPV6 if source.family() == Family::V6 => (0, 0, echo_id(Family::V6, &prefix)),
             _ => return Err(Error::Unsupported),
         };
-        Ok(Self {
-            source,
-            destination,
-            protocol,
-            source_port: a,
-            destination_port: z,
-        })
+        Ok((
+            Self {
+                source,
+                destination,
+                protocol,
+                source_port: a,
+                destination_port: z,
+            },
+            echo,
+        ))
     }
 }
 

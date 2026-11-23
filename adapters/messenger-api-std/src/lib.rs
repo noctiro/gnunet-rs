@@ -2,8 +2,8 @@
 //! CADET relay and daemon authority remain distinct packages and processes.
 #![forbid(unsafe_code)]
 pub use domain::{
-    Binding, Contact, Hash, History, HistoryWorkspace, MemberSession, MessageRef, Operation,
-    PublicKey, Room, SensitiveBuffer, ShortHash, Source, crypto, wire,
+    Binding, Contact, Hash, History, HistoryCell, HistoryWorkspace, MemberSession, MessageRef,
+    Operation, PublicKey, Room, SensitiveBuffer, ShortHash, Source, crypto, wire,
 };
 pub use gnunet_client_host::EndpointSource;
 pub use gnunet_gnsrecord_text as record_text;
@@ -11,9 +11,11 @@ pub use gnunet_messenger_client_host as native;
 pub use gnunet_messenger_core as domain;
 mod api;
 mod clock;
+mod dependencies;
 mod discovery;
 mod drive;
 mod epochs;
+mod frontier;
 mod io;
 mod limits;
 mod providers;

@@ -1,6 +1,7 @@
 //! Caller-driven native NSE host over the original CORE and PILS clients.
 //! Protocol, history, proof and lease authority remain in the pure NSE owner.
 #![forbid(unsafe_code)]
+mod histogram;
 /// Actual raw8 proof persistence, OS fencing and explicit unknown recovery.
 pub mod proof;
 /// Foreground official configuration and shared process resources.
@@ -275,6 +276,7 @@ pub struct Host<'a, const P: usize = 64, const S: usize = 32> {
     subscription: Option<Box<dyn ClockSubscription>>,
     revision: u64,
     clock_error: Option<ProtocolError>,
+    histogram: Option<histogram::Recorder>,
     store: proof::Store,
     backend_fault: bool,
     persist: Option<PersistRequest<'a>>,
@@ -364,8 +366,13 @@ impl<'a, const P: usize, const S: usize> Host<'a, P, S> {
             return Err(ProtocolError::Conflict.into());
         }
         let subscription = ports.clock.subscribe().map_err(Error::Clock)?;
-        let mut memory = reserve(pow::MEMORY_BLOCKS)?;
-        for _ in 0..pow::MEMORY_BLOCKS {
+        let proof_blocks = if config.work_bits.get() == 0 {
+            0
+        } else {
+            pow::MEMORY_BLOCKS
+        };
+        let mut memory = reserve(proof_blocks)?;
+        for _ in 0..proof_blocks {
             memory.push(pow::Block::default());
         }
         let mut service = Service::new(instances.nse, config)?;
@@ -421,6 +428,7 @@ impl<'a, const P: usize, const S: usize> Host<'a, P, S> {
             subscription: Some(subscription),
             revision: 0,
             clock_error: None,
+            histogram: None,
             store,
             backend_fault: false,
             persist: None,
@@ -625,7 +633,7 @@ impl<'a, const P: usize, const S: usize> Host<'a, P, S> {
         });
         Ok(())
     }
-    fn handle_core(&mut self, progress: core::Progress<'a>) -> Result<Progress, Error> {
+    fn handle_core(&mut self, progress: core::Progress<'a>, now: u64) -> Result<Progress, Error> {
         match progress {
             core::Progress::Inbound { epoch, event } => match event {
                 core::Inbound::Ready { local, .. } => {
@@ -662,10 +670,19 @@ impl<'a, const P: usize, const S: usize> Host<'a, P, S> {
                         .iter()
                         .find(|p| p.core == peer && p.epoch == epoch)
                     {
-                        match self
-                            .service
-                            .receive(p.nse, bytes.as_ref(), &mut self.memory)
+                        let bytes = bytes.as_ref();
+                        if let Some(histogram) = self.histogram.as_mut()
+                            && self.service.identity().is_some()
+                            && bytes.len() == flood::MESSAGE_LEN
+                            && official::MessageHeader::decode(bytes).is_ok_and(|header| {
+                                header.size() == flood::MESSAGE_LEN
+                                    && header.message_type()
+                                        == official::message_type::NSE_P2P_FLOOD
+                            })
                         {
+                            histogram.receive(now);
+                        }
+                        match self.service.receive(p.nse, bytes, &mut self.memory) {
                             Ok(pure::Received::SelfUpdate) => {
                                 self.report.self_updates =
                                     self.report.self_updates.saturating_add(1)
@@ -792,13 +809,13 @@ impl<'a, const P: usize, const S: usize> Host<'a, P, S> {
         }
         Ok(Progress::Activity)
     }
-    fn poll_core(&mut self, cx: &mut Context<'_>) -> Poll<Result<Progress, Error>> {
+    fn poll_core(&mut self, cx: &mut Context<'_>, now: u64) -> Poll<Result<Progress, Error>> {
         let result = {
             let mut drive = std::pin::pin!(self.core.drive(None));
             drive.as_mut().poll(cx)
         };
         match result {
-            Poll::Ready(Ok(p)) => Poll::Ready(self.handle_core(p)),
+            Poll::Ready(Ok(p)) => Poll::Ready(self.handle_core(p, now)),
             Poll::Ready(Err(e)) => Poll::Ready(Err(e.into())),
             Poll::Pending => Poll::Pending,
         }
@@ -1256,7 +1273,7 @@ impl<'a, const P: usize, const S: usize> Host<'a, P, S> {
         for offset in 0..5 {
             let group = (self.cursor + offset) % 5;
             let result = match group {
-                0 => self.poll_core(cx),
+                0 => self.poll_core(cx, now),
                 1 => self.poll_pils(cx),
                 2 => self.poll_subscribers(cx),
                 3 => self.poll_accept(cx, listeners, observe),

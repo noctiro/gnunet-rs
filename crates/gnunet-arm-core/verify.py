@@ -1,14 +1,19 @@
 #!/usr/bin/env python3
 """Source-bound pure ARM core+native-header byte verification; no ARM service startup."""
-import argparse,hashlib,json,os,re,shlex,subprocess,time,importlib.util
+import argparse,hashlib,json,os,re,shlex,subprocess,sys,time,importlib.util
 from pathlib import Path
 HERE=Path(__file__).resolve().parent
 ROOT=HERE.parents[1]
+ARTIFACT_HELPER=ROOT/'tools/cargo_artifacts.py'
+sys.dont_write_bytecode=True
+sys.path.insert(0,str(ARTIFACT_HELPER.parent))
+from cargo_artifacts import CargoArtifacts
+from rust_toolchain import rust_channel
 UPSTREAM=None
 PIN='346358e26d4dcc2dc4f51bef5d52dca29c7d8165'
 def sha(p):return hashlib.sha256(p.read_bytes()).hexdigest()
 def input_files(reference):
- files={ROOT/'Cargo.toml',ROOT/'Cargo.lock',ROOT/'rust-toolchain.toml',reference}
+ files={ROOT/'Cargo.toml',ROOT/'Cargo.lock',ROOT/'rust-toolchain.toml',ARTIFACT_HELPER,ARTIFACT_HELPER.with_name('rust_toolchain.py'),reference}
  for base in [HERE,ROOT/'crates/gnunet-types',ROOT/'crates/gnunet-wire']:
   for p in base.rglob('*'):
    if 'target' in p.relative_to(base).parts:continue
@@ -48,7 +53,8 @@ def main():
  global UPSTREAM
  ap=argparse.ArgumentParser(description=__doc__)
  for name in ['output','reference','upstream']:ap.add_argument('--'+name,type=Path,required=True)
- args=ap.parse_args();out=args.output.resolve();refpath=args.reference.resolve();UPSTREAM=args.upstream.resolve();TARGET=out/'target'
+ ap.add_argument('--toolchain')
+ args=ap.parse_args();toolchain='+'+rust_channel(ROOT,args.toolchain);out=args.output.resolve();refpath=args.reference.resolve();UPSTREAM=args.upstream.resolve();TARGET=out/'target'
  for source in [HERE,UPSTREAM]:
   if out.is_relative_to(source) or source.is_relative_to(out):raise RuntimeError('output/source must be disjoint')
  out.mkdir(parents=True,exist_ok=False)
@@ -70,32 +76,30 @@ def main():
   if (r.returncode==0)==nonzero:raise RuntimeError(name+' unexpected exit '+str(r.returncode))
   return r.stdout.decode('utf-8','replace')+'\n'+r.stderr.decode('utf-8','replace')
  common=['--manifest-path',HERE/'Cargo.toml','--target-dir',TARGET,'--offline','--locked','--no-default-features','-p','gnunet-arm-core']
- run('toolchain',['rustc','+1.99.1','-Vv']);run('cargo-version',['cargo','+1.99.1','-V'])
- run('fmt',['cargo','+1.99.1','fmt','--manifest-path',HERE/'Cargo.toml','--','--check'])
- text=run('tests',['cargo','+1.99.1','test',*common,'--tests']);actual=re.findall(r'^test (\S+) \.\.\. ok$',text,re.M)
+ run('toolchain',['rustc',toolchain,'-Vv']);run('cargo-version',['cargo',toolchain,'-V'])
+ run('fmt',['cargo',toolchain,'fmt','--manifest-path',HERE/'Cargo.toml','--','--check'])
+ text=run('tests',['cargo',toolchain,'test',*common,'--tests']);actual=re.findall(r'^test (\S+) \.\.\. ok$',text,re.M)
  expected=[]
  for p in list((HERE/'src').glob('*.rs'))+list((HERE/'tests').glob('*.rs')):expected+=re.findall(r'#\[test\](?:\s*#\[[\s\S]*?\])*\s*fn\s+(\w+)',p.read_text())
  if not actual or len(actual)!=len(expected)or set(actual)!=set(expected):raise RuntimeError('actual test set differs from source')
- doc=run('doctests',['cargo','+1.99.1','test',*common,'--doc']);docnames=re.findall(r'^test (.+?) \.\.\. ok$',doc,re.M)
+ doc=run('doctests',['cargo',toolchain,'test',*common,'--doc']);docnames=re.findall(r'^test (.+?) \.\.\. ok$',doc,re.M)
  if len(docnames)!=4 or sum('compile fail'in n for n in docnames)!=2:raise RuntimeError('missing lifetime documentation controls')
- run('clippy',['cargo','+1.99.1','clippy',*common,'--all-targets','--','-D','warnings'])
- env=os.environ.copy();env['RUSTDOCFLAGS']='-D warnings';run('docs',['cargo','+1.99.1','doc',*common,'--no-deps'],env=env)
- run('thumb',['cargo','+1.99.1','check',*common,'--target','thumbv6m-none-eabi'])
- run('metadata',['cargo','+1.99.1','metadata','--manifest-path',HERE/'Cargo.toml','--offline','--locked','--no-default-features','--format-version','1']);meta=json.loads((out/'metadata.stdout').read_text())
- run('production-tree',['cargo','+1.99.1','tree','--manifest-path',HERE/'Cargo.toml','--offline','--locked','--no-default-features','-p','gnunet-arm-core','--edges','normal','--prefix','none','--format','{p}|{f}'])
+ run('clippy',['cargo',toolchain,'clippy',*common,'--all-targets','--','-D','warnings'])
+ env=os.environ.copy();env['RUSTDOCFLAGS']='-D warnings';run('docs',['cargo',toolchain,'doc',*common,'--no-deps'],env=env)
+ run('thumb',['cargo',toolchain,'check',*common,'--target','thumbv6m-none-eabi'])
+ run('metadata',['cargo',toolchain,'metadata','--manifest-path',HERE/'Cargo.toml','--offline','--locked','--no-default-features','--format-version','1']);meta=json.loads((out/'metadata.stdout').read_text())
+ run('production-tree',['cargo',toolchain,'tree','--manifest-path',HERE/'Cargo.toml','--offline','--locked','--no-default-features','-p','gnunet-arm-core','--edges','normal','--prefix','none','--format','{p}|{f}'])
  used=set()
  for line in (out/'production-tree.stdout').read_text().splitlines():
   package,features=line.removesuffix(' (*)').split('|',1)
   if features.strip():raise RuntimeError('unexpected production feature')
   used.add(package.split()[0])
  if used!={'gnunet-arm-core','gnunet-types','gnunet-wire'}or any(p['source']is not None for p in meta['packages']if p['name']in used):raise RuntimeError('unexpected production dependency')
- run('ui-artifacts',['cargo','+1.99.1','build',*common,'--lib','--message-format=json']);libraries={}
- for line in (out/'ui-artifacts.stdout').read_text().splitlines():
-  a=json.loads(line)
-  if a.get('reason')=='compiler-artifact':
-   for f in a['filenames']:
-    if f.endswith('.rlib'):libraries[a['target']['name']]=f
- rust=['rustc','+1.99.1','--edition=2024','--crate-type=lib','--emit=metadata','--error-format=json','-L','dependency='+str(TARGET/'debug/deps'),'--extern','gnunet_arm_core='+libraries['gnunet_arm_core'],'--extern','gnunet_types='+libraries['gnunet_types']]
+ run('ui-artifacts',['cargo',toolchain,'build',*common,'--lib','--message-format=json'])
+ artifacts=CargoArtifacts((out/'ui-artifacts.stdout').read_bytes())
+ own=artifacts.rlib('gnunet_arm_core',HERE/'Cargo.toml')
+ types=artifacts.rlib('gnunet_types',ROOT/'crates/gnunet-types/Cargo.toml')
+ rust=['rustc',toolchain,'--edition=2024','--crate-type=lib','--emit=metadata','--error-format=json',*artifacts.rustc_dependency_args(),'--extern','gnunet_arm_core='+str(own),'--extern','gnunet_types='+str(types)]
  ui=[]
  for name,expected_code in [('frame_after_write','E0502'),('list_escape','E0515'),('controls',None)]:
   run('ui-'+name,[*rust,HERE/'tests/ui'/(name+'.rs'),'-o',out/(name+'.rmeta')],nonzero=expected_code is not None)
@@ -113,7 +117,7 @@ def main():
   cc.append(a)
  cc +=[str(HERE/'normal_bytes.c'),'-o',str(out/'normal-bytes')]
  run('normal-header-compile',cc,cwd=Path(entry['directory']));run('normal-header-bytes',[out/'normal-bytes'])
- run('rust-wire-bytes',['cargo','+1.99.1','run',*common,'--example','wire_trace'])
+ run('rust-wire-bytes',['cargo',toolchain,'run',*common,'--example','wire_trace'])
  crows=[json.loads(s)for s in (out/'normal-header-bytes.stdout').read_text().splitlines()];rrows=[json.loads(s)for s in (out/'rust-wire-bytes.stdout').read_text().splitlines()];cframes=[r for r in crows if r['kind']=='frame'];layout=next(r for r in crows if r['kind']=='layout')
  if len(cframes)!=8 or cframes!=rrows:raise RuntimeError('actual native C/Rust frames differ')
  if layout!={'kind':'layout','message':16,'result':24,'list':24,'info':28,'status':8,'message_align':8,'result_field':16,'list_count':16,'info_restart':12,'info_last_start':20}:raise RuntimeError('native peer ABI unavailable for this proven profile')

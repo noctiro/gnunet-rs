@@ -30,7 +30,7 @@ fn main() -> ExitCode {
 fn run(startup: gnunet_service_startup::ClientStartup) -> Result<(), Failure> {
     use gnunet_program_host::{
         logging::Logger,
-        program::{self, Defaults, Invocation, NlsDisabled, Preparation},
+        program::{self, Defaults, Invocation, Preparation},
         reporting::Reporter,
         service,
         shared_clock::SharedClock,
@@ -43,7 +43,7 @@ fn run(startup: gnunet_service_startup::ClientStartup) -> Result<(), Failure> {
         Default::default(),
     )?;
     let mut logger = Logger::new(b"gnunet-daemon-pt", std::process::id(), false)?;
-    let prepared = program::prepare(
+    let prepared = program::prepare_installed(
         config,
         Invocation {
             binary_name: b"gnunet-daemon-pt",
@@ -54,7 +54,6 @@ fn run(startup: gnunet_service_startup::ClientStartup) -> Result<(), Failure> {
         Default::default(),
         std::env::args_os(),
         &program::Environment::capture(),
-        &mut NlsDisabled,
         &mut logger,
         &clock,
         &mut io::stdout().lock(),

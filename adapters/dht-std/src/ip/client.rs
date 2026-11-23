@@ -1,6 +1,6 @@
 use super::*;
+use gnunet_service_runtime::network::{SocketOpenError, SocketPolicy};
 use gnunet_wire::official::Frame;
-use socket2::{Domain, Protocol, Socket, Type};
 use std::{
     collections::VecDeque,
     future::Future,
@@ -88,16 +88,32 @@ fn isolated_receive_error(error: &io::Error) -> bool {
     gnunet_native::network::isolated_datagram_receive_error(error)
 }
 
-fn bind(endpoint: SocketAddr) -> io::Result<Binding> {
-    let socket = Socket::new(
-        if endpoint.is_ipv4() {
-            Domain::IPV4
-        } else {
-            Domain::IPV6
-        },
-        Type::DGRAM,
-        Some(Protocol::UDP),
-    )?;
+enum BindFailure {
+    Native(io::Error),
+    Protection(io::Error),
+}
+
+impl BindFailure {
+    fn into_io(self) -> io::Error {
+        match self {
+            Self::Native(error) | Self::Protection(error) => error,
+        }
+    }
+}
+
+impl From<io::Error> for BindFailure {
+    fn from(error: io::Error) -> Self {
+        Self::Native(error)
+    }
+}
+
+fn bind(endpoint: SocketAddr, socket_policy: &SocketPolicy) -> Result<Binding, BindFailure> {
+    let socket = socket_policy
+        .open_udp(endpoint)
+        .map_err(|error| match error {
+            SocketOpenError::Create(error) => BindFailure::Native(error),
+            SocketOpenError::Protection(error) => BindFailure::Protection(error),
+        })?;
     if endpoint.is_ipv6() {
         socket.set_only_v6(true)?;
     }
@@ -120,6 +136,16 @@ impl<'id> Client<'id> {
     /// Bind the actual configured numeric sockets and snapshot real interfaces.
     /// No CORE, resolver, NSE service or private key is opened by this owner.
     pub fn new(instance: &'id mut Instance, config: Config) -> Result<Self, Error> {
+        Self::new_with_socket_policy(instance, config, &SocketPolicy::default())
+    }
+
+    /// Bind actual DHTU-IP sockets after preparing each native socket in the
+    /// application's egress policy. A refused socket is never used for IO.
+    pub fn new_with_socket_policy(
+        instance: &'id mut Instance,
+        config: Config,
+        socket_policy: &SocketPolicy,
+    ) -> Result<Self, Error> {
         if config.targets == 0
             || config.targets > 65_536
             || config.sends == 0
@@ -133,7 +159,10 @@ impl<'id> Client<'id> {
         }
         let mut sockets = vector(2)?;
         match config.bind {
-            Some(ip) => sockets.push(bind(SocketAddr::new(ip, config.port))?),
+            Some(ip) => sockets.push(
+                bind(SocketAddr::new(ip, config.port), socket_policy)
+                    .map_err(BindFailure::into_io)?,
+            ),
             None => {
                 let mut port = config.port;
                 let mut unavailable = None;
@@ -141,13 +170,15 @@ impl<'id> Client<'id> {
                     IpAddr::V4(Ipv4Addr::UNSPECIFIED),
                     IpAddr::V6(Ipv6Addr::UNSPECIFIED),
                 ] {
-                    match bind(SocketAddr::new(ip, port)) {
+                    match bind(SocketAddr::new(ip, port), socket_policy) {
                         Ok(binding) => {
                             port = binding.local.port();
                             sockets.push(binding);
                         }
-                        Err(error) if family_unavailable(&error) => unavailable = Some(error),
-                        Err(error) => return Err(error.into()),
+                        Err(BindFailure::Native(error)) if family_unavailable(&error) => {
+                            unavailable = Some(error);
+                        }
+                        Err(error) => return Err(error.into_io().into()),
                     }
                 }
                 if sockets.is_empty() {

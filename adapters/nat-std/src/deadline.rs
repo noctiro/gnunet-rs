@@ -2,37 +2,62 @@
 use crate::Error;
 /// Original process-clock and native targets shared with helper admission.
 pub use gnunet_service_runtime::clock::{Bounds, BoundsError};
-use gnunet_service_runtime::clock::{DeadlineGuard, RuntimeClock};
+use gnunet_service_runtime::{
+    clock::{DeadlineGuard, RuntimeClock},
+    network::SocketPolicy,
+};
 use gnunet_types::Error as Fault;
 use std::{
     future::{Future, poll_fn},
+    net::SocketAddr,
     sync::Arc,
     task::{Context, Poll},
 };
 /// NAT error mapping and retained-result execution over one shared deadline guard.
-pub struct Gate(DeadlineGuard);
+pub struct Gate {
+    deadline: DeadlineGuard,
+    socket_policy: SocketPolicy,
+}
 impl Gate {
     /// Reserve exactly one clock waiter for the unchanged original targets.
     pub fn new(clock: Arc<dyn RuntimeClock>, bounds: Bounds) -> Result<Self, Error> {
-        DeadlineGuard::new(clock, bounds)
-            .map(Self)
-            .map_err(Into::into)
+        Self::new_with_socket_policy(clock, bounds, SocketPolicy::default())
+    }
+    /// Retain the original native egress policy for every socket of this job.
+    pub fn new_with_socket_policy(
+        clock: Arc<dyn RuntimeClock>,
+        bounds: Bounds,
+        socket_policy: SocketPolicy,
+    ) -> Result<Self, Error> {
+        Ok(Self {
+            deadline: DeadlineGuard::new(clock, bounds)?,
+            socket_policy,
+        })
+    }
+    /// Application policy for the exact native sockets created on this job.
+    pub fn socket_policy(&self) -> &SocketPolicy {
+        &self.socket_policy
+    }
+    /// Bind one original UDP socket under both the deadline and the egress policy.
+    pub async fn bind_udp(&mut self, address: SocketAddr) -> Result<tokio::net::UdpSocket, Error> {
+        let policy = self.socket_policy.clone();
+        self.run(async move { policy.udp_bind(address) }).await
     }
     /// Original source clock, shared by identity with the selected Resolver.
     pub fn clock(&self) -> &Arc<dyn RuntimeClock> {
-        self.0.clock()
+        self.deadline.clock()
     }
     /// Original immutable targets.
     pub const fn bounds(&self) -> Bounds {
-        self.0.bounds()
+        self.deadline.bounds()
     }
     /// Check both original targets at the current effect boundary.
     pub fn check(&self) -> Result<u64, Error> {
-        self.0.check().map_err(Into::into)
+        self.deadline.check().map_err(Into::into)
     }
     /// Stabilize the original source while retaining its independent native bound.
     pub fn poll(&mut self, cx: &mut Context<'_>) -> Poll<Result<u64, Error>> {
-        self.0.poll(cx).map(|result| {
+        self.deadline.poll(cx).map(|result| {
             result
                 .map(|sample| sample.now.as_micros())
                 .map_err(Into::into)

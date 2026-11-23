@@ -31,6 +31,8 @@ struct Client<'id> {
     mode: Mode,
     limits: Limits,
     deadlines: Deadlines,
+    restoration_send_budget: Option<u64>,
+    restoration_send_until: Option<u64>,
     request: Option<OwnedFrame>,
     source: Option<OwnedFrame>,
     total: usize,
@@ -61,7 +63,8 @@ impl<'id> Client<'id> {
     ) -> Result<Self, Error> {
         limits.validate()?;
         let clock = source.clock();
-        deadlines.validate(clock.sample()?.now.as_micros(), mode == Mode::Search)?;
+        let now = clock.sample()?.now.as_micros();
+        deadlines.validate(now, mode == Mode::Search)?;
         let len = request.encoded_len()?;
         if len > limits.frame_bytes {
             return Err(ProtocolError::Capacity.into());
@@ -80,6 +83,9 @@ impl<'id> Client<'id> {
             mode,
             limits,
             deadlines,
+            restoration_send_budget: (deadlines.until == u64::MAX)
+                .then_some(deadlines.send_until - now),
+            restoration_send_until: None,
             request: Some(OwnedFrame::new(bytes)),
             source: None,
             total: len,
@@ -160,6 +166,17 @@ impl<'id> Client<'id> {
         self.alarm = None;
         self.alarm_at = None;
         self.read_first = false;
+        if self.first_written
+            && self.restoration_send_until.is_none()
+            && let Some(budget) = self.restoration_send_budget
+        {
+            let now = self.clock.sample()?.now.as_micros();
+            self.restoration_send_until = Some(
+                now.checked_add(budget)
+                    .filter(|target| *target != u64::MAX)
+                    .ok_or(ProtocolError::Overflow)?,
+            );
+        }
         let retry_after = self.channel.schedule_retry()?;
         Ok(Progress::SourceLost { end, retry_after })
     }
@@ -177,6 +194,9 @@ impl<'id> Client<'id> {
         if !self.first_written {
             next = next.min(self.deadlines.send_until);
         }
+        if let Some(restoration) = self.restoration_send_until {
+            next = next.min(restoration);
+        }
         if !self.first_result
             && let Some(first) = self.deadlines.first_result_until
         {
@@ -185,12 +205,16 @@ impl<'id> Client<'id> {
         if let Some(grace) = self.grace {
             next = next.min(grace);
         }
-        Some(next)
+        (next != u64::MAX).then_some(next)
     }
     fn expire(&mut self, now: u64) -> Option<Progress<'id>> {
-        let cause = if now >= self.deadlines.until {
+        let cause = if self.deadlines.until != u64::MAX && now >= self.deadlines.until {
             Some(EndCause::LifetimeDeadline)
-        } else if !self.first_written && now >= self.deadlines.send_until {
+        } else if (!self.first_written && now >= self.deadlines.send_until)
+            || self
+                .restoration_send_until
+                .is_some_and(|until| now >= until)
+        {
             Some(EndCause::SendDeadline)
         } else if self.grace.is_some_and(|grace| now >= grace) {
             Some(EndCause::GraceDeadline)
@@ -198,7 +222,7 @@ impl<'id> Client<'id> {
             && self
                 .deadlines
                 .first_result_until
-                .is_some_and(|first| now >= first)
+                .is_some_and(|first| first != u64::MAX && now >= first)
         {
             Some(EndCause::FirstResultDeadline)
         } else {
@@ -310,7 +334,7 @@ impl<'id> Client<'id> {
                 Err(error) => return Ok(Some(self.end(EndCause::Clock(error)))),
             };
             let cap = if self.first_written {
-                self.deadlines.until
+                self.restoration_send_until.unwrap_or(self.deadlines.until)
             } else {
                 self.deadlines.send_until
             };
@@ -376,7 +400,7 @@ impl<'id> Announcement<'id> {
 pub struct Search<'id>(Client<'id>);
 impl<'id> Search<'id> {
     /// Reserve/encode one canonical search, without opening a socket.
-    /// A finite first-result deadline is required, independent of send/lifetime.
+    /// Supply a first-result policy independently of the finite initial send.
     pub fn new(
         instance: &'id Instance,
         source: EndpointSource,

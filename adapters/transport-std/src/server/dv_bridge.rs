@@ -1,6 +1,7 @@
 //! Physical DV ports. No crypto, actor or persistence owner is hidden in Server.
 use super::*;
 use gnunet_transport::dv_bridge::{self as dv, DirectQueue, Ingress, IngressId, SendId, Source};
+use gnunet_transport::p2p::DvFrame;
 
 #[derive(Clone, PartialEq, Eq)]
 enum Debt {
@@ -49,10 +50,17 @@ impl core::fmt::Display for QueueError {
     }
 }
 impl std::error::Error for QueueError {}
-/// Identify only actual communicator1202 carrying complete1218/1219. It does not
-/// classify unrelated malformed IPC as a DV operation.
-pub(super) fn is_dv(input: &[u8]) -> bool {
-    matches!(gnunet_transport::communicator::Request::decode(input), Ok(gnunet_transport::communicator::Request::Incoming { message, .. }) if gnunet_wire::official::Frame::decode(message).is_ok_and(|f| matches!(f.header().message_type().value(), gnunet_transport::dv::LEARN_TYPE | gnunet_transport::dv::BOX_TYPE)))
+pub(super) fn classify_dv(input: &[u8]) -> Option<DvFrame> {
+    match gnunet_transport::communicator::Request::decode(input).ok()? {
+        gnunet_transport::communicator::Request::Incoming { message, .. } => {
+            DvFrame::classify(message)
+        }
+        _ => None,
+    }
+}
+
+fn is_dv(input: &[u8]) -> bool {
+    classify_dv(input) == Some(DvFrame::Direct)
 }
 impl Server {
     /// Whether this original source remains attached as a retirement barrier.
@@ -66,14 +74,13 @@ impl Server {
         self.engine.dv_source_accepting()
     }
     /// Whether the current native input boundary permits one new Actor source.
-    /// Partial ordinary input is not yet classifiable; complete DV input still
-    /// belongs to its original source. Reading this state starts no IO, captures
-    /// no deadline, and grants no source capability.
+    /// Partial input and complete DV-dependent frames must run without the
+    /// replacement actor first. Reading this state starts no IO.
     pub fn dv_source_attach_ready(&self) -> bool {
         !self
             .clients
             .iter()
-            .any(|c| c.input.is_some() || c.io.frame().is_some_and(is_dv))
+            .any(|c| c.input.is_some() || c.io.frame().and_then(classify_dv).is_some())
     }
     /// Actual Engine-minted source, after the real ready actor identity check.
     pub fn dv_attach_source(&mut self, peer: PeerId) -> Result<Source, Error> {
@@ -93,15 +100,13 @@ impl Server {
     }
     /// No clock required. Actor source was physically closed before this call.
     pub fn dv_retire_source(&mut self, source: &Source) -> Result<(), Error> {
-        // Partial/held old-source bytes cannot be handed to a replacement
-        // actor. Close their original physical MQ before source retirement;
-        // other clients/complete ordinary frames keep their own ownership.
+        // Close known direct old-source DV. Unclassified or wrapped input keeps
+        // its original tag/deadline and prevents replacement attachment.
         let mut first = None;
         while let Some(i) = self.clients.iter().position(|c| {
-            c.dv_rx_source.as_ref() == Some(source)
-                && (c.input.is_some() || c.io.frame().is_some_and(is_dv))
+            c.dv_rx_source.as_ref() == Some(source) && c.io.frame().is_some_and(is_dv)
         }) {
-            if let Err(error) = self.close(i) {
+            if let Err(error) = self.close_observed(i, RetirementCause::DvSourceRetired) {
                 first.get_or_insert(error);
             }
         }
@@ -863,10 +868,13 @@ impl Server {
 mod delivery_boundary_tests {
     use super::*;
     use gnunet_crypto::EddsaPrivateKey;
-    use gnunet_transport::p2p::{Challenge, Flow, Validation};
+    use gnunet_transport::{
+        dv::LEARN_TYPE,
+        p2p::{Challenge, Flow, Reliable, Validation},
+    };
     use gnunet_wire::official::{
         Frame,
-        communicator::{Characteristics, Queue, Request},
+        communicator::{Characteristics, Queue, Request, Response},
     };
 
     struct Key(EddsaPrivateKey);
@@ -893,6 +901,12 @@ mod delivery_boundary_tests {
         let mut bytes = vec![0; request.encoded_len()?];
         request.encode(&mut bytes)?;
         Ok(bytes)
+    }
+    struct Store;
+    impl AddressStore for Store {
+        fn validated(&mut self, _: PeerId, _: &[u8], _: u64) -> Result<(), Error> {
+            Err(Error::Conflict)
+        }
     }
     fn times(now: u64) -> Times {
         Times::new(MonoInstant(now), AbsoluteTime::from_micros(1_000_000 + now))
@@ -1046,12 +1060,6 @@ mod delivery_boundary_tests {
     async fn partial_registration_finishes_on_original_mq_before_dv_source_handoff()
     -> Result<(), Box<dyn std::error::Error>> {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        struct Store;
-        impl AddressStore for Store {
-            fn validated(&mut self, _: PeerId, _: &[u8], _: u64) -> Result<(), Error> {
-                Err(Error::Conflict)
-            }
-        }
         let mut signer = Key(EddsaPrivateKey::from_seed([14; 32]));
         let mut entropy = FixtureEntropy(0);
         let mut server = Server::new(
@@ -1062,6 +1070,7 @@ mod delivery_boundary_tests {
         let (socket, mut communicator) = crate::test_support::pair().await?;
         let client = server.admit(socket)?;
         let lease = server.clients[0].lease;
+        let old = server.dv_attach_source(signer.identity())?;
         let registration = wire(Request::Register {
             characteristics: Characteristics::Reliable,
             can_burst: false,
@@ -1073,14 +1082,19 @@ mod delivery_boundary_tests {
                 .step(None, 10, &mut signer, &mut entropy, &mut Store)
                 .await?;
             let original = server.clients[0].input.ok_or(Error::NotReady)?;
-            check(!server.dv_source_attach_ready() && !server.dv_source_active())?;
+            check(!server.dv_source_attach_ready() && server.dv_source_active())?;
+            check(server.clients[0].dv_rx_source.as_ref() == Some(&old))?;
+            server.dv_begin_retire_source(&old)?;
+            server.dv_retire_source(&old)?;
+            check(!server.dv_source_active() && !server.dv_source_attach_ready())?;
             // Native progress continues on the same accepted MQ and first-byte
-            // target. It is not an Actor admission or a discarded/replayed frame.
+            // target after retiring the DV actor.
             communicator.write_all(&registration[1..2]).await?;
             server
                 .step(None, 10, &mut signer, &mut entropy, &mut Store)
                 .await?;
             check(server.clients[0].input == Some(original) && server.clients[0].lease == lease)?;
+            check(server.clients[0].dv_rx_source.as_ref() == Some(&old))?;
             check(!server.dv_source_attach_ready())?;
             communicator.write_all(&registration[2..]).await?;
             while server.clients[0].io.frame().is_none() {
@@ -1089,10 +1103,12 @@ mod delivery_boundary_tests {
                     .await?;
             }
             check(server.dv_source_attach_ready() && server.clients[0].id == client)?;
+            check(server.clients[0].dv_rx_source.is_none())?;
             // A complete ordinary registration needs no Actor ownership. The
             // exact trusted-host port can now mint its source once, then consume
             // that original complete frame without closing or retagging its MQ.
             let source = server.dv_attach_source(signer.identity())?;
+            check(source != old)?;
             server
                 .step(None, 10, &mut signer, &mut entropy, &mut Store)
                 .await?;
@@ -1104,6 +1120,102 @@ mod delivery_boundary_tests {
             server.shutdown()?;
             let mut byte = [0; 1];
             check(communicator.read(&mut byte).await? == 0)?;
+            Ok::<_, Box<dyn std::error::Error>>(())
+        })
+        .await??;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn complete_old_reliable_dv_keeps_its_original_input_until_flow_release()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let mut signer = Key(EddsaPrivateKey::from_seed([14; 32]));
+        let mut entropy = FixtureEntropy(0);
+        let mut server = Server::new(
+            Engine::new(signer.identity(), gnunet_transport::Limits::default())?,
+            1,
+            65535,
+        )?;
+        let (socket, mut communicator) = crate::test_support::pair().await?;
+        let client = server.admit(socket)?;
+        let lease = server.clients[0].lease;
+        let source = server.dv_attach_source(signer.identity())?;
+        let registration = wire(Request::Register {
+            characteristics: Characteristics::Reliable,
+            can_burst: false,
+            prefix: b"unix",
+        })?;
+        let [hi, lo] = LEARN_TYPE.to_be_bytes();
+        let mut wrapper = [0; 28];
+        Reliable {
+            countdown: 0,
+            uuid: [15; 16],
+            message: &[0, 4, hi, lo],
+        }
+        .encode(&mut wrapper)?;
+        let peer = [16; 32];
+        let flow_id = [17; 8];
+        let original = wire(Request::Incoming {
+            flow_control: true,
+            flow_id,
+            validity: 1_000_000,
+            peer,
+            neighbour: [0; 32],
+            message: &wrapper,
+        })?;
+
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            communicator.write_all(&registration).await?;
+            while server.clients[0].io.frame().is_none() {
+                server
+                    .step(None, 10, &mut signer, &mut entropy, &mut Store)
+                    .await?;
+            }
+            server
+                .step(None, 10, &mut signer, &mut entropy, &mut Store)
+                .await?;
+            communicator.write_all(&original[..1]).await?;
+            server
+                .step(None, 10, &mut signer, &mut entropy, &mut Store)
+                .await?;
+            let deadline = server.clients[0].input.ok_or(Error::NotReady)?;
+            server.dv_begin_retire_source(&source)?;
+            server.dv_retire_source(&source)?;
+            communicator.write_all(&original[1..]).await?;
+            while server.clients[0].io.frame().is_none() {
+                server
+                    .step(None, 10, &mut signer, &mut entropy, &mut Store)
+                    .await?;
+            }
+            let held = &server.clients[0];
+            check(held.io.frame() == Some(original.as_slice()))?;
+            check(held.input == Some(deadline) && held.dv_rx_source.as_ref() == Some(&source))?;
+            check(held.id == client && held.lease == lease)?;
+            check(matches!(
+                server.dv_attach_source(signer.identity()),
+                Err(Error::NotReady)
+            ))?;
+
+            // The ordinary route check rejects this unvalidated sender and
+            // releases the exact communicator callback on its original MQ.
+            server
+                .step(None, 10, &mut signer, &mut entropy, &mut Store)
+                .await?;
+            server
+                .step(None, 10, &mut signer, &mut entropy, &mut Store)
+                .await?;
+            let mut reply = [0; 48];
+            communicator.read_exact(&mut reply).await?;
+            check(Response::decode(&reply)? == Response::Received(flow_id, peer))?;
+            check(server.clients[0].id == client && server.clients[0].lease == lease)?;
+            check(server.take_native_retirement().is_none() && server.dv_inbox().is_none())?;
+            let replacement = server.dv_attach_source(signer.identity())?;
+            check(replacement != source && server.dv_source_debts(&replacement) == 0)?;
+            server.dv_begin_retire_source(&replacement)?;
+            server.dv_retire_source(&replacement)?;
+            server.shutdown()?;
             Ok::<_, Box<dyn std::error::Error>>(())
         })
         .await??;

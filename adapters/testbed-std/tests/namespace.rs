@@ -141,3 +141,49 @@ fn replaced_home_and_root_cannot_redirect_a_canonical_publication() -> Result<()
         "original home disappeared during refused publication",
     )
 }
+
+#[test]
+fn aliased_control_metadata_cannot_authorize_a_tree() -> Result<(), Failure> {
+    let fixture = Fixture::new()?;
+    let instance = core::Instance::new();
+    let mut live_slots = [core::PortSlot::empty()];
+    let mut live = System::create(&instance, &mut live_slots, fixture.options())?;
+    let directory = live.directory().to_owned();
+    let marker = directory.join(".testbed-rust-owner");
+    let counter = directory.join(".testbed-rust.counter");
+    let alias = fixture.path.join("metadata-alias");
+
+    std::fs::hard_link(&marker, &alias)?;
+    let template = gnunet_config::Configuration::default();
+    check(
+        live.configuration_create(&template).is_err(),
+        "live root accepted an aliased marker",
+    )?;
+    live.destroy(false)?;
+    let mut slots = [core::PortSlot::empty()];
+    check(
+        System::create(&instance, &mut slots, fixture.options()).is_err(),
+        "restart accepted an aliased marker",
+    )?;
+    std::fs::remove_file(&alias)?;
+
+    std::fs::hard_link(&counter, &alias)?;
+    check(
+        System::create(&instance, &mut slots, fixture.options()).is_err(),
+        "restart accepted an aliased counter",
+    )?;
+    check(
+        std::fs::read(&alias)? == b"0\n",
+        "refused allocations modified the original counter",
+    )?;
+    std::fs::remove_file(&alias)?;
+    let mut reopened = System::create(&instance, &mut slots, fixture.options())?;
+    let configuration = reopened.configuration_create(&template)?;
+    check(
+        configuration.home().file_name() == Some(OsStr::new("0")),
+        "successful restart did not preserve the original allocation frontier",
+    )?;
+    drop(configuration);
+    reopened.destroy(true)?;
+    Ok(())
+}

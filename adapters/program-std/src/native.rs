@@ -12,35 +12,31 @@ fn cstring(bytes: &[u8]) -> io::Result<CString> {
 mod regex;
 pub(crate) use regex::{Regex, RegexCompileFailure};
 
-/// Widen the platform signed microsecond type without changing prior native narrowing.
+/// Widen a signed native time component without changing its value.
 #[cfg(unix)]
-pub(crate) fn wide_micros(value: impl Into<i64>) -> i64 {
+pub(crate) fn widen_time_component(value: impl Into<i64>) -> i64 {
     value.into()
 }
 
 mod calendar;
 pub(crate) use calendar::{Calendar, wall_time};
 
-#[cfg(any(target_os = "macos", target_os = "freebsd"))]
-fn errno_ptr() -> *mut libc::c_int {
-    #[expect(
-        unsafe_code,
-        reason = "Darwin and FreeBSD provide a live thread-local errno pointer"
-    )]
-    // SAFETY: __error has no input and returns this thread's errno address.
-    unsafe {
-        libc::__error()
-    }
-}
+#[cfg(target_os = "android")]
+use libc::__errno as native_errno;
 #[cfg(target_os = "linux")]
+use libc::__errno_location as native_errno;
+#[cfg(any(target_vendor = "apple", target_os = "freebsd"))]
+use libc::__error as native_errno;
+
+#[cfg(unix)]
 fn errno_ptr() -> *mut libc::c_int {
     #[expect(
         unsafe_code,
-        reason = "Linux provides a live thread-local errno pointer"
+        reason = "Each Unix ABI returns the calling thread's live errno pointer"
     )]
-    // SAFETY: __errno_location has no input and returns this thread's errno address.
+    // SAFETY: the platform accessor has no input and returns this thread's errno address.
     unsafe {
-        libc::__errno_location()
+        native_errno()
     }
 }
 #[cfg(windows)]

@@ -2,35 +2,15 @@ use super::{
     Blob,
     memory::{Quota, Table},
 };
-use crate::{Attribute, Credential, Identifier, Presentation, Ticket};
+use crate::{
+    Attribute, Credential, Identifier, Presentation, Ticket,
+    fixed::{IDENTIFIER_LABEL_BYTES, StoredRecord, identifier_label},
+};
 use alloc::rc::Rc;
 use gnunet_gnsrecord::{RecordData, RecordFlags, RecordType, ZoneKey};
 use gnunet_types::Error;
 use gnunet_wire::official::namestore::Records;
-/// Exact Crockford text length for a256bit official RECLAIM identifier.
-pub const IDENTIFIER_LABEL_BYTES: usize = 52;
-/// Encode the actual GNUnet data-to-string label, without NUL or private prefix.
-pub fn identifier_label(id: Identifier, out: &mut [u8]) -> Result<usize, Error> {
-    let out = out
-        .get_mut(..IDENTIFIER_LABEL_BYTES)
-        .ok_or(Error::Capacity)?;
-    const A: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
-    let (mut bits, mut used, mut at) = (0u16, 0u32, 0usize);
-    for byte in id.bytes() {
-        bits = ((bits & ((1 << used) - 1)) << 8) | u16::from(*byte);
-        used += 8;
-        while used >= 5 {
-            used -= 5;
-            out[at] = A[usize::from((bits >> used) & 31)];
-            at += 1;
-        }
-    }
-    if used > 0 {
-        out[at] = A[usize::from((bits << (5 - used)) & 31)];
-        at += 1;
-    }
-    Ok(at)
-}
+
 /// Parse a current mutable GNS-name capability and its typed issuer.
 /// This validates format only; lookup authenticity belongs to the GNS provider.
 pub fn capability<'a>(ticket: Ticket<'a>) -> Result<(&'a [u8], ZoneKey), Error> {
@@ -65,34 +45,7 @@ impl Row {
             return Err(Error::TooLarge);
         }
         for record in records.records().iter() {
-            let r = record?;
-            let object = match r.record_type {
-                RecordType::RECLAIM_ATTRIBUTE => Some(Attribute::decode(r.data)?.id),
-                RecordType::RECLAIM_CREDENTIAL => Some(Credential::decode(r.data)?.id),
-                RecordType::RECLAIM_PRESENTATION => {
-                    Presentation::decode(r.data)?;
-                    None
-                }
-                RecordType::RECLAIM_ATTRIBUTE_REF => {
-                    Identifier::decode(r.data)?;
-                    None
-                }
-                RecordType::RECLAIM_TICKET => {
-                    Ticket::decode(r.data)?;
-                    None
-                }
-                _ => None,
-            };
-            if let Some(id) = object {
-                // A mixed/duplicate object set is legal when every object is
-                // bound to this same canonical identifier label. No second
-                // record is silently discarded or given a different owner.
-                let mut expected = [0; IDENTIFIER_LABEL_BYTES];
-                identifier_label(id, &mut expected)?;
-                if id.is_zero() || label != expected {
-                    return Err(Error::Malformed);
-                }
-            }
+            StoredRecord::decode(record?)?.check_label(label)?;
         }
         Ok(Self {
             label: Blob::copy(quota, label)?,

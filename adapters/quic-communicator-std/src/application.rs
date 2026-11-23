@@ -7,6 +7,7 @@ use gnunet_transport_quic::{Instance, Role};
 use gnunet_types::{Error as Protocol, MonoInstant};
 use std::{marker::PhantomData, task::Context};
 use tokio::time::Instant;
+use zeroize::Zeroizing;
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub(crate) enum FrameId<'id> {
     Raw(raw::FrameId<'id>),
@@ -149,7 +150,7 @@ impl<'id, 'slots, 'buf> Application<'id, 'slots, 'buf> {
     pub(crate) fn queue(
         &mut self,
         id: raw::SendId,
-        bytes: &[u8],
+        bytes: Zeroizing<Vec<u8>>,
         hard: Instant,
         now: MonoInstant,
     ) -> Result<(), Fault> {

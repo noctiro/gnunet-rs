@@ -40,8 +40,8 @@ impl<'c, 'slots, 'p, E: Entropy, const O: usize> Server<'c, 'slots, 'p, E, O> {
                 if let Some(pending) = l.pending_entry {
                     observe(Event::EntryFailed {
                         client: app.client.clone(),
-                        key: pending.request.key,
-                        door: pending.request.door,
+                        key: pending.key,
+                        door: pending.requested_door,
                         reason: Fault::Closed.into(),
                     });
                 }
@@ -82,8 +82,8 @@ impl<'c, 'slots, 'p, E: Entropy, const O: usize> Server<'c, 'slots, 'p, E, O> {
         {
             observe(Event::EntryFailed {
                 client: app.client.clone(),
-                key: pending.request.key,
-                door: pending.request.door,
+                key: pending.key,
+                door: pending.requested_door,
                 reason,
             });
         }
@@ -140,11 +140,13 @@ impl<'c, 'slots, 'p, E: Entropy, const O: usize> Server<'c, 'slots, 'p, E, O> {
     }
     fn complete_open_input(&self, app: &App<'c>) -> Option<OpenInput> {
         let input_until = app.input_until?;
-        let Request::Open { room, .. } = Request::decode(app.io.frame()?).ok()? else {
+        let core::LocalRequest::AdmitRoom(core::LocalRoomAdmission::Open { room, .. }) =
+            core::LocalRequest::decode(app.io.frame()?).ok()?
+        else {
             return None;
         };
         if !app.rooms.iter().any(|lease| {
-            lease.phase != LeasePhase::Closing
+            !lease.phase.is_closing()
                 && self
                     .core
                     .room_key(lease.room)
@@ -164,11 +166,14 @@ impl<'c, 'slots, 'p, E: Entropy, const O: usize> Server<'c, 'slots, 'p, E, O> {
     }
     fn complete_active_entry(&self, app: &App<'c>) -> Option<EntryInput> {
         let input_until = app.input_until?;
-        let Request::Entry { room, .. } = Request::decode(app.io.frame()?).ok()? else {
+        let core::LocalRequest::AdmitRoom(core::LocalRoomAdmission::Entry(entry)) =
+            core::LocalRequest::decode(app.io.frame()?).ok()?
+        else {
             return None;
         };
+        let room = entry.room();
         if !app.rooms.iter().any(|lease| {
-            lease.phase == LeasePhase::Active
+            lease.phase.is_active()
                 && self
                     .core
                     .room_key(lease.room)
@@ -231,7 +236,7 @@ impl<'c, 'slots, 'p, E: Entropy, const O: usize> Server<'c, 'slots, 'p, E, O> {
             if let Some(input) = app.entry_input
                 && (now >= input.until || app.input_until.is_some_and(|until| now >= until))
                 && app.rooms.iter().any(|lease| {
-                    lease.phase == LeasePhase::Active
+                    lease.phase.is_active()
                         && self
                             .core
                             .room_key(lease.room)
@@ -258,7 +263,7 @@ impl<'c, 'slots, 'p, E: Entropy, const O: usize> Server<'c, 'slots, 'p, E, O> {
                 if self.apps[row].as_ref().is_some_and(|app| {
                     app.rooms[index]
                         .pending_entry
-                        .is_some_and(|pending| now >= pending.request.until)
+                        .is_some_and(|pending| now >= pending.until)
                 }) {
                     self.fail_entry(row, index, Fault::Deadline.into(), observe);
                     return true;
@@ -389,8 +394,7 @@ impl<'c, 'slots, 'p, E: Entropy, const O: usize> Server<'c, 'slots, 'p, E, O> {
                             || l.sync_until.is_some_and(|u| now >= u)
                     })
                     || app.rooms.iter().any(|l| {
-                        matches!(l.phase, LeasePhase::Opening | LeasePhase::Entering)
-                            && now >= l.until
+                        matches!(l.phase, LeasePhase::Admitting(request) if now >= request.until)
                     });
                 if expired {
                     self.close_app(row, CloseCause::Deadline, observe);
@@ -398,10 +402,7 @@ impl<'c, 'slots, 'p, E: Entropy, const O: usize> Server<'c, 'slots, 'p, E, O> {
                 }
             }
         }
-        let pending = self.cadet.pending_transmit();
-        if self.cadet_pending.as_ref().map(|(t, _)| *t) != pending {
-            self.cadet_pending = pending.map(|t| (t, now + self.limits.operation_lifetime));
-        }
+        self.refresh_cadet_pending(now);
         if self.peer_output.as_ref().is_some_and(|o| now >= o.until)
             || self.cadet_pending.is_some_and(|(_, until)| now >= until)
         {
@@ -428,13 +429,23 @@ impl<'c, 'slots, 'p, E: Entropy, const O: usize> Server<'c, 'slots, 'p, E, O> {
             }
         }
         for i in 0..self.tunnels.len() {
-            if let Some(t) = self.tunnels[i].as_mut()
-                && !t.compatible
+            if let Some(t) = self.tunnels[i].as_ref()
+                && !t.handshake.is_ready()
                 && !t.closing
                 && now >= t.until
+                && self
+                    .cadet_admission_demand(
+                        CadetAdmissionTarget::Channel {
+                            room: t.room,
+                            peer: t.peer,
+                            channel: t.channel,
+                        },
+                        now,
+                    )
+                    .is_none()
             {
-                t.closing = true;
                 let channel = t.channel;
+                self.tunnels[i].as_mut().ok_or(Fault::Stale)?.closing = true;
                 self.discard_tunnel_input(channel);
                 return Ok(true);
             }
@@ -623,9 +634,13 @@ impl<'c, 'slots, 'p, E: Entropy, const O: usize> Server<'c, 'slots, 'p, E, O> {
                     .chain(app.rooms.iter().flat_map(|lease| {
                         lease
                             .pending_entry
-                            .map(|pending| pending.request.until)
+                            .map(|pending| pending.until)
                             .into_iter()
                             .chain(lease.pending_open.map(|pending| pending.request.until))
+                            .chain(match lease.phase {
+                                LeasePhase::Admitting(request) => Some(request.until),
+                                LeasePhase::Active | LeasePhase::Closing => None,
+                            })
                     }))
             })
             .min()

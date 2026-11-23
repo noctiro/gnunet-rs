@@ -1,20 +1,26 @@
 //! Bounded GAP content-hash query/return-path ownership; allocation-free by default.
-//! Optional `alloc` supports actual larger official filters under an aggregate cap.
+//! Larger official filters use caller-owned route storage or bounded optional `alloc`.
 //!
 //! This composable layer handles official CORE FS137/138 D/I/UBLOCK/ANY routing.
 //! Hosts supply actual CORE neighbor generations, logical source microseconds,
 //! cryptographic entropy, original source operations and actual MQ write facts.
 //! It opens no socket, datastore, CADET, DHT, timer, task or private wire protocol.
-//! Unknown-source level0 D/I and anonymous level1 use hop-by-hop CORE queries:
-//! no origin/target identity extensions are emitted. Original level0 stays0.
+//! Unaddressed requests use hop-by-hop CORE queries. Forward-only requests
+//! name their original ingress, and forwarded requests retain provider hints.
 //! Higher numeric output needs the explicit privacy owner's real cover permission;
 //! this alone is no global anonymity proof.
 //! Unsolicited migration remains separate. UBLOCK result groups use
 //! the official BLOCK Bloom logic; each original request keeps independent state.
 mod group;
+/// Bounded history of actual DATASTORE service times.
+pub mod load;
 /// Real cover-budget claims and bounded randomized release over original IO.
 pub mod privacy;
+/// Historical scheduling policy for local outbound query plans.
+pub mod scheduling;
 pub mod storage;
+mod timing;
+use core::num::NonZeroU16;
 use gnunet_crypto::hash512;
 use gnunet_types::Error;
 /// Inline per-request official BLOCK Bloom bits, independent of result buffers.
@@ -23,8 +29,9 @@ pub const GROUP_FILTER_BYTES: usize = group::BYTES;
 /// Largest official serialized group's bit array; its nonce is four extra wire bytes.
 pub const MAX_GROUP_FILTER_BYTES: usize = gnunet_wire::official::fs_gap::MAX_BLOOM_BYTES;
 use gnunet_wire::official::{
+    datastore::Data,
     fs::BlockType,
-    fs_gap::{GET_PREFIX, Get, KNOWN_OPTIONS, Put, RETURN_TO},
+    fs_gap::{GET_PREFIX, Get, KNOWN_OPTIONS, Put, RETURN_TO, TRANSMIT_TO},
     message_type as mt,
 };
 
@@ -77,11 +84,60 @@ token!(Transmit);
 pub struct NeighborSlot {
     serial: u64,
     peer: Option<[u8; 32]>,
+    withdrawing: bool,
+    transmission: timing::TransmissionTiming,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Target {
     Peer(Ref),
     Local(u64),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ReplyRouting {
+    HopByHop,
+    DirectToIngress(Ref),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct Forwarding {
+    replies: ReplyRouting,
+    preferred_provider: Option<[u8; 32]>,
+}
+
+impl Forwarding {
+    const HOP_BY_HOP: Self = Self {
+        replies: ReplyRouting::HopByHop,
+        preferred_provider: None,
+    };
+
+    fn bitmap(self) -> u32 {
+        (u32::from(matches!(self.replies, ReplyRouting::DirectToIngress(_))) * RETURN_TO)
+            | (u32::from(self.preferred_provider.is_some()) * TRANSMIT_TO)
+    }
+
+    fn encoded_len(self) -> usize {
+        GET_PREFIX + self.bitmap().count_ones() as usize * 32
+    }
+}
+
+#[derive(Clone, Copy)]
+struct Consumer {
+    target: Target,
+    forbidden: u64,
+    anonymity: u32,
+    foreign: bool,
+}
+
+impl Consumer {
+    const fn local(tag: u64, anonymity: u32) -> Self {
+        Self {
+            target: Target::Local(tag),
+            forbidden: 0,
+            anonymity,
+            foreign: false,
+        }
+    }
 }
 #[derive(Clone, Copy, Debug)]
 struct Return {
@@ -91,6 +147,22 @@ struct Return {
     done: bool,
     delivered: u64,
     anonymity: u32,
+    reply_credit: u32,
+}
+
+#[derive(Clone, Copy)]
+struct Priority {
+    forwarding: u32,
+    paid: u32,
+}
+
+impl Priority {
+    const fn unmetered(forwarding: u32) -> Self {
+        Self {
+            forwarding,
+            paid: 0,
+        }
+    }
 }
 /// Caller-provided bounded reverse/local return-path slot.
 #[derive(Clone, Copy, Debug, Default)]
@@ -108,6 +180,30 @@ enum StoredSource {
     Unspecified,
     Local(u32),
     Peer { from: Ref, is_local: bool },
+}
+
+enum ResultFrame<'bytes> {
+    Encoded(&'bytes [u8]),
+    Datastore(Put<'bytes>),
+}
+
+impl ResultFrame<'_> {
+    fn wire_size(&self) -> Result<usize, Error> {
+        match self {
+            Self::Encoded(frame) => Ok(frame.len()),
+            Self::Datastore(put) => put.encoded_len(),
+        }
+    }
+
+    fn write(self, output: &mut [u8]) -> Result<(), Error> {
+        match self {
+            Self::Encoded(frame) => output.copy_from_slice(frame),
+            Self::Datastore(put) => {
+                put.encode(output)?;
+            }
+        }
+        Ok(())
+    }
 }
 /// Actual provenance/anonymity kept outside the original PUT138 bytes.
 #[derive(Clone, Copy, Debug)]
@@ -146,6 +242,7 @@ struct Query {
     key: [u8; 64],
     priority: u32,
     wire_deadline: i128,
+    started_us: u64,
     retain_until: u64,
     source: Source,
     retiring: bool,
@@ -156,7 +253,8 @@ struct Query {
     result_serial: u64,
     terminal: bool,
     request_group: [u8; 64],
-    relay: bool,
+    forwarding: Forwarding,
+    foreign: bool,
     result_source: StoredSource,
     unsolicited: bool,
 }
@@ -165,16 +263,24 @@ struct Query {
 pub struct RouteSlot<'bytes> {
     record: Option<Query>,
     bytes: &'bytes mut [u8],
-    group: group::Group,
+    group: group::Group<'bytes>,
 }
 impl<'bytes> RouteSlot<'bytes> {
     /// Borrow one finite original-result buffer.
     #[must_use]
     pub fn new(bytes: &'bytes mut [u8]) -> Self {
+        Self::with_group_filter(bytes, &mut [])
+    }
+
+    /// Reserve a separate wide Bloom filter buffer alongside this route's result.
+    /// Each admitted group uses its original width. The caller can provision a
+    /// subset of route slots for filters up to [`MAX_GROUP_FILTER_BYTES`].
+    #[must_use]
+    pub fn with_group_filter(bytes: &'bytes mut [u8], filter: &'bytes mut [u8]) -> Self {
         Self {
             record: None,
             bytes,
-            group: group::Group::empty(),
+            group: group::Group::empty(filter),
         }
     }
 }
@@ -188,7 +294,7 @@ pub struct Limits {
     /// Bound offered priorities before C-compatible positive-TTL bounding.
     pub max_priority: u32,
     /// Aggregate actual additional filter Vec capacities, including retiring routes.
-    /// Zero admits only inline groups; no-alloc builds never allocate large groups.
+    /// Zero admits only groups that fit inline or in the caller's fixed storage.
     pub filter_heap_bytes: usize,
 }
 impl Default for Limits {
@@ -219,10 +325,31 @@ pub trait Entropy {
 /// resolved by the actual shared local owner before passing an actual PUT here.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Selection {
-    /// Actual D/I/UBLOCK/ANY registry value.
-    pub kind: BlockType,
+    kind: BlockType,
     /// Original content hash.
     pub query: [u8; 64],
+}
+impl Selection {
+    /// Admit one official D/I/UBLOCK/ANY query type and its original hash.
+    pub const fn new(kind: BlockType, query: [u8; 64]) -> Result<Self, Error> {
+        if !matches!(
+            kind,
+            BlockType::ANY | BlockType::DBLOCK | BlockType::IBLOCK | BlockType::UBLOCK
+        ) {
+            return Err(Error::Unsupported);
+        }
+        Ok(Self { kind, query })
+    }
+
+    /// Original official registry value.
+    #[must_use]
+    pub const fn kind(self) -> BlockType {
+        self.kind
+    }
+
+    const fn tracks_results(self) -> bool {
+        matches!(self.kind, BlockType::ANY | BlockType::UBLOCK)
+    }
 }
 /// Original one-shot source job; retain its Route token through cancellation.
 #[derive(Clone, Copy, Debug)]
@@ -231,6 +358,8 @@ pub struct Lookup<'id> {
     pub route: Route<'id>,
     /// Actual selection, no datastore UID/metadata guess.
     pub selection: Selection,
+    /// Creation time of that original request in source microseconds.
+    pub started_us: u64,
 }
 /// Query admission has no network or datastore success meaning.
 #[derive(Clone, Copy, Debug)]
@@ -241,6 +370,54 @@ pub struct Admission<'id> {
     pub path: Path<'id>,
     /// True only for an existing matching type/key route.
     pub joined: bool,
+}
+
+/// Original sender's spendable balance and the current DATASTORE load.
+#[derive(Clone, Copy, Debug)]
+pub struct GetBudget {
+    available: u32,
+    load: load::Load,
+}
+
+impl GetBudget {
+    /// Bind the sender's available respect to one load observation.
+    #[must_use]
+    pub const fn new(available: u32, load: load::Load) -> Self {
+        Self { available, load }
+    }
+
+    fn offered(self, requested: u32) -> u32 {
+        if self.load.free() {
+            0
+        } else {
+            requested.min(i32::MAX as u32).min(self.available)
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Ingress {
+    Loopback,
+    Unmetered,
+    Accounted(GetBudget),
+}
+
+/// Admitted peer request and the exact debit owed by its original sender.
+#[derive(Clone, Copy, Debug)]
+pub struct ChargedGet<'id> {
+    /// Original GAP route and return path.
+    pub admission: Admission<'id>,
+    /// Respect the transport sender pays once for this accepted frame.
+    pub debit: u32,
+}
+
+/// Admission of a verified peer result with its one-shot respect credit.
+#[derive(Clone, Copy, Debug)]
+pub struct PeerResult {
+    /// Actual result observation.
+    pub state: ResultState,
+    /// Respect earned by the original sender of a retained nonterminal result.
+    pub credit: u32,
 }
 /// Actual positive source/peer observation; none implies absence or an END.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -276,15 +453,64 @@ pub enum Destination<'id> {
     Local(u64),
 }
 #[derive(Clone, Copy, Debug)]
+enum SendTarget {
+    Query(Option<NonZeroU16>),
+    Reply(Ref),
+}
+
+#[derive(Clone, Copy, Debug)]
 struct Sending {
     serial: u64,
     neighbor: Ref,
     route: Ref,
-    path: Option<Ref>,
+    target: SendTarget,
     priority: u32,
     length: usize,
     admitted: bool,
     exposed: bool,
+}
+
+/// Authority to plan the next query attempt on the same route and neighbor.
+/// Only a complete local CORE write can create it.
+#[derive(Debug)]
+pub struct RetrySeed<'id> {
+    route: Route<'id>,
+    neighbor: Neighbor<'id>,
+    attempts: NonZeroU16,
+}
+
+/// One locally planned retry. Dispatch consumes it and must use its exact
+/// original route and neighbor generation.
+#[derive(Debug)]
+pub struct Retry<'id> {
+    seed: RetrySeed<'id>,
+    plan: scheduling::Plan,
+}
+
+impl<'id> Retry<'id> {
+    /// The route that owned the completed original query write.
+    #[must_use]
+    pub const fn route(&self) -> Route<'id> {
+        self.seed.route
+    }
+
+    /// The neighbor generation that received the original local handoff.
+    #[must_use]
+    pub const fn neighbor(&self) -> Neighbor<'id> {
+        self.seed.neighbor
+    }
+
+    /// Earliest eligible dispatch in the original runtime clock.
+    #[must_use]
+    pub const fn ready_at(&self) -> u64 {
+        self.plan.ready_at()
+    }
+
+    /// The local FS queue rank among eligible attempts.
+    #[must_use]
+    pub const fn weight(&self) -> scheduling::QueueWeight {
+        self.plan.weight()
+    }
 }
 /// Original actual send-retirement facts; the concrete host failure remains
 /// with its source port. Exposed/failed work is never auto-replayed here.
@@ -394,6 +620,8 @@ pub struct Router<'id, 'slots, 'bytes> {
     serial: u64,
     limits: Limits,
     filter_heap_bytes: usize,
+    route_lifetime: timing::RouteLifetime,
+    scheduling: scheduling::History,
     stopping: bool,
 }
 impl<'id, 'slots, 'bytes> Router<'id, 'slots, 'bytes> {
@@ -434,6 +662,8 @@ impl<'id, 'slots, 'bytes> Router<'id, 'slots, 'bytes> {
             serial: 0,
             limits,
             filter_heap_bytes: 0,
+            route_lifetime: timing::RouteLifetime::new(),
+            scheduling: scheduling::History::new(),
             stopping: false,
         })
     }
@@ -516,6 +746,13 @@ impl<'id, 'slots, 'bytes> Router<'id, 'slots, 'bytes> {
     pub fn route_capacity(&self) -> usize {
         self.routes.len()
     }
+    /// Maximum simultaneous retry authorities for all owned routes. Each one
+    /// follows a distinct first attempt within that route's fanout.
+    pub fn retry_capacity(&self) -> Result<usize, Error> {
+        self.route_capacity()
+            .checked_mul(self.neighbors.len().min(usize::from(self.limits.fanout)))
+            .ok_or(Error::Overflow)
+    }
     /// Whether this original source selection is locally retiring. This is no
     /// storage terminal, network absence or permission to replace its generation.
     pub fn retiring(&self, route: Route<'id>) -> Result<bool, Error> {
@@ -549,6 +786,8 @@ impl<'id, 'slots, 'bytes> Router<'id, 'slots, 'bytes> {
                     !q.retiring
                         && q.source == Source::Done
                         && q.positive == 0
+                        && !q.terminal
+                        && self.relay_origin_live(q.forwarding)
                         && q.forwards < self.limits.fanout
                 })
                 .map(|q| {
@@ -631,6 +870,8 @@ impl<'id, 'slots, 'bytes> Router<'id, 'slots, 'bytes> {
         self.neighbors[slot] = NeighborSlot {
             serial,
             peer: Some(peer),
+            withdrawing: false,
+            transmission: timing::TransmissionTiming::new(),
         };
         Ok(self.n(Ref { slot, serial }))
     }
@@ -639,6 +880,43 @@ impl<'id, 'slots, 'bytes> Router<'id, 'slots, 'bytes> {
         let r = self.neighbor(neighbor)?;
         self.neighbors[r.slot].peer.ok_or(Error::StaleGeneration)
     }
+
+    /// Observe one complete local CORE handoff on its original neighbor.
+    /// Queue and completion timestamps use the same clock as GET admission.
+    /// A clock rollback leaves the estimate unchanged.
+    pub fn record_handoff(
+        &mut self,
+        neighbor: Neighbor<'id>,
+        queued_us: u64,
+        now_us: u64,
+    ) -> Result<(), Error> {
+        let n = self.neighbor(neighbor)?;
+        if let Some(elapsed) = now_us.checked_sub(queued_us) {
+            self.neighbors[n.slot].transmission.record(elapsed);
+        }
+        Ok(())
+    }
+    fn vacant_route(&self, filter_bytes: usize, result_bytes: usize) -> Result<usize, Error> {
+        let may_allocate = cfg!(feature = "alloc")
+            && filter_bytes
+                <= self
+                    .limits
+                    .filter_heap_bytes
+                    .saturating_sub(self.filter_heap_bytes);
+        self.routes
+            .iter()
+            .enumerate()
+            .filter(|(_, route)| route.record.is_none() && route.bytes.len() >= result_bytes)
+            .filter_map(|(slot, route)| {
+                let fixed = route.group.fixed_capacity();
+                let needs_heap = fixed < filter_bytes;
+                (!needs_heap || may_allocate).then_some((slot, needs_heap, fixed))
+            })
+            .min_by_key(|&(_, needs_heap, fixed)| (needs_heap, fixed))
+            .map(|(slot, _, _)| slot)
+            .ok_or(Error::Capacity)
+    }
+
     #[expect(
         clippy::too_many_arguments,
         reason = "Original selection/return authority, TTL and independent reply group are explicit admission inputs"
@@ -646,23 +924,25 @@ impl<'id, 'slots, 'bytes> Router<'id, 'slots, 'bytes> {
     fn admit(
         &mut self,
         selection: Selection,
-        target: Target,
-        forbidden: u64,
-        priority: u32,
+        consumer: Consumer,
+        priority: Priority,
         ttl: i32,
         now: u64,
-        group: Option<impl FnOnce(usize) -> Result<group::Group, Error>>,
+        group: Option<group::Initial<'_, '_>>,
         request_group: [u8; 64],
-        anonymity: u32,
-        relay: bool,
+        forwarding: Forwarding,
+        commit: impl FnOnce() -> Result<(), Error>,
     ) -> Result<Admission<'id>, Error> {
+        let Consumer {
+            target,
+            forbidden,
+            anonymity,
+            foreign,
+        } = consumer;
         if self.stopping {
             return Err(Error::Closed);
         }
-        if !matches!(selection.kind.value(), 0 | 1 | 2 | 9) {
-            return Err(Error::Unsupported);
-        }
-        let multiple = matches!(selection.kind.value(), 0 | 9);
+        let multiple = selection.tracks_results();
         if multiple && group.is_none() {
             return Err(Error::NotReady);
         }
@@ -684,6 +964,7 @@ impl<'id, 'slots, 'bytes> Router<'id, 'slots, 'bytes> {
                     !q.unsolicited
                         && q.kind == selection.kind
                         && q.key == selection.query
+                        && q.forwarding == forwarding
                         // A fresh local consumer can repeat a completed block.
                         // Keep the old owner and peer-loop tombstone unchanged.
                         && (!q.retiring || !matches!(target, Target::Local(_)) || same_target())
@@ -706,9 +987,26 @@ impl<'id, 'slots, 'bytes> Router<'id, 'slots, 'bytes> {
                     .map(|p| (slot, p))
             })
         {
+            commit()?;
             if let Some(q) = self.routes[route.slot].record.as_mut() {
                 q.forbidden |= forbidden;
-                q.relay &= relay;
+                q.foreign &= foreign;
+                if priority.paid != 0 {
+                    q.priority = q
+                        .priority
+                        .saturating_add(priority.forwarding)
+                        .min(self.limits.max_priority);
+                    let deadline = i128::from(now) + i128::from(ttl) * 1_000_000;
+                    if deadline > q.wire_deadline {
+                        q.wire_deadline = deadline;
+                        if let Some(path) = self.paths[slot].record.as_mut() {
+                            path.reply_credit = path
+                                .reply_credit
+                                .saturating_add(priority.paid)
+                                .min(q.priority);
+                        }
+                    }
+                }
             }
             if let Some(ret) = self.paths[slot].record.as_mut() {
                 ret.anonymity = ret.anonymity.max(anonymity);
@@ -730,10 +1028,7 @@ impl<'id, 'slots, 'bytes> Router<'id, 'slots, 'bytes> {
         let route_slot = if let Some(old) = old {
             old.slot
         } else {
-            self.routes
-                .iter()
-                .position(|r| r.record.is_none())
-                .ok_or(Error::Capacity)?
+            self.vacant_route(group.as_ref().map_or(0, group::Initial::len), 0)?
         };
         let route_serial = if let Some(old) = old {
             old.serial
@@ -751,36 +1046,41 @@ impl<'id, 'slots, 'bytes> Router<'id, 'slots, 'bytes> {
             slot: route_slot,
             serial: route_serial,
         };
-        // Existing route/path merges above never build or copy filter state.
-        // All metadata arithmetic precedes the only optional new allocation.
-        let prepared_group = if old.is_none() {
+        let staged_group = if old.is_none()
+            && let Some(group) = group
+        {
             let available = self
                 .limits
                 .filter_heap_bytes
                 .checked_sub(self.filter_heap_bytes)
                 .ok_or(Error::Overflow)?;
-            let group = group
-                .map(|build| build(available))
-                .transpose()?
-                .unwrap_or_else(group::Group::empty);
-            let heap = self
-                .filter_heap_bytes
-                .checked_add(group.heap_bytes())
-                .ok_or(Error::Overflow)?;
-            if heap > self.limits.filter_heap_bytes {
-                return Err(Error::Capacity);
+            let slot = &mut self.routes[route_slot];
+            if let Err(error) = slot.group.initialize(group, available) {
+                slot.group.reset();
+                return Err(error);
             }
-            Some((group, heap))
+            true
         } else {
-            None
+            false
         };
-        if let Some((group, heap)) = prepared_group {
-            self.routes[route_slot].record = Some(Query {
+        if let Err(error) = commit() {
+            if staged_group {
+                self.routes[route_slot].group.reset();
+            }
+            return Err(error);
+        }
+        if old.is_none() {
+            let slot = &mut self.routes[route_slot];
+            if staged_group {
+                self.filter_heap_bytes += slot.group.heap_bytes();
+            }
+            slot.record = Some(Query {
                 serial: route_serial,
                 kind: selection.kind,
                 key: selection.query,
-                priority: priority.min(self.limits.max_priority),
+                priority: priority.forwarding.min(self.limits.max_priority),
                 wire_deadline: i128::from(now) + i128::from(ttl) * 1_000_000,
+                started_us: now,
                 retain_until,
                 source: Source::Queued,
                 retiring: false,
@@ -791,15 +1091,14 @@ impl<'id, 'slots, 'bytes> Router<'id, 'slots, 'bytes> {
                 result_serial: 0,
                 terminal: false,
                 request_group,
-                relay,
+                forwarding,
+                foreign,
                 result_source: StoredSource::Unspecified,
                 unsolicited: false,
             });
-            self.routes[route_slot].group = group;
-            self.filter_heap_bytes = heap;
         } else if let Some(q) = self.routes[route_slot].record.as_mut() {
             q.forbidden |= forbidden;
-            q.relay &= relay;
+            q.foreign &= foreign;
         }
         self.paths[path_slot].record = Some(Return {
             serial: path_serial,
@@ -808,6 +1107,7 @@ impl<'id, 'slots, 'bytes> Router<'id, 'slots, 'bytes> {
             done: false,
             delivered: 0,
             anonymity,
+            reply_credit: priority.paid,
         });
         self.serial = path_serial;
         Ok(Admission {
@@ -869,19 +1169,12 @@ impl<'id, 'slots, 'bytes> Router<'id, 'slots, 'bytes> {
         {
             return Err(Error::Capacity);
         }
-        let route_slot = self
-            .routes
-            .iter()
-            .position(|r| r.record.is_none())
-            .ok_or(Error::Capacity)?;
+        let route_slot = self.vacant_route(0, frame.len())?;
         let path_slot = self
             .paths
             .iter()
             .position(|p| p.record.is_none())
             .ok_or(Error::Capacity)?;
-        if self.routes[route_slot].bytes.len() < frame.len() {
-            return Err(Error::Capacity);
-        }
         let route_serial = self.next_serial()?;
         let path_serial = route_serial.checked_add(1).ok_or(Error::Overflow)?;
         let retain_until = now
@@ -892,13 +1185,13 @@ impl<'id, 'slots, 'bytes> Router<'id, 'slots, 'bytes> {
             serial: route_serial,
         };
         self.routes[route_slot].bytes[..frame.len()].copy_from_slice(frame);
-        self.routes[route_slot].group = group::Group::empty();
         self.routes[route_slot].record = Some(Query {
             serial: route_serial,
             kind: put.block_type,
             key,
             priority: 0,
             wire_deadline: i128::from(now),
+            started_us: now,
             retain_until,
             source: Source::Done,
             retiring: false,
@@ -909,7 +1202,8 @@ impl<'id, 'slots, 'bytes> Router<'id, 'slots, 'bytes> {
             result_serial: 1,
             terminal: true,
             request_group: [0; 64],
-            relay: false,
+            forwarding: Forwarding::HOP_BY_HOP,
+            foreign: false,
             result_source: StoredSource::Local(anonymity),
             unsolicited: true,
         });
@@ -920,6 +1214,7 @@ impl<'id, 'slots, 'bytes> Router<'id, 'slots, 'bytes> {
             done: false,
             delivered: 0,
             anonymity,
+            reply_credit: 0,
         });
         self.serial = path_serial;
         Ok(Admission {
@@ -948,7 +1243,10 @@ impl<'id, 'slots, 'bytes> Router<'id, 'slots, 'bytes> {
     /// Exact path still owned by the one original native output, if any.
     #[must_use]
     pub fn pending_path(&self) -> Option<Path<'id>> {
-        self.pending.and_then(|p| p.path.map(|path| self.p(path)))
+        match self.pending?.target {
+            SendTarget::Reply(path) => Some(self.p(path)),
+            SendTarget::Query(_) => None,
+        }
     }
 
     /// Start a local basic-anonymous content request. Level1 deliberately uses
@@ -965,25 +1263,24 @@ impl<'id, 'slots, 'bytes> Router<'id, 'slots, 'bytes> {
         ttl_seconds: i32,
         now: u64,
     ) -> Result<Admission<'id>, Error> {
-        if anonymity != 1 || !matches!(selection.kind.value(), 1 | 2) {
+        if anonymity != 1 || selection.tracks_results() {
             return Err(Error::Unsupported);
         }
         self.admit(
             selection,
-            Target::Local(local_tag),
-            0,
-            priority,
+            Consumer::local(local_tag, anonymity),
+            Priority::unmetered(priority),
             ttl_seconds,
             now,
-            None::<fn(usize) -> Result<group::Group, Error>>,
+            None,
             [0; 64],
-            anonymity,
-            false,
+            Forwarding::HOP_BY_HOP,
+            || Ok(()),
         )
     }
     /// Start one original request with its actual whole-UBLOCK seen set. Entropy
-    /// creates its official local Bloom group; D/I use no group. Level0
-    /// D/I/UBLOCK discovery keeps its original numeric0. Level0 ANY is refused.
+    /// creates its official local Bloom group for ANY and UBLOCK. Every query
+    /// retains its original anonymity level, including level zero.
     /// Output above1 requires the matching live privacy permission,
     /// without adding an anonymity field or private RID to peer messages.
     #[expect(
@@ -1001,24 +1298,61 @@ impl<'id, 'slots, 'bytes> Router<'id, 'slots, 'bytes> {
         seen: &[[u8; 64]],
         entropy: &mut impl Entropy,
     ) -> Result<Admission<'id>, Error> {
-        if anonymity == 0 && !matches!(selection.kind.value(), 1 | 2 | 9) {
-            return Err(Error::Unsupported);
-        }
-        let group = matches!(selection.kind.value(), 0 | 9)
-            .then_some(|available| group::Group::new(None, seen, entropy, available));
+        let group = selection
+            .tracks_results()
+            .then_some(group::Initial::Local { seen, entropy });
         self.admit(
             selection,
-            Target::Local(local_tag),
-            0,
-            priority,
+            Consumer::local(local_tag, anonymity),
+            Priority::unmetered(priority),
             ttl_seconds,
             now,
             group,
             [0; 64],
-            anonymity,
-            false,
+            Forwarding::HOP_BY_HOP,
+            || Ok(()),
         )
     }
+
+    /// Start forwarding after the caller has settled its direct local source
+    /// phase. A newly created route schedules no duplicate DATASTORE sweep.
+    /// A joined original retains its own queued or running source.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Uses the same original policy and entropy inputs as start_with_seen"
+    )]
+    pub fn start_forwarding_with_seen(
+        &mut self,
+        selection: Selection,
+        local_tag: u64,
+        anonymity: u32,
+        priority: u32,
+        ttl_seconds: i32,
+        now: u64,
+        seen: &[[u8; 64]],
+        entropy: &mut impl Entropy,
+    ) -> Result<Admission<'id>, Error> {
+        let original = self.start_with_seen(
+            selection,
+            local_tag,
+            anonymity,
+            priority,
+            ttl_seconds,
+            now,
+            seen,
+            entropy,
+        )?;
+        if !original.joined {
+            let route = self.route(original.route)?;
+            self.routes[route.slot]
+                .record
+                .as_mut()
+                .ok_or(Error::StaleGeneration)?
+                .source = Source::Done;
+        }
+        Ok(original)
+    }
+
     /// Accept-copy one complete actual neighbor GET. Missing RETURN_TO is the
     /// actual ingress; an explicit return-to must already be a connected neighbor.
     /// Unknown extensions are a refusal, never reinterpreted as a local origin.
@@ -1041,8 +1375,66 @@ impl<'id, 'slots, 'bytes> Router<'id, 'slots, 'bytes> {
         entropy: &mut impl Entropy,
         is_local: bool,
     ) -> Result<Admission<'id>, Error> {
+        let ingress = if is_local {
+            Ingress::Loopback
+        } else {
+            Ingress::Unmetered
+        };
+        self.receive_get_with_policy(from, frame, now, entropy, ingress, |_| Ok(()))?
+            .map(|get| get.admission)
+            .ok_or(Error::Conflict)
+    }
+
+    /// Admit a nonlocal GET against its original sender's respect. A valid
+    /// request declined under load returns `None` and admits no source work.
+    pub fn receive_get_accounted(
+        &mut self,
+        from: Neighbor<'id>,
+        frame: &[u8],
+        now: u64,
+        entropy: &mut impl Entropy,
+        budget: GetBudget,
+    ) -> Result<Option<ChargedGet<'id>>, Error> {
+        self.receive_get_accounted_with(from, frame, now, entropy, budget, |_| Ok(()))
+    }
+
+    /// Confirm a positive debit after route admission preflight and before
+    /// publishing any changes to a new or existing route. A refused debit
+    /// leaves no source lookup or return path on the original peer's behalf.
+    pub fn receive_get_accounted_with(
+        &mut self,
+        from: Neighbor<'id>,
+        frame: &[u8],
+        now: u64,
+        entropy: &mut impl Entropy,
+        budget: GetBudget,
+        commit_debit: impl FnOnce(u32) -> Result<(), Error>,
+    ) -> Result<Option<ChargedGet<'id>>, Error> {
+        self.receive_get_with_policy(
+            from,
+            frame,
+            now,
+            entropy,
+            Ingress::Accounted(budget),
+            commit_debit,
+        )
+    }
+
+    fn receive_get_with_policy(
+        &mut self,
+        from: Neighbor<'id>,
+        frame: &[u8],
+        now: u64,
+        entropy: &mut impl Entropy,
+        policy: Ingress,
+        commit_debit: impl FnOnce(u32) -> Result<(), Error>,
+    ) -> Result<Option<ChargedGet<'id>>, Error> {
         let ingress = self.neighbor(from)?;
+        if self.neighbors[ingress.slot].withdrawing {
+            return Err(Error::Closed);
+        }
         let get = Get::decode(frame)?;
+        let selection = Selection::new(get.block_type, *get.query)?;
         if get.bitmap & !KNOWN_OPTIONS != 0 {
             return Err(Error::Unsupported);
         }
@@ -1051,7 +1443,7 @@ impl<'id, 'slots, 'bytes> Router<'id, 'slots, 'bytes> {
                 .iter()
                 .enumerate()
                 .find_map(|(slot, n)| {
-                    (n.peer.as_ref() == Some(peer)).then_some(Ref {
+                    (!n.withdrawing && n.peer.as_ref() == Some(peer)).then_some(Ref {
                         slot,
                         serial: n.serial,
                     })
@@ -1060,11 +1452,41 @@ impl<'id, 'slots, 'bytes> Router<'id, 'slots, 'bytes> {
         } else {
             ingress
         };
-        let priority = get.priority.min(self.limits.max_priority);
+        let preferred_provider = get.identity(TRANSMIT_TO)?.copied();
+        let requested = get.priority.min(self.limits.max_priority);
+        let (debit, priority, replies) = match policy {
+            Ingress::Accounted(budget) => {
+                let offered = budget.offered(requested);
+                if !budget.load.free() && !budget.load.admits(offered) {
+                    self.scheduling.observe_offer(offered);
+                    return Ok(None);
+                }
+                if self.neighbors[target.slot]
+                    .transmission
+                    .relay_only(offered, &self.route_lifetime)
+                {
+                    (
+                        offered,
+                        Priority::unmetered(0),
+                        ReplyRouting::DirectToIngress(ingress),
+                    )
+                } else {
+                    (
+                        offered,
+                        Priority {
+                            forwarding: offered,
+                            paid: offered,
+                        },
+                        ReplyRouting::HopByHop,
+                    )
+                }
+            }
+            _ => (0, Priority::unmetered(requested), ReplyRouting::HopByHop),
+        };
         // Exact active C bound/decrement; actual send/create TTL unit is seconds.
         let ttl = if get.ttl_seconds > 0 {
             i64::from(get.ttl_seconds)
-                .min(i64::from(priority) * 5)
+                .min(i64::from(priority.forwarding) * 5)
                 .min(1 << 30)
         } else {
             i64::from(get.ttl_seconds)
@@ -1076,23 +1498,40 @@ impl<'id, 'slots, 'bytes> Router<'id, 'slots, 'bytes> {
         let ttl = i32::try_from(ttl - 10_000 - i64::from(random)).map_err(|_| Error::Overflow)?;
         let raw =
             (get.block_type == BlockType::UBLOCK && !get.bloom.is_empty()).then_some(get.bloom);
-        let group = matches!(get.block_type.value(), 0 | 9)
-            .then_some(|available| group::Group::new(raw, &[], entropy, available));
-        self.admit(
-            Selection {
-                kind: get.block_type,
-                query: *get.query,
+        let group = if !selection.tracks_results() {
+            None
+        } else if let Some(raw) = raw {
+            Some(group::Initial::incoming(raw)?)
+        } else {
+            Some(group::Initial::Local { seen: &[], entropy })
+        };
+        let admission = self.admit(
+            selection,
+            Consumer {
+                target: Target::Peer(target),
+                forbidden: (1_u64 << ingress.slot) | (1_u64 << target.slot),
+                anonymity: 1,
+                foreign: !matches!(policy, Ingress::Loopback),
             },
-            Target::Peer(target),
-            (1_u64 << ingress.slot) | (1_u64 << target.slot),
             priority,
             ttl,
             now,
             group,
             hash512(get.bloom),
-            1,
-            !is_local,
-        )
+            Forwarding {
+                replies,
+                preferred_provider,
+            },
+            || {
+                if debit == 0 {
+                    Ok(())
+                } else {
+                    commit_debit(debit)
+                }
+            },
+        )?;
+        self.scheduling.observe_offer(debit);
+        Ok(Some(ChargedGet { admission, debit }))
     }
     /// Dispatch one actual original local source job. No result/cache hit is
     /// fabricated; cancellation retains Running until source_finished settles it.
@@ -1112,6 +1551,7 @@ impl<'id, 'slots, 'bytes> Router<'id, 'slots, 'bytes> {
                 kind: q.kind,
                 query: q.key,
             },
+            started_us: q.started_us,
         })
     }
     fn result_key(put: Put<'_>, digest: &[u8; 64]) -> Result<[u8; 64], Error> {
@@ -1154,33 +1594,59 @@ impl<'id, 'slots, 'bytes> Router<'id, 'slots, 'bytes> {
     fn commit_result(
         &mut self,
         route: Ref,
-        frame: &[u8],
+        frame: ResultFrame<'_>,
         kind: BlockType,
         digest: &[u8; 64],
         source: StoredSource,
-    ) -> Result<(), Error> {
+        observed_us: Option<u64>,
+    ) -> Result<u32, Error> {
+        let size = frame.wire_size()?;
+        let lifetime = if kind == BlockType::UBLOCK {
+            None
+        } else {
+            let started_us = self.query(route)?.started_us;
+            observed_us.and_then(|now| now.checked_sub(started_us))
+        };
         if kind == BlockType::UBLOCK {
             self.routes[route.slot].group.mark(digest)?;
         }
-        self.routes[route.slot].bytes[..frame.len()].copy_from_slice(frame);
+        frame.write(&mut self.routes[route.slot].bytes[..size])?;
         let q = self.routes[route.slot]
             .record
             .as_mut()
             .ok_or(Error::StaleGeneration)?;
-        q.positive = frame.len();
+        q.positive = size;
         q.result_serial += 1;
         q.terminal = kind != BlockType::UBLOCK;
         q.result_source = source;
         if q.source == Source::Queued {
             q.source = Source::Done;
         }
-        Ok(())
+        let mut credit = 0_u32;
+        if kind == BlockType::UBLOCK {
+            for path in &mut *self.paths {
+                if let Some(path) = &mut path.record
+                    && path.route == route
+                    && !path.done
+                {
+                    credit = credit.saturating_add(core::mem::take(&mut path.reply_credit));
+                }
+            }
+            if credit != 0 {
+                q.priority = 0;
+            }
+        }
+        if let Some(elapsed) = lifetime {
+            self.route_lifetime.record(elapsed);
+        }
+        Ok(credit)
     }
     fn install(
         &mut self,
         route: Ref,
         frame: &[u8],
         source: StoredSource,
+        observed_us: Option<u64>,
     ) -> Result<ResultState, Error> {
         if self.query(route)?.retiring {
             return Ok(ResultState::Retired);
@@ -1190,7 +1656,14 @@ impl<'id, 'slots, 'bytes> Router<'id, 'slots, 'bytes> {
         let key = Self::result_key(put, &digest)?;
         let state = self.preflight(route, put, &key, &digest, frame.len())?;
         if state == ResultState::Retained {
-            self.commit_result(route, frame, put.block_type, &digest, source)?;
+            let _consumed = self.commit_result(
+                route,
+                ResultFrame::Encoded(frame),
+                put.block_type,
+                &digest,
+                source,
+                observed_us,
+            )?;
         }
         Ok(state)
     }
@@ -1199,6 +1672,27 @@ impl<'id, 'slots, 'bytes> Router<'id, 'slots, 'bytes> {
     pub fn positive_pending(&self, route: Route<'id>) -> Result<bool, Error> {
         Ok(self.query(self.route(route)?)?.positive != 0)
     }
+
+    /// Whether this live original request has yet to accept its first result.
+    pub fn awaiting_first_result(&self, route: Route<'id>) -> Result<bool, Error> {
+        let query = self.query(self.route(route)?)?;
+        Ok(!query.retiring && query.result_serial == 0)
+    }
+
+    /// Decide whether the original local DATASTORE scan may request another
+    /// row. An active local client keeps its unlimited-priority source policy.
+    pub fn continue_source(&self, route: Route<'id>, load: load::Load) -> Result<bool, Error> {
+        let reference = self.route(route)?;
+        let query = self.query(reference)?;
+        if self.paths.iter().any(|path| {
+            path.record.is_some_and(|path| {
+                path.route == reference && !path.done && matches!(path.target, Target::Local(_))
+            })
+        }) {
+            return Ok(true);
+        }
+        Ok(load.free() && query.result_serial <= 5 + 2 * u64::from(query.priority))
+    }
     /// Accept one nonterminal original source item. Its real source operation
     /// remains Running until its later original storage terminal/failure retires.
     pub fn source_result(&mut self, route: Route<'id>, frame: &[u8]) -> Result<ResultState, Error> {
@@ -1206,7 +1700,7 @@ impl<'id, 'slots, 'bytes> Router<'id, 'slots, 'bytes> {
         if self.query(r)?.source != Source::Running {
             return Err(Error::Conflict);
         }
-        self.install(r, frame, StoredSource::Unspecified)
+        self.install(r, frame, StoredSource::Unspecified, None)
     }
     /// Accept an actual nonterminal source result together with its original
     /// DATASTORE anonymity. This metadata is absent from the encoded peer PUT.
@@ -1220,7 +1714,57 @@ impl<'id, 'slots, 'bytes> Router<'id, 'slots, 'bytes> {
         if self.query(r)?.source != Source::Running {
             return Err(Error::Conflict);
         }
-        self.install(r, frame, StoredSource::Local(anonymity))
+        self.install(r, frame, StoredSource::Local(anonymity), None)
+    }
+    /// Validate one real DATASTORE row and encode its official PUT directly
+    /// into the original route's result slot. The original source remains
+    /// running for keyword results. A retained D/I block settles that source.
+    /// Callers check the stored expiry against their qualified absolute clock
+    /// before admitting the row. No intermediate full-size frame is required.
+    pub fn source_datastore(
+        &mut self,
+        route: Route<'id>,
+        record: Data<'_>,
+        observed_us: u64,
+    ) -> Result<ResultState, Error> {
+        let r = self.route(route)?;
+        let original = self.query(r)?;
+        if original.source != Source::Running {
+            return Err(Error::Conflict);
+        }
+        if original.retiring {
+            return Ok(ResultState::Retired);
+        }
+        let put = Put {
+            block_type: BlockType::new(record.kind),
+            expiration: record.expiration,
+            block: record.value,
+        };
+        let size = put.encoded_len()?;
+        let digest = hash512(put.block);
+        let key = Self::result_key(put, &digest)?;
+        if key != *record.key {
+            return Err(Error::Authentication);
+        }
+        let result = self.preflight(r, put, &key, &digest, size)?;
+        if result == ResultState::Retained {
+            let _credit = self.commit_result(
+                r,
+                ResultFrame::Datastore(put),
+                put.block_type,
+                &digest,
+                StoredSource::Local(record.anonymity),
+                Some(observed_us),
+            )?;
+            if put.block_type != BlockType::UBLOCK {
+                self.routes[r.slot]
+                    .record
+                    .as_mut()
+                    .ok_or(Error::StaleGeneration)?
+                    .source = Source::Done;
+            }
+        }
+        Ok(result)
     }
     /// Settle only the actual original source operation. None means its real
     /// no-block terminal; failures stay with the explicit source caller. A type6
@@ -1236,7 +1780,7 @@ impl<'id, 'slots, 'bytes> Router<'id, 'slots, 'bytes> {
             return Err(Error::Conflict);
         }
         let result = if let Some(frame) = actual {
-            self.install(r, frame, StoredSource::Unspecified)?
+            self.install(r, frame, StoredSource::Unspecified, None)?
         } else if q.retiring {
             ResultState::Retired
         } else {
@@ -1256,6 +1800,7 @@ impl<'id, 'slots, 'bytes> Router<'id, 'slots, 'bytes> {
         route: Route<'id>,
         actual: Option<&[u8]>,
         anonymity: u32,
+        observed_us: u64,
     ) -> Result<ResultState, Error> {
         let r = self.route(route)?;
         let q = self.query(r)?;
@@ -1263,7 +1808,7 @@ impl<'id, 'slots, 'bytes> Router<'id, 'slots, 'bytes> {
             return Err(Error::Conflict);
         }
         let state = if let Some(frame) = actual {
-            self.install(r, frame, StoredSource::Local(anonymity))?
+            self.install(r, frame, StoredSource::Local(anonymity), Some(observed_us))?
         } else if q.retiring {
             ResultState::Retired
         } else {
@@ -1318,17 +1863,44 @@ impl<'id, 'slots, 'bytes> Router<'id, 'slots, 'bytes> {
         checked: CheckedPut<'_>,
         is_local: bool,
     ) -> Result<ResultState, Error> {
+        Ok(self
+            .retain_peer_result(from, checked, is_local, None)?
+            .state)
+    }
+
+    /// Retain a verified original result once and settle each matched path's
+    /// remaining credit. Duplicate, terminal and unmatched PUTs earn none.
+    pub fn receive_put_accounted(
+        &mut self,
+        from: Neighbor<'id>,
+        checked: CheckedPut<'_>,
+        is_local: bool,
+        observed_us: u64,
+    ) -> Result<PeerResult, Error> {
+        self.retain_peer_result(from, checked, is_local, Some(observed_us))
+    }
+
+    fn retain_peer_result(
+        &mut self,
+        from: Neighbor<'id>,
+        checked: CheckedPut<'_>,
+        is_local: bool,
+        observed_us: Option<u64>,
+    ) -> Result<PeerResult, Error> {
         let origin = self.neighbor(from)?;
+        if self.neighbors[origin.slot].withdrawing {
+            return Err(Error::Closed);
+        }
         let source = StoredSource::Peer {
             from: origin,
             is_local,
         };
-        self.neighbor(from)?;
         let frame = checked.frame;
         let put = checked.put;
         let digest = checked.digest;
         let key = checked.key;
         let mut state = ResultState::Unmatched;
+        let mut credit = 0_u32;
         // Preflight all matching requests before any original group/result
         // changes. A busy consumer retains the caller's exact original frame.
         for slot in 0..self.routes.len() {
@@ -1364,17 +1936,27 @@ impl<'id, 'slots, 'bytes> Router<'id, 'slots, 'bytes> {
                 };
                 if self.preflight(route, put, &key, &digest, frame.len())? == ResultState::Retained
                 {
-                    self.commit_result(route, frame, put.block_type, &digest, source)?;
+                    let settled = self.commit_result(
+                        route,
+                        ResultFrame::Encoded(frame),
+                        put.block_type,
+                        &digest,
+                        source,
+                        observed_us,
+                    )?;
+                    if !is_local {
+                        credit = credit.saturating_add(settled);
+                    }
                 }
             }
         }
-        Ok(state)
+        Ok(PeerResult { state, credit })
     }
     fn begin_send(
         &mut self,
         neighbor: Ref,
         route: Ref,
-        path: Option<Ref>,
+        target: SendTarget,
         priority: u32,
         length: usize,
     ) -> Result<Transmit<'id>, Error> {
@@ -1384,7 +1966,7 @@ impl<'id, 'slots, 'bytes> Router<'id, 'slots, 'bytes> {
             serial,
             neighbor,
             route,
-            path,
+            target,
             priority,
             length,
             admitted: false,
@@ -1400,20 +1982,55 @@ impl<'id, 'slots, 'bytes> Router<'id, 'slots, 'bytes> {
         route: Route<'id>,
         neighbor: Neighbor<'id>,
     ) -> Result<privacy::Requirement<'id>, Error> {
-        let r = self.route(route)?;
-        self.neighbor(neighbor)?;
+        self.query_requirement_for(route, neighbor, None)
+    }
+
+    fn forwarding_query(&self, r: Ref) -> Result<Query, Error> {
         let q = self.query(r)?;
-        if q.retiring {
+        if self.stopping || q.retiring || q.terminal || !self.relay_origin_live(q.forwarding) {
             return Err(Error::Closed);
         }
-        if q.source != Source::Done || q.positive != 0 {
-            return Err(Error::NotReady);
+        Ok(q)
+    }
+
+    fn relay_origin_live(&self, forwarding: Forwarding) -> bool {
+        match forwarding.replies {
+            ReplyRouting::HopByHop => true,
+            ReplyRouting::DirectToIngress(origin) => self
+                .neighbors
+                .get(origin.slot)
+                .is_some_and(|n| n.serial == origin.serial && n.peer.is_some() && !n.withdrawing),
         }
-        let n = self.neighbor(neighbor)?;
-        if q.forwards >= self.limits.fanout || ((q.forbidden | q.attempted) & (1u64 << n.slot)) != 0
+    }
+
+    fn check_attempt(&self, q: &Query, n: Ref, previous: Option<NonZeroU16>) -> Result<(), Error> {
+        if self.neighbors[n.slot].withdrawing {
+            return Err(Error::Closed);
+        }
+        let bit = 1_u64 << n.slot;
+        let attempted = q.attempted & bit != 0;
+        if q.forbidden & bit != 0
+            || attempted != previous.is_some()
+            || previous.is_none() && q.forwards >= self.limits.fanout
         {
             return Err(Error::PermissionDenied);
         }
+        Ok(())
+    }
+
+    fn query_requirement_for(
+        &self,
+        route: Route<'id>,
+        neighbor: Neighbor<'id>,
+        previous: Option<NonZeroU16>,
+    ) -> Result<privacy::Requirement<'id>, Error> {
+        let r = self.route(route)?;
+        let n = self.neighbor(neighbor)?;
+        let q = self.forwarding_query(r)?;
+        if q.source != Source::Done || q.positive != 0 {
+            return Err(Error::NotReady);
+        }
+        self.check_attempt(&q, n, previous)?;
         let level = self
             .paths
             .iter()
@@ -1427,10 +2044,54 @@ impl<'id, 'slots, 'bytes> Router<'id, 'slots, 'bytes> {
         Ok(privacy::Requirement::query(
             route,
             neighbor,
-            privacy::Class::new(mt::FS_GET, q.kind, GET_PREFIX)?,
+            previous,
+            privacy::Class::new(mt::FS_GET, q.kind, q.forwarding.encoded_len())?,
             level,
-            q.relay,
+            q.foreign,
         ))
+    }
+
+    fn retry_residence(&self, seed: &RetrySeed<'id>) -> Result<u64, Error> {
+        let route = self.route(seed.route)?;
+        let neighbor = self.neighbor(seed.neighbor)?;
+        let q = self.forwarding_query(route)?;
+        self.check_attempt(&q, neighbor, Some(seed.attempts))?;
+        Ok(q.retain_until)
+    }
+
+    /// Convert the original completed handoff into one immutable retry plan.
+    /// Stale, forbidden or completed routes and exhausted residence retire it.
+    pub fn schedule_retry(
+        &mut self,
+        seed: RetrySeed<'id>,
+        now: u64,
+        entropy: &mut impl Entropy,
+    ) -> Result<Option<Retry<'id>>, Error> {
+        let Ok(retain_until) = self.retry_residence(&seed) else {
+            return Ok(None);
+        };
+        if retain_until.saturating_sub(now) <= scheduling::RETRY_FLOOR_US {
+            return Ok(None);
+        }
+        let plan = self.scheduling.plan(now, seed.attempts.get(), entropy)?;
+        Ok((plan.ready_at() < retain_until).then_some(Retry { seed, plan }))
+    }
+
+    /// Whether the original planned retry may still become eligible during its
+    /// residence. A held nonterminal positive pauses dispatch.
+    #[must_use]
+    pub fn retry_current(&self, retry: &Retry<'id>, now: u64) -> bool {
+        self.retry_residence(&retry.seed)
+            .is_ok_and(|end| now < end && retry.ready_at() < end)
+    }
+
+    /// Current privacy requirements for this retry's original route and peer.
+    /// Dispatch also verifies the plan's clock target.
+    pub fn retry_requirement(
+        &self,
+        retry: &Retry<'id>,
+    ) -> Result<privacy::Requirement<'id>, Error> {
+        self.query_requirement_for(retry.route(), retry.neighbor(), Some(retry.seed.attempts))
     }
     /// Original positive/provenance for one still-owned return path. This
     /// distinguishes actual local DATA anonymity from unknown peer metadata.
@@ -1517,7 +2178,11 @@ impl<'id, 'slots, 'bytes> Router<'id, 'slots, 'bytes> {
         let current = if let Some(path) = requirement.path() {
             self.reply_requirement(path)
         } else {
-            self.query_requirement(requirement.route(), requirement.neighbor())
+            self.query_requirement_for(
+                requirement.route(),
+                requirement.neighbor(),
+                requirement.previous_attempts(),
+            )
         };
         current.is_ok_and(|r| r == requirement)
     }
@@ -1533,7 +2198,7 @@ impl<'id, 'slots, 'bytes> Router<'id, 'slots, 'bytes> {
         if self.query_requirement(route, neighbor)?.needed() != 0 {
             return Err(Error::NotReady);
         }
-        self.prepare_query_inner(route, neighbor, now, entropy)
+        self.prepare_query_inner(route, neighbor, now, entropy, None)
     }
     /// Prepare only this exact query authorized by the explicit cover owner.
     pub fn prepare_query_with_permit(
@@ -1545,7 +2210,29 @@ impl<'id, 'slots, 'bytes> Router<'id, 'slots, 'bytes> {
         permit: privacy::Permit<'id>,
     ) -> Result<Transmit<'id>, Error> {
         permit.authorizes(self.query_requirement(route, neighbor)?)?;
-        self.prepare_query_inner(route, neighbor, now, entropy)
+        self.prepare_query_inner(route, neighbor, now, entropy, None)
+    }
+
+    /// Prepare this original elapsed retry once under its own live permission.
+    /// The route's current wire TTL, remaining respect and coverage are used.
+    pub fn prepare_retry_with_permit(
+        &mut self,
+        retry: Retry<'id>,
+        now: u64,
+        entropy: &mut impl Entropy,
+        permit: privacy::Permit<'id>,
+    ) -> Result<Transmit<'id>, Error> {
+        if now < retry.ready_at() {
+            return Err(Error::NotReady);
+        }
+        permit.authorizes(self.retry_requirement(&retry)?)?;
+        self.prepare_query_inner(
+            retry.route(),
+            retry.neighbor(),
+            now,
+            entropy,
+            Some(retry.seed.attempts),
+        )
     }
     /// Prepare an anonymous hop-by-hop query to one explicit real neighbor.
     /// Caller chooses routing/queue heuristics; this enforces loop/fanout bounds,
@@ -1556,6 +2243,7 @@ impl<'id, 'slots, 'bytes> Router<'id, 'slots, 'bytes> {
         neighbor: Neighbor<'id>,
         now: u64,
         entropy: &mut impl Entropy,
+        previous: Option<NonZeroU16>,
     ) -> Result<Transmit<'id>, Error> {
         let r = self.route(route)?;
         let n = self.neighbor(neighbor)?;
@@ -1565,21 +2253,29 @@ impl<'id, 'slots, 'bytes> Router<'id, 'slots, 'bytes> {
         if self.pending.is_some() {
             return Err(Error::WouldBlock);
         }
-        let q = self.query(r)?;
-        if q.retiring || now >= q.retain_until {
+        let q = self.forwarding_query(r)?;
+        if now >= q.retain_until {
             return Err(Error::Closed);
         }
         if q.source != Source::Done || q.positive != 0 {
             return Err(Error::NotReady);
         }
-        if q.forwards >= self.limits.fanout
-            || ((q.forbidden | q.attempted) & (1_u64 << n.slot)) != 0
-        {
-            return Err(Error::PermissionDenied);
-        }
+        self.check_attempt(&q, n, previous)?;
         let ttl = i32::try_from((q.wire_deadline - i128::from(now)) / 1_000_000)
             .map_err(|_| Error::Overflow)?;
-        let priority = entropy.uniform(q.priority + 1)?;
+        let mut identities = [[0_u8; 32]; 2];
+        let mut used = 0;
+        let priority = if let ReplyRouting::DirectToIngress(origin) = q.forwarding.replies {
+            identities[used] = self.peer(self.n(origin))?;
+            used += 1;
+            0
+        } else {
+            entropy.uniform(q.priority + 1)?
+        };
+        if let Some(provider) = q.forwarding.preferred_provider {
+            identities[used] = provider;
+            used += 1;
+        }
         if priority > q.priority {
             return Err(Error::InvalidInput);
         }
@@ -1588,13 +2284,17 @@ impl<'id, 'slots, 'bytes> Router<'id, 'slots, 'bytes> {
             priority,
             ttl_seconds: ttl,
             reserved: 0,
-            bitmap: 0,
+            bitmap: q.forwarding.bitmap(),
             query: &q.key,
-            identities: &[],
+            identities: identities[..used].as_flattened(),
             bloom: &[],
         }
         .encode(self.output)?;
-        self.begin_send(n, r, None, priority, length)
+        let tx = self.begin_send(n, r, SendTarget::Query(previous), priority, length)?;
+        if previous.is_none() {
+            self.scheduling.observe_initial();
+        }
+        Ok(tx)
     }
     /// Basic reply preparation with actual supplied source policy. A local
     /// source above1 needs a live content-cover permission; unknown peer policy
@@ -1638,7 +2338,7 @@ impl<'id, 'slots, 'bytes> Router<'id, 'slots, 'bytes> {
         }
         let out = self.output.get_mut(..q.positive).ok_or(Error::Capacity)?;
         out.copy_from_slice(&self.routes[ret.route.slot].bytes[..q.positive]);
-        self.begin_send(neighbor, ret.route, Some(p), 0, q.positive)
+        self.begin_send(neighbor, ret.route, SendTarget::Reply(p), 0, q.positive)
     }
     fn sending(&self, tx: Transmit<'id>) -> Result<Sending, Error> {
         if !core::ptr::eq(self.owner, tx.owner) {
@@ -1654,6 +2354,13 @@ impl<'id, 'slots, 'bytes> Router<'id, 'slots, 'bytes> {
     pub fn send_bytes(&self, tx: Transmit<'id>) -> Result<(Neighbor<'id>, &[u8]), Error> {
         let p = self.sending(tx)?;
         Ok((self.n(p.neighbor), &self.output[..p.length]))
+    }
+    /// Whether any named relay origin still authorizes this prepared send.
+    /// A withdrawn origin leaves already exposed bytes on their original MQ.
+    pub fn relay_origin_current(&self, tx: Transmit<'id>) -> Result<bool, Error> {
+        let p = self.sending(tx)?;
+        Ok(!matches!(p.target, SendTarget::Query(_))
+            || self.relay_origin_live(self.query(p.route)?.forwarding))
     }
     /// Record actual MQ admission, not remote transmission or processing.
     pub fn admitted(&mut self, tx: Transmit<'id>) -> Result<(), Error> {
@@ -1674,36 +2381,41 @@ impl<'id, 'slots, 'bytes> Router<'id, 'slots, 'bytes> {
         Ok(())
     }
     fn settle_send(&mut self, p: Sending, success: bool) -> Result<SendRetired<'id>, Error> {
-        if let Some(path) = p.path {
-            let q = self.query(p.route)?;
-            if let Some(ret) = self.paths[path.slot]
-                .record
-                .as_mut()
-                .filter(|r| r.serial == path.serial)
-            {
-                ret.delivered = q.result_serial;
-                ret.done = q.terminal;
+        let (kind, path) = match p.target {
+            SendTarget::Reply(path) => {
+                let q = self.query(p.route)?;
+                if let Some(ret) = self.paths[path.slot]
+                    .record
+                    .as_mut()
+                    .filter(|r| r.serial == path.serial)
+                {
+                    ret.delivered = q.result_serial;
+                    ret.done = q.terminal;
+                }
+                self.release_positive(p.route)?;
+                (SendKind::Reply, Some(self.p(path)))
             }
-            self.release_positive(p.route)?;
-        } else if let Some(q) = self.routes[p.route.slot]
-            .record
-            .as_mut()
-            .filter(|q| q.serial == p.route.serial)
-        {
-            q.attempted |= 1_u64 << p.neighbor.slot;
-            q.forwards = q.forwards.saturating_add(1);
-            q.priority = q.priority.saturating_sub(p.priority);
-        }
+            SendTarget::Query(previous) => {
+                if let Some(q) = self.routes[p.route.slot]
+                    .record
+                    .as_mut()
+                    .filter(|q| q.serial == p.route.serial)
+                {
+                    if previous.is_none() {
+                        q.attempted |= 1_u64 << p.neighbor.slot;
+                        q.forwards = q.forwards.saturating_add(1);
+                    }
+                    q.priority = q.priority.saturating_sub(p.priority);
+                }
+                (SendKind::Query, None)
+            }
+        };
         let fact = SendRetired {
             transmit: self.t(p.serial),
             neighbor: self.n(p.neighbor),
             route: self.r(p.route),
-            kind: if p.path.is_some() {
-                SendKind::Reply
-            } else {
-                SendKind::Query
-            },
-            path: p.path.map(|path| self.p(path)),
+            kind,
+            path,
             bytes: p.length,
             admitted: p.admitted,
             exposed: p.exposed,
@@ -1715,11 +2427,32 @@ impl<'id, 'slots, 'bytes> Router<'id, 'slots, 'bytes> {
     /// Commit an actual full original write. This releases local output storage;
     /// it is not a reply, peer processing acknowledgement or successful lookup.
     pub fn written(&mut self, tx: Transmit<'id>) -> Result<SendRetired<'id>, Error> {
+        self.written_for_forwarding(tx).map(|(fact, _)| fact)
+    }
+
+    /// Commit an actual full original write and retain its single authority to
+    /// plan a follow-up query on the same route and CORE generation.
+    pub fn written_for_forwarding(
+        &mut self,
+        tx: Transmit<'id>,
+    ) -> Result<(SendRetired<'id>, Option<RetrySeed<'id>>), Error> {
         let p = self.sending(tx)?;
         if !p.admitted || !p.exposed {
             return Err(Error::NotReady);
         }
-        self.settle_send(p, true)
+        let fact = self.settle_send(p, true)?;
+        let seed = match p.target {
+            SendTarget::Query(previous) => previous
+                .map_or(Some(1), |n| n.get().checked_add(1))
+                .and_then(NonZeroU16::new)
+                .map(|attempts| RetrySeed {
+                    route: fact.route,
+                    neighbor: fact.neighbor,
+                    attempts,
+                }),
+            SendTarget::Reply(_) => None,
+        };
+        Ok((fact, seed))
     }
     /// Settle only after the original external MQ operation physically stopped.
     /// Its concrete failure/Unknown remains owned by the caller. No automatic
@@ -1817,6 +2550,7 @@ impl<'id, 'slots, 'bytes> Router<'id, 'slots, 'bytes> {
     /// this is deliberately separate from physical disconnect/send settlement.
     pub fn retire_neighbor_paths(&mut self, neighbor: Neighbor<'id>) -> Result<(), Error> {
         let n = self.neighbor(neighbor)?;
+        self.neighbors[n.slot].withdrawing = true;
         for p in &mut *self.paths {
             if let Some(p) = p.record.as_mut()
                 && p.target == Target::Peer(n)
@@ -1966,6 +2700,39 @@ impl<'id, 'slots, 'bytes> Router<'id, 'slots, 'bytes> {
                 .iter()
                 .all(|r| r.record.is_none_or(|q| q.source != Source::Running))
     }
+
+    /// Release retired routes after all original operations and GAP neighbors
+    /// retire, without reopening admission.
+    pub fn finish_shutdown(&mut self) -> Result<(), Error> {
+        if !self.stopping {
+            return Err(Error::Conflict);
+        }
+        if !self.quiesced() || self.neighbors.iter().any(|slot| slot.peer.is_some()) {
+            return Err(Error::WouldBlock);
+        }
+        for slot in 0..self.routes.len() {
+            if let Some(query) = self.routes[slot].record {
+                self.clear_route(
+                    Ref {
+                        slot,
+                        serial: query.serial,
+                    },
+                    query.positive,
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Reopen the workspace. Old tokens cannot authorize new work.
+    pub fn restart(&mut self) -> Result<(), Error> {
+        self.finish_shutdown()?;
+        self.route_lifetime = timing::RouteLifetime::new();
+        self.scheduling = scheduling::History::new();
+        self.stopping = false;
+        Ok(())
+    }
+
     /// Release only an expired dedup tombstone whose actual original source and
     /// native output have settled. Time/cancel never turns an operation into END.
     pub fn collect(&mut self, route: Route<'id>, now: u64) -> Result<(), Error> {
@@ -1978,13 +2745,17 @@ impl<'id, 'slots, 'bytes> Router<'id, 'slots, 'bytes> {
         {
             return Err(Error::WouldBlock);
         }
+        self.clear_route(r, q.positive)
+    }
+
+    fn clear_route(&mut self, r: Ref, positive: usize) -> Result<(), Error> {
         let heap = self
             .filter_heap_bytes
             .checked_sub(self.routes[r.slot].group.heap_bytes())
             .ok_or(Error::Overflow)?;
-        self.routes[r.slot].bytes[..q.positive].fill(0);
+        self.routes[r.slot].bytes[..positive].fill(0);
         self.routes[r.slot].record = None;
-        self.routes[r.slot].group = group::Group::empty();
+        self.routes[r.slot].group.reset();
         self.filter_heap_bytes = heap;
         for p in &mut *self.paths {
             if p.record.is_some_and(|p| p.route == r) {

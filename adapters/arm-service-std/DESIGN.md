@@ -7,10 +7,11 @@ daemon IPC and timers still require their host integration and validation.
 
 Official anchors: gnunet-service-arm.c setup_service1897 registry/BINARY/category/CONFIG/PIPECONTROL/IMMEDIATE_START/NOARMBIND/START_ON_DEMAND and reversed iteration; get_server_addresses342..661 native endpoint/probe rules; create_listen_socket995..1112 reuse/v6only/backlog5/permission flags; accept_connection975 only readiness, never accept; start_process745 disarms all tasks before inherited listener mapping; shutdown1500 closes every parent listener before any TERM. Generic BoundListeners::bind cannot be substituted wholesale: its port/error/UID policy and private API differ. Reuse low-level bind_private/CreatedPath/private_parents and safe socket2 instead.
 
-The shared `gnunet-service-runtime::readiness` module uses Tokio1.54.1's
-native constructor once in a stable opaque OwnedFd wrapper, with no
-get_mut/replacement. Host body forbids unsafe. Poll0 with locked nix0.31.3 confirms
-level readiness without accept/read. Cached hints returning WouldBlock are cleared. HUP/ERR/NVAL are explicitly classified. into_owned deregisters first. Drive
+The shared `gnunet-service-runtime::readiness` module registers an opaque `OwnedFd`
+wrapper once with Tokio and does not replace the descriptor. `nix::poll` with a
+zero timeout confirms level readiness without accepting or reading. A would-block
+result clears the cached readiness hint; hangup, error and invalid descriptor
+events are classified separately. `into_owned` deregisters first. Drive
 cancellation retains the owner, logical Arm and leased core authority.
 
 ManagedListener stores opaque readiness/socket owner before an optional CreatedPath guard, closing FD before inode removal. Inherited sockets never acquire path guards. Core ListenerId/ReadinessId and native original owner are mapped one-to-one; Arm installs one logical watcher, Disarm removes it without accepting, Close actually consumes the parent listener and then acknowledges. Poll only logically armed watchers. A readiness pulse stores the exact current core ReadinessId before returning/awaiting so cancellation cannot lose a consumed event. Parent listener remains available for child inheritance; after child consumes backlog, cached stale readiness must not trigger a new process.

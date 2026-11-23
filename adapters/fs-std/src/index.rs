@@ -380,7 +380,7 @@ impl Index {
         self.store.cleanup_failure()
     }
     /// Last successful native observation of the private store's directory names.
-    /// Independent of file-data and logical commit; Windows returns Unavailable.
+    /// This is independent of file-data synchronization and logical commit.
     #[must_use]
     pub fn directory_sync(&self) -> Option<crate::DirectorySync> {
         self.store.directory_sync()

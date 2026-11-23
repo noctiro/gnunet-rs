@@ -76,7 +76,7 @@ impl Harness {
         let peer = Identity::from_seed([5; 32]).peer();
         let remote = UdpSocket::bind("127.0.0.1:0")?;
         remote.set_nonblocking(true)?;
-        let socket = DatagramSocket::bind("127.0.0.1:0".parse()?)?;
+        let socket = DatagramSocket::bind("127.0.0.1:0".parse()?, Default::default())?;
         let (service, communicator) = support::pair().await?;
         let configuration = Configuration {
             local: local.peer(),

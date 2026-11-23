@@ -1,0 +1,13 @@
+cc_prebuilt_binary {
+    name: "@NAME@",
+    vendor: true,
+    compile_multilib: "first",
+    srcs: ["@NAME@"],
+    stl: "none",
+    system_shared_libs: ["libc", "libm", "libdl"],
+    shared_libs: ["liblog"],
+    check_elf_files: true,
+    strip: {
+        none: true,
+    },
+}

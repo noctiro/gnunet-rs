@@ -9,6 +9,8 @@ IGD HTTP/HTTPS, SOAP/XML and raw-helper supervision. `program` adds the normal
 PROGRAM entries and always enables these providers. The SDK's `official-nat`
 feature also selects the full provider composition.
 
+`service` enables the caller-driven foreground and shared Resolver broker.
+
 Default features are empty. `deadline`, `interfaces`, `resolve` and `stun`
 are available to client/test adapters. This primitive profile avoids coupling
 NAT clients to an HTTP/TLS provider and does not supply a reduced service backend.
@@ -31,7 +33,15 @@ Each Add uses fresh operating-system entropy for a 128-bit identity in the stand
 
 Pure bounded SOAP classification occurs once at the shared HTTP framing boundary, before a post-response clock/expiry wait or failure. Actual Add success/rejection and Delete success/absence remain facts when that independent guard fails; the original guard cause still fails the job. Queued cleanup never refreshes its original deadline. Query SOAP714 is only an absence snapshot: it settles a previously confirmed mapping, but cannot exclude an earlier exposed unknown Add applying later. That case reports absence and unresolved uncertainty independently. Observing the original marker proves that original Add has applied; subsequent DELETE success or its SOAP714 absence can settle that cleanup. `OwnedThenAbsent` keeps the latter fact distinct from absence before ownership was established. TLS-buffered plaintext cannot be treated as known-unsent, and timeout/error/capacity/clock refusal cannot become a removal receipt.
 
-The Rust helper supervisor launches only explicit configured Rust binary paths through official SUID_BINARY_PATH/libexec selection, with no shell or old C command. It owns Child/PID generation, bounded partial/multiple newline stdout, original source/interface lifetime, finite sender deadlines, kill/wait/retirement outcomes and separate primary/cleanup errors. A client helper0 means two complete local raw datagram sends, not reverse-connection success. A server line is an unauthenticated original ICMP observation. Port0 is diagnostic. No READY/banner/stdin protocol is invented. Real independent child retirement continues even while canonical clock stabilization is Pending. Source reappearance cannot reuse an old helper generation. The privileged-helper ordinary entry selects the shared runner for Linux, Darwin and modern FreeBSD. Their raw-kernel ABI adapters remain separate from pure packet handling; other target helper capabilities are explicitly unsupported and are not treated as successful traversal.
+The standalone service selects installed helpers through `SUID_BINARY_PATH`
+and `libexec`. An embedded service receives the installed pair from its host.
+The supervisor launches each executable directly and owns its generation,
+stdout framing, source or interface lifetime, deadline and retirement. A
+successful sender exit records two complete local raw datagram sends. A
+server line carries an unauthenticated ICMP observation. Port zero is
+diagnostic. Native child retirement continues while the canonical clock
+stabilizes. Source reappearance creates a fresh helper generation.
+[Executable interfaces](../nat-helper-std/README.md#executable-interfaces)
 
 `auto::propose` parses the serialized configuration and returns its serialized diff. The active pinned C NAT-auto daemon only probes whether external upnpc exists; this implementation has a built-in Rust IGD backend and proposes ENABLE_UPNP=YES. It returns UNKNOWN classification, never a fictitious connectivity test. It does not apply/write configuration. The original codec retains raw0/unknown status/type values from official peers.
 
@@ -39,7 +49,35 @@ The public `gnunet-nat-server` listener decodes the16-byte official NAT_TEST. It
 
 Three foreground apps are included: gnunet-service-nat, gnunet-service-nat-auto and gnunet-nat-server. They perform once-only inherited-descriptor capture, shared PROGRAM preparation/clock, official service-user privilege policy, one shared Resolver broker, SERVICE bind/credentials/activation, signal/parent stop, finite source drain, child/router cleanup and independent final error reporting. PROGRAM's GNUNET_OK=1 is distinguished from process exit0. READY means local listener/owner setup, never NAT connectivity. STOPPED includes pending/unresolved cleanup; unresolved ownership does not become a clean shutdown.
 
+## STUN configuration
+
+Periodic outward probes require both `[nat] USE_STUN = YES` and a nonempty
+`STUN_SERVERS` list. Each entry is a host or host:port; the default port is
+3478. Set `STUN_FREQUENCY` to change the five-minute interval. Passive NAT
+client STUN messages still use the official wire format and `STUN_STALE` policy.
+
+## Embedded service
+
+`startup::serve_embedded` binds ordinary NAT IPC and runs the same server and
+Resolver driver as the standalone service. `startup::EmbeddedSettings` supplies
+the configuration, clock, network hints and socket policy. The caller drives
+the service under its current identity and keeps the configured listener namespace
+stable. Interface scans, STUN and UPnP use the configured policy.
+
+A deployment can supply `startup::HelperPrograms` with separate trusted
+absolute paths for the installed NAT observer and sender. The deployment owns
+the paths and native permissions for the service lifetime. A protected socket
+policy rejects this process-helper profile before listener binding. The
+existing NAT supervisor owns each helper through bounded retirement. Stop
+reports provider and listener cleanup failures.
+
 ## Native process composition
+
+`startup::EmbeddedSettings` takes a host-owned `NetworkChanges` consumer. Notifications
+coalesce into the existing bounded interface scan and honor `ENABLE_IPSCAN`.
+Native deadlines and provider work keep their turns during repeated notifications.
+Stopping disables notification-driven scans. A default consumer uses the periodic
+scan schedule.
 
 With feature `program`, `foreground::main(Mode)` is the unsafe fresh-executable
 entry shared by NAT, NAT-AUTO and the NAT test server. It captures original
@@ -72,7 +110,11 @@ Official NAT keys control IP scan, UPNP, local/v6 filtering, STUN servers/freshn
 
 ## Limitations
 
-The independent native Registration/AutoQuery client is integrated as gnunet-nat-client-host and the optional clients::nat SDK edge. The separate gnunet-nat-test-host supplies the high-level caller (original challenge listener/NAT registration/test-server calls/cancel/result), and the end-user gnunet-nat / gnunet-nat-auto commands use it. The public util NAT burst/socket API is supplied separately by gnunet-nat-burst-host. Linux, Darwin and modern FreeBSD raw-helper source paths and HTTP/HTTPS IGD control are present. The Windows helper backend uses the same ICMP packets and an original-reader byte-pipe lifetime; raw permissions and provider/platform interoperability remain separate coverage boundaries; these source paths do not prove successful traversal.
+The native Registration/AutoQuery client is supplied by gnunet-nat-client-host
+and the optional `clients::nat` SDK edge. The gnunet-nat and gnunet-nat-auto
+commands use gnunet-nat-test-host for challenge listening, registration and
+test-server calls. The util NAT burst/socket API is supplied by
+gnunet-nat-burst-host.
 
 The cleanup queue is fallibly reserved at Manager construction. Original source
 retirement revokes core authority first and queues cleanup without a temporary

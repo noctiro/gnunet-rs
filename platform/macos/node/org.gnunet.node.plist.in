@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>org.gnunet.node</string>
+    <key>UserName</key>
+    <string>gnunet</string>
+    <key>GroupName</key>
+    <string>gnunet</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>@GNUNET_EXECUTABLE@</string>
+        <string>--state-directory</string>
+        <string>/var/db/gnunet-node/state</string>
+        <string>--ipc-directory</string>
+        <string>/var/db/gnunet-node/ipc</string>
+        <string>--bootstrap-data-directory</string>
+        <string>@GNUNET_BOOTSTRAP_DATA@</string>
+        <string>--outbound-tcp</string>
+    </array>
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+    <key>ExitTimeOut</key>
+    <integer>30</integer>
+    <key>Umask</key>
+    <integer>63</integer>
+    <key>StandardOutPath</key>
+    <string>/var/log/gnunet-node/stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/var/log/gnunet-node/stderr.log</string>
+</dict>
+</plist>

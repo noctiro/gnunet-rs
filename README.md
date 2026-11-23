@@ -4,7 +4,7 @@ An independent Rust implementation of GNUnet, targeting its full feature set and
 interoperability with official C nodes, clients and services. Protocol and service
 logic are implemented in Rust; official C software is used for reference checks.
 
-Current limitations and pending interoperability work are tracked in
+Known implementation and interoperability gaps are tracked in
 [Implementation status](IMPLEMENTATION_STATUS.md).
 
 ## Getting started
@@ -13,9 +13,10 @@ Run commands from the repository root. Rust is pinned by
 [rust-toolchain.toml](rust-toolchain.toml); native features may also require a C
 compiler and platform SDK.
 
-Linux, macOS, Windows and FreeBSD are full native implementation targets.
-The [platform matrix](tests/README.md#continuous-integration) describes actual
-execution coverage; embedded profiles compile selected `no_std` configurations.
+GNUnet targets Linux, macOS, Windows, FreeBSD,
+[Android](platform/android/README.md), [iOS](platform/ios/README.md) and
+[OpenHarmony](platform/openharmony/README.md).
+The [test matrix](tests/README.md#continuous-integration) records execution coverage.
 
 Build the CLI and inspect its commands:
 
@@ -29,6 +30,9 @@ semantics; its [command reference](apps/gnunet-cli/commands.md) contains example
 Service commands require the corresponding service to be running. Local file and
 crypto commands use their documented local inputs.
 
+Stage a node with its programs and peer configuration using
+[native node staging](tools/xtask/node/README.md).
+
 ## Rust library
 
 The [gnunet facade](crates/gnunet/README.md) exposes protocol engines and optional
@@ -41,8 +45,13 @@ cargo check -p gnunet --features official-ipc --locked
 ```
 
 See the [SDK guide](crates/gnunet/README.md) for feature selection and API paths.
+The [embedded peer](adapters/node-std/README.md) runs the core native services
+and TCP and UDP communicators on an application's runtime.
+The [node SDK](platform/sdk/README.md) provides native application bindings.
 
 ## Service processes
+
+Run the embedded peer as a foreground process with [`gnunet-node`](apps/gnunet-node/README.md).
 
 Each executable has a guide under [applications](apps/README.md) covering configuration and
 runtime dependencies. For example, [STATISTICS](apps/gnunet-service-statistics/README.md)
@@ -71,7 +80,7 @@ Starting one service does not start its dependencies or a complete node stack.
 | [Protocol contracts](spec/gnunet/README.md) | Compatibility boundary, reference authority and release criteria |
 | [Test guide](tests/README.md) | Targeted checks, full matrix and official-C profiles |
 | [Security](SECURITY.md) | Vulnerability reporting and supported scope |
-| [Implementation status](IMPLEMENTATION_STATUS.md) | Open functionality and acceptance work |
+| [Implementation status](IMPLEMENTATION_STATUS.md) | Prioritized implementation and interoperability gaps |
 
 ## License
 

@@ -112,7 +112,7 @@ pub(super) fn run() -> Result<std::process::ExitCode, Failure> {
             ))?
         } else {
             let _entered = runtime.enter();
-            BoundListeners::from_activation(activation)?
+            BoundListeners::from_activation_with_access(activation, settings.access)?
         };
         for error in bound.failures() {
             reports.warning(
@@ -129,9 +129,12 @@ pub(super) fn run() -> Result<std::process::ExitCode, Failure> {
         gnunet_service_runtime::private_parents(&settings.directory)?;
         let mut wal =
             gnunet_peerstore_host::backend::Wal::open(&settings.directory, settings.backend)?;
-        if let Some(path) = &settings.hellos {
-            hellos::import_hellos(&mut wal, path, settings.hello_files, &diagnostics)?;
-        }
+        hellos::import_hellos(
+            &mut wal,
+            settings.hellos.as_ref(),
+            gnunet_service_runtime::clock::RuntimeClock::sample(&clock)?.now,
+            &diagnostics,
+        )?;
         runtime.block_on(foreground::before_start(&mut control, &diagnostics))?;
         let mut worker = gnunet_peerstore_host::worker::Worker::start(wal, settings.worker)?;
         runtime.block_on(async {

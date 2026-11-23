@@ -156,7 +156,7 @@ impl Factory {
             observed_now: now,
             work_left: Cell::new(self.quota.limits.work_units),
             credit: 1,
-            cursor: (0, 0),
+            cursor: 0,
         };
         self.quota.jobs.set(
             self.quota
@@ -256,7 +256,7 @@ pub struct Job {
     pub(super) observed_now: u64,
     pub(super) work_left: Cell<usize>,
     pub(super) credit: u64,
-    pub(super) cursor: (usize, usize),
+    pub(super) cursor: usize,
 }
 impl Drop for Job {
     fn drop(&mut self) {

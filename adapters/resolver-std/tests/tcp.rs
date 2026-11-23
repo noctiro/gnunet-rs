@@ -7,15 +7,23 @@
 use gnunet_client::resolver::{Family, Request, Response, WireId};
 use gnunet_config::Configuration;
 use gnunet_resolver_host::{
-    MachineInputs,
-    startup::{foreground_configured, foreground_tcp, native_family},
+    MachineInputs, Report,
+    startup::{
+        EmbeddedDns, EmbeddedSettings, foreground_configured, foreground_tcp, native_family,
+        serve_embedded,
+    },
 };
+use gnunet_service_runtime::clock::SystemClock;
 use gnunet_wire::official::Frame;
 use std::{
+    cell::Cell,
     error::Error,
     io,
     net::IpAddr,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
     time::Duration,
 };
 use tokio::{
@@ -155,7 +163,7 @@ fn native_inputs_preserve_search_domain_dns_order_and_nondefault_port() -> TestR
 }
 
 #[test]
-fn configured_local_service_answers_real_frames_and_retires_its_node() -> TestResult {
+fn embedded_local_service_answers_real_frames_and_retires_its_node() -> TestResult {
     let (_directory, _path, config) = local_configuration()?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -165,22 +173,31 @@ fn configured_local_service_answers_real_frames_and_retires_its_node() -> TestRe
             let (ready, readiness) = oneshot::channel();
             let (stop, stopping) = oneshot::channel();
             let task = tokio::task::spawn_local(async move {
-                foreground_configured(
-                    &config,
-                    MachineInputs {
-                        hosts: b"2001:db8::7 native6.example\n".to_vec(),
-                        ..Default::default()
+                serve_embedded(
+                    EmbeddedSettings {
+                        config: &config,
+                        dns: EmbeddedDns::Datagram {
+                            inputs: MachineInputs {
+                                hosts: b"2001:db8::7 native6.example\n".to_vec(),
+                                ..Default::default()
+                            },
+                            endpoints: &[],
+                            updates: Default::default(),
+                        },
+                        socket_policy: Default::default(),
+                        clock: Arc::new(SystemClock),
                     },
-                    &[],
                     move |bound| {
-                        let path = bound
+                        let outcome = bound
                             .unix_paths()
                             .next()
-                            .ok_or_else(|| io::Error::other("no owned local listener"))?
-                            .to_path_buf();
-                        ready
-                            .send(path)
-                            .map_err(|_| io::Error::other("readiness receiver closed"))
+                            .ok_or_else(|| io::Error::other("no owned local listener"))
+                            .and_then(|path| {
+                                ready
+                                    .send(path.to_path_buf())
+                                    .map_err(|_| io::Error::other("readiness receiver closed"))
+                            });
+                        std::future::ready(outcome)
                     },
                     async move { stopping.await.map_err(io::Error::other) },
                     |_| {},
@@ -219,6 +236,36 @@ fn configured_local_service_answers_real_frames_and_retires_its_node() -> TestRe
         .await
         .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "configured local Resolver stalled"))?
     })
+}
+
+#[test]
+fn requested_stop_skips_embedded_resolver_binding_and_readiness() -> TestResult {
+    let (_directory, path, mut config) = local_configuration()?;
+    config.set_number(b"resolver", b"PORT", 65_536)?;
+    let called = Cell::new(false);
+    let runtime = tokio::runtime::Builder::new_current_thread().build()?;
+    let report = runtime.block_on(serve_embedded(
+        EmbeddedSettings {
+            config: &config,
+            dns: EmbeddedDns::Datagram {
+                inputs: MachineInputs::default(),
+                endpoints: &[],
+                updates: Default::default(),
+            },
+            socket_policy: Default::default(),
+            clock: Arc::new(SystemClock),
+        },
+        |_| {
+            called.set(true);
+            std::future::ready(Ok(()))
+        },
+        std::future::ready(Ok(())),
+        |_| {},
+    ))?;
+    assert_eq!(report, Report::default());
+    assert!(!path.exists());
+    assert!(!called.get());
+    Ok(())
 }
 
 #[test]

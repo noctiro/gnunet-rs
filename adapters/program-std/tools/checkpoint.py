@@ -9,13 +9,16 @@ from _common import sha,require_disjoint_output,local_snapshot,require_lint_cont
 from normal_reference import load
 from validation import validate_inventory,cargo_artifacts,validate_configuration_locale
 BASE=Path(__file__).resolve().parents[1]
+sys.dont_write_bytecode=True
+sys.path.insert(0,str(BASE.parents[1]/"tools"))
+from rust_toolchain import rust_channel
 BINS={'program-observer','logging-observer','getopt-observer','helpers-observer','configuration-edge','process-logging-observer','file-logging-observer','native-gettext-observer','program-nls-observer','program-broker-observer','diagnostic-helpers-observer','program-daemon-observer','program-monolith-observer','configuration-locale-observer'}
 COUNTS={'program-lifecycle':('profiles',8),'logging':('profiles',19),'getopt':('cases',63),'helpers':('profiles',65),'file-logging':('profiles',21),'native-gettext':('profiles',6),'nls0-program':('profiles',20),'nls1-program':('profiles',20),'program-broker':('profiles',3),'daemon':('profiles',8),'monolith':('profiles',4),'config-diagnostics':('profiles',30),'ownership':('negative_controls',8),'configuration-locale':('profiles',134)}
 def save(path,value):path.write_text(json.dumps(value,indent=2)+'\n')
 def main():
  p=argparse.ArgumentParser()
  for name in ['manifest','config-manifest','repo','source','reference','target-dir','output','library','include']:p.add_argument('--'+name,type=Path,required=True)
- p.add_argument('--msgfmt',default='msgfmt');p.add_argument('--toolchain',default='1.99.1');a=p.parse_args()
+ p.add_argument('--msgfmt',default='msgfmt');p.add_argument('--toolchain');a=p.parse_args();a.toolchain=rust_channel(a.repo.resolve(),a.toolchain)
  if a.manifest.resolve()!=BASE/'Cargo.toml':raise ValueError('manifest is not this maintained package')
  target=a.target_dir.resolve();config=a.config_manifest.resolve().parent
  if target==a.repo.resolve()/'target':raise ValueError('Root target is forbidden')
@@ -44,6 +47,8 @@ def main():
  def component(name,tool,actor,extra=(),common_args=True):
   argv=[sys.executable,str(BASE/'tools'/tool)]
   if common_args:argv+=['--repo',str(a.repo),'--source',str(a.source),'--reference',str(a.reference)]
+  if tool in {'program_compare.py','diagnostic_helpers_compare.py','program_daemon_compare.py','program_monolith_compare.py','program_broker_compare.py'}:
+   argv+=['--toolchain',a.toolchain]
   argv+=['--rust',bins[actor]['path'],'--output',str(out/name),*map(str,extra)];run(name,argv);receipt=json.loads((out/name/'result.json').read_text())
   if receipt.get('status')!='passed':raise ValueError('actual component receipt failed '+name)
   if name=='configuration-locale':validate_configuration_locale(receipt)

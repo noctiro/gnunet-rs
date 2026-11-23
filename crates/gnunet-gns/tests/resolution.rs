@@ -9,9 +9,16 @@ use gnunet_gns::*;
 use gnunet_gnscrypto::{Label, ZoneSecret};
 use gnunet_gnsrecord::{ZoneKeyType, serialize};
 use std::net::{IpAddr, Ipv4Addr};
+use std::num::NonZeroU16;
 
 fn secret(seed: u8) -> ZoneSecret {
     ZoneSecret::Edkey(EdkeySecret::from_seed([seed; 32]))
+}
+
+fn box_selector(protocol: u16, port: u16) -> Result<BoxSelector, Error> {
+    let protocol = NonZeroU16::new(protocol).ok_or(Error::InvalidInput)?;
+    let port = NonZeroU16::new(port).ok_or(Error::InvalidInput)?;
+    Ok(BoxSelector::new(protocol, port))
 }
 
 #[test]
@@ -475,10 +482,14 @@ fn cname_following_replaces_nonempty_remainder_exactly_like_pinned_c() -> Result
     Ok(())
 }
 #[test]
-fn numeric_box_symbolic_registry_and_sbox_prefix_unbox_actual_payload() -> Result<(), Error> {
+fn box_service_effect_supports_decimal_labels_and_preserves_sbox_prefix() -> Result<(), Error> {
     let root = secret(12);
     let box_data = [0, 6, 1, 187, 0, 0, 0, 52, 1, 2, 3];
-    for name in ["_443._tcp.host", "_https._tcp.host"] {
+    for (name, expected_service) in [
+        ("_443._tcp.host", "443"),
+        ("_8443._tcp.host", "8443"),
+        ("_https._tcp.host", "https"),
+    ] {
         let mut i = Instance::new();
         let mut r = Resolver::new(&mut i, Limits::default())?;
         let q = r.lookup(request(root.public_key(), name, RecordType::new(52)))?;
@@ -495,12 +506,14 @@ fn numeric_box_symbolic_registry_and_sbox_prefix_unbox_actual_payload() -> Resul
             )?,
             100,
         )?;
-        if name.contains("https") {
-            assert!(
-                matches!(&r.effect(q)?.ok_or(Error::NotReady)?.kind,EffectKind::Service{service,protocol}if service=="https"&&protocol=="tcp")
-            );
-            r.service(effect(&r, q)?, Some((6, 443)))?;
+        match &r.effect(q)?.ok_or(Error::NotReady)?.kind {
+            EffectKind::Service { service, protocol } => {
+                assert_eq!(service, expected_service);
+                assert_eq!(protocol, "tcp");
+            }
+            _ => return Err(Error::NotReady),
         }
+        r.service(effect(&r, q)?, Some(box_selector(6, 443)?))?;
         let answer = answer(&mut r, q)?;
         assert_eq!(answer.len(), 1);
         assert_eq!(answer[0].record_type, RecordType::new(52));
@@ -697,10 +710,30 @@ fn box_and_sbox_overlap_combines_payloads_and_unassigned_critical_fails() -> Res
         )?,
         100,
     )?;
+    r.service(effect(&r, q)?, Some(box_selector(6, 443)?))?;
     let result = answer(&mut r, q)?;
     assert_eq!(result.len(), 2);
     assert_eq!(result[0].data, [1]);
     assert_eq!(result[1].data, b"second");
+    let q = r.lookup(request(
+        root.public_key(),
+        "_443._tcp.host",
+        RecordType::new(52),
+    ))?;
+    cache(
+        &mut r,
+        q,
+        &block(
+            &root,
+            "host",
+            &[rd(RecordType::SBOX, 200, RecordFlags::NONE, &sbox)],
+        )?,
+        100,
+    )?;
+    assert!(r.effect(q)?.is_none());
+    let result = answer(&mut r, q)?;
+    assert_eq!(result.len(), 1);
+    assert_eq!(result[0].data, b"second");
     let q = r.lookup(request(root.public_key(), "host", RecordType::A))?;
     cache(
         &mut r,
@@ -833,7 +866,7 @@ fn namespace_mismatch_and_dns_disabled_have_explicit_failures() -> Result<(), Er
         let mut r = Resolver::new(
             &mut i,
             Limits {
-                dns: false,
+                dns: gnunet_gns::DnsPolicy::Deny,
                 ..Limits::default()
             },
         )?;

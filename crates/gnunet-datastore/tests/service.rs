@@ -45,7 +45,7 @@ impl Memory {
             .map_or(Ok(()), |failure| Err(TestError(failure)))
     }
 }
-impl Backend for Memory {
+impl Lifecycle for Memory {
     type Error = TestError;
     fn usage(&self) -> Usage {
         Usage {
@@ -53,6 +53,35 @@ impl Backend for Memory {
             value_bytes: self.values.iter().map(|v| v.value.len() as u64).sum(),
         }
     }
+    fn maintain(&mut self, policy: MaintenancePolicy) -> Result<Maintenance, TestError> {
+        self.maintenance += 1;
+        self.error()?;
+        let mut report = Maintenance::default();
+        while report.removed_entries < (policy.max_evictions as u64) {
+            let Some(index) = self
+                .values
+                .iter()
+                .position(|v| v.meta.expiration <= policy.now)
+            else {
+                break;
+            };
+            let old = self.values.remove(index);
+            report.removed_entries += 1;
+            report.removed_bytes += old.value.len() as u64 + ENTRY_OVERHEAD;
+            report.min_expiration = Some(policy.now);
+        }
+        report.more = self.values.iter().any(|v| v.meta.expiration <= policy.now);
+        Ok(report)
+    }
+    fn drop_all(&mut self) -> Result<(), TestError> {
+        self.error()?;
+        self.drops += 1;
+        self.values.clear();
+        Ok(())
+    }
+}
+
+impl Backend for Memory {
     fn put(&mut self, value: Put<'_>, policy: PutPolicy) -> Result<PutReport, TestError> {
         self.puts += 1;
         self.error()?;
@@ -167,32 +196,6 @@ impl Backend for Memory {
             }
             None => Ok(false),
         }
-    }
-    fn maintain(&mut self, policy: MaintenancePolicy) -> Result<Maintenance, TestError> {
-        self.maintenance += 1;
-        self.error()?;
-        let mut report = Maintenance::default();
-        while report.removed_entries < (policy.max_evictions as u64) {
-            let Some(index) = self
-                .values
-                .iter()
-                .position(|v| v.meta.expiration <= policy.now)
-            else {
-                break;
-            };
-            let old = self.values.remove(index);
-            report.removed_entries += 1;
-            report.removed_bytes += old.value.len() as u64 + ENTRY_OVERHEAD;
-            report.min_expiration = Some(policy.now);
-        }
-        report.more = self.values.iter().any(|v| v.meta.expiration <= policy.now);
-        Ok(report)
-    }
-    fn drop_all(&mut self) -> Result<(), TestError> {
-        self.error()?;
-        self.drops += 1;
-        self.values.clear();
-        Ok(())
     }
 }
 struct Random(u64);
@@ -802,6 +805,17 @@ fn remove_unknown_keeps_original_cause_and_fences_without_status() -> TestResult
     };
     let mut random = Random(0);
     let mut output = [0xa5; STATUS_BUFFER_BYTES];
+    assert!(matches!(
+        service.handle(
+            client,
+            Request::Drop,
+            &mut backend,
+            &mut output,
+            now(),
+            &mut random
+        )?,
+        ReplyAction::NoReply
+    ));
     let original = output;
     let key = [67; 64];
     let request = Request::Remove {
@@ -836,6 +850,11 @@ fn remove_unknown_keeps_original_cause_and_fences_without_status() -> TestResult
         Err(Error::OutcomeUnknown)
     ));
     assert_eq!(output, original);
+    assert!(matches!(
+        service.shutdown(&mut backend),
+        Err(WorkError::Protocol(Error::OutcomeUnknown))
+    ));
+    assert_eq!(backend.drops, 0);
     Ok(())
 }
 
@@ -976,5 +995,101 @@ fn underestimated_reservations_use_ordinary_quota_without_spending_another_clien
     assert_eq!(backend.values.len(), 3);
     assert_eq!(service.disconnect(a)?, 0);
     assert_eq!(service.disconnect(b)?, 0);
+    Ok(())
+}
+
+#[test]
+fn yielding_command_charges_once_and_only_its_original_can_settle() -> TestResult {
+    let mut identity = Instance::new();
+    let mut clients = [ClientSlot::EMPTY; 2];
+    let mut reservations = [ReservationSlot::EMPTY; 1];
+    let mut service = Service::new(
+        &mut identity,
+        &mut clients,
+        &mut reservations,
+        Config::default(),
+    )?;
+    let a = service.connect()?;
+    let b = service.connect()?;
+    let mut backend = Memory::default();
+    let mut random = Random(0);
+    let mut output = [0; STATUS_BUFFER_BYTES];
+    let action = service.handle(
+        a,
+        Request::Reserve {
+            amount: 10,
+            entries: 2,
+        },
+        &mut backend,
+        &mut output,
+        now(),
+        &mut random,
+    )?;
+    let rid = u32::try_from(code(action, &output)?)?;
+    let request = Request::Put(data(&[7; 64], b"exact", rid));
+    let Dispatch::Run {
+        id,
+        command: Command::Put(put, policy),
+    } = service.begin::<TestError>(
+        a,
+        request,
+        || backend.usage(),
+        &mut output,
+        now(),
+        &mut random,
+    )?
+    else {
+        return Err("expected admitted PUT".into());
+    };
+    assert_eq!(policy.random, 1);
+    assert_eq!(service.accounting(&backend)?.reserved_bytes, 261);
+    assert!(matches!(
+        service.begin::<TestError>(
+            b,
+            request,
+            || backend.usage(),
+            &mut output,
+            now(),
+            &mut random,
+        ),
+        Err(Error::WouldBlock)
+    ));
+    assert_eq!(random.0, 1);
+    assert_eq!(service.disconnect(a), Err(Error::WouldBlock));
+    assert!(matches!(
+        service.maintain(&mut backend, now()),
+        Err(WorkError::Protocol(Error::WouldBlock))
+    ));
+    assert!(matches!(
+        service.shutdown(&mut backend),
+        Err(WorkError::Protocol(Error::WouldBlock))
+    ));
+    assert!(matches!(
+        service.finish(&id, Completion::<TestError>::Remove(Ok(false)), &mut output),
+        Err(Error::Conflict)
+    ));
+    let completion = Completion::Put(backend.put(put, policy));
+    assert_eq!(
+        code(service.finish(&id, completion, &mut output)?, &output)?,
+        1
+    );
+    assert_eq!(backend.puts, 1);
+    assert_eq!(service.cancel(&id), Err(Error::Stale));
+
+    let Dispatch::Run { id: second, .. } = service.begin::<TestError>(
+        a,
+        request,
+        || backend.usage(),
+        &mut output,
+        now(),
+        &mut random,
+    )?
+    else {
+        return Err("expected second PUT".into());
+    };
+    assert_eq!(service.cancel(&id), Err(Error::Stale));
+    service.cancel(&second)?;
+    assert_eq!(service.disconnect(a)?, 0);
+    assert_eq!(backend.puts, 1);
     Ok(())
 }

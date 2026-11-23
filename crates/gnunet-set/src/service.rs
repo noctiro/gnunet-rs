@@ -48,6 +48,7 @@ struct Offer<'id> {
 struct CopyRow<'id> {
     cookie: [u8; 4],
     source: Client<'id>,
+    publication: Option<EffectId<'id>>,
 }
 enum Engine {
     Union(Union),
@@ -367,6 +368,13 @@ impl<'id> Service<'id> {
         self.extra(external)
     }
     fn queue(&mut self, action: Action<'id>) -> Result<EffectId<'id>, Error> {
+        self.queue_for_request(action, None)
+    }
+    fn queue_for_request(
+        &mut self,
+        action: Action<'id>,
+        standalone_request: Option<u32>,
+    ) -> Result<EffectId<'id>, Error> {
         let ordering = self.ordering(&action)?;
         self.effect_room(1, action.bytes())?;
         let id = EffectId::new(self.instance, self.serial()?);
@@ -379,6 +387,7 @@ impl<'id> Service<'id> {
             action,
             admitted: false,
             ordering,
+            standalone_request,
         });
         Ok(id)
     }
@@ -408,6 +417,32 @@ impl<'id> Service<'id> {
                 |b| b.element(),
             ),
         })
+    }
+    fn check_request_id(&self, client: Client<'id>, rid: u32) -> Result<(), Error> {
+        if self
+            .ops
+            .iter()
+            .any(|op| op.client == client && op.rid == rid)
+            || self.effects.iter().any(|effect| {
+                effect.standalone_request == Some(rid) && effect.ordering.client == Some(client)
+            })
+        {
+            return Err(Error::Conflict);
+        }
+        Ok(())
+    }
+    fn fail_request(&mut self, client: Client<'id>, rid: u32) -> Result<(), Error> {
+        self.check_request_id(client, rid)?;
+        let bytes = self.result(rid, Status::Failure, 0, None)?;
+        self.queue_for_request(
+            Action::ClientFrame {
+                client,
+                operation: None,
+                bytes,
+            },
+            Some(rid),
+        )?;
+        Ok(())
     }
     /// Admit one actual original local client, initially unregistered.
     pub fn attach_client(&mut self) -> Result<Client<'id>, Error> {
@@ -486,17 +521,10 @@ impl<'id> Service<'id> {
             context,
             app,
         } = plan;
-        if self.ops.len() >= self.limits.operations
-            || self
-                .ops
-                .iter()
-                .any(|o| o.client == self.clients[c].id && o.rid == rid)
-        {
+        if self.ops.len() >= self.limits.operations {
             return Err(Error::Conflict);
         }
-        if context.len() > self.limits.context_bytes {
-            return Err(Error::TooLarge);
-        }
+        self.check_request_id(self.clients[c].id, rid)?;
         let (kind, content) = self.content(c)?;
         let mode = ResultMode::try_from(mode)?;
         mode.validate(kind)?;
@@ -670,15 +698,25 @@ impl<'id> Service<'id> {
                 options,
                 context,
             } => {
+                let (kind, content) = self.content(c)?;
                 // Encoding preflight enforces the actual CADET application cap,
                 // which is narrower than the public local nested-context bound.
                 PeerMessage::OperationRequest {
-                    operation: self.content(c)?.0 as u32,
+                    operation: kind as u32,
                     element_count: 0,
                     app_id,
                     context,
                 }
                 .encoded_len(self.abi)?;
+                if context.len() > self.limits.context_bytes {
+                    return Err(Error::TooLarge);
+                }
+                if kind == OperationType::Union
+                    && !Union::supports_local_options(options, content.len())?
+                {
+                    ResultMode::try_from(result_mode)?.validate(kind)?;
+                    return self.fail_request(client, request_id);
+                }
                 self.effect_room(1, 0)?;
                 let op = self.prepare_op(
                     c,
@@ -708,24 +746,35 @@ impl<'id> Service<'id> {
                 result_mode,
                 options,
             } => {
-                let i = self
-                    .offers
-                    .iter()
-                    .position(|i| {
-                        i.accept == accept_id && i.adopting.is_none() && !i.closing && !i.gone
-                    })
-                    .ok_or(Error::Stale)?;
+                let (kind, content) = self.content(c)?;
+                let Some(i) = self.offers.iter().position(|i| {
+                    i.accept == accept_id
+                        && i.adopting.is_none()
+                        && !i.closing
+                        && !i.gone
+                        && i.expires > self.now
+                }) else {
+                    return self.fail_request(client, request_id);
+                };
                 let listener = self.ci(self.offers[i].listener)?;
-                if !self.clients[listener].live || self.offers[i].expires <= self.now {
-                    return Err(Error::Deadline);
+                if !self.clients[listener].live {
+                    return self.fail_request(client, request_id);
                 }
                 let offered_kind = self.clients[listener]
                     .listener
                     .as_ref()
                     .ok_or(Error::Stale)?
                     .operation;
-                if self.content(c)?.0 != offered_kind {
+                if kind != offered_kind {
                     return Err(Error::InvalidInput);
+                }
+                if kind == OperationType::Union
+                    && !Union::supports_local_options(options, content.len())?
+                {
+                    ResultMode::try_from(result_mode)?.validate(kind)?;
+                    self.fail_request(client, request_id)?;
+                    self.offers[i].closing = true;
+                    return Ok(());
                 }
                 let count = self.offers[i].count;
                 let incoming = self.offers[i].id;
@@ -760,26 +809,30 @@ impl<'id> Service<'id> {
                 Ok(())
             }
             ClientRequest::Reject { accept_id } => {
-                let i = self
-                    .offers
-                    .iter()
-                    .position(|i| {
-                        i.accept == accept_id
-                            && i.listener == client
-                            && i.adopting.is_none()
-                            && !i.closing
-                    })
-                    .ok_or(Error::Stale)?;
-                self.offers[i].closing = true;
+                self.clients[c]
+                    .listener
+                    .as_ref()
+                    .ok_or(Error::InvalidInput)?;
+                if let Some(offer) = self.offers.iter_mut().find(|i| {
+                    i.accept == accept_id
+                        && i.listener == client
+                        && i.adopting.is_none()
+                        && !i.closing
+                        && !i.gone
+                }) {
+                    offer.closing = true;
+                }
                 Ok(())
             }
             ClientRequest::Cancel { request_id } => {
-                let i = self
+                self.content(c)?;
+                if let Some(i) = self
                     .ops
                     .iter()
                     .position(|o| o.client == client && o.rid == request_id)
-                    .ok_or(Error::Stale)?;
-                self.cancel_op(i, Error::Cancelled);
+                {
+                    self.cancel_op(i, Error::Cancelled);
+                }
                 Ok(())
             }
             ClientRequest::Iterate => {
@@ -825,7 +878,7 @@ impl<'id> Service<'id> {
                 let mut growth = Growth::new(self.remaining()?);
                 growth.claim(bytes.capacity())?;
                 growth.grow_vec(&mut self.copies, 1)?;
-                self.queue(Action::ClientFrame {
+                let publication = self.queue(Action::ClientFrame {
                     client,
                     operation: None,
                     bytes,
@@ -833,6 +886,7 @@ impl<'id> Service<'id> {
                 self.copies.push(CopyRow {
                     cookie,
                     source: client,
+                    publication: Some(publication),
                 });
                 self.cookie = value;
                 Ok(())
@@ -844,7 +898,7 @@ impl<'id> Service<'id> {
                 let copy = self
                     .copies
                     .iter()
-                    .position(|r| r.cookie == cookie)
+                    .position(|r| r.cookie == cookie && r.publication.is_none())
                     .ok_or(Error::Stale)?;
                 let source = self.ci(self.copies[copy].source)?;
                 if !self.clients[source].live {
@@ -1418,6 +1472,15 @@ impl<'id> Service<'id> {
                 client, operation, ..
             } => {
                 let c = self.ci(*client)?;
+                if operation.is_none()
+                    && let Some(index) = self.copies.iter().position(|r| r.publication == Some(id))
+                {
+                    if failure.is_none() && self.clients[c].live {
+                        self.copies[index].publication = None;
+                    } else {
+                        self.copies.swap_remove(index);
+                    }
+                }
                 if self.clients[c].iteration_effect == Some(id) {
                     self.clients[c].iteration_effect = None;
                     if failure.is_none()
@@ -1850,6 +1913,13 @@ impl<'id> Service<'id> {
     pub fn operation_live(&self, id: Operation<'id>) -> bool {
         self.oi(id)
             .is_ok_and(|i| !self.ops[i].cancelled && !self.ops[i].final_done)
+    }
+    /// Time remaining under the original operation deadline, clamped by the
+    /// canonical time already observed by the service. Does not grant IO.
+    pub fn operation_remaining(&self, id: Operation<'id>, now: u64) -> Result<u64, Error> {
+        Ok(self.ops[self.oi(id)?]
+            .expires
+            .saturating_sub(self.now.max(now)))
     }
     /// Whether the exact pending incoming owner is still permitted native IO.
     #[must_use]

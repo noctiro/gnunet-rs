@@ -51,10 +51,12 @@ targets are retained. Once established, a replacement registration-only phase
 may expire and be retired for another finite attempt within that same whole
 lifetime. Old receipts/causes stay in the bounded diagnostics; whole registration
 remains a local write. Explicit close, whole/input/control expiry or
-identity/protocol failure cannot revive it. Outgoing calls are never redialed, and old controls or
-audio are not replayed. GNS/IDENTITY source failure or EOF is not a negative
-lookup or a successful hangup. A zero-record GNS result remains distinct
-from source failure.
+identity/protocol failure cannot revive it. Outgoing transport loss or expiry
+retires that call and its media while the registered phone remains available.
+The command retains the original loss and lets the user place a new call.
+Shared provider or protocol failures end the interactive session. Old controls
+and audio never transfer to a new call. A zero-record GNS result remains
+distinct from source failure.
 
 ## Rust helper installation
 
@@ -62,8 +64,10 @@ The command owns two Rust helper children: `gnunet-helper-audio-record` and
 `gnunet-helper-audio-playback`. Unix launches them through
 `gnunet-arm-spawn-helper`; Windows uses `CreateProcessW` directly with an explicit
 standard-handle allowlist and no shell. All helpers must come from the same Rust
-installation. Unix audio uses PulseAudio; Windows uses WASAPI and a standard Opus
-DLL beside the helpers, as described in the [audio backend](../../adapters/conversation-audio-std/README.md).
+installation. On Unix, the helpers default to PulseAudio.
+`GNUNET_CONVERSATION_AUDIO_PROVIDER=gstreamer` selects GStreamer on Linux,
+macOS and FreeBSD. Windows uses WASAPI and a standard Opus DLL beside the
+helpers. [Audio backend](../../adapters/conversation-audio-std/README.md#native-providers)
 
 For a command in `PREFIX/bin`, helpers default to
 `PREFIX/lib/gnunet/libexec/NAME`; otherwise they are siblings of the command,
@@ -91,6 +95,21 @@ pair requires the original processes and pending write to retire. Diagnostics
 keep native termination results, actual exits, partial cursors, write cancellation
 and remaining debt separately. Process admission, an exit code of zero and a
 whole local frame write do not establish hardware readiness or remote playback.
+
+## Local microphone and speaker test
+
+Run `gnunet-conversation-test [-c FILENAME]` to record for five seconds and
+play the recording back on the same machine. It uses the installed Rust
+record and playback helpers and the same `HELPER_RECORD` and
+`HELPER_PLAYBACK` path settings. It runs without a node or Conversation
+service. The recording stays in bounded memory. Replay uses the complete
+frames retained before capture stopped.
+
+The recorder's exit is observed before playback starts. Playback has a
+ten-second deadline to write the recording and observe the playback helper's
+exit. Success means the native playback helper reported successful drain.
+Check the audible output to qualify the device. Unix requires the selected
+PCM provider and libopus. Windows requires WASAPI and the installed Opus DLL.
 
 ## Bounds
 

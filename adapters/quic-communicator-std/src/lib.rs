@@ -3,15 +3,22 @@
 //! no detached Quinn tasks, hidden DNS, production GNUnet FFI or peer-auth claim.
 #![forbid(unsafe_code)]
 mod application;
+#[cfg(feature = "embedded-config")]
+mod configured;
 pub mod credentials;
 mod drivers;
+/// Caller-driven raw QUIC and HTTP/3 foreground.
+pub mod embedded;
 mod endpoint;
+mod frame_pool;
 #[cfg(feature = "h3-profile")]
 mod h3_link;
 mod ipc;
+mod local_keys;
 /// Actual owned row inventory; independent of socket byte observations.
 pub mod metrics;
 mod network;
+mod quic_tls;
 mod raw;
 mod runtime;
 mod socket;

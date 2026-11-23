@@ -88,6 +88,13 @@ fn durable_receiver_restart_rejects_captured_kx_and_binds_both_identities() -> T
         Err(JournalError::Core(Error::Authentication))
     ));
     let mut journal = Journal::open(&scratch.0, b.peer(), 2)?;
+    gnunet_native::filesystem::validate_readonly(
+        &journal
+            .current
+            .as_ref()
+            .ok_or("missing reopened original")?
+            .file,
+    )?;
     let mut receiver = Receiver::new(b.peer(), a.peer(), RxPolicy::default())?;
     assert!(matches!(
         receiver.initial(&b, first.bytes(), &mut plain, &mut journal),
@@ -138,7 +145,21 @@ fn real_postrename_parent_loss_blocks_all_admission_until_original_recovered() -
     let local = [2; 32];
     let peer = [3; 32];
     let mut journal = Journal::open(&live, local, 2)?;
+    gnunet_native::filesystem::validate_readonly(
+        &journal
+            .current
+            .as_ref()
+            .ok_or("missing initial original")?
+            .file,
+    )?;
     journal.commit_time(local, peer, 10)?;
+    gnunet_native::filesystem::validate_readonly(
+        &journal
+            .current
+            .as_ref()
+            .ok_or("missing committed original")?
+            .file,
+    )?;
     let result = journal.commit_time_observed(local, peer, 11, || {
         assert!(fs::rename(&live, &moved).is_ok());
     });
@@ -150,6 +171,13 @@ fn real_postrename_parent_loss_blocks_all_admission_until_original_recovered() -
             ..
         }))
     ));
+    gnunet_native::filesystem::validate_readonly(
+        &journal
+            .pending
+            .as_ref()
+            .ok_or("missing uncertain original replacement")?
+            .file,
+    )?;
     let pending = fs::read(moved.join(DATA))?;
     assert!(journal.quiescent().is_err());
     assert!(journal.latest(peer).is_err());
@@ -186,6 +214,13 @@ fn real_postrename_parent_loss_blocks_all_admission_until_original_recovered() -
     fs::write(live.join(DATA), &pending)?;
     File::open(live.join(DATA))?.sync_all()?;
     assert!(journal.recover()?);
+    gnunet_native::filesystem::validate_readonly(
+        &journal
+            .current
+            .as_ref()
+            .ok_or("missing recovered original")?
+            .file,
+    )?;
     assert!(journal.quiescent()?);
     assert_eq!(journal.latest(peer)?, Some(11));
     assert!(matches!(
@@ -195,6 +230,56 @@ fn real_postrename_parent_loss_blocks_all_admission_until_original_recovered() -
     journal.commit_time(local, peer, 12)?;
     assert_eq!(journal.latest(peer)?, Some(12));
     assert_eq!(journal.commits(), 3);
+    Ok(())
+}
+#[test]
+fn changed_committed_inode_cannot_authorize_reads_or_replace_newer_state() -> Test {
+    let scratch = Scratch::new()?;
+    let local = [2; 32];
+    let peer = [3; 32];
+    let mut journal = Journal::open(&scratch.0, local, 2)?;
+    journal.commit_time(local, peer, 10)?;
+    drop(journal);
+    let mut journal = Journal::open(&scratch.0, local, 2)?;
+    let committed = journal
+        .current
+        .as_ref()
+        .ok_or("missing original snapshot")?
+        .info;
+
+    let path = scratch.0.join(DATA);
+    let newer = Snapshot {
+        highwater: 0,
+        records: vec![Record {
+            peer,
+            monotonic: 99,
+        }],
+    }
+    .encode(local)?;
+    let mut edited = File::options().write(true).open(&path)?;
+    edited.write_all(&newer)?;
+    edited.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(5_000))?;
+    edited.sync_all()?;
+    let edited_info = private_data_file_info(&edited)?;
+    assert_eq!(edited_info.identity, committed.identity);
+    assert_eq!(edited_info.bytes, committed.bytes);
+    assert_ne!(edited_info.times.modified, committed.times.modified);
+    drop(edited);
+
+    assert!(journal.quiescent().is_err());
+    assert!(journal.latest(peer).is_err());
+    assert!(matches!(
+        journal.commit_time(local, peer, 12),
+        Err(JournalError::Native(Failure {
+            stage: Stage::Read,
+            outcome: Outcome::Unknown,
+            ..
+        }))
+    ));
+    assert!(journal.recover().is_err());
+    assert!(journal.latest(peer).is_err());
+    assert_eq!(fs::read(&path)?, newer);
+    assert_eq!(journal.commits(), 0);
     Ok(())
 }
 #[test]
@@ -245,9 +330,10 @@ fn replaced_canonical_entry_blocks_admission_until_original_is_restored() -> Tes
     let local = [2; 32];
     let mut journal = Journal::open(&scratch.0, local, 2)?;
     journal.commit_time(local, [3; 32], 9)?;
+    let canonical = scratch.0.join(DATA);
     let original = scratch.0.join("original-data");
-    fs::rename(scratch.0.join(DATA), &original)?;
-    fs::create_dir(scratch.0.join(DATA))?;
+    fs::rename(&canonical, &original)?;
+    fs::create_dir(&canonical)?;
     assert_eq!(
         ReplayStore::commit(&mut journal, local, [3; 32], 10),
         Err(Error::OutcomeUnknown)
@@ -257,8 +343,20 @@ fn replaced_canonical_entry_blocks_admission_until_original_is_restored() -> Tes
     assert_eq!(failure.outcome, Outcome::Unknown);
     assert!(journal.latest([3; 32]).is_err());
     assert_eq!(journal.commits(), 1);
-    fs::remove_dir(scratch.0.join(DATA))?;
-    fs::rename(original, scratch.0.join(DATA))?;
+    fs::remove_dir(&canonical)?;
+    fs::copy(&original, &canonical)?;
+    assert!(journal.recover().is_err());
+    fs::remove_file(&canonical)?;
+    fs::rename(original, &canonical)?;
+    // Make the restored metadata observably different even on filesystems that
+    // keep the same change time across a rename and its reversal.
+    let restored = File::options().write(true).open(&canonical)?;
+    restored.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(5_000))?;
+    drop(restored);
+    assert!(journal.latest([3; 32]).is_err());
+    assert!(journal.recover()?);
+    assert!(!journal.recover()?);
+    assert_eq!(journal.commits(), 1);
     assert_eq!(journal.latest([3; 32])?, Some(9));
     journal.commit_time(local, [3; 32], 10)?;
     assert_eq!(journal.latest([3; 32])?, Some(10));

@@ -162,6 +162,55 @@ fn deterministic_rotation_is_reversible_and_unchanged_feed_is_atomic() -> Result
     assert_eq!(service.identity().public_key(), original);
     Ok(())
 }
+#[cfg(feature = "alloc")]
+#[test]
+fn heap_announcements_match_inline_wire_and_capacity_semantics() -> Result<(), Error> {
+    use gnunet_pils::HeapService;
+
+    const ANNOUNCEMENT_LIMIT: usize = 204;
+    let profile = Profile::ReferenceDeterministic;
+    let mut inline = service::<ANNOUNCEMENT_LIMIT>(profile)?;
+    let mut heap = HeapService::<ANNOUNCEMENT_LIMIT>::new_heap(
+        MasterKey::from_seed(core::array::from_fn(|i| i as u8)),
+        profile,
+        100,
+        limits(),
+    )?;
+    assert_eq!(inline.announcement(), heap.announcement());
+
+    let mut frame = [0; 2400];
+    let mut scratch = [0; 2048];
+    let len = feed(&[b"tcp://127.0.0.1:1234"], &mut frame)?;
+    let inline_action = inline.receive(&frame[..len], &mut scratch, 200, &mut [])?;
+    assert_eq!(
+        inline_action,
+        Action::Broadcast {
+            identity_changed: true
+        }
+    );
+    assert_eq!(
+        heap.receive(&frame[..len], &mut scratch, 200, &mut [])?,
+        inline_action
+    );
+    assert_eq!(heap.announcement(), inline.announcement());
+    let peer = heap.identity().public_key();
+
+    let len = feed(
+        &[b"tcp://127.0.0.1:4321", b"tcp://127.0.0.1:3456"],
+        &mut frame,
+    )?;
+    assert_eq!(
+        inline.receive(&frame[..len], &mut scratch, 300, &mut []),
+        Err(Error::Capacity)
+    );
+    assert_eq!(
+        heap.receive(&frame[..len], &mut scratch, 300, &mut []),
+        Err(Error::Capacity)
+    );
+    assert_eq!(heap.announcement(), inline.announcement());
+    assert_eq!(heap.identity().public_key(), peer);
+    Ok(())
+}
 #[test]
 fn explicit_source_choices_cannot_override_a_conflicting_or_unknown_node_profile()
 -> Result<(), Error> {

@@ -110,13 +110,31 @@ pub fn encode_data<'a>(plaintext: &[u8], output: &'a mut [u8]) -> Result<Encoded
     let derived = material(&key)?;
     let target = &mut output[..length];
     target[..plaintext.len()].copy_from_slice(plaintext);
-    match xchacha20poly1305_seal(
-        &derived.secret,
-        &derived.nonce,
-        &[],
-        &mut target[..plaintext.len()],
-    ) {
-        Ok(tag) => target[plaintext.len()..].copy_from_slice(&tag),
+    seal_data(key, &derived, plaintext.len(), target)
+}
+
+/// Encode the already initialized plaintext prefix as a DBLOCK in the same
+/// buffer. The buffer must also have room for the detached authentication tag.
+pub fn encode_data_in_place(output: &mut [u8], length: usize) -> Result<Encoded<'_>, Error> {
+    if length > BLOCK_BYTES {
+        return Err(Error::TooLarge);
+    }
+    let target = output
+        .get_mut(..length + TAG_BYTES)
+        .ok_or(Error::Capacity)?;
+    let key = hash512(&target[..length]);
+    let derived = material(&key)?;
+    seal_data(key, &derived, length, target)
+}
+
+fn seal_data<'a>(
+    key: [u8; 64],
+    derived: &Material,
+    length: usize,
+    target: &'a mut [u8],
+) -> Result<Encoded<'a>, Error> {
+    match xchacha20poly1305_seal(&derived.secret, &derived.nonce, &[], &mut target[..length]) {
+        Ok(tag) => target[length..].copy_from_slice(&tag),
         Err(error) => {
             target.zeroize();
             return Err(error);

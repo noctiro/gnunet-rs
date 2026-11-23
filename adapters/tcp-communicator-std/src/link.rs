@@ -63,6 +63,12 @@ impl Link {
     pub(crate) fn empty(&self) -> bool {
         self.tx.is_empty()
     }
+    pub(crate) fn input_idle(&self) -> bool {
+        self.filled == 0 && !self.ready
+    }
+    pub(crate) fn matches_capacity(&self, bytes: usize, frames: usize) -> bool {
+        self.max_bytes == bytes && self.max_frames == frames
+    }
     pub(crate) fn online(&self) -> bool {
         self.connection.is_some()
     }

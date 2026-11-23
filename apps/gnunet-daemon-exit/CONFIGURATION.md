@@ -149,8 +149,6 @@ replaced by the big-endian local port. At most256 mappings are retained.
   `CADET_PAYLOAD_BYTES`, `CADET_SEND_CREDIT`, `RESOLVER_FRAME_BYTES`,
   `RESOLVER_IO_SLICE_BYTES`, `RESOLVER_QUEUE`. Existing native owners validate
   frame and slot capacities. Resolver slots/name storage are fixed128/256.
-  `PEER_AF_PROFILE=native|linux|darwin|freebsd|windows` explicitly selects the official numeric
-  peer AF ABI without adding any negotiation wire.
 
 The two example configurations are inputs for a later explicitly executed
 integration run. They do not start dependencies. DNS-only needs a CADET
@@ -161,6 +159,20 @@ administrative privileges. Linux fresh instead needs the privileged helper
 installation. macOS and FreeBSD use their direct native creation paths. Device
 lifetime and cleanup follow the [TUN ownership contract](../../adapters/tun-std/API.md#device-ownership-and-provisioning). Disabled egress setup is an explicit operator-managed profile; no native
 snapshot proves external forwarding, NAT or remote reachability.
+
+### Peer address families
+
+Set `[exit-rust] PEER_AF_PROFILES` to a semicolon-separated list of up to 64
+`PEER PROFILE` entries. Each peer uses a 52-character GNUnet identity or 64 hex
+digits. Profiles are `native`, `linux`, `darwin`, `freebsd` or `windows`.
+Duplicate decoded identities are rejected. EXIT selects the assignment from the
+authenticated CADET channel's peer and uses it for ICMP replies, including
+IPv6 errors on named TCP and UDP service channels.
+
+For unassigned peers, EXIT uses the first supported IPv6 AF value in an
+admitted request. Until then it uses `[exit-rust] PEER_AF_PROFILE`, which
+accepts the same names and defaults to `native`. The explicit reply assignment
+and the received wire AF remain independent on each channel.
 
 ## Windows Wintun
 

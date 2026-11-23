@@ -36,7 +36,7 @@ fn run(inherited: gnunet_service_startup::ClientStartup) -> Result<(), Failure> 
         getopt::Options,
         helpers::{self, Target},
         logging::Logger,
-        program::{self, Defaults, Invocation, NlsDisabled, Preparation},
+        program::{self, Defaults, Invocation, Preparation},
         shared_clock::SharedClock,
     };
     use std::sync::Arc;
@@ -75,7 +75,7 @@ fn run(inherited: gnunet_service_startup::ClientStartup) -> Result<(), Failure> 
         provide.clone(),
     ));
     let mut logger = Logger::new(b"gnunet-daemon-hostlist", std::process::id(), false)?;
-    let prepared=program::prepare(config,Invocation{binary_name:b"gnunet-daemon-hostlist",help:Some(b"Official HOSTLIST bootstrap, learned advertisements, verified HELLO publication. -a/--advertise -b/--bootstrap -e/--enable-learning -p/--provide-hostlist. HTTP/HTTPS bootstrap uses actual shared Resolver, verified Rustls and bounded original sockets; own qualified metadata store only. URI and proxy authentication are redacted. [hostlist-rust] supplies explicit resource/time profiles."),select_default_filename:true,defaults:Defaults::Native},options,std::env::args_os(),&program::Environment::capture(),&mut NlsDisabled,&mut logger,&clock,&mut io::stdout().lock(),&mut io::stderr().lock());
+    let prepared=program::prepare_installed(config,Invocation{binary_name:b"gnunet-daemon-hostlist",help:Some(b"Official HOSTLIST bootstrap, learned advertisements, verified HELLO publication. -a/--advertise -b/--bootstrap -e/--enable-learning -p/--provide-hostlist. HTTP/HTTPS bootstrap uses actual shared Resolver, verified Rustls and bounded original sockets; own qualified metadata store only. URI and proxy authentication are redacted. [hostlist-rust] supplies explicit resource/time profiles."),select_default_filename:true,defaults:Defaults::Native},options,std::env::args_os(),&program::Environment::capture(),&mut logger,&clock,&mut io::stdout().lock(),&mut io::stderr().lock());
     let reports = reporting::Reports::new(logger, clock.clone());
     let result = (|| {
         let prepared = match prepared? {

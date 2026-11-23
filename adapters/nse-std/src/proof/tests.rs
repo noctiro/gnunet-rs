@@ -12,10 +12,8 @@ fn actual_raw8_is_atomic_and_kernel_fence_releases_without_pid_guessing()
     let path = scratch.0.join("proof");
     let mut first = Store::open(path.clone())?;
     assert_eq!(first.loaded()?, None);
-    #[cfg(unix)]
-    assert_eq!(first.directory_sync(), DirectorySync::Synchronized);
-    #[cfg(windows)]
-    assert_eq!(first.directory_sync(), DirectorySync::Unavailable);
+    let barrier = gnunet_native::filesystem::Directory::open(&scratch.0)?.sync()?;
+    assert_eq!(first.directory_sync(), barrier);
     assert!(matches!(
         Store::open(path.clone()),
         Err(Error {

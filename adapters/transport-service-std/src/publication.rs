@@ -3,7 +3,7 @@
 //! lifecycle. No Committed/Durable state is set from STORE_RESULT.
 use crate::{
     Failure,
-    generation::{self, Reservations},
+    generation::{self, Reservations, retirement},
     hello::{self, HelloSink},
     pils::Pils,
     time::Bounds,
@@ -63,10 +63,15 @@ struct Row<'id> {
     refresh: Option<u64>,
     retiring: bool,
 }
-struct Feed {
-    publication: PublicationId,
-    uris: Vec<u8>,
-    bounds: Bounds,
+enum Feed<'id> {
+    AwaitingAdmission {
+        publication: PublicationId,
+        bounds: Bounds,
+    },
+    Submitted {
+        publication: PublicationId,
+        operation: OperationId<'id>,
+    },
 }
 struct HelloIntent<'id> {
     task: HelloTask<'id>,
@@ -96,16 +101,22 @@ pub struct Publications<'id> {
     maximum: usize,
     authority: Authority,
     identity: Identity<'id>,
+    lifecycle: Lifecycle,
     limits: Limits,
     stamp_owner: Option<AddressLease>,
-    feed: Option<Feed>,
-    feed_operation: Option<OperationId<'id>>,
+    feed: Option<Feed<'id>>,
     hello: Option<HelloIntent<'id>>,
     hello_running: bool,
     hello_until: Option<u64>,
     hello_publication: Option<PublicationId>,
     refresh_feed: Option<u64>,
     scratch: Vec<u8>,
+}
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum Lifecycle {
+    Active,
+    Rotating,
+    Retired,
 }
 fn allocate(n: usize) -> Result<Vec<u8>, Fault> {
     let mut out = Vec::new();
@@ -131,10 +142,10 @@ impl<'id> Publications<'id> {
             maximum: limits.addresses,
             authority: Authority::from_verified_peer(identity.peer()),
             identity,
+            lifecycle: Lifecycle::Active,
             limits,
             stamp_owner: None,
             feed: None,
-            feed_operation: None,
             hello: None,
             hello_running: false,
             hello_until: None,
@@ -147,7 +158,10 @@ impl<'id> Publications<'id> {
     /// Changing physical source/key requires actual outer epoch retirement;
     /// identical raw peer bytes cannot recreate the former authority brand.
     pub fn identity(&mut self, identity: Identity<'id>) -> Result<(), Fault> {
-        if identity.epoch() != self.identity.epoch() || identity.peer() != self.identity.peer() {
+        if self.lifecycle != Lifecycle::Active
+            || identity.epoch() != self.identity.epoch()
+            || identity.peer() != self.identity.peer()
+        {
             return Err(Fault::StaleGeneration);
         }
         self.identity = identity;
@@ -288,10 +302,7 @@ impl<'id> Publications<'id> {
                     Err(_) => row.retiring = true,
                 }
             }
-            SignTask::Feed(_) => {
-                self.feed_operation = None;
-                self.feed = None;
-            }
+            SignTask::Feed(publication) => self.settle_feed(&publication)?,
             SignTask::Validation(_) => return Err(Fault::Malformed.into()),
         }
         Ok(())
@@ -302,13 +313,27 @@ impl<'id> Publications<'id> {
         let SignTask::Feed(publication) = origin else {
             return Err(Fault::Malformed.into());
         };
-        self.feed_operation = None;
-        match server.address_publication_written(&publication) {
-            Ok(()) | Err(Fault::Stale) => {}
-            Err(error) => return Err(error.into()),
-        }
+        self.check_feed(&publication)?;
+        server.address_publication_written(&publication)?;
         self.feed = None;
         Ok(())
+    }
+    fn check_feed(&self, expected: &PublicationId) -> Result<(), Fault> {
+        match &self.feed {
+            Some(Feed::Submitted { publication, .. }) if expected == publication => Ok(()),
+            _ => Err(Fault::Stale),
+        }
+    }
+    fn settle_feed(&mut self, publication: &PublicationId) -> Result<(), Fault> {
+        self.check_feed(publication)?;
+        self.feed = None;
+        Ok(())
+    }
+    fn feed_operation(&self) -> Option<OperationId<'id>> {
+        match &self.feed {
+            Some(Feed::Submitted { operation, .. }) => Some(*operation),
+            _ => None,
+        }
     }
     /// Apply actual STORE result only to the original certificate. Strong pure
     /// commit_finished(Committed) is deliberately never called from this path.
@@ -377,20 +402,25 @@ impl<'id> Publications<'id> {
     /// Capture a real verified PILS announcement only when its exact identity,
     /// original resource revision and current address list still match. Forward
     /// its unchanged purpose7 signature as an ordinary HELLO frame, not envelope.
+    /// Announcements can lag behind local FEED writes. Only a local resource
+    /// change or the refresh timer schedules a new address publication.
     pub fn announcement(&mut self, server: &Server, bytes: &[u8], now: u64) -> Result<(), Failure> {
-        if self.hello_running || self.hello.is_some() {
+        if self.lifecycle != Lifecycle::Active || self.hello_running || self.hello.is_some() {
             return Ok(());
         }
         let update = gnunet_wire::official::pils::PeerUpdate::decode(bytes)?;
         let hello = Hello::parse_block(update.block, &mut self.scratch, self.limits.hello)?;
-        if hello.peer() != self.identity.peer() || !server.addresses_match(hello) {
+        if hello.peer() != self.identity.peer() || update.hash != self.identity.address_hash() {
             return Ok(());
         }
         let _actual = hello.verify_at(
             self.limits.signature_profile,
             AbsoluteTime::from_micros(now),
         )?;
-        if hello.address_count() == 0 {
+        if hello.address_hash(self.limits.signature_profile) != update.hash {
+            return Err(Fault::Authentication.into());
+        }
+        if hello.address_count() == 0 || !server.addresses_match(hello) {
             return Ok(());
         }
         let id = server.address_snapshot()?.id().clone();
@@ -468,59 +498,17 @@ impl<'id> Publications<'id> {
         hello_sink: &mut HelloSink<'id, HelloTask<'id>>,
         now: u64,
     ) -> Result<bool, Failure> {
+        if self.lifecycle != Lifecycle::Active {
+            return Ok(false);
+        }
         self.synchronize(server, pils)?;
         if self.refresh_feed.is_some_and(|at| at <= now) {
             server.refresh_address_publication()?;
             self.refresh_feed = None;
             self.hello_until = None;
         }
-        if self.feed_operation.is_none() {
-            if self.feed.is_none()
-                && let Some(publication) = server.address_publication()?
-            {
-                let mut uris = Vec::new();
-                uris.try_reserve_exact(self.limits.hello.maximum_address_bytes)
-                    .map_err(|_| Fault::Capacity)?;
-                for uri in publication.uris() {
-                    if uris
-                        .len()
-                        .checked_add(uri.len())
-                        .and_then(|n| n.checked_add(1))
-                        .is_none_or(|n| n > self.limits.hello.maximum_address_bytes)
-                    {
-                        return Err(Fault::Capacity.into());
-                    }
-                    uris.extend_from_slice(uri);
-                    uris.push(0);
-                }
-                self.feed = Some(Feed {
-                    publication: publication.id().clone(),
-                    uris,
-                    bounds: Bounds::after(now, self.limits.operation)?,
-                });
-            }
-            if let Some(feed) = &self.feed {
-                if !feed.bounds.live(now) {
-                    return Err(Fault::Deadline.into());
-                }
-                let mut builder = HelloBuilder::new(&mut self.scratch, self.limits.hello);
-                for uri in feed.uris.split(|b| *b == 0).filter(|b| !b.is_empty()) {
-                    builder.add_address(uri)?;
-                }
-                match pils.feed(
-                    SignTask::Feed(feed.publication.clone()),
-                    &builder,
-                    feed.bounds,
-                ) {
-                    Ok(operation) => {
-                        server.claim_address_publication(&feed.publication)?;
-                        self.feed_operation = Some(operation);
-                        return Ok(true);
-                    }
-                    Err(rejected) if temporary(rejected.reason) => {}
-                    Err(rejected) => return Err(rejected.reason.into()),
-                }
-            }
+        if self.advance_feed(server, pils, now)? {
+            return Ok(true);
         }
         for i in 0..self.rows.len() {
             if self.rows[i].retiring {
@@ -668,6 +656,53 @@ impl<'id> Publications<'id> {
         }
         Ok(false)
     }
+    fn advance_feed(
+        &mut self,
+        server: &mut Server,
+        pils: &mut Pils<'id, SignTask>,
+        now: u64,
+    ) -> Result<bool, Failure> {
+        if self.feed_operation().is_some() {
+            return Ok(false);
+        }
+        let Some(publication) = server.address_publication()? else {
+            self.feed = None;
+            return Ok(false);
+        };
+        let id = publication.id().clone();
+        let bounds = match &self.feed {
+            Some(Feed::AwaitingAdmission {
+                publication,
+                bounds,
+            }) if *publication == id => *bounds,
+            _ => Bounds::after(now, self.limits.operation)?,
+        };
+        if !bounds.live(now) {
+            return Err(Fault::Deadline.into());
+        }
+        let mut builder = HelloBuilder::new(&mut self.scratch, self.limits.hello);
+        for uri in publication.uris() {
+            builder.add_address(uri)?;
+        }
+        match pils.feed(SignTask::Feed(id.clone()), &builder, bounds) {
+            Ok(operation) => {
+                self.feed = Some(Feed::Submitted {
+                    publication: id.clone(),
+                    operation,
+                });
+                server.claim_address_publication(&id)?;
+                Ok(true)
+            }
+            Err(rejected) if temporary(rejected.reason) => {
+                self.feed = Some(Feed::AwaitingAdmission {
+                    publication: id,
+                    bounds,
+                });
+                Ok(false)
+            }
+            Err(rejected) => Err(rejected.reason.into()),
+        }
+    }
     /// Actual canonical next refresh only; native provider bounds are separate.
     pub fn next_refresh(&self) -> Option<u64> {
         self.rows
@@ -677,20 +712,18 @@ impl<'id> Publications<'id> {
             .filter(|n| *n > 0)
             .min()
     }
-    /// Physically retiring the old Server precedes this hook. Cancel each old
-    /// signature/FEED on the same actual PILS source, retain all native suffixes,
-    /// and transfer the one actual stamp origin to the caller's worker drain.
-    pub(crate) fn begin_epoch_retirement(
+    /// Retire old identity effects while preserving the unsigned FEED already
+    /// admitted on the unchanged physical PILS source. Transfer the actual
+    /// old stamp origin to the caller's worker drain.
+    pub(crate) fn begin_rotation(
         &mut self,
         pils: &mut Pils<'id, SignTask>,
-    ) -> Result<Option<crate::epoch::RetiredStamp<'id>>, Failure> {
-        self.retire();
-        self.feed = None;
-        self.hello = None;
-        self.refresh_feed = None;
-        if let Some(operation) = self.feed_operation {
-            pils.cancel(operation)?;
+    ) -> Result<Option<retirement::RetiredStamp<'id>>, Failure> {
+        if self.lifecycle != Lifecycle::Active {
+            return Err(Fault::Conflict.into());
         }
+        self.lifecycle = Lifecycle::Rotating;
+        self.retire_preparations();
         for row in &self.rows {
             if let Some(operation) = row.sign {
                 pils.cancel(operation)?;
@@ -698,11 +731,29 @@ impl<'id> Publications<'id> {
         }
         Ok(self.take_retired_stamp()?)
     }
-    /// Transfer only an actually admitted original generation job after the old
-    /// Engine's physical sources have been retired. No crypto/receipt is created.
+    /// Adopt only an observation on the same physical source after all
+    /// original admitted work has settled. New certificate offers are built
+    /// lazily from the unchanged live Server address leases.
+    pub(crate) fn finish_rotation(&mut self, identity: Identity<'id>) -> Result<(), Fault> {
+        if self.lifecycle != Lifecycle::Rotating || !self.rotation_quiescent() {
+            return Err(Fault::WouldBlock);
+        }
+        if identity.epoch() != self.identity.epoch() {
+            return Err(Fault::StaleGeneration);
+        }
+        self.rows.clear();
+        self.identity = identity;
+        self.authority = Authority::from_verified_peer(identity.peer());
+        self.hello_until = None;
+        self.hello_publication = None;
+        self.lifecycle = Lifecycle::Active;
+        Ok(())
+    }
+    /// Transfer only an actually admitted original generation job owned by
+    /// the retiring authority. No crypto or storage receipt is created.
     pub(crate) fn take_retired_stamp(
         &mut self,
-    ) -> Result<Option<crate::epoch::RetiredStamp<'id>>, Fault> {
+    ) -> Result<Option<retirement::RetiredStamp<'id>>, Fault> {
         let original = match self.stamp_owner.take() {
             Some(lease) => {
                 let row = self
@@ -711,7 +762,7 @@ impl<'id> Publications<'id> {
                     .find(|r| *r.certificate.lease() == lease)
                     .ok_or(Fault::Stale)?;
                 let request = row.stamp.take().ok_or(Fault::Stale)?;
-                Some(crate::epoch::RetiredStamp::from_original(
+                Some(retirement::RetiredStamp::from_original(
                     self.identity,
                     lease,
                     request,
@@ -723,8 +774,9 @@ impl<'id> Publications<'id> {
     }
     /// No original SIGN/FEED/STORE/HELLO work remains owned here. This is not
     /// remote withdrawal; old cache entries retain their actual expirations.
-    pub(crate) fn epoch_quiescent(&self) -> bool {
-        self.feed_operation.is_none()
+    pub(crate) fn rotation_quiescent(&self) -> bool {
+        self.feed_operation().is_none()
+            && self.stamp_owner.is_none()
             && !self.hello_running
             && self
                 .rows
@@ -768,6 +820,15 @@ impl<'id> Publications<'id> {
     /// their real clients until actual completion/close; historical cache is not
     /// advertised as erased or revoked by this local retirement.
     pub fn retire(&mut self) {
+        self.lifecycle = Lifecycle::Retired;
+        self.retire_preparations();
+    }
+    fn retire_preparations(&mut self) {
+        if self.feed_operation().is_none() {
+            self.feed = None;
+        }
+        self.hello = None;
+        self.refresh_feed = None;
         for row in &mut self.rows {
             row.retiring = true;
             row.stamp_intent = None;

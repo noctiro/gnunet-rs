@@ -50,8 +50,9 @@ impl<'id, 'store, 'bytes> Engine<'id, 'store, 'bytes> {
             }
             if self.store.leases.iter().enumerate().any(|(i, l)| {
                 i != victim
-                    && l.state
-                        .is_some_and(|l| l.expires > now && l.address == candidate)
+                    && l.state.is_some_and(|l| {
+                        l.address == candidate && l.owns_address(now, self.last_activity)
+                    })
             }) {
                 continue;
             }
@@ -68,6 +69,232 @@ impl<'id, 'store, 'bytes> Engine<'id, 'store, 'bytes> {
             return Ok(Some(candidate));
         }
         Ok(None)
+    }
+
+    fn available_lease(&self, now: AbsoluteTime) -> Option<usize> {
+        self.store
+            .leases
+            .iter()
+            .position(|l| l.state.is_none())
+            .or_else(|| {
+                self.store
+                    .leases
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, l)| {
+                        l.state
+                            .filter(|l| !l.owns_address(now, self.last_activity))
+                            .map(|l| (i, l.used))
+                    })
+                    .min_by_key(|(_, used)| *used)
+                    .map(|(i, _)| i)
+            })
+    }
+
+    const fn prefix(&self, family: Family) -> Option<Prefix> {
+        match family {
+            Family::V4 => self.limits.ipv4,
+            Family::V6 => self.limits.ipv6,
+        }
+    }
+
+    /// This family has a configured prefix backed by the original verified TUN.
+    #[must_use]
+    pub fn has_routed_prefix(&self, family: Family) -> bool {
+        self.prefix(family).is_some() && self.current_tun().is_ok()
+    }
+
+    /// Observe a published local reply's same-family address and expiration.
+    #[must_use]
+    pub fn published_internet_address(
+        &self,
+        destination: Address,
+        until: AbsoluteTime,
+    ) -> Option<(Address, AbsoluteTime)> {
+        self.current_tun().ok()?;
+        self.store
+            .leases
+            .iter()
+            .filter_map(|slot| slot.state)
+            .find_map(|lease| {
+                (matches!(lease.publication, LeasePublication::LocalPublished)
+                    && lease.target == Target::Internet(destination)
+                    && lease.address.family() == destination.family()
+                    && lease.expires > until)
+                    .then_some((lease.address, lease.expires))
+            })
+    }
+
+    /// Reserve a same-family Internet address for a native reply. Pass the
+    /// original reservation to add to its group, or none to start one. The
+    /// caller applies Internet access policy before asking the engine and must
+    /// settle the group even on preparation or native failure.
+    pub fn reserve_internet(
+        &mut self,
+        batch: Option<Reservation<'id>>,
+        destination: Address,
+        now: AbsoluteTime,
+        expires: AbsoluteTime,
+    ) -> Result<(Reservation<'id>, Address), Error> {
+        if expires <= now || expires.is_never() {
+            return Err(Error::Deadline);
+        }
+        self.current_tun()?;
+        let prefix = self
+            .prefix(destination.family())
+            .ok_or(Error::Unavailable)?;
+        let existing = batch
+            .map(|token| self.reservation(token, LeasePublication::Reserved))
+            .transpose()?;
+        let row = self.available_lease(now).ok_or(Error::Capacity)?;
+        let address = if let Some((address, _)) = self.published_internet_address(destination, now)
+        {
+            // Give this original reply its own address hold even when it
+            // uses an address that another, already submitted reply exposed.
+            address
+        } else {
+            self.allocation_address(prefix, row, now)?
+                .ok_or(Error::Capacity)?
+        };
+        let original = if let Some(existing) = existing {
+            existing
+        } else {
+            Reference {
+                row,
+                serial: self.serial()?,
+            }
+        };
+        self.store.leases[row].state = Some(LeaseState {
+            serial: original.serial,
+            address,
+            target: Target::Internet(destination),
+            expires,
+            used: now,
+            publication: LeasePublication::Reserved,
+        });
+        Ok((Reservation(self.handle(original)), address))
+    }
+
+    fn reservation(
+        &self,
+        token: Reservation<'id>,
+        phase: LeasePublication,
+    ) -> Result<Reference, Error> {
+        let original = self.reference(token.0)?;
+        self.store
+            .leases
+            .get(original.row)
+            .and_then(|slot| slot.state)
+            .filter(|lease| lease.serial == original.serial && lease.publication == phase)
+            .map(|_| original)
+            .ok_or(Error::StaleGeneration)
+    }
+
+    /// Arm the whole original reply immediately before passing its bytes to a
+    /// native source. A client may use the address before the acknowledgement
+    /// arrives. No address becomes routable when validation of the reply fails.
+    pub fn arm_reservations(
+        &mut self,
+        token: Reservation<'id>,
+        now: AbsoluteTime,
+    ) -> Result<(), Error> {
+        self.current_tun()?;
+        let original = self.reservation(token, LeasePublication::Reserved)?;
+        if self
+            .store
+            .leases
+            .iter()
+            .filter_map(|slot| slot.state)
+            .any(|lease| lease.serial == original.serial && lease.expires <= now)
+        {
+            return Err(Error::Deadline);
+        }
+        for lease in self
+            .store
+            .leases
+            .iter_mut()
+            .filter_map(|slot| slot.state.as_mut())
+        {
+            if lease.serial == original.serial {
+                lease.publication = LeasePublication::Armed;
+            }
+        }
+        Ok(())
+    }
+
+    /// The original board operation refused admission without submission.
+    /// Keep its addresses pinned for retry, and disable their new flows until
+    /// the group is armed again under the current time and route checks.
+    pub fn defer_reservations(&mut self, token: Reservation<'id>) -> Result<(), Error> {
+        let original = self.reservation(token, LeasePublication::Armed)?;
+        for lease in self
+            .store
+            .leases
+            .iter_mut()
+            .filter_map(|slot| slot.state.as_mut())
+        {
+            if lease.serial == original.serial {
+                lease.publication = LeasePublication::Reserved;
+            }
+        }
+        Ok(())
+    }
+
+    /// Settle this exact group. Only certified non-submission permits immediate
+    /// release. Started flows still own their tuple and exclude the address
+    /// from future allocation until their retirement.
+    pub fn settle_reservations(
+        &mut self,
+        token: Reservation<'id>,
+        outcome: ReservationOutcome,
+    ) -> Result<(), Error> {
+        let original = if outcome == ReservationOutcome::Unsent {
+            self.reservation(token, LeasePublication::Reserved)
+                .or_else(|_| self.reservation(token, LeasePublication::Armed))?
+        } else {
+            self.reservation(token, LeasePublication::Armed)?
+        };
+        let publication = match outcome {
+            ReservationOutcome::Unsent => None,
+            ReservationOutcome::Submitted => Some(LeasePublication::LocalPublished),
+            ReservationOutcome::Uncertain { deadline } => {
+                Some(LeasePublication::Uncertain(deadline))
+            }
+        };
+        for row in 0..self.store.leases.len() {
+            if let Some(mut lease) = self.store.leases[row].state.filter(|lease| {
+                lease.serial == original.serial
+                    && matches!(
+                        lease.publication,
+                        LeasePublication::Reserved | LeasePublication::Armed
+                    )
+            }) {
+                let Some(publication) = publication else {
+                    self.store.leases[row].state = None;
+                    continue;
+                };
+                lease.publication = publication;
+                if publication == LeasePublication::LocalPublished
+                    && let Some(previous) = self
+                        .store
+                        .leases
+                        .iter_mut()
+                        .filter_map(|slot| slot.state.as_mut())
+                        .find(|existing| {
+                            existing.publication == LeasePublication::LocalPublished
+                                && existing.address == lease.address
+                                && existing.target == lease.target
+                        })
+                {
+                    previous.expires = previous.expires.max(lease.expires);
+                    previous.used = previous.used.max(lease.used);
+                    self.store.leases[row].state = None;
+                } else {
+                    self.store.leases[row].state = Some(lease);
+                }
+            }
+        }
+        Ok(())
     }
     fn choose_address(
         &self,
@@ -102,6 +329,28 @@ impl<'id, 'store, 'bytes> Engine<'id, 'store, 'bytes> {
         client: Client<'id>,
         request: WireRequest,
         now: AbsoluteTime,
+    ) -> Result<Request<'id>, Error> {
+        self.redirect_with_policy(client, request, now, Allocation::Allowed)
+    }
+
+    /// Respond to an original redirection denied by local policy with AF_UNSPEC.
+    /// The response follows the same original client and retirement contract,
+    /// without allocating or changing any lease.
+    pub fn deny_redirect(
+        &mut self,
+        client: Client<'id>,
+        request: WireRequest,
+        now: AbsoluteTime,
+    ) -> Result<Request<'id>, Error> {
+        self.redirect_with_policy(client, request, now, Allocation::Denied)
+    }
+
+    fn redirect_with_policy(
+        &mut self,
+        client: Client<'id>,
+        request: WireRequest,
+        now: AbsoluteTime,
+        policy: Allocation,
     ) -> Result<Request<'id>, Error> {
         let c = self.client_ref(client)?;
         request.encoded_len()?;
@@ -158,27 +407,15 @@ impl<'id, 'store, 'bytes> Engine<'id, 'store, 'bytes> {
             .ok_or(Error::Capacity)?;
         // Never silently retarget an unexpired virtual address retained by an
         // application. Bounded exhaustion returns official AF_UNSPEC failure.
-        let victim = self
-            .store
-            .leases
-            .iter()
-            .position(|l| l.state.is_none())
-            .or_else(|| {
-                self.store
-                    .leases
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(i, l)| l.state.filter(|l| l.expires <= now).map(|l| (i, l.used)))
-                    .min_by_key(|(_, used)| *used)
-                    .map(|(i, _)| i)
-            });
-        let address = if expires <= now || self.current_tun().is_err() {
-            None
-        } else if let Some(victim) = victim {
-            self.choose_address(result_af, victim, now)?
-        } else {
-            None
-        };
+        let victim = self.available_lease(now);
+        let address =
+            if policy == Allocation::Denied || expires <= now || self.current_tun().is_err() {
+                None
+            } else if let Some(victim) = victim {
+                self.choose_address(result_af, victim, now)?
+            } else {
+                None
+            };
         self.preflight(if address.is_some() { 2 } else { 1 })?;
         let mut bytes = [0; 32];
         let len = Response {
@@ -199,6 +436,7 @@ impl<'id, 'store, 'bytes> Engine<'id, 'store, 'bytes> {
                 target,
                 expires,
                 used: now,
+                publication: LeasePublication::Published,
             });
             Some(r)
         } else {
@@ -297,7 +535,9 @@ impl<'id, 'store, 'bytes> Engine<'id, 'store, 'bytes> {
         self.observe_activity(activity)?;
         let mut count = 0;
         for l in &mut *self.store.leases {
-            if l.state.is_some_and(|l| absolute >= l.expires) {
+            if l.state
+                .is_some_and(|l| !l.owns_address(absolute, Some(activity)))
+            {
                 l.state = None;
                 count += 1
             }
@@ -324,4 +564,10 @@ impl<'id, 'store, 'bytes> Engine<'id, 'store, 'bytes> {
         }
         Ok(count)
     }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Allocation {
+    Allowed,
+    Denied,
 }

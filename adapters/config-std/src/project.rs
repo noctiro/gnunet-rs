@@ -3,6 +3,7 @@ use crate::{
     Configuration, Environment, Error, Limits, ProcessEnvironment, bytes_path, path_bytes,
 };
 use std::{
+    ffi::OsStr,
     fs,
     path::{Path, PathBuf},
     sync::{Mutex, OnceLock},
@@ -300,7 +301,8 @@ impl Installation {
     }
     /// Native discovery. Linux mapped-image/PATH/executable ordering follows C.
     /// A statically linked Rust program on Darwin has no GNUnet util dylib to
-    /// discover; it uses the official executable/PATH fallbacks. An embedding
+    /// discover. It uses the official executable/PATH fallbacks and resolves
+    /// the containing library directory for installed libexec programs. An embedding
     /// with a distinct shared-library location supplies `from_locations`.
     pub fn discover(project: &ProjectData, environment: &impl Environment) -> Result<Self, Error> {
         project.validate()?;
@@ -401,17 +403,53 @@ impl Installation {
     }
 }
 fn executable_directory(project: &ProjectData, executable: &Path) -> Option<PathBuf> {
-    let bytes = path_bytes(executable.parent()?).ok()?.to_vec();
+    let directory = executable.parent()?;
+    let project_name = bytes_path(&project.project_dirname).ok()?;
+    if directory.file_name() == Some(OsStr::new("libexec"))
+        && let Some(project_directory) = directory.parent()
+        && project_directory.file_name() == Some(project_name.as_os_str())
+        && let Some(library) = project_directory.parent()
+        && let Some(name) = library.file_name()
+        && ["lib", "lib32", "lib64"]
+            .iter()
+            .any(|candidate| name.eq_ignore_ascii_case(OsStr::new(candidate)))
+    {
+        return Some(library.to_owned());
+    }
     #[cfg(target_os = "linux")]
     {
-        let _ = project;
+        let bytes = path_bytes(directory).ok()?;
         if bytes.len() < 4 || bytes[bytes.len() - 4] != b'/' {
             return None;
         }
     }
-    #[cfg(not(target_os = "linux"))]
-    let _ = project;
-    bytes_path(&bytes).ok()
+    Some(directory.to_owned())
+}
+
+#[cfg(test)]
+mod executable_tests {
+    use super::*;
+
+    #[test]
+    fn installed_libexec_resolves_the_parent_library_directory()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let project = ProjectData::default();
+        let prefix = Path::new("stage with spaces");
+        for dir in ["lib", "lib64"] {
+            let library = prefix.join(dir);
+            let executable = library.join("gnunet/libexec/gnunet-service-arm");
+            let discovered = executable_directory(&project, &executable).ok_or(Error::Missing)?;
+            if discovered != library {
+                return Err("installed executable resolved the wrong library directory".into());
+            }
+            let shape = Installation::from_locations(&project, &discovered, None)?;
+            let defaults = shape.path(PathKind::Datadir).ok_or(Error::Missing)?;
+            if defaults != prefix.join("share/gnunet") {
+                return Err("installed service default directory escaped its prefix".into());
+            }
+        }
+        Ok(())
+    }
 }
 #[cfg(target_os = "linux")]
 fn mapped_library(project: &ProjectData) -> Option<PathBuf> {

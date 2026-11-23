@@ -343,12 +343,19 @@ impl<'id, 'slots, 'seen, S: StorePort, L: LocationSigner, R: PeerRouter>
                             self.close_client(lookup.client(), observe);
                         }
                         Err(e) => {
+                            let recoverable = self.store.state() != ports::StoreState::Closed
+                                && e.recoverable_get();
                             self.fault(
                                 Some(lookup.client().value()),
                                 Arc::new(Error::Port(e)),
                                 observe,
                             );
-                            match self.protocol.local_unavailable(lookup) {
+                            let settlement = if recoverable {
+                                self.protocol.local_interrupted(lookup)
+                            } else {
+                                self.protocol.local_unavailable(lookup)
+                            };
+                            match settlement {
                                 Ok(()) => {
                                     if let Err(e) = self.release_done(lookup.query_id(), observe) {
                                         self.fault(Some(lookup.client().value()), e, observe);

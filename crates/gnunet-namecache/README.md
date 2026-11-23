@@ -48,6 +48,11 @@ to check its original zone/name binding before calling the same signature code. 
 
 ## Cache operations
 
+The default `fixed::Cache` borrows independently sized `fixed::Slot`
+buffers. It selects the smallest eligible slot, preserves existing entries
+when capacity is exhausted, and serves lookups against explicit qualified
+UTC. The host can borrow retained ciphertexts for a shutdown snapshot.
+
 The explicit `alloc` feature provides real `Cache::{insert,lookup,delete,
 expire_before,handle}`. Queries are sorted for allocation-free binary-search
 lookups. One metadata vector is reserved at construction; moving metadata never
@@ -67,11 +72,10 @@ version has expired, so retaining them would only waste bounded cache space. Del
 Expiration is explicit, using the exact SQL predicate `expiration < now`; equality
 stays valid. The native SQLite implementation schedules cleanup hourly during
 cache calls; PostgreSQL cleans on each cache call. Their raw lookup has no
-expiration predicate and can return a block awaiting cleanup. The pure core also
-has no hidden clock: raw lookup does not invent a miss. A service owner must call
-`expire_before` on its chosen maintenance schedule; the record consumer remains
-responsible for trusted-time validity checks. UINT64_MAX remains the official
-never value.
+expiration predicate and can return a block awaiting cleanup. The allocated
+cache exposes the same raw lookup and leaves cleanup scheduling to its host.
+The fixed cache filters each lookup using supplied UTC. UINT64_MAX remains
+the official never value for a block.
 
 As in the service/database boundary, insertion parses structure and derives
 the query/expiry, but treats ciphertext as opaque and does not prove signatures. Native clients check public signatures before accepting results. `handle` replies

@@ -305,18 +305,85 @@ async fn two_channel_retirement() -> Result<(), Failure> {
     check(server.sends.len() == 1)?;
     let original_send = server.sends[0].id;
     let original = server.sends[0].channel;
-    let send_target = server.sends[0].hard;
     let other = *actual
         .iter()
         .find(|channel| **channel != original)
         .ok_or("second original channel missing")?;
-    let other_peer = server.channels[server
+    let other_index = server
         .channel_index(other)
-        .ok_or("second original row missing")?]
-    .as_ref()
-    .ok_or("second original row missing")?
-    .peer;
-    check(server.timer_target(None) == Some(send_target))?;
+        .ok_or("second original row missing")?;
+    let other_row = server.channels[other_index]
+        .as_ref()
+        .ok_or("second original row missing")?;
+    let other_peer = other_row.peer;
+    let other_hard = other_row
+        .operation_hard
+        .ok_or("second original deadline missing")?;
+    let original_index = server
+        .channel_index(original)
+        .ok_or("first original row missing")?;
+    let original_hard = server.channels[original_index]
+        .as_ref()
+        .and_then(|row| row.operation_hard)
+        .ok_or("first original deadline missing")?;
+    check(server.timer_target(None) == Some(original_hard.min(other_hard)))?;
+    for _ in 0..8 {
+        server.progress()?;
+        server.effect(&mut |_| {})?;
+        if server.sends.len() == 2 {
+            break;
+        }
+    }
+    check(server.sends.len() == 2 && server.sends[1].channel == other)?;
+    let other_send = server.sends[1].id;
+    let expected = server.sends[1].frame.bytes().to_vec();
+    // Neither frame has local send credit. Outwaiting the short physical
+    // write grace must not revoke an operation that is still live.
+    let absent_credit = server.hard()?;
+    check(absent_credit < original_hard.min(other_hard))?;
+    tokio::time::sleep_until(absent_credit).await;
+    check(!server.guards(&mut |_| {})? && !server.peer_work(&mut |_| {})?)?;
+    check(server.sends.len() == 2 && server.pending.is_none())?;
+    let mut ack = [0; 8];
+    gnunet_wire::official::cadet::Response::Ack {
+        channel: other.wire_id(),
+    }
+    .encode(&mut ack)?;
+    send_bytes(&peer, &ack).await?;
+    while server.cadet.channel_info(other)?.send_credit == 0 {
+        poll_fn(|cx| server.poll_cadet(cx, &mut |_| {})).await?;
+    }
+    check(server.peer_work(&mut |_| {})?)?;
+    let write = server
+        .pending
+        .as_ref()
+        .ok_or("credit did not admit peer send")?;
+    check(
+        write.effect == Some(other_send)
+            && write.hard > absent_credit
+            && write.hard <= other_hard
+            && write.hard <= server.hard()?,
+    )?;
+    let mut other_terminal = None;
+    while server.pending.is_some() {
+        poll_fn(|cx| {
+            server.poll_cadet(cx, &mut |event| {
+                if let Event::EffectTerminal(terminal) = event
+                    && terminal.effect.id == other_send
+                {
+                    other_terminal = Some(terminal.completion);
+                }
+            })
+        })
+        .await?;
+    }
+    check(other_terminal == Some(Completion::Written))?;
+    check(matches!(
+        gnunet_wire::official::cadet::Request::decode(&frame(&peer).await?)?,
+        gnunet_wire::official::cadet::Request::Data { channel, messages, .. }
+            if channel == other.wire_id() && messages == expected
+    ))?;
+    check(server.sends.len() == 1 && server.sends[0].id == original_send)?;
     let business = hold_data(&mut server, &peer, original).await?;
     check(server.read_hard.is_none() && server.cadet.pending_transmit().is_none())?;
     tokio::time::sleep_until(business).await;
@@ -330,11 +397,8 @@ async fn two_channel_retirement() -> Result<(), Failure> {
         .and_then(|channel| channel.hard)
         .ok_or("first close did not capture cleanup target")?;
     check(cleanup > business && cleanup > Instant::now())?;
-    check(server.sends.len() == 1 && server.sends[0].hard == send_target)?;
-    // This original send target is earlier than cleanup, but its ended phase
-    // cannot wake the reactor once this same channel is closing. The real
-    // pending/cleanup targets, rather than retained old business bytes, remain.
-    check(send_target < cleanup && server.timer_target(None) == Some(cleanup))?;
+    check(server.sends.len() == 1 && server.sends[0].id == original_send)?;
+    check(cleanup < original_hard.min(other_hard) && server.timer_target(None) == Some(cleanup))?;
     check(
         server.channels[index]
             .as_ref()

@@ -34,14 +34,21 @@ pub enum Error {
 impl Error {
     pub(crate) fn classified(&self) -> Fault {
         match self {
-            Self::Protocol(error) => *error,
-            Self::Native(ConnectError::Protocol(error)) => *error,
+            Self::Protocol(error)
+            | Self::Native(ConnectError::Protocol(error))
+            | Self::Seti(seti::Cause::Protocol(error))
+            | Self::Seti(seti::Cause::Ports(ConnectError::Protocol(error))) => *error,
+            Self::Seti(seti::Cause::Deadline) => Fault::Deadline,
+            Self::Seti(seti::Cause::Eof | seti::Cause::Closed) => Fault::Closed,
             Self::Entropy(_) => Fault::EntropyUnavailable,
             Self::Paillier(error) => crate::backend::classify_paillier(*error),
             _ => Fault::Io,
         }
     }
 }
+
+#[cfg(test)]
+mod tests;
 impl fmt::Display for Error {
     fn fmt(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

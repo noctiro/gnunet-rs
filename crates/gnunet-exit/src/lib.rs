@@ -5,6 +5,7 @@
 #![forbid(unsafe_code)]
 #[cfg(feature = "alloc")]
 extern crate alloc;
+pub use gnunet_vpn::PeerProfiles;
 /// Shared official address and family types.
 pub use gnunet_wire::official::vpn::{Address, AfProfile, Family};
 /// Bounded actual flow/table/packet/processing/retirement coordinator.
@@ -12,5 +13,7 @@ pub use gnunet_wire::official::vpn::{Address, AfProfile, Family};
 pub mod engine;
 /// Explicit bounded caller-entropy NAT address/port selection.
 pub mod nat;
+/// Allocation-free conversion between official EXIT peer frames and IP packets.
+pub mod packet;
 /// Typed local transport/tuple and configured target policy.
 pub mod policy;

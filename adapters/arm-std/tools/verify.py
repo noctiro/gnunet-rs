@@ -8,6 +8,12 @@ validation, actual original PID waits, explicit 62/18 native matrix outcomes.
 import argparse,json,os,pathlib,re,subprocess,sys,time
 from _common import local_snapshot,require_disjoint_output,workspace_root,sha,require_lint_contract
 from reference import load
+
+TOOLS=pathlib.Path(__file__).resolve().parents[3]/"tools"
+sys.dont_write_bytecode=True
+sys.path.insert(0,str(TOOLS))
+from cargo_artifacts import CargoArtifacts
+from rust_toolchain import rust_channel
 from witnesses import SHORT_RUST,LONG_RUST,PROCESS_RUST,SHARED_PROCESS_RUST,RUNTIME_ORIGINAL_RUST,RUNTIME_SUPPLEMENTARY_RUST,require_test_output,require_docs,require_stdio
 
 
@@ -16,13 +22,15 @@ def main():
     parser.add_argument('--package',type=pathlib.Path,default=pathlib.Path(__file__).resolve().parents[1])
     parser.add_argument('--repo',type=pathlib.Path)
     for name in ['source','reference','output']:parser.add_argument('--'+name,type=pathlib.Path,required=True)
-    parser.add_argument('--cargo',default='cargo');parser.add_argument('--toolchain',default='1.99.1')
-    args=parser.parse_args();package=args.package.resolve();repo=args.repo.resolve()if args.repo else workspace_root(package);tools=pathlib.Path(__file__).resolve().parent;manifest=package/'Cargo.toml';cargo=[args.cargo,'+'+args.toolchain];pinned=['--manifest-path',str(manifest),'--offline','--locked'];environment=os.environ.copy();environment['CARGO_BUILD_JOBS']='2'
+    parser.add_argument('--cargo',default='cargo');parser.add_argument('--toolchain')
+    args=parser.parse_args();package=args.package.resolve();repo=args.repo.resolve()if args.repo else workspace_root(package);tools=pathlib.Path(__file__).resolve().parent;manifest=package/'Cargo.toml';channel=rust_channel(repo,args.toolchain);cargo=[args.cargo,'+'+channel];pinned=['--manifest-path',str(manifest),'--offline','--locked'];environment=os.environ.copy();environment['CARGO_BUILD_JOBS']='2'
     meta_argv=cargo+['metadata',*pinned,'--format-version','1'];meta=subprocess.run(meta_argv,cwd=package,env=environment,capture_output=True,timeout=180)
     if meta.returncode:raise RuntimeError('locked metadata failed: '+meta.stderr.decode())
     metadata=json.loads(meta.stdout);reference,normal=load(args.reference,args.source,repo)
     output=require_disjoint_output(args.output,[package,tools,repo,pathlib.Path(metadata['workspace_root']),args.source,args.reference.resolve().parent,pathlib.Path(reference['build']),pathlib.Path(reference['prefix'])]);output.mkdir();(output/'metadata.stdout').write_bytes(meta.stdout);(output/'metadata.stderr').write_bytes(meta.stderr)
-    selected,inputs=local_snapshot(metadata,package,tools)
+    def tooling_inputs():
+        return {str(path):sha(path) for path in [TOOLS/'cargo_artifacts.py',TOOLS/'rust_toolchain.py',repo/'rust-toolchain.toml']}
+    selected,inputs=local_snapshot(metadata,package,tools);inputs.update(tooling_inputs())
     if selected['name']!='gnunet-arm-host':raise ValueError('actual gnunet-arm-host package required')
     lint_contract=require_lint_contract(package,repo,metadata)
     result={'status':'failed','scope':'shared native process port plus original ARM client/monitor/ARM-self regression; full ARM daemon/CLI/testing and global owner completion remain pending','package':str(package),'inputs':inputs,'normal_inputs':normal,'commands':[{'label':'metadata','argv':meta_argv,'exit_code':0}],'build_settings':{key:environment.get(key)for key in ['CARGO_BUILD_JOBS','RUSTFLAGS','CARGO_ENCODED_RUSTFLAGS','RUSTC','RUSTDOC','RUSTUP_TOOLCHAIN','MACOSX_DEPLOYMENT_TARGET','SDKROOT']},'owner_promotion':False};started=time.monotonic();binaries={}
@@ -38,8 +46,10 @@ def main():
         run('cargo-version',cargo+['--version','--verbose']);run('fmt',cargo+['fmt','--manifest-path',manifest,'--package',selected['name'],'--check'])
         target=output/'cargo-target';common=['--package',selected['name'],'--target-dir',target]
         run('clippy',cargo+['clippy',*pinned,*common,'--all-targets','--','-D','warnings'])
-        run('build',cargo+['build',*pinned,*common,'--bins','--examples'])
-        binary_paths={'helper':target/'debug/gnunet-arm-spawn-helper','owner':target/'debug/examples/local_owner','public_owner':target/'debug/examples/public_owner','fixture':target/'debug/examples/arm_fixture','process_owner':target/'debug/examples/process_owner'}
+        build=run('build',cargo+['build',*pinned,*common,'--bins','--examples','--message-format=json'])
+        artifacts=CargoArtifacts(build)
+        binary_paths={label:artifacts.example(example,manifest) for label,example in {'owner':'local_owner','public_owner':'arm_host_public_owner','fixture':'arm_fixture','process_owner':'process_owner'}.items()}
+        binary_paths['helper']=artifacts.binary('gnunet-arm-spawn-helper',manifest)
         binaries={str(path):sha(path)for path in binary_paths.values()};result['fresh_rust_binaries']=dict(binaries)
         # All actual local fixtures are this fresh Rust executable. Separate
         # normal-C probes below use independently compiled plain-C targets.
@@ -77,7 +87,7 @@ def main():
         run('signal-paired',[sys.executable,'-B',tools/'signal_compare.py',*local,'--output',output/'signal-paired'],timeout=100);signals=json.loads((output/'signal-paired/result.json').read_text())
         if signals.get('status')!='passed'or len(signals.get('cases',[]))!=8 or {(row['profile'],row['stdio'])for row in signals['cases']}!={(profile,flags)for profile in ['ignore','default']for flags in [0,7,8,15]}or not all(row['matched']for row in signals['cases']):raise ValueError('eight actual full-host signal profiles missing')
         result['full_host_signal_pairs']=8
-        run('generic-process-paired',[sys.executable,'-B',tools/'process_compare.py',*shared,'--package',package,'--output',output/'generic-process-paired'],timeout=120);generic=json.loads((output/'generic-process-paired/result.json').read_text())
+        run('generic-process-paired',[sys.executable,'-B',tools/'process_compare.py',*shared,'--package',package,'--output',output/'generic-process-paired','--toolchain',channel],timeout=120);generic=json.loads((output/'generic-process-paired/result.json').read_text())
         expected_process={'simple-raw','empty-argv','directory-late-exec','not-executable','late-interpreter','control-one-byte','control-epipe','control-default-sigpipe','two-queued-listeners'}
         if generic.get('status')!='passed' or generic.get('case_count')!=9 or {row['label']for row in generic.get('cases',[])}!=expected_process or not all(row['matched']for row in generic['cases']):raise ValueError('actual shared-process nine paired cases missing')
         result['generic_process_pairs']=9
@@ -85,7 +95,7 @@ def main():
         if seams.get('status')!='passed' or seams.get('kind')!='source-extracted-process-kill-finite-write-seams' or seams.get('case_count')!=2 or {row['write_class']for row in seams.get('cases',[])}!={'eintr','zero'} or not all(row['write_calls']==1 and row['actual_signal']==15 and row['native_kill_fallback']is True for row in seams['cases']):raise ValueError('explicit source-extracted finite-write seams missing')
         result['source_extracted_kill_write_seams']=2
         # This label remains separate from unchanged-library process observations.
-        after,normal_after=load(args.reference,args.source,repo);_,after_inputs=local_snapshot(metadata,package,tools);result['inputs_unchanged']=after_inputs==inputs;result['normal_inputs_unchanged']=reference==after and normal==normal_after;result['executed_binaries_unchanged']=all(sha(path)==value for path,value in binaries.items())
+        after,normal_after=load(args.reference,args.source,repo);_,after_inputs=local_snapshot(metadata,package,tools);after_inputs.update(tooling_inputs());result['inputs_unchanged']=after_inputs==inputs;result['normal_inputs_unchanged']=reference==after and normal==normal_after;result['executed_binaries_unchanged']=all(sha(path)==value for path,value in binaries.items())
         if not all(result[key]for key in ['inputs_unchanged','normal_inputs_unchanged','executed_binaries_unchanged']):raise ValueError('source/file-set/settings/native/binary input changed')
         result['status']='completed_with_explicit_native_differences';result['checks_passed']=True;result['native_equivalence']=False;result['receipts']={str(path):sha(path)for path in output.rglob('result.json')}
     except Exception as error:result['failure']=type(error).__name__+': '+str(error)

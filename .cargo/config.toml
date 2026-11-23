@@ -4,3 +4,5 @@ target-dir = "target"
 [alias]
 xtask = "run --locked -p xtask --"
 
+[registry]
+global-min-publish-age = "3 days"

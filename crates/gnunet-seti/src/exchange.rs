@@ -812,8 +812,10 @@ impl<'id, 'store, 'bytes> Service<'id, 'store, 'bytes> {
         }
         Ok(())
     }
-    /// Original frame actually completed writing. Local queue admission alone must
-    /// never call this method. Canceled old effects settle without reviving state.
+    /// The whole original frame reached its destination transport, through a
+    /// complete MQ write or an in-process transfer to the destination's own
+    /// message slot. Staging on the sender side does not settle this effect.
+    /// Canceled old effects settle without reviving state.
     pub fn written(&mut self, effect: Effect<'id>) -> Result<(), Error> {
         let (r, pending) = self.effect_ref(effect)?;
         if !pending.exposed {

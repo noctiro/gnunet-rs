@@ -13,6 +13,12 @@ READY stdout is completely flushed only after host readiness, and only then noti
 
 The official DHT bucket/cache/try-connect configuration is consumed; additional `dht-rust` resource limits are explicit. Registry-only revocation settings are used only when both WORKBITS and EPOCH_DURATION exist.
 
+`[dhtcache] QUOTA` bounds the volatile payload cache. `[dht-rust] CACHE_RECORDS`
+and `CACHE_PATH_BYTES` independently bound records and retained signed paths.
+Under pressure, the node reclaims expired entries first, then prefers near-key
+entries and later expirations. A valid PUT can continue to local delivery and
+forwarding without being retained in the cache.
+
 ## Underlay selection
 
 The official defaults are `[dhtu-gnunet] ENABLED=YES` and `[dhtu-ip] ENABLED=NO`. The IP section accepts `NSE` (default4) and `UDP_PORT` (default6666, a16-bit

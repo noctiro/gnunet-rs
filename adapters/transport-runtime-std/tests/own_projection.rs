@@ -5,6 +5,7 @@
     reason = "Assertions check original record provenance, desired resources and exact signed values"
 )]
 use gnunet_crypto::{EddsaPublicKey, EddsaSignature, Entropy};
+use gnunet_hello::SignatureProfile;
 use gnunet_pils::{Action, HelloLimits, MasterKey, Profile, Service, client as pc};
 use gnunet_transport::{
     ClientId, Engine, Limits, PeerId, Signer,
@@ -61,18 +62,27 @@ struct Fixture<'a> {
     communicator: ClientId,
     peer: PeerId,
     engine_time: u64,
+    profile: Profile,
     purposes: Vec<u32>,
 }
 impl<'a> Fixture<'a> {
     fn new(instance: &'a mut pc::Instance, seed: u8) -> Result<Self, Error> {
+        Self::with_profile(instance, seed, Profile::Reference029)
+    }
+
+    fn with_profile(
+        instance: &'a mut pc::Instance,
+        seed: u8,
+        profile: Profile,
+    ) -> Result<Self, Error> {
         let service = Service::new(
             MasterKey::from_seed([seed; 32]),
-            Profile::Reference029,
+            profile,
             100,
             hello_limits(),
         )?;
         let peer = PeerId(*service.identity().public_key().as_bytes());
-        let mut client = Owner::new(instance, Profile::Reference029, hello_limits())?;
+        let mut client = Owner::new(instance, profile, hello_limits())?;
         let epoch = client.begin_connection(AbsoluteTime::from_micros(0))?;
         let mut announcement = service.announcement().to_vec();
         let identity = match client.receive(
@@ -106,6 +116,7 @@ impl<'a> Fixture<'a> {
             communicator,
             peer,
             engine_time: 1,
+            profile,
             purposes: Vec::new(),
         })
     }
@@ -213,6 +224,7 @@ impl<'a> Fixture<'a> {
             self.engine.address_snapshot()?,
             self.authority.pure().clone(),
             now,
+            self.profile.hello(),
         )?;
         self.sign_hello(hello, now)
     }
@@ -235,6 +247,7 @@ fn prepare_hello(
     set: Publication<'_>,
     authority: Authority,
     now: u64,
+    profile: SignatureProfile,
 ) -> Result<HelloCandidate, Error> {
     HelloCandidate::prepare(
         set,
@@ -242,6 +255,7 @@ fn prepare_hello(
         now,
         PublicationBounds::checked(8, 4096, 65535, 65535)?,
         8,
+        profile,
     )
 }
 fn project(
@@ -399,6 +413,7 @@ fn desired_lease_and_authority_changes_cannot_relabel_a_committed_value() -> Res
         f.engine.address_snapshot()?,
         different_brand.pure().clone(),
         102,
+        f.profile.hello(),
     )?;
     let hello = f.sign_hello(hello, 102)?;
     assert_eq!(
@@ -418,6 +433,7 @@ fn desired_lease_and_authority_changes_cannot_relabel_a_committed_value() -> Res
         f.engine.address_snapshot()?,
         other.authority.pure().clone(),
         103,
+        other.profile.hello(),
     )?;
     let hello = other.sign_hello(hello, 103)?;
     assert_eq!(
@@ -450,9 +466,9 @@ fn desired_lease_and_authority_changes_cannot_relabel_a_committed_value() -> Res
 }
 
 #[test]
-fn actual_journal_backend_keeps_refused_original_and_commits_mixed_then_hello_only_projection()
+fn deterministic_journal_keeps_refused_original_and_commits_mixed_then_hello_only_projection()
 -> Result<(), Error> {
-    use gnunet_transport_host::peerstore::{Journal, ManagedQuota};
+    use gnunet_transport_host::peerstore::{HelloProfiles, Journal, ManagedQuota};
     use gnunet_transport_runtime::{own::OwnRecordBackend, own_store::JournalBackend};
     struct Cleanup(std::path::PathBuf);
     impl Drop for Cleanup {
@@ -468,10 +484,15 @@ fn actual_journal_backend_keeps_refused_original_and_commits_mixed_then_hello_on
     ));
     std::fs::create_dir(&path).map_err(|_| Error::Storage)?;
     let directory = Cleanup(path);
-    let mut journal = Journal::open(directory.0.join("db"))?;
+    let profile = Profile::ReferenceDeterministic;
+    let profiles = HelloProfiles {
+        managed: profile.hello(),
+        discovery: SignatureProfile::Gnunet029,
+    };
+    let mut journal = Journal::open_with_profiles(directory.0.join("db"), profiles)?;
     assert_eq!(journal.reserve_monotime(1000, 10)?, (1000, 1009));
     let mut instance = pc::Instance::new();
-    let mut f = Fixture::new(&mut instance, 17)?;
+    let mut f = Fixture::with_profile(&mut instance, 17, profile)?;
     f.add(A)?;
     let mut a = f.certificate(0)?;
     let a_id = f.sign_record(&mut a, 100, 1000)?;
@@ -560,7 +581,7 @@ fn actual_journal_backend_keeps_refused_original_and_commits_mixed_then_hello_on
     drop(original);
     assert_eq!(journal.commits(), 4);
     drop(journal);
-    let journal = Journal::open(directory.0.join("db"))?;
+    let journal = Journal::open_with_profiles(directory.0.join("db"), profiles)?;
     assert_eq!(journal.highwater(), 1009);
     let raw = std::fs::read(directory.0.join("db")).map_err(|_| Error::Storage)?;
     assert!(raw.windows(a_value.len()).any(|bytes| bytes == a_value));

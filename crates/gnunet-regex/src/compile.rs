@@ -1,10 +1,19 @@
-//! Complete explicit-alloc compiler with bounded fallible admission.
-use crate::{BlockEdge, EdgeSource, Hash, encode_state, proof_key, state_block_len};
-use alloc::vec::Vec;
+//! Bounded compiler, with interchangeable caller-owned and heap storage.
 mod artifacts;
+mod automaton;
 mod dfa;
 mod parser;
 mod proof;
+mod records;
+mod storage;
+
+pub use artifacts::{ArtifactMemory, ArtifactWorkspace};
+pub use automaton::{GraphMemory, GraphWorkspace};
+pub use proof::{ProofMemory, ProofWorkspace};
+pub use records::{
+    AutomatonView, Edge, EdgeIter, Edges, Record, RecordMemory, State, StateIter, States,
+};
+use records::{Layout, Table};
 /// Resource whose caller-selected bound refused a complete construction.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Limit {
@@ -130,223 +139,129 @@ impl Budget {
         Ok(())
     }
 }
-fn push<T>(vec: &mut Vec<T>, value: T, max: usize, kind: Limit) -> Result<(), BuildError> {
-    if vec.len() >= max {
-        return Err(BuildError::Limit(kind));
-    }
-    vec.try_reserve(1).map_err(|_| BuildError::Allocation)?;
-    vec.push(value);
-    Ok(())
+
+/// Temporary compiler storage. An admitted automaton borrows only its separate
+/// record memory, which allows this workspace to compile another announcement.
+pub struct Compiler<'a> {
+    graph: GraphWorkspace<'a>,
+    proof: ProofWorkspace<'a>,
+    artifacts: ArtifactWorkspace<'a>,
 }
-fn filled<T: Clone>(count: usize, value: T) -> Result<Vec<T>, BuildError> {
-    let mut vec = Vec::new();
-    vec.try_reserve_exact(count)
-        .map_err(|_| BuildError::Allocation)?;
-    vec.resize(count, value);
-    Ok(vec)
-}
-fn bytes(input: &[u8]) -> Result<Vec<u8>, BuildError> {
-    let mut vec = Vec::new();
-    vec.try_reserve_exact(input.len())
-        .map_err(|_| BuildError::Allocation)?;
-    vec.extend_from_slice(input);
-    Ok(vec)
-}
-/// Owned exact transition bytes and destination state proof key.
-#[derive(Debug)]
-pub struct Edge {
-    label: Vec<u8>,
-    destination: Hash,
-    target: usize,
-}
-impl Edge {
-    /// Nonempty exact label, with no regex interpretation during traversal.
-    #[must_use]
-    pub fn label(&self) -> &[u8] {
-        &self.label
-    }
-    /// Exact SHA-512 of the destination state's original proof bytes.
-    #[must_use]
-    pub const fn destination(&self) -> Hash {
-        self.destination
-    }
-}
-impl EdgeSource for [Edge] {
-    fn len(&self) -> usize {
-        <[Edge]>::len(self)
-    }
-    fn edge(&self, index: usize) -> Option<BlockEdge<'_>> {
-        self.get(index).map(|e| BlockEdge {
-            destination: e.destination,
-            label: &e.label,
-        })
-    }
-}
-/// One minimized state with its complete proof and compressed transitions.
-#[derive(Debug)]
-pub struct State {
-    proof: Vec<u8>,
-    key: Hash,
-    accepting: bool,
-    edges: Vec<Edge>,
-}
-impl State {
-    /// Borrow exact pure state artifact.
-    #[must_use]
-    pub fn record(&self) -> Record<'_> {
-        Record {
-            proof: &self.proof,
-            key: self.key,
-            accepting: self.accepting,
-            edges: &self.edges,
+
+impl<'a> Compiler<'a> {
+    /// Combine the independent graph, proof and artifact workspaces.
+    pub fn new(
+        graph: GraphWorkspace<'a>,
+        proof: ProofWorkspace<'a>,
+        artifacts: ArtifactWorkspace<'a>,
+    ) -> Self {
+        Self {
+            graph,
+            proof,
+            artifacts,
         }
     }
-}
-/// One self-contained pure state block view, not a submitted announcement.
-#[derive(Clone, Copy, Debug)]
-pub struct Record<'a> {
-    /// Exact unhashed proof bytes, without NUL.
-    pub proof: &'a [u8],
-    /// SHA-512 of exactly proof.
-    pub key: Hash,
-    /// Whether consuming the full string at this state accepts.
-    pub accepting: bool,
-    /// Nonempty literal edge labels and exact destination proof keys.
-    pub edges: &'a [Edge],
-}
-impl Record<'_> {
-    /// Checked official block byte size.
-    pub fn encoded_len(self) -> Result<usize, gnunet_types::Error> {
-        state_block_len(self.proof, self.edges)
+
+    /// Compile the official byte grammar into caller-owned storage. A rejected
+    /// expression leaves the destination empty and all workspace reusable.
+    /// Compression one keeps byte edges; zero follows linear paths up to the
+    /// resource bounds; other values cap non-start edges. Start edges cap at 24.
+    pub fn compile_into<'out, const RECORDS: usize, const EDGES: usize, const TEXT: usize>(
+        &mut self,
+        expression: &[u8],
+        compression: u16,
+        limits: Limits,
+        output: &'out mut RecordMemory<RECORDS, EDGES, TEXT>,
+    ) -> Result<AutomatonView<'out>, BuildError> {
+        let layout = self.compile(expression, compression, limits, &mut output.table())?;
+        output.layout = Some(layout);
+        output.view().ok_or(BuildError::Conflict)
     }
-    /// Encode official state block into caller storage, without any network effect.
-    pub fn encode(self, out: &mut [u8]) -> Result<usize, gnunet_types::Error> {
-        encode_state(self.proof, self.accepting, self.edges, out)
+
+    fn compile(
+        &mut self,
+        expression: &[u8],
+        compression: u16,
+        limits: Limits,
+        destination: &mut Table<'_>,
+    ) -> Result<Layout, BuildError> {
+        let mut budget = Budget { limits, steps: 0 };
+        let graph = self.graph.build(expression, &mut budget)?;
+        let proofs = proof::create(&graph, &mut self.proof, &mut budget)?;
+        artifacts::create(
+            &graph,
+            &proofs,
+            &mut self.artifacts,
+            destination,
+            compression,
+            &mut budget,
+        )
     }
 }
-struct Initial {
-    proof: Vec<u8>,
-    accepting: bool,
-    edges: Vec<Edge>,
-}
-/// Complete independent automaton. Each construction is atomic and fallible;
-/// default-noalloc hashing/encoding does not imply the compiler allocates nothing.
+
+/// Heap-backed ownership of a completed automaton.
+#[cfg(feature = "alloc")]
 pub struct Automaton {
-    states: Vec<State>,
-    initial: Vec<Initial>,
-    language: Vec<u8>,
-    work: u64,
+    table: Table<'static>,
+    layout: Layout,
 }
+
+#[cfg(feature = "alloc")]
 impl Automaton {
-    /// Compile the complete official byte grammar: grouping/union, implicit
-    /// concatenation, and postfix */+/?; every other non-NUL byte is literal.
-    /// `compression=1` means byte edges, 0 unbounded linear paths (still resource
-    /// bounded), otherwise an upper bound per non-start edge. Start edges cap24.
+    /// Compile the same bounded byte grammar as [`Compiler::compile_into`].
     pub fn compile(
         expression: &[u8],
         compression: u16,
         limits: Limits,
     ) -> Result<Self, BuildError> {
-        let mut budget = Budget { limits, steps: 0 };
-        let nfa = parser::parse(expression, &mut budget)?;
-        let dfa = dfa::determinize(nfa, &mut budget)?;
-        let dfa = dfa::minimize(dfa, &mut budget)?;
-        let (proofs, language) = proof::create(&dfa, &mut budget)?;
-        let states = artifacts::compress(&dfa, proofs, compression, &mut budget)?;
-        let initial = artifacts::initial(&states, &mut budget)?;
-        let result = Self {
-            states,
-            initial,
-            language,
-            work: budget.steps,
-        };
-        for state in &result.states {
-            let count = state
-                .edges
-                .len()
-                .checked_mul(
-                    state
-                        .edges
-                        .len()
-                        .checked_add(1)
-                        .ok_or(BuildError::Overflow)?,
-                )
-                .and_then(|n| n.checked_div(2))
-                .ok_or(BuildError::Overflow)?;
-            budget.charge(u64::try_from(count).map_err(|_| BuildError::Overflow)?)?;
-            state
-                .record()
-                .encoded_len()
-                .map_err(|_| BuildError::Limit(Limit::BlockBytes))?;
-        }
-        for i in 0..result.initial.len() {
-            let edge_count = result.initial[i].edges.len();
-            let count = edge_count
-                .checked_mul(edge_count.checked_add(1).ok_or(BuildError::Overflow)?)
-                .and_then(|n| n.checked_div(2))
-                .ok_or(BuildError::Overflow)?;
-            budget.charge(u64::try_from(count).map_err(|_| BuildError::Overflow)?)?;
-            result
-                .initial(i)
-                .ok_or(BuildError::Conflict)?
-                .encoded_len()
-                .map_err(|_| BuildError::Limit(Limit::BlockBytes))?;
-        }
-        Ok(Self {
-            work: budget.steps,
-            ..result
-        })
+        let mut compiler = Compiler::new(
+            GraphWorkspace::heap(),
+            ProofWorkspace::heap(),
+            ArtifactWorkspace::heap(),
+        );
+        let mut table = Table::heap();
+        let layout = compiler.compile(expression, compression, limits, &mut table)?;
+        Ok(Self { table, layout })
     }
-    /// Full-string byte matching; embedded NUL input is rejected explicitly.
-    pub fn is_match(&self, input: &[u8]) -> Result<bool, gnunet_types::Error> {
-        if input.contains(&0) {
-            return Err(gnunet_types::Error::InvalidInput);
-        }
-        let mut state = 0;
-        let mut at = 0;
-        while at < input.len() {
-            let row = &self.states[state];
-            let found = row
-                .edges
-                .iter()
-                .filter(|e| input[at..].starts_with(&e.label))
-                .max_by_key(|e| e.label.len());
-            let Some(edge) = found else {
-                return Ok(false);
-            };
-            at += edge.label.len();
-            state = edge.target;
-        }
-        Ok(self.states[state].accepting)
-    }
-    /// All minimized states, retaining proofs assigned before compression.
+
+    /// Borrow the shared representation.
     #[must_use]
-    pub fn states(&self) -> &[State] {
-        &self.states
+    pub fn view(&self) -> AutomatonView<'_> {
+        self.table.view(self.layout)
     }
-    /// A language-equivalent expression, not byte-identical C canonicalization.
+
+    /// All minimized states with their original proofs.
     #[must_use]
-    pub fn language_expression(&self) -> &[u8] {
-        &self.language
+    pub fn states(&self) -> States<'_> {
+        self.view().states()
     }
-    /// Complete retained synthetic entry count.
+
+    /// Number of retained synthetic entry records.
     #[must_use]
-    pub fn initial_count(&self) -> usize {
-        self.initial.len()
+    pub const fn initial_count(&self) -> usize {
+        self.layout.records - self.layout.states
     }
-    /// Borrow exact entry record. Entries are indexed independently of states.
+
+    /// A synthetic entry, indexed independently of minimized states.
     #[must_use]
     pub fn initial(&self, index: usize) -> Option<Record<'_>> {
-        self.initial.get(index).map(|i| Record {
-            proof: &i.proof,
-            key: proof_key(&i.proof),
-            accepting: i.accepting,
-            edges: &i.edges,
-        })
+        self.view().initial(index)
     }
-    /// Actual shared scalar algorithmic work charged by this construction.
+
+    /// Language-equivalent expression.
+    #[must_use]
+    pub fn language_expression(&self) -> &[u8] {
+        self.view().language_expression()
+    }
+
+    /// Actual charged compiler work.
     #[must_use]
     pub const fn work_used(&self) -> u64 {
-        self.work
+        self.layout.work
+    }
+
+    /// Match the full input against the retained graph.
+    pub fn is_match(&self, input: &[u8]) -> Result<bool, gnunet_types::Error> {
+        self.view().is_match(input)
     }
 }

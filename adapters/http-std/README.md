@@ -3,9 +3,9 @@
 Caller-driven HTTP/HTTPS GET/HEAD and bounded SOAP POST for HOSTLIST and NAT.
 The transport uses the shared CLIENT Resolver, RuntimeClock and native stream
 boundary with Hyper, Rustls and URL parsing. Request, response and cancellation
-owners are shared across Unix and Windows; TCP initialization borrows the
-original descriptor or Winsock socket. TLS uses AWS-LC and requires its supported
-native build toolchain on the selected target.
+owners are shared across Unix and Windows. TCP initialization borrows the
+original descriptor or Winsock socket. TLS uses the
+[shared Rust provider](../tls-crypto-std/README.md).
 
 ## Public interfaces
 
@@ -39,7 +39,11 @@ All six configured proxy modes from the original provider remain: HTTP, HTTP1.0,
 
 ## Transport policy and bounds
 
-The explicit owned Rustls config uses the approved AWS-LC non-FIPS native/asm provider and webpki-roots1.0.11, with hostname/certificate validation, normal SystemTime X509 validity, no client key or insecure verifier, and resumption/early-data disabled. TLS trust time is deliberately separate from RuntimeClock operation deadlines. `Tls::with_roots` accepts explicitly caller-owned trust roots without disabling hostname/validity checks. No pure-Rust-cryptographic-primitive or FIPS claim is made.
+The Rustls config uses Mozilla trust anchors, validates the hostname and
+certificate, and checks X.509 validity with `SystemTime`. Client authentication,
+resumption and early data are disabled. TLS trust time is separate from
+`RuntimeClock` operation deadlines. `Tls::with_roots` selects caller-provided
+roots while retaining hostname and validity checks.
 
 Bounds include URI8192, SOAP body1MiB, response16MiB, native64MiB per direction, bounded headers/parser buffers, frames, probes and redirects; profiles can be smaller. URI/body/action retained buffers are zeroizing/redacted. The mature libraries may retain transient parsed URL/header/TLS buffers; their complete wiping is not claimed. `bounded_io` exposes exact byte/expiry guards for an existing accepted-server owner without manufacturing HTTP or business receipts.
 

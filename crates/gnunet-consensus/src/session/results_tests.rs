@@ -27,6 +27,7 @@ fn failed_participant(refusal: Refusal) -> Result<(), Error> {
     grading_offers(&mut session, GradingCase::TiedRound, 0, &peers)?;
     session.conclude(10_000)?;
     let (mut inventory, mut leader, mut output, mut done) = (false, false, 0, false);
+    let mut rejected_marker = false;
     for _ in 0..65_536 {
         session.step(20_000, 1)?;
         let reconcile = session.effect().and_then(|effect| match effect.action {
@@ -36,11 +37,13 @@ fn failed_participant(refusal: Refusal) -> Result<(), Error> {
                 peer,
                 context,
                 ..
-            } => Some((task, set, peer, context)),
+            } => Some((task, set, peer, context, effect.action.set_options())),
             _ => None,
         });
-        if let Some((task, set, peer, context)) = reconcile {
+        if let Some((task, set, peer, context, options)) = reconcile {
             let population = original_population(&session, set)?;
+            let options = options.ok_or(Error::Conflict)?;
+            check(options.byzantine == 1 && options.byzantine_lower_bound == 0)?;
             if context.kind == 1 {
                 check(
                     population.contains(&BASE.to_vec())
@@ -105,29 +108,38 @@ fn failed_participant(refusal: Refusal) -> Result<(), Error> {
                         20_000,
                         &mut OpaqueApplication,
                     )?,
-                    Refusal::Malformed => check(
-                        session.set_result(
-                            task,
-                            peer,
+                    Refusal::Malformed => {
+                        let event = if context.kind == 5 {
+                            rejected_marker = true;
+                            SetEvent::AddLocal {
+                                element_type: 25,
+                                data: &[0, 0, 1, 7],
+                            }
+                        } else {
                             SetEvent::AddLocal {
                                 element_type: 0,
                                 data: &[],
-                            },
-                            20_000,
-                            &mut OpaqueApplication,
-                        ) == Err(Error::Malformed),
-                    )?,
+                            }
+                        };
+                        check(
+                            session.set_result(task, peer, event, 20_000, &mut OpaqueApplication)
+                                == Err(Error::Malformed),
+                        )?;
+                    }
                 }
             } else {
                 let remote = if context.kind == 1 {
                     let mut marker = alloc::vec![0; 12];
                     marker[2] = 2;
-                    marker[3..11].copy_from_slice(&2u64.to_be_bytes());
-                    marker[11] = peers
+                    marker[3..11].copy_from_slice(&1u64.to_be_bytes());
+                    let sender = peers
                         .iter()
                         .position(|p| *p == peer)
                         .ok_or(Error::NotFound)? as u8;
-                    alloc::vec![BASE.to_vec(), GOOD.to_vec(), marker]
+                    marker[11] = sender;
+                    // Each completed inventory reports one distinct value.
+                    let value = if sender == 1 { BASE } else { GOOD };
+                    alloc::vec![value.to_vec(), marker]
                 } else {
                     alloc::vec![BASE.to_vec(), GOOD.to_vec()]
                 };
@@ -153,7 +165,7 @@ fn failed_participant(refusal: Refusal) -> Result<(), Error> {
                     && session.outcome().failure.is_none()
                     && session.task_failures().1 != 0
                     && session.staged_bytes == 0
-                    && session.sizes[3] == 0,
+                    && (!matches!(refusal, Refusal::Malformed) || rejected_marker),
             );
         }
     }
@@ -167,6 +179,52 @@ fn failed_participant_cannot_publish_partial_union_lead_or_inventory() -> Result
 fn malformed_participant_cancels_its_original_tasks_without_killing_honest_quorum()
 -> Result<(), Error> {
     failed_participant(Refusal::Malformed)
+}
+
+#[test]
+fn a_removal_of_an_unknown_body_fails_without_charging_the_population_pool() -> Result<(), Error> {
+    let domain = Instance::new();
+    let peers = [[1; 32], [2; 32]];
+    let mut session = Session::new(
+        &domain,
+        peers[0],
+        join(&peers),
+        Limits::default(),
+        Abi::native(),
+        10_000,
+    )?;
+    session.insert(24, &[1], 10_000, &mut OpaqueApplication)?;
+    session.conclude(10_000)?;
+    for _ in 0..16 {
+        session.step(20_000, 64)?;
+        let original = session.effect().and_then(|effect| match effect.action {
+            Action::Reconcile { task, peer, .. } => Some((task, peer)),
+            _ => None,
+        });
+        receipt(&mut session)?;
+        if let Some((task, peer)) = original {
+            let charged = session.pool.charged()?;
+            check(
+                session.set_result(
+                    task,
+                    peer,
+                    SetEvent::AddRemote {
+                        element_type: 25,
+                        data: &PARTIAL,
+                    },
+                    20_000,
+                    &mut OpaqueApplication,
+                ) == Err(Error::Authentication),
+            )?;
+            check(session.pool.find(&PARTIAL, Abi::native())?.is_none())?;
+            check(session.pool.charged()? == charged)?;
+            check(session.step(20_000, 64)?)?;
+            return check(session.effect().is_some_and(
+                |effect| matches!(effect.action, Action::CancelTask { task: original } if original == task),
+            ));
+        }
+    }
+    Err(Error::NotReady)
 }
 
 #[test]

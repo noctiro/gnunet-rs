@@ -1,20 +1,16 @@
 //! Official DNS/helper keys and explicit bounded Rust resource policy.
 use crate::{Failure, statistics};
 use gnunet_config::Configuration;
-#[cfg(unix)]
-use gnunet_dns_service_host::HelperOptions;
 use gnunet_dns_service_host::{GatewayLimits, Limits, core};
 use gnunet_service_runtime::{
     credentials::UnixAccess,
     service::{ServiceOptions, ShutdownMode},
     service_options,
 };
-use std::{
-    net::{IpAddr, Ipv4Addr, Ipv6Addr},
-    time::Duration,
-};
-const LOCAL: &[u8] = b"dns-rust";
-fn number(c: &Configuration, key: &[u8], default: usize) -> Result<usize, Failure> {
+use std::{net::SocketAddr, time::Duration};
+mod exit;
+pub(super) const LOCAL: &[u8] = b"dns-rust";
+pub(super) fn number(c: &Configuration, key: &[u8], default: usize) -> Result<usize, Failure> {
     Ok(c.get(LOCAL, key)
         .map(|_| c.get_number(LOCAL, key))
         .transpose()?
@@ -22,7 +18,82 @@ fn number(c: &Configuration, key: &[u8], default: usize) -> Result<usize, Failur
         .transpose()?
         .unwrap_or(default))
 }
-fn duration(c: &Configuration, key: &[u8], default: Duration) -> Result<Duration, Failure> {
+
+#[cfg(all(
+    test,
+    any(target_os = "macos", target_os = "ios"),
+    feature = "apple-dns-proxy"
+))]
+mod tests {
+    use super::*;
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "Provider configuration must remain independent of helper/interface fields while the ordinary source still validates them"
+    )]
+    fn provider_profile_ignores_helper_only_configuration() -> Result<(), Failure> {
+        let mut config = Configuration::new(Default::default());
+        config.set_value(b"dns", b"DNS_EXIT", Some(b"192.0.2.53"))?;
+        config.set_value(b"dns", b"IPV4ADDR", Some(b"not-an-address"))?;
+        config.set_value(b"dns", b"IFNAME", Some(b"not a valid interface"))?;
+        config.set_value(LOCAL, b"HELPER_BINARY", Some(b"relative-helper"))?;
+        let provider = Settings::read_provider(&config)?;
+        assert!(matches!(
+            provider.packets,
+            crate::packet_source::Settings::ApplicationFlows(_)
+        ));
+        assert!(Settings::read(&config).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn multicast_is_explicit_and_uses_the_original_request_lifetime() -> Result<(), Failure> {
+        fn multicast(c: &Configuration) -> Result<Option<Duration>, Failure> {
+            match Settings::read_provider(c)?.packets {
+                crate::packet_source::Settings::ApplicationFlows(limits) => {
+                    Ok(limits.multicast_timeout)
+                }
+                _ => Err("provider did not select application flows".into()),
+            }
+        }
+        let mut config = Configuration::new(Default::default());
+        config.set_value(b"dns", b"DNS_EXIT", Some(b"192.0.2.53"))?;
+        if multicast(&config)?.is_some() {
+            return Err("native multicast was enabled without configuration".into());
+        }
+        config.set_value(LOCAL, b"NATIVE_MULTICAST_RELAY", Some(b"YES"))?;
+        config.set_value(LOCAL, b"REQUEST_HARD_LIFETIME", Some(b"60 s"))?;
+        if multicast(&config)? != Some(Duration::from_secs(60)) {
+            return Err("native multicast did not use the configured hard lifetime".into());
+        }
+        Ok(())
+    }
+}
+
+#[cfg(all(test, windows))]
+#[test]
+fn windows_settings_retain_local_owner_and_group_policy() -> Result<(), Failure> {
+    let mut config = Configuration::default();
+    config.set_value(b"dns", b"DNS_EXIT", Some(b"192.0.2.53"))?;
+    config.set_value(LOCAL, b"WINDOWS_BACKEND", Some(b"WFP"))?;
+    config.set_value(b"dns", b"UNIX_MATCH_GID", Some(b"YES"))?;
+    let group = Settings::read(&config)?.unix;
+    if group.match_uid || !group.match_gid {
+        return Err("DNS settings did not retain Windows group access".into());
+    }
+    config.set_value(b"dns", b"UNIX_MATCH_UID", Some(b"YES"))?;
+    let owner = Settings::read(&config)?.unix;
+    if !owner.match_uid || !owner.match_gid {
+        return Err("DNS settings did not retain Windows owner access".into());
+    }
+    Ok(())
+}
+
+pub(super) fn duration(
+    c: &Configuration,
+    key: &[u8],
+    default: Duration,
+) -> Result<Duration, Failure> {
     let d = c
         .get(LOCAL, key)
         .map(|_| c.get_time(LOCAL, key))
@@ -38,14 +109,18 @@ fn duration(c: &Configuration, key: &[u8], default: Duration) -> Result<Duration
     }
     Ok(d)
 }
-fn text<'a>(c: &'a Configuration, key: &[u8], default: &'a str) -> Result<&'a str, Failure> {
+pub(super) fn text<'a>(
+    c: &'a Configuration,
+    key: &[u8],
+    default: &'a str,
+) -> Result<&'a str, Failure> {
     c.get(b"dns", key)
         .map(std::str::from_utf8)
         .transpose()
         .map(|v| v.unwrap_or(default))
         .map_err(Into::into)
 }
-fn yes(c: &Configuration, key: &[u8], default: bool) -> Result<bool, Failure> {
+pub(super) fn yes(c: &Configuration, key: &[u8], default: bool) -> Result<bool, Failure> {
     Ok(c.get(b"dns", key)
         .map(|_| c.get_yesno(b"dns", key))
         .transpose()?
@@ -56,7 +131,7 @@ pub(super) struct Settings {
     pub native: Limits,
     pub gateway: GatewayLimits,
     pub packets: crate::packet_source::Settings,
-    pub exit: IpAddr,
+    pub exit: SocketAddr,
     pub options: ServiceOptions,
     pub unix: UnixAccess,
     pub resolver: gnunet_resolver_broker::Limits,
@@ -65,6 +140,19 @@ pub(super) struct Settings {
 }
 impl Settings {
     pub fn read(c: &Configuration) -> Result<Self, Failure> {
+        Self::read_with(c, crate::packet_source::Profile::Service)
+    }
+    #[cfg(all(
+        any(target_os = "macos", target_os = "ios"),
+        feature = "apple-dns-proxy"
+    ))]
+    pub fn read_provider(c: &Configuration) -> Result<Self, Failure> {
+        Self::read_with(c, crate::packet_source::Profile::Provider)
+    }
+    fn read_with(
+        c: &Configuration,
+        profile: crate::packet_source::Profile,
+    ) -> Result<Self, Failure> {
         let clients = number(c, b"MAX_CLIENTS", 16)?;
         let requests = number(c, b"MAX_REQUESTS", 128)?;
         let payload = number(c, b"DNS_BYTES", core::MAX_DNS_BYTES)?;
@@ -99,67 +187,7 @@ impl Settings {
         {
             return Err("invalid original DNS resolver/deadline bounds".into());
         }
-        let ipv4: Ipv4Addr = text(c, b"IPV4ADDR", "169.254.1.1")?.parse()?;
-        let mask: Ipv4Addr = text(c, b"IPV4MASK", "255.255.0.0")?.parse()?;
-        let ipv6: Ipv6Addr = text(c, b"IPV6ADDR", "2001:db8::1")?.parse()?;
-        let prefix: u8 = text(c, b"IPV6PREFIX", "126")?.parse()?;
-        if prefix > 128 {
-            return Err("DNS IPV6PREFIX exceeds128".into());
-        }
-        let exit: IpAddr = text(c, b"DNS_EXIT", "8.8.8.8")?.parse()?;
-        if exit.is_unspecified()
-            || exit.is_multicast()
-            || exit == IpAddr::V4(ipv4)
-            || exit == IpAddr::V6(ipv6)
-        {
-            return Err("DNS_EXIT must be a numeric usable resolver distinct from interception TUN addresses".into());
-        }
-        let interface = text(
-            c,
-            b"IFNAME",
-            if cfg!(target_os = "macos") {
-                "utun"
-            } else {
-                "gnunet-dns"
-            },
-        )?
-        .to_owned();
-        #[cfg(unix)]
-        if interface.is_empty()
-            || interface.len() >= 16
-            || !interface
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b"_.-".contains(&b))
-        {
-            return Err("invalid DNS IFNAME".into());
-        }
-        #[cfg(windows)]
-        if interface.is_empty()
-            || interface.encode_utf16().count() > 128
-            || interface.contains('\0')
-        {
-            return Err("invalid Windows DNS IFNAME".into());
-        }
-        #[cfg(unix)]
-        let binary = if c.get(LOCAL, b"HELPER_BINARY").is_some() {
-            c.get_filename(LOCAL, b"HELPER_BINARY", &gnunet_config::ProcessEnvironment)?
-        } else {
-            std::env::current_exe()?.with_file_name(if cfg!(windows) {
-                "gnunet-helper-dns.exe"
-            } else {
-                "gnunet-helper-dns"
-            })
-        };
-        #[cfg(unix)]
-        if !binary.is_absolute() {
-            return Err("DNS Rust helper path must be absolute".into());
-        }
-        #[cfg(windows)]
-        for key in [b"UNIX_MATCH_UID".as_slice(), b"UNIX_MATCH_GID".as_slice()] {
-            if c.get(b"dns", key).is_some() && yes(c, key, false)? {
-                return Err("Windows DNS uses native endpoint ACLs; Unix UID/GID peer matching is unavailable".into());
-            }
-        }
+        let exit = exit::read(c, profile)?;
         let grace = duration(c, b"SHUTDOWN_GRACE", Duration::from_secs(60))?;
         Ok(Self {
             core: core::Limits {
@@ -170,34 +198,7 @@ impl Settings {
             },
             native,
             gateway,
-            #[cfg(unix)]
-            packets: crate::packet_source::Settings::Helper(HelperOptions {
-                program: binary,
-                interface,
-                ipv6,
-                prefix,
-                ipv4,
-                mask,
-                skip_routing: yes(c, b"SKIP_ROUTING_SETUP", false)?,
-                frame_bytes: 65535,
-                io_slice_bytes: slice,
-                input_lifetime: duration(c, b"HELPER_INPUT_LIFETIME", Duration::from_secs(10))?,
-                stop_grace: grace,
-            }),
-            #[cfg(windows)]
-            packets: crate::packet_source::Settings::Windows(
-                crate::packet_source::windows::Settings::read(
-                    c,
-                    crate::packet_source::windows::Addresses {
-                        interface,
-                        ipv4,
-                        mask,
-                        ipv6,
-                        prefix,
-                    },
-                    yes(c, b"SKIP_ROUTING_SETUP", false)?,
-                )?,
-            ),
+            packets: crate::packet_source::read(c, slice, grace, exit.ip(), profile)?,
             exit,
             options: service_options(c, b"dns", ShutdownMode::Immediate)?,
             unix: UnixAccess {

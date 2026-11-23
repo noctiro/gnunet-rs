@@ -17,6 +17,13 @@ and ID; later tokens are unused, matching the pinned plugin. Path requirements
 are checked before client construction or directory work. A longer ego name
 containing `/` cannot replace the DELETE subject selected by its first token.
 
+Credential GET keeps the original row when its JWT metadata is missing or
+malformed. Malformed JWT payloads have an empty `attributes` array, while an
+invalid issuer or expiration field is omitted independently. PABC rows carry
+their opaque text and type, and unregistered formats carry their name and ID.
+Parser and response capacity limits and invalid JSON string encodings remain
+request errors.
+
 An unknown read/delete subject returns `[]` with HTTP200 before ID decoding. Missing required path parts retain HTTP400. Unknown POST subjects return the
 existing bounded HTTP404 error. The pinned C POST branch instead logs and returns
 without generating a response, with an infinite plugin timeout; that behavior is
@@ -56,11 +63,16 @@ Every request freezes grouped EndpointSources before any native admission, inclu
 
 ## Conditional OIDC
 
-The pinned Meson build includes openid_plugin.c/oidc_helper.c only when JOSE exists; pabc_plugin.c is unbuilt. The Rust `oidc` feature connects `oidc::Provider` and authorize/login/token/userinfo handlers, GET discovery, and GET `/jwks.json` outside `/openid`. `Provider::new` accepts an explicitly owned real `Signer::{Rs256,Hs512}`, original clock, origin/login UI, optional confidential-client secret, explicit consume-status profile and bounded state pools. It reads no key path, spawns no task, and silently downgrades no algorithm. RS256 uses the approved mature non-FIPS native/asm AWS-LC primitive through gnunet-oidc-crypto-host; it is not claimed as a pure Rust RSA primitive or FIPS backend. HS512 reuses the existing zeroizing HMAC512 primitive.
+The pinned Meson build includes openid_plugin.c/oidc_helper.c only when JOSE exists; pabc_plugin.c is unbuilt. The Rust `oidc` feature connects `oidc::Provider` and authorize/login/token/userinfo handlers, GET discovery, and GET `/jwks.json` outside `/openid`. `Provider::new` accepts an explicitly owned real `Signer::{Rs256,Hs512}`, original clock, origin/login UI, optional confidential-client secret, explicit consume-status profile and bounded state pools. It reads no key path, spawns no task, and silently downgrades no algorithm. RS256 uses RustCrypto RSA with OS-backed signing blinding through `gnunet-oidc-crypto-host`. HS512 reuses the existing zeroizing HMAC512 primitive.
 
 Authorize checks GNS redirect registration by exact value, initialized IDENTITY subject, RECLAIM attribute iteration and ticket/presentation issuance before signing purpose27. Normal STRING claims and opaque aggregated JWT presentations remain distinct; presentation authenticity belongs to the relying party. Login Identity cookies are bounded original three-second sessions (the active C constant is3, not its stale30-minute comment). Standard scope groups, exact nonstandard scope names and named id_token/userinfo claims select attributes. For example, `scope=openid%20department` selects the actual `department` attribute for both ID token and userinfo, including its aggregated presentation when applicable. Scope tokens follow RFC6749 section3.3 ASCII syntax; unknown well-formed names contribute no invented attribute or rejection. The `openid` control scope and empty split items do not select same-named attributes; explicit named claims remain available. Only original RECLAIM iteration results enter ticket issuance; claim values, including essential/value/values, are ignored as in the active producer. Token authentication uses configured client credentials plus local confidential identity, or public-client S256 PKCE. Signature verification derives the issuer only after decoding the original ticket. Original client ID, redirect URI, one-use code, native+logical expiry and purpose signature are checked. After GNS registration validates the exact callback, explicit OAuth authorization errors return `error`, `error_description` and the original `state` through that bounded percent-encoded callback. Missing or unregistered client/callback authority never produces this redirect. Independent source, IO, clock, cryptographic and resource failures retain their typed causes. Cached authority never retags a replacement MQ. Userinfo always consumes the ticket and checks its identity/status; no speculative old-attribute cache fabricates a successful result. The raw consume word is retained in Response/Report; canonical BE32 or pinned little-endian C producer defect is one explicit RECLAIM source profile shared with ordinary REST, never auto-detected. An matching-issuer GNUNET_NO becomes UserInfo401 invalid_token with a Bearer challenge. A provider failure, unknown result, mismatched issuer, source loss or timeout preserves its independent cause and does not claim revocation. Token-endpoint invalid_client401 carries Basic; challenges are selected by their OAuth flow and never inferred for unrelated/global401 responses.
 
 HTTP URL-encoded and multipart forms are bounded/preflighted, duplicate parameters across query/body fail, and only original content-type/auth/cookie fields survive erased RX into the handler. Original cookies/location/cache-control fields have owned zeroizing values. Global HTTP Basic is a separate envelope: after it authenticates, that same header is not reinterpreted as OAuth client credentials. Client-secret POST and access_token parameter work with that envelope; OAuth Basic/Bearer headers require explicit global-Basic-disabled policy. The origin/login UI and signer are fixed until restart, while new native jobs can observe committed CLIENT configuration. Standard public JWKS is `{keys:[...]}` rather than the C route's bare-JWK bug; HS512 publishes no secret key. C issuer-before-copy, redirect-prefix, short PKCE and URI-hyphen bugs are not reproduced.
+
+Authorize checks the nonce and canonical S256 challenge before reserving a
+grant or issuing a RECLAIM ticket. A supplied challenge must be nonempty and
+include the `S256` method. A registered callback receives `invalid_request`
+with the original state when these fields are invalid.
 
 Explicit `Provider::persistent` claims only a new or Rust-OIDC-marked private directory, restores the original owned RSA PKCS8/HS signer and live issued grant/access artifacts, and returns its independently polled single `persistence::Driver`. The foreground requires explicit `OIDC_STATE_DIRECTORY` and waits for initial commit before readiness. The existing `Provider::new` remains an explicitly ephemeral embedding constructor. Signer replacement after recovery failure, C JWK/store adoption, key rotation and refresh-token routes are not provided; PABC proofs remain unavailable in the active build. Claim selection uses requested names as in the active C producer. Address subfields preserve its first normal/aggregated mode, first matching presentation and original source indices; conflicting later modes are skipped. Whole address claims and normal structured address/subfields are supported.
 
@@ -100,9 +112,9 @@ headers, framing and known length before body waiting. Original Basic policy,
 CORS and route admission run before interim output;401/404/405 and known
 oversize413 can therefore finish without inviting the body. OPTIONS reuses the
 same synchronous handler decision before body waiting or100: actual200, or
-original OpenID capability501. Successful OPTIONS supplies the permitted
-Access-Control-Allow-Methods as well as Allow, with the existing origin and
-configured header response policy. Like the normal C plugin, it does not invent
+original OpenID capability501. Successful OPTIONS returns the plugin's
+`Access-Control-Allow-Methods` value and lists implemented methods in `Allow`,
+with the same origin and configured header policy. Like the C plugin, it does not invent
 an extra HTTP403 admission test for browser-requested method/header fields;
 browsers apply those original response fields. Unknown or mixed
 expectations produce417, including the ordinary final Connection:close. Repeated known100-continue members mean one expectation, not repeated replies. Known100-continue on HTTP/1.0 is ignored; a zero/no-body request or one with

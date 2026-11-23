@@ -1,19 +1,20 @@
 # SERVICE history archive and original layout contract
 
-This extension is production source for the alloc-backed SERVICE owner. It adds
-no network command, message type, private RID, GNS/DHT owner, compatibility
-migration layer or disk attestation signature. The earlier baseline had selected native/embedded static
-compilation receipts; they do not qualify this version6 identity-lineage extension. No new model, crypto, key, storage, native or C execution was used;
-recovery and mixed official interoperability remain unqualified.
+The service archive stores local recovery state. Its format is independent of
+the GNUnet wire protocol and does not import upstream C data directories.
 
 ## Trust and durable receipts
 
-`prepare_archive(maximum)` prepares a bounded zeroizing image; it is not a commit.
-`CommittedArchive` is an explicit **trusted provider contract**, like the external
-source/entropy ports. Implementing that trait is a trust decision, not a way to
-verify arbitrary bytes. Production implements it only on a private owner made
-from actual `snapshot-host::Loaded` after Namespace::Messenger qualification and
-nonzero generation. It exposes no network-byte constructor for Restored.
+`prepare_archive_into(output)` writes a bounded checkpoint to caller storage.
+Its guard exposes the written prefix and erases it on drop. With `alloc`,
+`prepare_archive(maximum)` returns the same format in an owned zeroizing buffer.
+The storage port commits the prepared bytes separately.
+
+`CommittedArchive` is a trusted storage provider contract. It exposes the exact
+bytes and nonzero generation read from an already committed service record.
+The desktop adapter constructs its provider from a `snapshot-host::Loaded`
+qualified for `Namespace::Messenger`. Network ingress cannot supply this
+capability.
 `Server::install_history` requires the exact History/Restored private domain pair
 and the same configured local profile, before original IO starts.
 
@@ -54,6 +55,30 @@ operation/native job, current membership binding, private recipient key, AEAD
 key, ephemeral scalar, physical channel or live IO authority is serialized.
 Unauthenticated deferred packets are not promoted to durable accepted facts.
 
+Within a room, each accepted message has a unique nonzero sequence that stays
+unchanged across checkpoints. Byte offsets and traversal indices belong to one
+borrowed checkpoint. Local GET and signed SERVICE REQUEST share the traversal
+of authenticated deletion links. GET applies the requesting client's current
+member lineage; REQUEST applies the session that signed the request. Current
+room records take precedence, including a deletion of a previously readable
+original. An original read only from the checkpoint has no live source or
+member capability.
+
+Detached graph pages use the same canonical message rows. Each page is bound
+to its storage namespace, local peer, room generation and emission. The
+directory pins the exact working checkpoint and rejects duplicate hashes or
+acceptance sequences across pages and working rows. Pages hold settled public
+`TEXT`, `FILE` and `REQUEST` originals and their final tombstones, as well as applied
+`PEER`, `CONNECTION` and `MISS` originals. Peer controls retain their original
+peer signer and cannot become tombstones. Unfinished application and pending
+deletion timers remain working state. A resumable session completion walk
+restarts from its signed closing hash if a new directory changes its coordinates.
+
+A live REQUEST may read the same signed target after cutover. Core checks its
+original source and message slot generations against the committed row
+and uses the original signing session for history permissions. Recovery does
+not recreate an in-flight request from that row.
+
 Loading checks exact format/trailing bounds and configured table/payload caps,
 slot generations and references, retained allocation charges, session
 successor chains/bounds, both retained-message and epoch DAGs, immutable epoch
@@ -62,10 +87,48 @@ frames are re-decoded under their own explicit body/padding layout; their actual
 canonical hashes, headers/parents and member/peer signatures are checked. A
 Deleted row with no raw bytes is restored only as a trusted durable acceptance
 fact, with structural/ownership checks, never described as a new signature check.
-Temporary adjacency/Kahn workspace is linear in the configured node/epoch slot
-bound and uses fallible allocations; no repeated full-graph walk per vertex is
-used for cycle detection. Persistent retained charges include the new per-node,
-per-session and per-peer metadata and lazy alias capacity.
+Temporary adjacency and traversal workspace is linear in the configured
+node or epoch slot bound and is reused across rooms. The service buffer
+constructor requires caller-owned graph cells; heap recovery allocates its
+graph workspace fallibly. Retained charges include room metadata, epoch alias
+capacity and nested epoch storage.
+
+`Core::recover_archive_with_service_buffers` uses the same `ServiceBuffers`
+layout as `Core::with_service_buffers`. `ServiceRoomStorage` also backs the six
+per-room tables, four processing collections, epoch alias buckets and epoch
+membership snapshots. The original room slot selects its partition. Contacts,
+their names and historical signers use the supplied `ServiceTables`, while the
+event queue and work pool start empty.
+Core charges the inline room slots, partition directory, `ServiceTables` and
+KEY ancestry workspace at construction, and each room's partition when the
+room is restored. Size the separate graph validation scratch with
+`ArchiveGraphCell::required_cells`. This path needs no allocator. The hosted
+image does not carry client group, confirmation or nonce state; the two reserved
+counts must be zero.
+
+With `alloc`, `recover_archive_with_frame_pool` borrows the signed-frame pool
+and frame workspace; `recover_archive_with_fixed_history` also uses
+[caller-owned room partitions](README.md#state-and-ownership) for the message
+table, index and ready queue. Each archived room index selects its original
+partition, including when earlier slots are vacant.
+
+The paged service path verifies original frames in the committed image during
+recovery. Eligible complete, applied originals retain a byte range and an exact
+digest instead of a frame slot. Graph records keep their independent capacity
+limit. To rewrite a paged archive, the storage owner supplies the verified
+original bytes from the previous revision and installs new ranges after
+confirming the new commit.
+
+For media with a page directory, `GraphDetachment` prepares both the graph
+page and a working checkpoint that omits the selected rows. The storage owner
+commits both under one root before settling the detachment and releasing the
+working slots. Rooted recovery validates the
+joined graph using `ArchiveGraphCell::required_cells_with_detached`; it leaves
+detached rows on their pages. A detached deletion updates the same rooted
+selection and preserves the acceptance sequence and parent links.
+
+All recovery paths use the same `GMSHIS06` encoding and validation. Failed
+recovery drops staged state without granting live source or signer authority.
 
 All loaded nodes have `MessageOrigin::Archived(ArchivedFact)` and no live Source;
 `ServiceAttribution.source` is None for them. Old scopes, operations and tokens
@@ -78,7 +141,7 @@ passes the signature/source checks again; durable Rejected/Deleted/applied
 facts are not reset by such replay.
 
 Historical Active terminal lineages retain their old qualification separately
-from current state. An new source must supply a matching sender/id/key
+from current state. A new source must supply a matching sender/id/key
 signature within that lineage's retained scope before continuation rebinds the
 member. Missing parents defer that operation and remain genuine recovery targets.
 Original timestamps remain exact inputs to expiry/subscription checks;
@@ -107,9 +170,9 @@ own-signer lineage or supplies that authority.
 Healthy identity rotation first requires every current ServiceSigner operation,
 including a verified signature awaiting its local commit, to settle. It
 also refuses outstanding old-identity signing work attached to other sources.
-The transition prechecks every room's current signer lease and the bounded
-lineage allocation, including replacement growth peak. It then changes the
-current peer and signer roles together without allocating, stopping sources,
+The transition prechecks every room's current signer lease and signer table
+capacity, including peak memory when a heap-backed table grows. It then changes
+the current peer and signer roles together without allocating, stopping sources,
 changing their brands, renewing deadlines or changing historical signed bytes.
 The provider remains responsible for all old native operation debt.
 
@@ -138,12 +201,9 @@ mixed-producer private/epoch decryption and identifier API has independent
 Raw identifiers retain their original creator order across later senders/epochs;
 a later sender's native ABI cannot reinterpret them. This adds no wire field.
 The private owned-history image retains these optional declarations and the
-identifier-origin field. Its `GMSHIS06` layout also omits the historical
-process-instance label as described below, and rejects earlier image bodies. It
-is not a C store importer or a compatibility migration. No store/recovery path was
-executed while preparing this source extension. Service mode forwards signed
-PRIVATE/SECRET/group data opaquely rather than imposing client recipient/MAC
-success on daemon routing. It never invents the missing AUTHORIZATION MAC.
+identifier-origin field. Service mode forwards signed PRIVATE/SECRET/group data
+opaquely. Client key recovery follows the
+[AUTHORIZATION contract](../gnunet-messenger/README.md#authorization-constraint).
 
 ## Bounds
 
@@ -157,12 +217,12 @@ Live transport replay, provider jobs, current crypto keys and
 application plaintext are intentionally re-established by their owners,
 not restored as successful outstanding work from an old process.
 
-## Caller-owned live domain and version 5
+## Live instance and image format
 
-`Core::recover_archive(&mut instance, ...)` borrows a fresh caller-owned live
-`Instance`. The validated recovered Core uses that current domain; no persisted
-metadata becomes a live Source or provider capability. `Recovered` retains the
-borrow until its Core and live handles are no longer used.
+Recovery borrows a fresh caller-owned `Instance`. The recovered Core uses that
+domain; persisted metadata grants no live Source or provider capability.
+`Recovered` retains the borrow until its Core and live handles are no longer
+used.
 
 The private owned-store image starts with `GMSHIS06`. Historical
 `SourceObservation` contains only original room/source slot generations and role;
@@ -186,7 +246,7 @@ a different concept: immutable JOIN/LEAVE/MERGE membership state. Those rows and
 ordinary signed raw frames, hashes, profile declarations, session bounds, source
 observations and first-write aliases remain under their original checks.
 
-Version5 prepares a source-free Deleted historical graph anchor for authenticated
+The image stores a source-free Deleted historical graph anchor for authenticated
 TALK/SUBSCRIPTION: original hash, parents, sequence, timestamp and historical auth
 lineage are retained, but raw/plain data, discourse ID, node/receive epoch, input
 context/sender fields, transient layout/identifier hints and pending semantics

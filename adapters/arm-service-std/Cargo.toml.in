@@ -2,7 +2,7 @@
 name="gnunet-arm-service-host"
 version="0.1.0"
 edition="2024"
-rust-version="1.99.1"
+rust-version="1.100.0"
 license="MPL-2.0"
 autoexamples=false
 [workspace]
@@ -17,12 +17,14 @@ gnunet-arm-service-core={path="@REPOSITORY@/crates/gnunet-arm-service-core",defa
 gnunet-arm-core={path="@REPOSITORY@/crates/gnunet-arm-core",default-features=false}
 gnunet-service-runtime={path="@REPOSITORY@/adapters/service-runtime",default-features=false}
 gnunet-native={path="@REPOSITORY@/adapters/native-std",default-features=false}
-tokio={version="=1.54.1",default-features=false,features=["rt","net","time","io-util","signal"]}
-socket2={version="=0.6.5",default-features=false}
+tokio={version="1.54.1",default-features=false,features=["rt","net","time","io-util","signal"]}
+socket2={version="0.6.5",default-features=false}
 [target.'cfg(unix)'.dependencies]
-libc={version="=0.2.191",default-features=false}
+libc={version="0.2.191",default-features=false}
+[target.'cfg(windows)'.dependencies]
+tokio={version="1.54.1",default-features=false,features=["sync"]}
 [dev-dependencies]
-tokio={version="=1.54.1",default-features=false,features=["macros"]}
+tokio={version="1.54.1",default-features=false,features=["macros"]}
 [[bin]]
 name="gnunet-arm-listener-child-fixture"
 path="examples/listener_child.rs"

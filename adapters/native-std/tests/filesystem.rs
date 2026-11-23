@@ -5,8 +5,8 @@
     reason = "Native regressions assert independent original-object, cursor and lifetime observations"
 )]
 use gnunet_native::filesystem::{
-    Directory, ExclusiveFile, FileIdentity, FileReader, file_links, private_single_file_identity,
-    validate_readonly,
+    Directory, EntryInfo, ExclusiveFile, FileIdentity, FileInfo, FileReader, file_info, file_links,
+    private_data_file_info, private_single_file_identity, publication, validate_readonly,
 };
 use std::{
     ffi::OsStr,
@@ -16,6 +16,88 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 type Result = std::result::Result<(), Box<dyn std::error::Error>>;
+
+#[test]
+fn published_file_snapshots_stay_exact_across_native_reads_and_detect_real_changes() -> Result {
+    for destination in [
+        publication::Destination::Create,
+        publication::Destination::Replace,
+    ] {
+        let scratch = Scratch::create()?;
+        let directory = Directory::open(&scratch.0)?;
+        let name = OsStr::new("image");
+        let expected = [0x5a; 32];
+        if matches!(destination, publication::Destination::Replace) {
+            drop(publication::publish(
+                &directory,
+                name,
+                &[0x27; 32],
+                publication::Destination::Create,
+                || Ok(()),
+            )?);
+        }
+        let (file, barrier) =
+            publication::publish(&directory, name, &expected, destination, || Ok(()))?.into_parts();
+        validate_readonly(&file)?;
+        let original = private_data_file_info(&file).map_err(|error| {
+            io::Error::new(error.kind(), format!(
+                "{destination:?} after publication: {error}; held={:?}, named={:?}, links={:?}, barrier={barrier:?}",
+                file_info(&file), directory.entry_info(name), file_links(&file)
+            ))
+        })?;
+        let stage = |label| format!("{destination:?}: {label}; barrier={barrier:?}");
+        assert_published_snapshot(&directory, &file, original, &stage("published read lease"));
+        let reader = FileReader::from_file(&file)?;
+        assert_published_snapshot(&directory, &file, original, &stage("reader acquisition"));
+        let mut bytes = [0; 32];
+        reader.read_exact_at(&mut bytes, 0)?;
+        assert_eq!(bytes, expected);
+        assert_published_snapshot(&directory, &file, original, &stage("exact data read"));
+        assert_eq!(reader.read_at(&mut [0], 32)?, 0);
+        assert_published_snapshot(&directory, &file, original, &stage("EOF read"));
+        drop(reader);
+        directory.sync()?;
+        assert_published_snapshot(&directory, &file, original, &stage("directory barrier"));
+
+        // The immutable read phase is over. A separately opened actual writer
+        // must now invalidate the same original's exact extent fence.
+        let writer = directory.open_file_for_update(name)?;
+        writer.set_len(31)?;
+        assert_ne!(file_info(&file)?, EntryInfo::File(original));
+        gnunet_native::filesystem::close(writer)?;
+        let (replacement, _) = publication::publish(
+            &directory,
+            name,
+            &expected,
+            publication::Destination::Replace,
+            || Ok(()),
+        )?
+        .into_parts();
+        assert!(!directory.same_file(name, &file)?);
+        assert_ne!(
+            FileIdentity::of(&replacement)?,
+            original.identity,
+            "equal bytes must never identify a replacement as the original"
+        );
+    }
+    Ok(())
+}
+
+fn assert_published_snapshot(directory: &Directory, file: &File, expected: FileInfo, stage: &str) {
+    let held = file_info(file);
+    let named = directory.entry_info(OsStr::new("image"));
+    let links = file_links(file);
+    let qualified = private_data_file_info(file);
+    let selected = directory.same_file(OsStr::new("image"), file);
+    assert!(
+        matches!(&held, Ok(EntryInfo::File(observed)) if *observed == expected)
+            && matches!(&named, Ok(EntryInfo::File(observed)) if *observed == expected)
+            && matches!(&qualified, Ok(observed) if *observed == expected)
+            && matches!(links, Ok(1))
+            && matches!(selected, Ok(true)),
+        "{stage}: expected={expected:?}; held={held:?}; named={named:?}; private={qualified:?}; links={links:?}; selected={selected:?}"
+    );
+}
 
 #[test]
 fn prepared_directory_publication_refuses_existing_and_changed_names() -> Result {
@@ -53,6 +135,58 @@ fn prepared_directory_publication_refuses_existing_and_changed_names() -> Result
     );
     source.remove_file(OsStr::new("marker"), &file)?;
     parent.remove_directory(OsStr::new("selected"), &source)?;
+    Ok(())
+}
+
+#[cfg(target_os = "freebsd")]
+#[test]
+fn directory_publication_selects_its_source_under_the_parent_lock() -> Result {
+    use std::{sync::mpsc, thread, time::Duration};
+
+    let scratch = Scratch::create()?;
+    let parent = Directory::open(&scratch.0)?;
+    let original = parent.create_private_directory(OsStr::new("stage"))?;
+    let foreign = parent.create_private_directory(OsStr::new("foreign"))?;
+    // Open independently, as a cooperating publisher would. A duplicate of
+    // the original descriptor would share its flock ownership.
+    let lease = File::open(&scratch.0)?;
+    lease.lock()?;
+    let stage = scratch.0.join("stage");
+    let saved = scratch.0.join("saved");
+    let borrowed = scratch.0.join("foreign");
+    fs::rename(&stage, &saved)?;
+    fs::rename(&borrowed, &stage)?;
+
+    thread::scope(|scope| -> Result {
+        let (started, worker_started) = mpsc::sync_channel(1);
+        let (finished, completion) = mpsc::sync_channel(1);
+        let parent = &parent;
+        let original = &original;
+        scope.spawn(move || {
+            let _reported = started.send(());
+            let result =
+                parent.publish_directory(OsStr::new("stage"), original, OsStr::new("selected"));
+            let _reported = finished.send(result);
+        });
+        let restored = (|| -> Result {
+            worker_started.recv()?;
+            if !matches!(
+                completion.recv_timeout(Duration::from_millis(50)),
+                Err(mpsc::RecvTimeoutError::Timeout)
+            ) {
+                return Err("publication observed the staged name outside the parent lock".into());
+            }
+            fs::rename(&stage, &borrowed)?;
+            fs::rename(&saved, &stage)?;
+            Ok(())
+        })();
+        drop(lease);
+        restored?;
+        completion.recv()??;
+        Ok(())
+    })?;
+    assert!(parent.same_directory(OsStr::new("selected"), &original)?);
+    assert!(parent.same_directory(OsStr::new("foreign"), &foreign)?);
     Ok(())
 }
 

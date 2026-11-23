@@ -44,6 +44,12 @@ normalization scratch. Native owners separately bound peer/output cursor counts.
 admission is fallible; as with the rest of this workspace, small Rc control-block
 allocation follows the process allocator's out-of-memory policy.
 
+The `fixed` feature provides a caller-owned `Inventory<R, N>` and
+`NameScratch<N>` without a heap. Preparing a mutation keeps the committed
+inventory intact. The synchronous persistence callback borrows the complete
+qualified after-image. A confirmed receipt applies the prepared change.
+An uncertain receipt fences the inventory until recovery.
+
 CRUD uses locale-neutral Unicode18 lowercase plus canonical NFD, corresponding
 to `GNUNET_STRINGS_utf8_tolower` and the pinned libunistring1.5 dependency. The
 public UCD18 archive hash is checked by `generate.py`; provenance and both Unicode

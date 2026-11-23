@@ -1,8 +1,8 @@
 //! Single structural model. Arrays are explicitly public mock metadata, not
 //! private keys, generated keys, signatures, digests or cryptographic fixtures.
 //! This source calls no crypto, I/O, key provider or native implementation.
-use crate::{graph::*, slots::Slots, state::*, *};
-use alloc::{collections::VecDeque, vec::Vec};
+use crate::{graph::*, room_storage::RoomDirectory, slots::Slots, state::*, *};
+use alloc::vec::Vec;
 use wire::{envelope::Kind, padding, profile::Profile};
 fn limits() -> Limits {
     Limits {
@@ -24,14 +24,10 @@ fn limits() -> Limits {
 }
 pub(super) fn structural_core<'id>(instance: &'id mut Instance) -> Result<Core<'id>, Error> {
     let limits = limits();
-    let rooms = Slots::new(limits.rooms)?;
-    let contacts = Slots::new(limits.contacts)?;
-    let mut events = VecDeque::new();
-    events
-        .try_reserve_exact(limits.events)
-        .map_err(|_| gnunet_types::Error::Capacity)?;
-    let used =
-        rooms.bytes()? + contacts.bytes()? + events.capacity() * core::mem::size_of::<Event<'id>>();
+    let rooms = RoomDirectory::owned(limits.rooms)?;
+    let contacts = ContactTable::new(limits.contacts)?;
+    let events = EventQueue::new(limits.events)?;
+    let used = rooms.bytes()? + contacts.bytes()? + events.bytes()?;
     Ok(Core {
         instance: Brand::new(instance),
         limits,
@@ -39,11 +35,16 @@ pub(super) fn structural_core<'id>(instance: &'id mut Instance) -> Result<Core<'
         mode: Mode::Client,
         rooms,
         contacts,
+        names: ByteStore::Heap,
         events,
+        frames: FrameStore::default(),
+        work: ByteStore::Heap,
+        ancestry: None,
+        room_partitions: None,
         used,
         anonymous: [0; 36],
         local_peer: None,
-        own_signers: Vec::new(),
+        own_signers: SignerTable::new(),
     })
 }
 fn mock_source<'id>(brand: Brand<'id>) -> Source<'id> {
@@ -57,22 +58,13 @@ fn mock_source<'id>(brand: Brand<'id>) -> Source<'id> {
         slot,
     }
 }
-fn mock_contact<'id>(brand: Brand<'id>) -> Contact<'id> {
-    Contact {
-        core: brand,
-        room: Slot {
-            index: usize::MAX,
-            generation: 0,
-        },
-        slot: Slot {
-            index: 0,
-            generation: 1,
-        },
-    }
-}
-pub(super) fn session<'id>(brand: Brand<'id>, lineage: u64, generation: u64) -> SessionRow<'id> {
+const MOCK_CONTACT: Slot = Slot {
+    index: 0,
+    generation: 1,
+};
+pub(super) fn session(lineage: u64, generation: u64) -> SessionRow {
     SessionRow {
-        contact: mock_contact(brand),
+        contact: MOCK_CONTACT,
         id: [2; 32],
         public: [3; 36],
         hpke: [4; 36],
@@ -95,7 +87,7 @@ pub(super) fn node<'id>(
     lineage: u64,
     generation: u64,
     sequence: u64,
-) -> Result<Node<'id>, Error> {
+) -> Result<Node, Error> {
     let mut bytes = Vec::new();
     bytes
         .try_reserve_exact(8)
@@ -103,12 +95,7 @@ pub(super) fn node<'id>(
     bytes.extend_from_slice(b"PUBLIC!!");
     Ok(Node {
         hash: [hash; 64],
-        origin: MessageOrigin::Live(mock_source(brand)),
-        provenance: SourceObservation {
-            room: mock_source(brand).room,
-            source: mock_source(brand).slot,
-            role: SourceRole::Client,
-        },
+        origin: NodeOrigin::from_source(mock_source(brand), SourceRole::Client),
         layout: OriginalLayout::same(Profile::LITTLE_255),
         cipher_layout: None,
         plain_layout: None,
@@ -117,17 +104,17 @@ pub(super) fn node<'id>(
         resume_pending: false,
         meta: ReceiveMeta {
             epoch: [0; 64],
-            flags: 0,
+            flags: 8,
             requested: false,
             sender_hash: None,
             context: None,
         },
         phase: MessagePhase::Applied,
-        frame: Some(OwnedBytes::new(zeroize::Zeroizing::new(bytes))),
+        frame: Some(OwnedBytes::new(zeroize::Zeroizing::new(bytes)).into()),
         plaintext: None,
         auth: Some(Authentication {
             owner: Some(Owner {
-                contact: mock_contact(brand),
+                contact: MOCK_CONTACT,
                 lineage,
                 generation,
             }),
@@ -136,12 +123,12 @@ pub(super) fn node<'id>(
             peer: None,
         }),
         padding: padding::Decode::Absent,
-        plain_padding: padding::Decode::Absent,
         semantic_applied: true,
         complete: false,
         parents: [[parent; 64], [0; 64]],
         references: [[0; 64]; 3],
         frontier_applied: true,
+        frontier_recent: true,
         epoch: [0; 64],
         epoch_indexed: true,
         kind: Kind::TEXT,
@@ -157,7 +144,6 @@ pub(super) fn node<'id>(
         transcript: None,
         private_recipient: None,
         recipient: None,
-        visit: 0,
     })
 }
 fn write_original<'id>(core: &mut Core<'id>, room: Room<'id>) -> Result<Binding<'id>, Error> {
@@ -180,14 +166,14 @@ fn frontier_keeps_predecessor_and_epoch_on_the_same_branch() -> Result<(), Error
     let mut room = RoomRow::new([1; 64], None, limits(), Profile::LITTLE_255)?;
     let mut first = node(core.instance, 1, 0, 1, 1, 1)?;
     first.epoch = [11; 64];
-    let first = room.insert_node(first).map_err(|r| r.error)?;
+    let first = room.insert_node(first)?;
     let mut concurrent = node(core.instance, 2, 0, 1, 1, 2)?;
     concurrent.epoch = [22; 64];
-    let concurrent = room.insert_node(concurrent).map_err(|r| r.error)?;
-    room.update_frontier(first)?;
-    room.update_frontier(concurrent)?;
-    assert_eq!(room.frontier.len(), 2);
-    assert!(room.frontier.contains(&[1; 64]));
+    let concurrent = room.insert_node(concurrent)?;
+    room.update_frontier(first, Mode::Client)?;
+    room.update_frontier(concurrent, Mode::Client)?;
+    assert_eq!(room.queues.frontier.len(), 2);
+    assert!(room.queues.frontier.contains(&[1; 64]));
     assert_eq!(room.last_message, [2; 64]);
     assert_eq!(room.current_epoch, [22; 64]);
     Ok(())
@@ -209,42 +195,43 @@ fn bounded_original_state_model() -> Result<(), Error> {
     assert!(old != new);
     assert!(slots.get(old).is_err());
     let mut room = RoomRow::new([1; 64], None, limits(), Profile::LITTLE_255)?;
-    let root = room
-        .insert_node(node(brand, 1, 0, 1, 1, 1)?)
-        .map_err(|r| r.error)?;
-    let tail = room
-        .insert_node(node(brand, 2, 1, 1, 1, 2)?)
-        .map_err(|r| r.error)?;
-    assert!(!room.graph_complete(tail)?);
-    assert!(room.graph_complete(root)?);
+    let root = room.insert_node(node(brand, 1, 0, 1, 1, 1)?)?;
+    let tail = room.insert_node(node(brand, 2, 1, 1, 1, 2)?)?;
+    assert!(!room.graph_complete(tail, None)?);
+    assert!(room.graph_complete(root, None)?);
     room.nodes.get_mut(root)?.complete = true;
-    assert!(room.graph_complete(tail)?);
+    assert!(room.graph_complete(tail, None)?);
     room.nodes.get_mut(tail)?.complete = true;
     // Ownership flows only along an actual successor lineage, never because
     // another session happens to have the same public mock key/contact.
-    assert!(owns(&session(brand, 1, 2), room.nodes.get(root)?));
-    assert!(!owns(&session(brand, 2, 2), room.nodes.get(root)?));
+    assert!(owns(&session(1, 2), room.nodes.get(root)?));
+    assert!(!owns(&session(2, 2), room.nodes.get(root)?));
     let mut future = node(brand, 3, 2, 1, 2, 3)?;
-    assert!(!owns(&session(brand, 1, 1), &future));
+    assert!(!owns(&session(1, 1), &future));
     future.sequence = 0;
-    assert!(!known(&session(brand, 1, 2), &future));
+    assert!(!known(&session(1, 2), &future));
     // A deleted original preserves author/links and does not block descendants.
-    assert!(room.erase_message(tail, Some([4; 64]))? > 0);
+    room.nodes.get_mut(tail)?.complete = false;
+    room.queue_node(tail)?;
+    assert!(room.erase_message(&mut FrameStore::default(), tail, Some([4; 64]))? > 0);
+    room.queue_node(tail)?;
+    assert!(room.take_ready()? == Some(tail));
+    assert!(room.take_ready()?.is_none());
     assert!(room.nodes.get(tail)?.frame.is_none());
     assert!(room.nodes.get(tail)?.auth.is_some());
-    assert!(room.graph_complete(tail)?);
-    let mut closing = session(brand, 1, 2);
+    assert!(room.graph_complete(tail, None)?);
+    let mut closing = session(1, 2);
     closing.phase = SessionPhase::Closing;
     let s = room.sessions.insert(closing).map_err(|(e, _)| e)?;
     room.sequence = 3;
     room.schedule_completion(s)?;
     for _ in 0..8 {
-        let _completion = room.completion_step()?;
+        let _completion = room.completion_step(None)?;
     }
     assert_eq!(room.sessions.get(s)?.phase, SessionPhase::Completed);
     room.subscriptions
         .insert(Subscription {
-            contact: mock_contact(brand),
+            contact: MOCK_CONTACT,
             discourse: [5; 32],
             lineage: 1,
             start: 10,
@@ -316,7 +303,9 @@ fn bounded_original_state_model() -> Result<(), Error> {
     core.create_submitted(source)?;
     core.create_submitted(other_source)?;
     let open = core.open(source, 100)?;
-    assert_eq!(write_original(&mut core, room)?.operation(), open);
+    let open_binding = write_original(&mut core, room)?;
+    assert_eq!(open_binding.operation(), open);
+    assert_eq!(open_binding.source(), source);
     let notification_room = wire::Room {
         door: &[0; 32],
         key: &[1; 64],
@@ -327,6 +316,15 @@ fn bounded_original_state_model() -> Result<(), Error> {
     core.retire_operation(open)?;
     while core.pop_event().is_some() {}
     let missing = core.request_missing(source, [42; 64], 20, 100)?;
+    assert_eq!(missing.observation().index(), open.observation().index());
+    assert_ne!(
+        missing.observation().generation(),
+        open.observation().generation()
+    );
+    assert!(matches!(
+        core.write_progress(open_binding, 0, false),
+        Err(Error::Protocol(gnunet_types::Error::StaleGeneration))
+    ));
     assert_eq!(write_original(&mut core, room)?.operation(), missing);
     let close = core.close(source, 100)?;
     assert_eq!(write_original(&mut core, room)?.operation(), close);
@@ -403,7 +401,7 @@ fn bounded_original_state_model() -> Result<(), Error> {
     assert!(core.service_client(source).is_err());
     let mut old_public = public;
     old_public[35] = 0x43;
-    let mut current = session(brand, 1, 2);
+    let mut current = session(1, 2);
     current.public = public;
     let current = core
         .rooms
@@ -411,7 +409,7 @@ fn bounded_original_state_model() -> Result<(), Error> {
         .sessions
         .insert(current)
         .map_err(|(e, _)| e)?;
-    let mut previous = session(brand, 1, 1);
+    let mut previous = session(1, 1);
     previous.public = old_public;
     previous.phase = SessionPhase::Closing;
     previous.successor = Some(current);
@@ -430,7 +428,7 @@ fn bounded_original_state_model() -> Result<(), Error> {
             .is_err()
     );
     assert_eq!(core.service_client(source)?, (public, [2; 32]));
-    let mut completed = session(brand, 2, 1);
+    let mut completed = session(2, 1);
     completed.id = [3; 32];
     completed.public = old_public;
     completed.phase = SessionPhase::Completed;
@@ -448,3 +446,7 @@ fn bounded_original_state_model() -> Result<(), Error> {
     // No model data is presented as a valid message/crypto proof.
     Ok(())
 }
+
+mod dependencies;
+mod events;
+mod history;

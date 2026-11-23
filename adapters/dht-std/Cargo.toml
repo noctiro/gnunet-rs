@@ -5,9 +5,21 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+[features]
+startup = [
+    "dep:getrandom",
+    "dep:gnunet-config",
+    "dep:gnunet-program-host",
+    "dep:gnunet-resolver-broker",
+    "dep:gnunet-service-startup",
+    "tokio/macros",
+]
+
 [dependencies]
+getrandom = { workspace = true, optional = true }
 gnunet-block.workspace = true
 gnunet-client-host.workspace = true
+gnunet-config = { workspace = true, optional = true }
 gnunet-core-client-host.workspace = true
 gnunet-crypto = { workspace = true, features = ["pow"] }
 gnunet-dht = { workspace = true, features = ["alloc"] }
@@ -17,7 +29,10 @@ gnunet-nse-client-host.workspace = true
 gnunet-peerstore-client-host.workspace = true
 gnunet-pils = { workspace = true, features = ["alloc"] }
 gnunet-pils-host = { workspace = true, features = ["client"] }
+gnunet-program-host = { workspace = true, features = ["service-runtime"], optional = true }
+gnunet-resolver-broker = { workspace = true, optional = true }
 gnunet-service-runtime.workspace = true
+gnunet-service-startup = { workspace = true, optional = true }
 gnunet-transport-application-host.workspace = true
 gnunet-types.workspace = true
 gnunet-wire.workspace = true

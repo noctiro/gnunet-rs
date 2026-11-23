@@ -11,6 +11,7 @@ use std::{
 mod configuration;
 mod directory;
 mod probe;
+pub mod testing;
 mod types;
 pub use configuration::{Generated, required_ports};
 pub use types::*;

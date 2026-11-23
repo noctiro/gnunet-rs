@@ -1,9 +1,7 @@
 {
   "configuration.c": {
-    "source": "/private/tmp/gnunet-upstream-audit-20261026/src/lib/util/configuration.c",
+    "source": "src/lib/util/configuration.c",
     "source_sha256": "29177dd0e1ecc68035a9757d9a8479f5f736f5d90622bf00d9ef9aa3fdf4467b",
-    "compile_file": "../../gnunet-upstream-audit-20261026/src/lib/util/configuration.c",
-    "exit_code": 0,
     "sites": [
       {
         "macro": "GNUNET_break",
@@ -371,10 +369,8 @@
     ]
   },
   "disk.c": {
-    "source": "/private/tmp/gnunet-upstream-audit-20261026/src/lib/util/disk.c",
+    "source": "src/lib/util/disk.c",
     "source_sha256": "d68660547e31ed9409f22350a66878b3236655cea1b3541c5674850663b96e9e",
-    "compile_file": "../../gnunet-upstream-audit-20261026/src/lib/util/disk.c",
-    "exit_code": 0,
     "sites": [
       {
         "macro": "LOG_STRERROR_FILE",
@@ -820,10 +816,8 @@
     ]
   },
   "common_logging.c": {
-    "source": "/private/tmp/gnunet-upstream-audit-20261026/src/lib/util/common_logging.c",
+    "source": "src/lib/util/common_logging.c",
     "source_sha256": "4773a6a343f2017f97e19002eb1da5102b23642825487c144ee1da97894b81c2",
-    "compile_file": "../../gnunet-upstream-audit-20261026/src/lib/util/common_logging.c",
-    "exit_code": 0,
     "sites": [
       {
         "macro": "GNUNET_log_strerror_file",
@@ -864,10 +858,8 @@
     ]
   },
   "program.c": {
-    "source": "/private/tmp/gnunet-upstream-audit-20261026/src/lib/util/program.c",
+    "source": "src/lib/util/program.c",
     "source_sha256": "7eff92cd6b31f79ab6f09a1e38ff8fc09abd930f93c96c709bee3ca130318dc9",
-    "compile_file": "../../gnunet-upstream-audit-20261026/src/lib/util/program.c",
-    "exit_code": 0,
     "sites": [
       {
         "macro": "GNUNET_log",

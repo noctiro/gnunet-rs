@@ -76,6 +76,27 @@ fn held_root_and_wide_children_survive_parent_name_replacement() -> io::Result<(
     )?;
     Ok(())
 }
+
+#[test]
+fn directory_barrier_uses_the_held_object_after_its_name_is_removed() -> io::Result<()> {
+    let fixture = Fixture::new()?;
+    let original_name = fixture.0.join("original");
+    fs::create_dir(&original_name)?;
+    let original = Directory::open(&original_name)?;
+    let local_ntfs = super::sync::is_local_ntfs(original.as_file())?;
+    fs::rename(original_name, fixture.0.join("moved"))?;
+    let _file = original.create_private_file(OsStr::new("value"))?;
+    let expected = if local_ntfs {
+        crate::DirectorySync::Synchronized
+    } else {
+        crate::DirectorySync::Unavailable
+    };
+    require(
+        original.sync()? == expected,
+        "wrong held-directory flush result",
+    )
+}
+
 #[test]
 fn hard_links_preserve_source_and_cleanup_refuses_a_replacement() -> io::Result<()> {
     let fixture = Fixture::new()?;

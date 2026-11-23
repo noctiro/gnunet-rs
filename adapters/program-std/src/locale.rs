@@ -15,6 +15,9 @@ use std::{
     rc::Rc,
     sync::atomic::{AtomicBool, Ordering},
 };
+mod catalog;
+pub use catalog::InstalledLocale;
+pub(crate) use catalog::translations as installed_translations;
 #[cfg(unix)]
 const MESSAGES_CATEGORY: libc::c_int = libc::LC_MESSAGES;
 // GNU libintl's LC_MESSAGES value on systems without a native category.

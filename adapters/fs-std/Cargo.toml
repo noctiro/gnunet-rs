@@ -6,12 +6,45 @@ rust-version.workspace = true
 license.workspace = true
 
 [features]
-auto-share = ["network", "tokio/sync", "dep:time"]
+auto-share = ["network", "tokio/sync"]
 default = []
-extraction = ["dep:unicode-normalization", "dep:gnunet-extractor-host"]
+extraction = [
+    "dep:aes",
+    "dep:brotli-decompressor",
+    "dep:crypto-bigint",
+    "dep:crypto-primes",
+    "dep:des",
+    "dep:encoding_rs",
+    "dep:fax",
+    "dep:getrandom",
+    "dep:gnunet-extractor-host",
+    "dep:hkdf",
+    "dep:hmac",
+    "dep:jpxl-bitstream",
+    "dep:jpxl-core",
+    "dep:jpxl-decode",
+    "dep:jpxl-entropy",
+    "dep:md-5",
+    "dep:ml-kem",
+    "dep:p256",
+    "dep:p384",
+    "dep:p521",
+    "dep:quick-xml",
+    "dep:rc2",
+    "dep:rsa",
+    "dep:sha1",
+    "dep:sha2",
+    "dep:subtle",
+    "dep:time",
+    "dep:unicode-normalization",
+    "dep:x25519-dalek",
+    "dep:x448",
+    "dep:x509-parser",
+    "dep:zeroize",
+]
 service = ["dep:gnunet-client-host", "dep:gnunet-service-runtime", "dep:gnunet-wire", "dep:tokio", "tokio/io-util", "tokio/fs"]
-network = ["service", "extraction", "dep:gnunet-datastore-host", "dep:zeroize"]
-server = ["network", "gnunet-fs/alloc", "gnunet-datastore-host/server", "dep:gnunet-datastore", "dep:gnunet-config", "dep:gnunet-pils", "dep:gnunet-pils-host", "dep:gnunet-cadet-host", "dep:gnunet-core-client-host", "dep:gnunet-dht-client-host", "tokio/sync"]
+network = ["service", "extraction", "dep:gnunet-datastore-host"]
+server = ["network", "gnunet-fs/alloc", "gnunet-datastore-host/server", "dep:gnunet-datastore", "dep:gnunet-config", "dep:gnunet-pils", "dep:gnunet-pils-host", "dep:gnunet-cadet-host", "dep:gnunet-core-client-host", "dep:gnunet-dht-client-host", "dep:gnunet-peerstore-client-host", "tokio/sync"]
 
 [dependencies]
 gnunet-native.workspace = true
@@ -20,6 +53,7 @@ unicode-normalization = { workspace = true, optional = true }
 time = { workspace = true, optional = true, features = ["std"] }
 gnunet-core-client-host = { workspace = true, optional = true }
 gnunet-dht-client-host = { workspace = true, optional = true }
+gnunet-peerstore-client-host = { workspace = true, optional = true }
 gnunet-cadet-host = { workspace = true, optional = true }
 gnunet-config = { workspace = true, optional = true }
 gnunet-datastore = { workspace = true, optional = true }
@@ -30,6 +64,34 @@ gnunet-fs-codec = { workspace = true, features = ["alloc"] }
 gnunet-types.workspace = true
 gnunet-crypto.workspace = true
 gnunet-datastore-host = { workspace = true, optional = true }
+aes = { workspace = true, optional = true }
+crypto-bigint = { workspace = true, features = ["alloc"], optional = true }
+crypto-primes = { version = "0.7.2", default-features = false, features = ["alloc"], optional = true }
+ml-kem = { workspace = true, optional = true }
+des = { workspace = true, optional = true }
+rc2 = { workspace = true, optional = true }
+getrandom = { workspace = true, features = ["sys_rng"], optional = true }
+sha1 = { workspace = true, optional = true }
+hkdf = { workspace = true, optional = true }
+hmac = { workspace = true, optional = true }
+x25519-dalek = { workspace = true, optional = true }
+x448 = { version = "=0.14.0-pre.12", default-features = false, features = ["static_secrets"], optional = true }
+x509-parser = { workspace = true, optional = true }
+p256 = { workspace = true, features = ["alloc", "ecdh", "pkcs8"], optional = true }
+p384 = { workspace = true, features = ["alloc", "ecdh", "pkcs8"], optional = true }
+p521 = { workspace = true, features = ["alloc", "ecdh", "pkcs8"], optional = true }
+rsa = { workspace = true, features = ["hazmat"], optional = true }
+quick-xml = { workspace = true, optional = true }
+encoding_rs = { workspace = true, optional = true }
+brotli-decompressor = { workspace = true, optional = true }
+fax = { workspace = true, optional = true }
+jpxl-bitstream = { workspace = true, optional = true }
+jpxl-core = { workspace = true, optional = true }
+jpxl-decode = { workspace = true, optional = true }
+jpxl-entropy = { workspace = true, optional = true }
+md-5 = { workspace = true, optional = true }
+sha2 = { workspace = true, optional = true }
+subtle = { workspace = true, optional = true }
 zeroize = { workspace = true, optional = true }
 gnunet-client-host = { workspace = true, optional = true }
 gnunet-service-runtime = { workspace = true, optional = true }

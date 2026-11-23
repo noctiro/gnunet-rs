@@ -1,14 +1,103 @@
-//! One bounded immutable JSON line and real borrowed-stdout cursor.
+//! One bounded immutable row and real borrowed-stdout cursor.
 use super::{Failure, driver::Names};
 use crate::foreground::Stdout;
-use gnunet_client::statistics::{Statistic, WatchValue};
+use gnunet_client::statistics::{Selector, Statistic, WatchValue};
+use gnunet_service_runtime::clock::RuntimeClock;
+use gnunet_types::AbsoluteTime;
 use std::io::{self, Write};
-const CAPACITY: usize = 8192;
+pub(super) const WATCH_CAPACITY: usize = 8192;
+
+pub(super) enum Style {
+    Json,
+    Text(Text),
+}
+
+pub(super) struct Text {
+    pub quiet: bool,
+    pub separator: Vec<u8>,
+}
+
+impl Text {
+    fn row(
+        &self,
+        out: &mut impl Write,
+        selector: Selector<'_>,
+        value: u64,
+        persistent: bool,
+        watched_at: Option<AbsoluteTime>,
+    ) -> io::Result<()> {
+        let Some(time) = watched_at else {
+            return self.columns(out, selector, persistent, std::iter::once(value));
+        };
+        if self.quiet {
+            return writeln!(out, "{value}");
+        }
+        field(
+            out,
+            &gnunet_program_host::diagnostics::absolute_time(time)?,
+            24,
+        )?;
+        out.write_all(&self.separator)?;
+        out.write_all(b" ")?;
+        self.label(out, selector, persistent)?;
+        writeln!(out, "{value:16}")
+    }
+
+    fn columns(
+        &self,
+        out: &mut impl Write,
+        selector: Selector<'_>,
+        persistent: bool,
+        values: impl Iterator<Item = u64>,
+    ) -> io::Result<()> {
+        if !self.quiet {
+            self.label(out, selector, persistent)?;
+        }
+        for value in values {
+            write!(out, "{value:16}")?;
+            out.write_all(&self.separator)?;
+        }
+        out.write_all(b"\n")
+    }
+
+    fn label(
+        &self,
+        out: &mut impl Write,
+        selector: Selector<'_>,
+        persistent: bool,
+    ) -> io::Result<()> {
+        let separator = self.separator.as_slice();
+        out.write_all(if persistent { b"!" } else { b" " })?;
+        out.write_all(separator)?;
+        field(out, selector.subsystem, 12)?;
+        out.write_all(separator)?;
+        out.write_all(b" ")?;
+        if !separator.is_empty() {
+            out.write_all(b"\"")?;
+        }
+        field(out, selector.name, 50)?;
+        if separator.is_empty() {
+            out.write_all(b": ")
+        } else {
+            out.write_all(b"\"")?;
+            out.write_all(separator)?;
+            out.write_all(b" ")
+        }
+    }
+}
+
+fn field(out: &mut impl Write, bytes: &[u8], width: usize) -> io::Result<()> {
+    const PADDING: [u8; 50] = [b' '; 50];
+    out.write_all(&PADDING[..width.saturating_sub(bytes.len())])?;
+    out.write_all(bytes)
+}
+
 pub(super) struct Output {
     bytes: Vec<u8>,
     used: usize,
     capacity: usize,
     stdout: Stdout,
+    style: Style,
 }
 struct Limited<'a>(&'a mut Vec<u8>, usize);
 impl Write for Limited<'_> {
@@ -42,10 +131,7 @@ impl Write for Limited<'_> {
     }
 }
 impl Output {
-    pub fn new() -> Result<Self, Failure> {
-        Self::with_capacity(CAPACITY)
-    }
-    pub fn with_capacity(capacity: usize) -> Result<Self, Failure> {
+    pub fn new(style: Style, capacity: usize) -> Result<Self, Failure> {
         let bytes = Vec::new();
         let stdout = Stdout::new()?;
         Ok(Self {
@@ -53,6 +139,7 @@ impl Output {
             used: 0,
             capacity,
             stdout,
+            style,
         })
     }
     pub fn stage(
@@ -62,12 +149,22 @@ impl Output {
         index: u32,
         generation: u32,
         value: WatchValue,
+        clock: &dyn RuntimeClock,
     ) -> Result<(), Failure> {
         if !self.bytes.is_empty() {
             return Err("previous actual WATCH row still owns stdout".into());
         }
         self.used = 0;
         let mut out = Limited(&mut self.bytes, self.capacity);
+        if let Style::Text(text) = &self.style {
+            return Ok(text.row(
+                &mut out,
+                names.selector(),
+                value.value,
+                value.persistent(),
+                Some(clock.sample()?.now),
+            )?);
+        }
         write!(
             out,
             "{{\"event\":\"statistics_watch_value\",\"epoch\":{epoch},\"logical_index\":{index},\"logical_generation\":{generation},\"wid\":{},\"flags\":{},\"reserved\":{},\"value\":{},\"persistent\":{},\"subsystem\":",
@@ -93,6 +190,15 @@ impl Output {
         }
         self.used = 0;
         let mut out = Limited(&mut self.bytes, self.capacity);
+        if let Style::Text(text) = &self.style {
+            return Ok(text.row(
+                &mut out,
+                value.selector,
+                value.value,
+                value.persistent(),
+                None,
+            )?);
+        }
         write!(
             out,
             "{{\"event\":\"statistics_value\",\"uid\":{},\"persistent\":{},\"value\":{},\"subsystem\":",
@@ -115,6 +221,9 @@ impl Output {
             return Err("previous STATISTICS row still owns stdout".into());
         }
         self.used = 0;
+        if matches!(self.style, Style::Text(_)) {
+            return Ok(());
+        }
         let mut out = Limited(&mut self.bytes, self.capacity);
         if let Some(count) = count {
             writeln!(out, "{{\"event\":\"statistics_end\",\"count\":{count}}}")?;
@@ -123,6 +232,27 @@ impl Output {
         } else {
             out.write_all(b"{\"event\":\"statistics_set_confirmed\"}\n")?;
         }
+        Ok(())
+    }
+    pub(super) fn stage_columns(
+        &mut self,
+        selector: Selector<'_>,
+        persistent: bool,
+        values: impl Iterator<Item = u64>,
+    ) -> Result<(), Failure> {
+        if !self.bytes.is_empty() {
+            return Err("previous STATISTICS row still owns stdout".into());
+        }
+        let Style::Text(text) = &self.style else {
+            return Err("TESTBED aggregation requires text output".into());
+        };
+        self.used = 0;
+        text.columns(
+            &mut Limited(&mut self.bytes, self.capacity),
+            selector,
+            persistent,
+            values,
+        )?;
         Ok(())
     }
     /// None means no positive byte progress; caller owns real timer/readiness wait.

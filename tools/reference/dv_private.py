@@ -28,6 +28,7 @@ REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "tools/reference"))
 from conversation_owned import (Blocked, Controller, Deadline, ObservationError,
                                 Owner, described, file_hash)
+from peer_budget import MissingPeerBudget, require_peer_budget
 
 PROFILE = "three-normal-nodes-private-unix-dv-core"
 REVISION = "14698f19848af867f48a04521e274abd55972075"
@@ -666,6 +667,10 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if not args.execute:
         raise Blocked("explicit --execute is required; import/source preparation starts no product")
+    try:
+        require_peer_budget()
+    except MissingPeerBudget as error:
+        parser.error(str(error))
     output = absolute(args.output)
     if output.exists() or not any(within(output, root) for root in (REPO / "target", Path(tempfile.gettempdir()), Path("/tmp"))):
         raise Blocked("output must be a fresh selected private evidence directory")

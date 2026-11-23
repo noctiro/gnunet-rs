@@ -252,16 +252,33 @@ pub struct PeerClose<'core, 'book, 'pils, const O: usize = 32> {
     /// Logical identity-bound endpoint retirement, retaining actual peer debt.
     pub applications: Result<(), ProtocolError>,
 }
-/// Original local demand waiting for an explicitly supplied discovery/transport
-/// port. Observing it grants no route, current neighbor or remote success.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct Discovery<'app> {
-    /// Original generational application open intent.
-    pub open: gnunet_cadet::service::Open<'app>,
+pub(super) enum DiscoveryOwner<'node, 'app> {
+    Open(gnunet_cadet::service::Open<'app>),
+    Repair {
+        scope: gnunet_cadet::tunnel::context::Scope<'node>,
+        serial: u64,
+    },
+}
+/// Original application open or retained tunnel route search. A ticket grants
+/// no route, neighbor, cipher generation or remote success.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Discovery<'node, 'app> {
+    pub(super) owner: DiscoveryOwner<'node, 'app>,
     /// Exact expected end-to-end peer.
     pub peer: [u8; 32],
-    /// Original native elapsed opening bound, never renewed by discovery retries.
+    /// Original elapsed target, never renewed by discovery retries.
     pub expires: MonoInstant,
+}
+/// Original ticket's remaining route work.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DiscoveryStatus {
+    /// Another candidate can be admitted.
+    Searching,
+    /// An endpoint path is opening. Retain the lookup and its alternatives.
+    Opening,
+    /// A path was confirmed or the original ticket no longer owns a lookup.
+    Finished,
 }
 /// Read-only original demand for a TRANSPORT application preference. This is
 /// neither a current CORE neighbor nor proof of a connected/authenticated peer.
@@ -274,7 +291,7 @@ pub struct TransportDemand<'node, 'app> {
     pub channel: Option<gnunet_cadet::service::Channel<'app>>,
     /// An opening keeps its exact original intent and native elapsed/hard targets.
     /// None requires an already established channel or confirmed tunnel.
-    pub opening: Option<(Discovery<'app>, std::time::Instant)>,
+    pub opening: Option<(Discovery<'node, 'app>, std::time::Instant)>,
 }
 /// Original signing work, ready for the actual signer adapter.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

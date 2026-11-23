@@ -151,8 +151,8 @@ pub struct Config<'a> {
     pub services: &'a [Service],
     /// Optional actual DNS external request capability.
     pub dns: bool,
-    /// Actual remote-C AF profile. No private negotiation is added.
-    pub af: AfProfile,
+    /// Local reply AF assignments keyed by authenticated channel peers.
+    pub peer_profiles: &'a PeerProfiles,
 }
 /// Kernel-observed TCP lifecycle, without inventing endpoint sequencing/ACKs.
 #[derive(Clone, Copy, Debug, Default)]

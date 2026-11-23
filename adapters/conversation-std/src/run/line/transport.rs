@@ -1,5 +1,7 @@
 //! Physical CADET loss ends calls while the original local Line stays owned.
-use super::{Bounds, Completion, Error, Fault, NativeKind, PendingNative, Source, State, cadet};
+use super::{
+    Bounds, Completion, Error, Fault, NativeKind, PendingNative, ReceiveOwner, Source, State, cadet,
+};
 use std::io;
 
 pub(super) struct Recovery {
@@ -30,6 +32,71 @@ fn recoverable(cause: &cadet::LossCause) -> bool {
 }
 
 impl<'s, 'p, 'c, 'slots> State<'s, 'p, 'c, 'slots> {
+    pub(super) fn cadet_receive_deadline(&self) -> Option<(ReceiveOwner, Bounds)> {
+        // The CADET poller holds at most one DATA packet while it advances output.
+        if let Some(bound) = self.cadet_input {
+            return Some((ReceiveOwner::Stream, bound));
+        }
+        self.calls.iter().enumerate().find_map(|(index, entry)| {
+            let call = entry.as_ref()?;
+            if call.gone || call.retiring.is_some() {
+                return None;
+            }
+            let packet = call.input.as_ref()?;
+            let bound = self
+                .pending_native
+                .as_ref()
+                .filter(|pending| pending.ack.is_some_and(|(id, _)| id == call.id))
+                .map_or(packet.bound, |pending| pending.bound);
+            Some((ReceiveOwner::Call(index), bound))
+        })
+    }
+
+    pub(super) fn expire_cadet_input(&mut self) -> Result<bool, Error> {
+        let Some((owner, bound)) = self.cadet_receive_deadline() else {
+            return Ok(false);
+        };
+        match bound.check(self.sources.clock.as_ref()) {
+            Ok(()) => Ok(false),
+            Err(Fault::Deadline) => self.expire_cadet_receive_owner(owner),
+            Err(reason) => Err(reason.into()),
+        }
+    }
+
+    pub(super) fn expire_cadet_receive_owner(
+        &mut self,
+        owner: ReceiveOwner,
+    ) -> Result<bool, Error> {
+        let ReceiveOwner::Call(index) = owner else {
+            // An incomplete frame cannot be removed from an MQ byte stream.
+            return self.retire_cadet_for(Fault::Deadline);
+        };
+        let call = self.calls[index].as_ref().ok_or(Fault::StaleGeneration)?.id;
+        self.reject_call(index, Fault::Deadline)?;
+        if let Some(pending) = self.pending_native.as_ref()
+            && pending.ack.is_some_and(|(id, _)| id == call)
+            && !pending.known_written
+        {
+            let NativeKind::Effect(id) = pending.kind else {
+                return Err(Fault::Conflict.into());
+            };
+            if !self.cadet.discard_unexposed(pending.transmit)? {
+                // Never transfer the suffix of an exposed credit to a new MQ.
+                return self.retire_cadet_for(Fault::Deadline);
+            }
+            self.settle(id, Completion::Unsent(Fault::Deadline))?;
+            self.pending_native = None;
+        }
+        Ok(true)
+    }
+
+    pub(super) fn retire_cadet_for(&mut self, reason: Fault) -> Result<bool, Error> {
+        let cadet::Step::Lost { report, cause, .. } = self.cadet.reconnect()? else {
+            return Err(Fault::StaleGeneration.into());
+        };
+        self.recover_cadet(report, cause, reason)
+    }
+
     pub(super) fn cadet_lost(
         &mut self,
         report: cadet::Loss<'c>,
@@ -209,10 +276,7 @@ impl<'s, 'p, 'c, 'slots> State<'s, 'p, 'c, 'slots> {
         {
             return Ok(changed);
         }
-        let cadet::Step::Lost { report, cause, .. } = self.cadet.reconnect()? else {
-            return Err(Fault::StaleGeneration.into());
-        };
-        self.recover_cadet(report, cause, Fault::Cancelled)
+        self.retire_cadet_for(Fault::Cancelled)
     }
 
     pub(super) fn track_port_restore(&mut self) {

@@ -13,7 +13,7 @@ use gnunet_session_crypto::{
     udp::DatagramKey,
 };
 use gnunet_types::Error;
-use gnunet_wire::official::Frame;
+use gnunet_wire::official::{Frame, communicator::DEFAULT_PEER_IDLE_TIMEOUT};
 use zeroize::Zeroizing;
 /// Explicit local storage/rotation choices, not negotiated private wire fields.
 #[derive(Clone, Copy, Debug)]
@@ -42,7 +42,7 @@ impl Default for Policy {
             maximum_secret_bytes: 4 * 1024 * 1024 * 1024,
             rekey_after_bytes: 28 * 1024 * 1024 * 1024 / 10,
             rekey_after_us: 24 * 60 * 60 * 1_000_000,
-            acknowledgement_timeout_us: 5 * 60 * 1_000_000,
+            acknowledgement_timeout_us: DEFAULT_PEER_IDLE_TIMEOUT.as_micros() as u64,
             kem_attempts: NonZeroUsize::new(128).unwrap_or(NonZeroUsize::MIN),
         }
     }

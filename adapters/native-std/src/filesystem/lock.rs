@@ -2,6 +2,7 @@
 use std::{
     fs::{File, TryLockError},
     io,
+    mem::DropGuard,
 };
 /// A nonblocking exclusive whole-file lock on one original native file. The
 /// file is never unlinked by this owner. Native file closure releases the lock;
@@ -16,6 +17,16 @@ impl ExclusiveFile {
     pub fn try_lock(file: File) -> Result<Self, TryLockError> {
         file.try_lock()?;
         Ok(Self { file })
+    }
+    /// Lock the guarded original without cloning its handle. On failure the
+    /// guard runs its rollback with that original; on success it is dismissed.
+    pub fn try_lock_guarded(
+        file: DropGuard<File, impl FnOnce(File)>,
+    ) -> Result<Self, TryLockError> {
+        file.try_lock()?;
+        Ok(Self {
+            file: DropGuard::dismiss(file),
+        })
     }
     /// Borrow the original locked file. Cloning this handle or issuing another
     /// lock/unlock changes native ownership semantics and is caller-controlled.

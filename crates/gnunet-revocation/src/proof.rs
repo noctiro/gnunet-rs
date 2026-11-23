@@ -126,6 +126,11 @@ impl Certificate {
     pub fn bytes(&self) -> &[u8; PROOF_BYTES] {
         &self.0
     }
+    /// Original absolute microsecond timestamp, without time validity.
+    #[must_use]
+    pub const fn timestamp(&self) -> u64 {
+        u64::from_be_bytes(self.0.as_chunks::<8>().0[0])
+    }
     /// Original fixed typed public-key encoding, with no decoding or authenticity
     /// assertion. Borrowing it permits indices without another key allocation.
     #[must_use]

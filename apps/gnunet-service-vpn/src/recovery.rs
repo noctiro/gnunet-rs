@@ -104,10 +104,7 @@ impl Controller {
         vpn: &mut Coordinator<'_, '_, '_, '_, '_, '_>,
         reports: &Reporter,
     ) -> Poll<Result<bool, Failure>> {
-        if let Some(epoch) = self.installed.as_ref()
-            && *epoch == vpn.device_epoch()
-            && vpn.tun_ready()?
-        {
+        if self.installed.is_some() && self.installed == vpn.device_epoch() && vpn.tun_ready()? {
             self.report.verified = self.report.verified.saturating_add(1);
             self.installed = None;
             reports.debug(
@@ -144,7 +141,7 @@ impl Controller {
             Ok(()) => {
                 self.report.restart_attempts = self.report.restart_attempts.saturating_add(1);
                 self.report.installed = self.report.installed.saturating_add(1);
-                self.installed = Some(vpn.device_epoch());
+                self.installed = vpn.device_epoch();
                 Poll::Ready(Ok(true))
             }
             Err(WintunRecoveryFailure::Retained {
@@ -198,7 +195,10 @@ impl Controller {
             }
             Err(WintunRecoveryFailure::Prepared { device, error }) => {
                 self.report.restart_attempts = self.report.restart_attempts.saturating_add(1);
-                let loss = (*device).into_io().close();
+                let loss = (*device)
+                    .into_io()
+                    .close_native()
+                    .ok_or("VPN recovery lost its provisional Wintun device")?;
                 self.report.adapter_releases = self.report.adapter_releases.saturating_add(1);
                 reports.debug(
                     "vpn.tun.recovery.closed",

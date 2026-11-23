@@ -53,7 +53,8 @@ to the content reader to authenticate/decrypt their file tree.
 
 The existing generic channel owns native connection selection and framing. Partial reads/writes survive dropped drive futures and observation timeouts. Cancellation closes the dedicated MQ; a partially written index mutation
 retains its uncertain outcome. Search reconnection keeps the original query,
-deadline and bounded local deduplication set. The default RecentWindow policy
+deadline and bounded local deduplication set. A newly accepted query-bound
+block resets the delay for a future reconnect. The default RecentWindow policy
 works around the pinned C service's continuation merge condition; Continued
 supports the complete official wire form when the service merges it correctly. Search silence has no completion or not-found meaning. Index acknowledgements
 do not assert durable datastore publication.
@@ -87,6 +88,14 @@ filesystem and callback work cannot be forcibly preempted, and known native
 receipts remain distinct from timeout or cancellation intent.
 `OutputDir::download_file` uses the same fd-anchored commit/cleanup path as local
 reads. Dropping a whole transfer closes its MQ and removes the private temporary.
+
+`OutputDir::download_resumable` owns the selected filename and uses the GNUnet
+partial-file layout. Data blocks occupy their plaintext offsets and index
+blocks follow the rounded data extent. The original anchored file is locked,
+and each reused block is checked against the expected CHK before use. A complete
+existing file can be authenticated from plaintext alone. On success the file is
+truncated to its exact plaintext length and synced. `IncompleteOutput` controls
+whether a stopped transfer keeps or removes its eligible incomplete output.
 
 `Buffers::download_range_to` retrieves only the selected data leaves and their
 necessary index ancestors through the same native lookup and verified cache. Its asynchronous `network::range::RangeSink` borrows each `VerifiedChunk`, with
@@ -247,8 +256,8 @@ uncertain writes survive failure; weighted PUTs are never automatically retried.
 `namespace::key::KeyFile` creates and opens ordinary raw32 Ed25519 namespace
 seeds. Exclusive creation uses private permissions, original parent/file
 identities and file synchronization. `directory_sync` separately reports the
-actual parent naming barrier; Windows reports `Unavailable`, and reopen grants
-no new barrier receipt. Typed failures retain creation, file synchronization,
+actual [parent naming barrier](../native-std/API.md#anchored-filesystem-operations)
+observed at creation. Typed failures retain creation, file synchronization,
 naming observations and original native errors; failures never delete or replace keys. Loaded
 signers and temporary seed/fingerprint storage zeroize on drop. Before managed
 publication, complete seed re-read and native name/permission/stamp checks
@@ -414,6 +423,11 @@ fs search-task-status <task-directory>
 fs search-task-cancel <task-directory>
 ```
 
+During `search-task-run`, Ctrl+C or a supported termination signal requests
+a pause. The command continues driving the original task through durable
+pause and source retirement, and reports failures from the signal source
+alongside any task failure.
+
 The quota counts results first becoming visible during live work, including a
 saved partial match completed by a new hit. Historical revalidation does not
 consume it. Zero pauses before replay and makes no new result-authentication
@@ -463,6 +477,11 @@ LOC targets remain specific to the corresponding object. One deadline covers the
 whole tree. Known outputs survive failure/cancel; active temporary cleanup and
 the original control interruption remain independently visible. Final naming
 barrier failure may leave the reported path present for reconciliation.
+
+`OutputDir::download_tree_resumable` reopens output directories and applies the
+resumable file owner to each authenticated file. Directory membership is
+verified on every invocation. Completed files are reauthenticated in place.
+File and request parallelism share the same bounds as immediate extraction.
 
 `Buffers::store_indexed_tree` shares the same source traversal/planner and accepts
 an explicit named source root plus FS and DATASTORE endpoints. The canonical root
@@ -703,6 +722,12 @@ STATUS bytes or uncertainty, and settles before dependency shutdown.
 
 ## Serving and routing
 
+The FS server retains a local search across an interrupted DATASTORE read.
+The next scheduled sweep uses a fresh GET from UID zero because a replacement
+backend may assign different UIDs. The original FS client, query and verified
+seen hashes remain in place. An actual DATA_END on the fresh sweep establishes
+local exhaustion.
+
 `server::PeerRouter` is an explicit independent network composition port. Its
 result-delivery gate allows IO/timers/cancellation to keep progressing behind a
 slow local output. A received frame keeps its original route until native
@@ -746,7 +771,10 @@ controlled foreground shutdown; record and source-file failures remain local. Th
 `[fs-rust] SERVE_CADET=NO` or official `[fs] MAX_CADET_CLIENTS=0` disables it. The incoming capacity is bounded by both official and Rust resource caps. Discovery and routing use the separately configured backends.
 
 `server::gap::Router` uses a native CORE client for official137/138/139
-and a caller-storage GAP book. It supports D/I/UBLOCK/ANY queries, bounded
+and a caller-storage GAP book. Construction requires an explicit accounting
+mode. The foreground binds PEERSTORE to the same runtime clock as CORE. The
+unmetered mode supports isolated caller-controlled topologies. The router
+supports D/I/UBLOCK/ANY queries, bounded
 fanout/reverse paths and incoming serving through the same DATASTORE/type6 source. UBLOCK signatures and query bindings use the shared envelope verifier. Each
 original request owns its seen group, and a held result pauses streaming before
 the next unsubmitted UID lookup. Actual source END, a record limit and an
@@ -761,8 +789,8 @@ owner preserves requested levels and requires equivalent completed foreign
 relay writes before higher-level local sends. Neighbor generation, message
 type, block type and exact length bind credits; local requests and partial writes
 earn no credit. Optional `[fs] DELAY=YES` uses bounded randomized release with
-one original target. Unknown-source anonymity0 D/I queries also use this
-explicit CORE backend, retaining numeric0 and the original local route. They
+one original target. ANY at every level and unknown-source anonymity0 D/I
+queries use this explicit CORE backend with their original level and local route. They
 emit the same standard137/138 frames and keep the original verification,
 deadlines, cancellation and source debts. A missing/disabled GAP capability
 still admits no network work. If the nonanonymous CADET/DHT chain reports
@@ -879,25 +907,317 @@ every destructive admission first records that original intent. A slice must all
 finish before historical receipts can be reused. The CLI provides
 `fs unindex-task-{create,run,status,cancel,restart}` and `jobs-add ... unindex`. This adds no GNUnet wire, old-format migration or new dependency.
 
+## Automatic-sharing storage
+
+Catalog snapshots retain an original read-only handle and require unchanged
+identity, length, modification/change timestamps and selected directory entry.
+Publication synchronizes and closes the staged writer before replacing the
+canonical name. Refusals distinguish read-extent changes, held-file metadata
+changes, native file policy errors and a name selecting another object.
+Diagnostics retain the before/after
+metadata and original native error chain. A later name observation only explains
+the refusal; it cannot replace the failed check or restore acceptance.
+
 ## Metadata and automatic keywords
 
 The normal `gnunet-cli fs publish`, `publish-indexed`, `publish-tree` and
 `publish-tree-indexed` entries compose the existing `auto_prepare::prepare`
 with the content and per-object keyword Task runners. Directory metadata
 and keyword metadata refer to the same prepared original CHKs. Only safe
-basenames are included; the full local filesystem path is not advertised. The selected built-in extraction profile recognizes bounded magic MIME, HTML
-fields and ID3v1, using standard v2 metadata and ordinary type9 advertisements. The optional standard libextractor profile below consumes `[FS] EXTRACTORS`
-through the same source-bound preparation flow. Actual installed providers,
-extraction results and platform interoperability remain runtime-unverified.
+basenames are included; the full local filesystem path is not advertised. Built-in
+extraction uses the original descriptor and an explicit probe budget. The PNG
+scanner skips image payloads by checked chunk lengths, then verifies the CRC
+of each selected metadata chunk before emitting fields. JPEG APP1 and PNG eXIf
+pass their original profile to the same classic TIFF reader. It resolves
+primary, EXIF and GPS directories within the profile and suppresses duplicate
+tags. An EXIF JIS user comment is decoded as ISO-2022-JP and its UTF-8 value
+must fit the text limit. Standalone TIFF, BigTIFF and Olympus ORF use the same
+reader with positioned directory and field reads. ORF selects classic directory
+geometry through its own header signature. First-directory dimensions and
+text use the GNU TIFF metadata mapping. The reader skips raster strips and
+tiles.
+
+RAF reads image dimensions from its record directory and metadata from the
+declared JPEG preview and optional CFA TIFF. MRW reads the TIFF carried in
+the TTW block inside the metadata container. Each nested read uses the bounds
+of its declared payload and the original file's remaining probe budget.
+Sigma and Polaroid X3F read dimensions and rotation from the FOVb header and
+camera and exposure fields from UTF-16LE property lists. The footer directory
+bounds its sections. The largest eligible JPEG preview supplies missing fields.
+CAMF types 2, 4 and 5 supply missing camera identity, serial number, active
+dimensions, aperture, exposure time, exposure compensation, ISO and white
+balance within a 1 MiB decoded metadata limit.
+Canon CR3 uses CMT1 through CMT4 for the image, camera, MakerNote and GPS
+directories. Each directory resolves offsets within its own TIFF extent.
+CMT2 supplies image dimensions. CMT3 supplies macro mode, image quality,
+exposure mode, ISO, white balance and flash bias. CR3 XMP is carried by a
+top-level Adobe UUID box. CTMD samples from classic and fragmented tracks
+fill missing metadata fields in sample order.
+
+Classic Panasonic and Leica RAW share the sensor and camera field reader
+with Panasonic RW2. The complete RW2 header extension selects
+`image/x-panasonic-rw2`. The classic header selects `image/x-panasonic-raw`.
+A bounded JPEG preview supplies EXIF fields absent from the native
+directories. Canon CRW reads image geometry, camera and shot fields from
+their assigned CIFF directories in either byte order.
+
+TIFF-based RAW identifies CR2 from its extended header, DNG from
+`DNGVersion` in IFD0, and vendor subtypes from private compression values
+in the primary directory. Shared packed RAW compression uses the IFD0 Make.
+The PackBits value identifies Samsung SRW when IFD0 names Samsung and the
+selected image declares a color filter array. A qualified Samsung sensor
+directory accepts SHORT or LONG compression tags. NX1100, NX300 and NX500
+also allow odd offsets for direct SubIFDs after sensor and strip validation.
+Nikon CFA sensor directories
+use their Nikon MakerNote to identify additional NEF and NRW layouts.
+For an uncompressed or packed Nikon sensor, a bounded old-style JPEG thumbnail
+in IFD0 can identify NRW when the MakerNote lacks the private NRW marker.
+For the Coolpix 5700, the primary-image selector accepts the legacy
+`NewSubfileType` sentinel in a qualified 12-bit CFA directory.
+Mamiya ZD MEF uses the original camera identity and a full-size uncompressed
+12-bit CFA directory. Hasselblad 3FR combines the TIFF Make field with the
+PRONOM format marker and reads the embedded TIFF within its owning field.
+Leaf MOS reads bounded `PKTS` records for digital-back identity, ISO and
+JPEG preview metadata.
+Sony SR2, SRF and ARW can also use Sony-specific evidence in the owning
+TIFF directories. Prioritized traversal selects full-size RAW
+geometry while preserving IFD0 as the source for EXIF links, GPS, IPTC and
+XMP. CR2 uses its camera EXIF pixel dimensions, then the RAW directory
+dimensions when the camera dimensions are unavailable. The publication probe
+emits the identified media type before the other file fields.
+TIFF files without a recognized RAW identity still supply standard tags
+through the TIFF reader.
+Canon, Fujifilm, Nikon types 1–3, Olympus and OM System MakerNotes supply
+camera fields through directories bounded by the declared EXIF field extent.
+Canon, Nikon types 1 and 2, and classic Olympus resolve value offsets from the
+parent TIFF header. Fujifilm, modern Olympus and OM System use note-relative
+offsets. Nikon type 3 uses an embedded TIFF header. Each directory supplies
+the byte order used to decode its fields.
+Pentax `AOC` directories use parent TIFF offsets. `PENTAX` directories use
+note-relative offsets. Both use the MakerNote marker for byte order.
+Panasonic and compatible Leica directories use the parent TIFF byte order
+and supply image quality, white balance and macro mode.
+Sony headered and bare directories also supply their recorded rating. For
+Sony SRF, the bounded encrypted MakerNote supplies the as-shot white-balance
+coefficients in red, green and blue order with green as the reference.
+Ricoh notes use either the classic Ricoh directory or the note-relative
+Pentax-compatible directory used by GR III and GR IV.
+Minolta and Konica Minolta use the bare IFD, classic, 5D and 7D camera
+settings, or the Olympus-compatible `MINOL` and `CAMER` layout. Model-dependent
+packed settings use the IFD0 Model associated with their MakerNote source.
+Sanyo classic notes supply image quality, macro and flash settings. Casio
+classic and QVC Type 2 notes provide camera settings, with Concord DCI notes
+using the Type 2 layout. Samsung Type 2 supplies inline ISO and 35 mm equivalent
+focal length in either byte order. Qualified NX, WB2000 and EX2F notes supply
+aperture, exposure time and exposure compensation through note-relative
+offsets bounded to the value area after the directory. Aperture and exposure
+time use the first value of a single or paired rational field. The model
+profile specifies the focal-length units and recognized placeholder values.
+Epson R-D1 notes supply image quality and camera software. Kodak DCS
+profiles read shooting settings from their separately linked IFD0 directory.
+A Kodak P712, P850 or P880 MakerNote supplies aperture, exposure time and ISO
+when EXIF leaves them unset. Its linked CameraInfo directory stays inside the
+MakerNote extent and uses the note's byte order.
+A Kodak KDC private directory can identify the RAW profile and supply the
+selected white balance. DC120 identifies uncompressed and JPEG-compressed KDC
+using the camera model, linked Kodak shooting directory and 8-bit CFA image
+directory. Dimensions come from the selected image directory.
+
+IPTC IIM packets share one parser and emit keywords, city, sublocation and
+country in the GNU metadata registry. The decoder accepts the IIM Appendix C
+graphic designations, including NATS, national ISO 646 variants, ISO 8859
+sets, ECMA Cyrillic, CSN 369103 and JIS X 0208. Additional repertoires include
+ISO-IR 42 JIS C 6226-1978, 154 Latin supplementary graphics, 155 box drawing,
+156 ISO 6937 supplementary graphics, 166 Thai,
+168 revised JIS X 0208, 197 and 209 Sámi, 204–206 Latin sets with the euro
+sign, 226 Latin 10 and 228, 229 and 233 for JIS X 0213,
+along with GB 2312-1980, JIS X 0212, KS C 5601-1987 and the seven registered
+CNS 11643-1992 planes. An ISO 6937 accent must combine with a permitted base
+or space to complete one character.
+Each dataset starts from the declared ISO 2022 designation and invocation
+state. Code-structure announcements constrain width, graphic areas, and
+locking and single shifts, including the three ECMA-43 levels.
+The ISO-IR 26 newspaper controls project line breaks, erase words and
+characters, and apply one-character super shifts to an unambiguous alternate
+set. Typographic instruction payloads are consumed within the dataset.
+The ISO-IR 77 projection supports cursor and page movement, character and
+line editing, and tab stops. Select Presentation Directions sets the page's
+orientation and line progression. Select Character Path changes progression
+along a line. Screen-relative cursor motion follows physical axes, and
+editing and serialization use logical positions. When the update mode is
+unspecified, a direction change preserves the logical data. Character tab
+stops begin at eight-character intervals. Stops can change for one line or across the
+page. Aligned stops position the text at either edge, its centre or a graphic
+resolved from the invoked character set. A bounded field collects the text
+before placement. Repetition and cancellation act on the preceding coded
+graphic before it changes the page. Page motion preserves the active row and
+column, and form feed selects
+the next page's home row. Text is serialized in page order with form-feed
+separators. Each coded character occupies one position, including a JIS X 0213
+character represented by two Unicode scalars. The field byte budget bounds
+text, gaps and separators, and input and output size bound editing work.
+Directed and reversed strings preserve logical character order through
+Unicode directional isolates. The decoder validates nested scopes and
+rebuilds balanced isolates from the characters that survive editing. These
+markers occupy no cells and share the field's UTF-8 byte budget. Historical
+JIS characters with Unicode variation sequences also occupy one cell.
+Inside ISO 2022 text, an ISO-IR 196 switch uses UTF-8 until the standard
+return restores the preceding state. An ISO-IR 196 or 192 declaration in the
+IIM header selects UTF-8 for the entire dataset. ISO-IR 176 UCS-2, 177 UCS-4
+and 195 UTF-16 accept a byte-order mark and default to big-endian.
+With no declaration, the decoder starts with ISO 646 IRV graphics, uses
+ISO 4873 DV for eight-bit datasets and requires
+a designation for right-hand graphics and C1 controls. JPEG and EXV
+sidecars share the APP1, Photoshop APP13 and COM marker reader. TIFF reads
+tag 33723 before falling back to image resources. PNG uses CRC-checked
+ImageMagick text profiles, PSD and PSB use their image resources, and JPEG
+2000 uses the IPTC UUID box.
+PGF reads supported image and EXV carriers inside its declared user data.
+Nested carriers share the file's probe budget and the outer PGF supplies the
+media type and dimensions.
+
+XMP uses one namespace-aware RDF/XML parser. JPEG Extended XMP is joined only
+after the named fragments cover the packet exactly and match its MD5 digest.
+TIFF uses IFD0 tag 700, PNG uses checked text chunks, Photoshop and JPEG 2000
+use their XMP resources, and WebP uses the RIFF XMP chunk. GIF uses the
+GIF89a Adobe XMP application extension with its complete magic trailer.
+
+WebP uses dimensions from the extended canvas or the simple VP8 or VP8L
+header. Its extended EXIF chunk uses the shared TIFF reader.
+PNG and WebP publish embedded ICC profiles as binary color-profile entries
+with the registered ICC media type. PNG checks the chunk CRC and bounds the
+zlib expansion before decoding. Both carriers check the ICC tag extents and
+preserve the original profile bytes under the metadata capacity.
+
+JPEG XL reads orientation and dimensions from the bare codestream, the
+codestream box or fragments. An intrinsic size takes precedence over the
+coded size. Version 1 permits out-of-order fragments.
+The parser keeps positioned ranges until it can read the codestream prefix in
+index order. An embedded ICC profile is reconstructed from that prefix with
+independent limits for probe input, the decoded command stream, and the final
+profile. The profile is published as a binary entry. Decoding stops before
+the pixel frames. Container XML and EXIF reads take precedence over ICC
+payload reads. Plain and Brotli-compressed XML and EXIF boxes use their declared
+bounds. All recognized XML boxes contribute XMP under the shared probe and
+decompression budgets.
+
+HEIF and AVIF apply the primary item's clean aperture, scaling, rotation and
+mirror properties in `ipma` association order. Dimensions use the coordinate
+frame of the separate orientation field. `cdsc` references select the primary
+item's EXIF and RDF/XML metadata. A selected visual sequence track supplies
+its display geometry and orientation. Its first nonempty local visual sample
+selects `stmi` associations from `sbgp` or packed `csgp` mappings and `sgpd`
+descriptions. The group names the metadata handler and item IDs. The extractor
+searches the track, movie and file scopes in that order, including each scope's
+`meco` container. A track without sample associations can supply track-local
+EXIF and XMP items after a complete scan of its grouping boxes.
+
+A linked `tref/cdsc` metadata track uses the visual sample's decode time.
+The sample index selects the equal or closest preceding decode timestamp
+across track timebases. Classic timing runs map that time to a sample ordinal.
+Fragment runs with default duration, size and flags use arithmetic to find
+the sample and its byte range. Explicit fields remain subject to the probe
+budget. Empty visual runs with default extents advance without per-sample
+reads. Timed EXIF overlays track metadata, the most recent preceding sync
+sample for a delta, and the selected sample. A fragment delta can use a sync
+sample from the classic table. The reader resolves duplicate TIFF tags within
+each IFD before projecting publication fields and reads each value with its
+original byte order and offsets. Timed XMP supports plain XML, zlib-wrapped
+DEFLATE, gzip and Brotli. Image items also accept raw DEFLATE. Compressed timed
+XMP and compressed items draw from one expansion allowance.
+
+CR3 and HEIF/AVIF share a BMFF sample cursor that validates sample descriptions,
+classic chunk mappings, fragment defaults and run offsets against local media
+data. The cursor visits classic samples first, followed by ordinary `moof`
+samples. Direct, `idat` and item-relative extents are checked against their
+source and joined in declared order.
+ISO `comp` files restore the original file type from `otyp` when present.
+The extractor expands `!mov`, `!mof`, `!six` and `!ssx` using a bounded raw
+DEFLATE decoder. Box and sample offsets use the reconstructed file coordinates.
+Unchanged regions, including `mdat`, use positioned reads from the original
+file. Segment-index entries are outside metadata lookup.
+JPEG XL and HEIF use the same Brotli decoder with limits on both expanded
+output and internal history allocations.
+
+The PDF catalog selects its XML metadata stream. That stream uses its explicit
+crypt filter when present and otherwise follows the document metadata-encryption
+setting. Metadata and object streams can select an embedded file in the same
+PDF through a file specification's `/EF` dictionary. The embedded file uses
+its own decryption and decoding first, followed by the referring stream's
+`/FFilter` pipeline. Ordinary XMP can resolve indirect stream controls from
+compressed objects. Embedded streams inherit the referring stream's
+parameter lookup scope.
+
+For separate external streams, `PdfExternalStreams::bind` associates bytes
+with a file specification key and an observed version of a held PDF file.
+`MetadataSettings::with_pdf_external_streams` makes these bindings available
+to inspection, automatic keywords and publication preparation. The decoded
+file name or URL serves solely as the exact key for caller-supplied bytes.
+External bytes share the original probe allowance and use the referring
+stream's `/FFilter` pipeline. Private durable snapshots retain the supplied
+bytes and verify the original PDF's identity, version and SHA-512 content
+digest before using them. A durable unindex task snapshots only its own
+document's bindings and reuses the digest from the normal unindex source read.
+
+Native PDF extraction follows the final cross-reference and its previous
+revisions to the catalog, page count and document information. It resolves
+references by object number and generation. A hybrid cross-reference table
+takes precedence over its supplement for every object number listed in the
+table. Structural streams support ordered ASCIIHex, ASCII85, RunLength, LZW,
+Flate, CCITTFaxDecode and the PDF 2.0 `BrotliDecode` extension. Each stage uses
+the shared decoded-byte allowance, including intermediate output. LZW, Flate and Brotli
+accept TIFF and PNG predictors. Brotli window storage is bounded by the
+admitted output, including for large-window members. CCITTFaxDecode reconstructs
+packed scanlines from Group 3 one-dimensional or mixed coding and Group 4
+two-dimensional coding. Cross-reference stream controls are direct values.
+Object-stream controls can reference uncompressed objects in the current
+generation. Those positioned reads use the original probe
+budget, which also caps retained parameter bytes. The PDF reader opens
+Standard security revisions 2–6 with the implicit empty password and checks
+the permission block for revisions 5 and 6. It applies the string filter to
+standalone strings and the stream filter to object-stream bytes before other
+decoders run. Strings inside an object stream inherit its protection. Text
+uses PDFDocEncoding, UTF-16BE or UTF-8, and dates use the GNU UTC metadata
+representation. Output uses standard v2 metadata and ordinary type9
+advertisements. The optional standard libextractor profile below consumes
+`[FS] EXTRACTORS` through the same source-bound preparation flow.
+
+Adobe.PubSec `adbe.pkcs7.s3`, `s4` and `s5` use an explicitly bound
+`PdfRecipientAuthorization`. Document-wide filters enforce the first matching
+recipient's extraction permissions. Attachment-only protection leaves clear
+document metadata readable. `PdfCertificateRecipient::from_der` accepts a DER
+X.509 certificate and a matching unencrypted PKCS#8 key. A present key-usage
+extension must permit the selected operation. The native opener accepts
+definite and streamed BER CMS, identifies recipients by issuer and serial or
+subject key identifier, and supports RSA PKCS#1 v1.5, RSAES-OAEP and
+ephemeral-static ECDH on P-256, P-384, P-521, X25519 and X448. Restricted
+RSAES-OAEP credentials enforce the effective parameters from the certificate
+and private key. X25519 and X448 use X9.63 or HKDF with AES key wrap.
+RSA-KEM supports RFC 9690 and the RFC 5990 key-transport encoding with AES
+or Triple-DES key wrap. Use `from_rsa_kem_der` to bind a generic RSA
+certificate to KEM-only use.
+The authorization identity includes the effective RSA-KEM restrictions.
+X9.42 finite-field DH supports ephemeral-static and static-static agreement.
+One-pass ECMQV uses P-256, P-384 or P-521. Static agreement uses the CMS
+originator certificate or a certificate supplied with `with_originator_der`.
+Explicitly supplied originator certificates extend the public identity
+recorded for resumption. ML-KEM supports 512, 768 and 1024 with the seed,
+expanded, and combined PKCS#8 encodings.
+
+`PdfKekRecipient` supplies a pre-shared AES, Triple-DES or RC2 key under its exact
+public CMS identifier. `PdfPasswordRecipient` supplies password bytes for
+bounded PBKDF2 or a pre-derived key for password recipients with an omitted
+KDF. Use a distinct public identifier when rotating a credential. Content
+ciphers include AES, DES, Triple-DES, RC2 and RC4. Attach the credential for
+local extraction through `MetadataSettings::with_pdf_recipient`. A caller
+can supply another CMS opener through the same authorization type.
 
 Automatic labels retain original text, full Unicode lowercase followed by real
 canonical NFD, filename tokens with each normalized form, bracketed filename
-phrases and MIME-family terms. The extraction feature uses pinned
-`unicode-normalization =0.1.25`; network publication enables that same feature. The configured-provider integration adds one local native ABI leaf and preserves
-existing registry package blocks. Unicode table/version differences from the
-selected C libunistring are not claimed byte-identical for every code point. Required
-normalization expansion beyond the explicit policy cap is a preparation
-refusal, never silently omitted Unicode advertisement.
+phrases and MIME-family terms. Extraction and network publication use the same
+`unicode-normalization` tables. When the official C implementation uses a
+different Unicode version, normalization can differ for newly assigned code
+points. Preparation refuses normalization that expands beyond the policy cap.
 
 Each ordinary publication owns one explicit preparation thread, joins it after
 cancel/deadline, then runs each original Task once with the same service clock
@@ -956,6 +1276,14 @@ Namespace/SKS publication uses the same bounded metadata plan for direct,
 managed and prepared tasks. Signing keys, update graphs and observed
 write/commit boundaries retain their existing contracts.
 
+`ManualMetadata::plan` keeps uncompressed v2 output. Its `plan_with_codec`
+variant accepts caller-owned plain/coded workspaces, reusable codec state and
+the standard `Compression` selection. Full item selection and the same metadata
+limits apply; `Always` refuses an unavailable codec or insufficient coded
+capacity. The direct URI publication CLI exposes that selection as
+`--metadata-compression never|adaptive|always`, defaulting to `never`. Missing
+manual annotations remain absent metadata.
+
 Unindex task creation retains supplied runtime authority for that in-memory
 owner. Reopening restores configuration only. `authorize_metadata_from` and
 `authorize_native_metadata` explicitly reattach matching current authority before
@@ -979,8 +1307,10 @@ plugin options are refused; authority cannot be inferred from a task directory. 
 [GNU libextractor provider](../extractor-std/README.md) supplies separate native
 input lifetimes beneath that code. Windows admits a demand-paged view using
 `NativeMetadataLimits::mapped_input_bytes`; explicit borrowed buffers retain the
-separate `memory_input_bytes` limit. Local snapshot format `FSMETA02` preserves
-both limits and lossless native library paths; superseded snapshots refuse.
+separate `memory_input_bytes` limit. Local snapshot format `FSMETA04` preserves
+both limits, lossless native library paths, bound PDF streams and the selected
+PDF recipient's public identity. Resumed extraction reattaches the matching
+credential through `with_authorization_from`.
 
 `extraction::inspect_with_metadata` streams an `ExtractedObject`
 for each held file/directory descriptor through a caller sink. It shares the

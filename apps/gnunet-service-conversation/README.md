@@ -36,3 +36,17 @@ successful stop claim.
 Sound devices, phone-record publication and GNS calling belong to the
 [client/media workflow](../gnunet-conversation/). The central
 [implementation status](../../IMPLEMENTATION_STATUS.md) tracks remaining profiles.
+
+## Call and source recovery
+
+Remote channel loss retires its original live call and queues the local733
+HangUp notification under the original close bound. It preserves the registered
+phone and healthy local CADET/PILS sources. A channel-loss notification records
+failure; it does not imply a received peer hangup or successful pickup.
+
+After a Conversation service replacement, an existing registered-phone SDK
+owner may explicitly reregister following its actual source loss. This creates
+a fresh attachment for731 while retaining its original whole lifetime. Old
+calls, controls and media are retired. A fresh outgoing call uses a new Line;
+an old call token cannot authorize it even if the new service reuses a numeric
+CID. See the [client ownership contract](../../adapters/conversation-client-std/README.md).

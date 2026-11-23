@@ -66,7 +66,7 @@ fn execute() -> Result<u8, Cause> {
     use gnunet_program_host::{
         foreground,
         logging::Logger,
-        program::{self, Defaults, Invocation, NlsDisabled, Preparation},
+        program::{self, Defaults, Invocation, Preparation},
         reporting::Reporter,
         shared_clock::SharedClock,
     };
@@ -79,11 +79,11 @@ fn execute() -> Result<u8, Cause> {
     )?;
     let mut logger = Logger::new(b"gnunet-gns-proxy", std::process::id(), false)?;
     let selection = options::Selection::new();
-    let preparation=program::prepare(config,Invocation {
+    let preparation=program::prepare_installed(config,Invocation {
         binary_name:b"gnunet-gns-proxy",
         help:Some(b"Run the GNS SOCKS5 HTTP/HTTPS proxy. -p/--port selects the listener port (default 7777); -a/--authority selects an existing CA certificate/private-key PEM; -6/--disable-ivp6 disables IPv6. [gns-proxy] BIND_TO, BIND_TO6 and PROXY_CACERT use the normal configuration. Optional [gns-proxy-rust] PKIX_ROOTS selects a public root-certificate PEM bundle; bundled public roots are the default. Configure the browser to trust the selected proxy CA. System trust settings are managed separately. Standard -c/-L/-l/-h/-v choose configuration and diagnostics. Native stop signals and parent control stop the proxy."),
         select_default_filename:true,defaults:Defaults::Native,
-    },selection.options(),std::env::args_os(),&program::Environment::capture(),&mut NlsDisabled,&mut logger,&clock,&mut io::stdout().lock(),&mut io::stderr().lock());
+    },selection.options(),std::env::args_os(),&program::Environment::capture(),&mut logger,&clock,&mut io::stdout().lock(),&mut io::stderr().lock());
     let reporter = Reporter::new(logger, clock.clone());
     #[cfg(unix)]
     if let Some(notice) = early.notice {

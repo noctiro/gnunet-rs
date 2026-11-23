@@ -1,20 +1,17 @@
-//! Narrow actual RS256/HS512 OIDC bridge. RSA uses AWS-LC native/asm primitives,
-//! never libgnunet FFI or a homemade private-key RSA operation. No file is opened.
+//! Bounded RS256 and HS512 for caller-owned OpenID Connect keys and messages.
 #![forbid(unsafe_code)]
-use aws_lc_rs::{
-    encoding::{AsDer, Pkcs8V1Der},
-    rsa::{KeyPair, KeyPairComponents, KeySize, PublicKeyComponents},
-    signature::{self, KeyPair as _},
-};
-use gnunet_rest::oidc::base64;
+use gnunet_rest::base64;
 use gnunet_types::Error;
 use zeroize::Zeroizing;
+
+mod provider;
+
 /// Finite JWK/DER, public modulus, signed message and complete JWT bounds.
 #[derive(Clone, Copy, Debug)]
 pub struct Limits {
     /// Maximum complete explicit JWK or DER input.
     pub key_bytes: usize,
-    /// Maximum public modulus bytes;2048..8192-bit library bounds still apply.
+    /// Maximum public modulus bytes. The RSA modulus must be 2048–8192 bits.
     pub modulus_bytes: usize,
     /// Maximum complete original signing message/payload bytes.
     pub message_bytes: usize,
@@ -141,28 +138,21 @@ fn component(
     }
     Ok(raw)
 }
-/// Actual caller-owned RSA signer. No Clone, secret Debug, path or ambient JWK
-/// discovery is exposed. Backend owns/frees its private native key allocations.
+/// Caller-owned RSA signer with a zeroizing private key and redacted debug output.
 pub struct Rsa {
-    key: KeyPair,
+    key: provider::SigningKey,
     limits: Limits,
 }
 impl Rsa {
-    /// Explicit fresh RSA key generation, default official size2048 when selected
-    /// by the caller. This invokes AWS-LC's generator; no generation occurs by
-    /// constructing Limits, importing public JSON or formatting a response.
+    /// Generate a fresh RSA key of 2048, 3072, 4096 or 8192 bits using OS entropy.
     pub fn generate(bits: usize, limits: Limits) -> Result<Self, Error> {
-        let size = match bits {
-            2048 => KeySize::Rsa2048,
-            3072 => KeySize::Rsa3072,
-            4096 => KeySize::Rsa4096,
-            8192 => KeySize::Rsa8192,
-            _ => return Err(Error::Unsupported),
-        };
+        if !matches!(bits, 2048 | 3072 | 4096 | 8192) {
+            return Err(Error::Unsupported);
+        }
         if bits / 8 > limits.modulus_bytes {
             return Err(Error::Capacity);
         }
-        let key = KeyPair::generate(size).map_err(|_| Error::Entropy)?;
+        let key = provider::SigningKey::generate(bits)?;
         Ok(Self { key, limits })
     }
     /// Import only explicit caller-owned PKCS8 DER. No file path/read is accepted.
@@ -170,10 +160,7 @@ impl Rsa {
         if input.len() > limits.key_bytes {
             return Err(Error::Capacity);
         }
-        let key = KeyPair::from_pkcs8(input).map_err(|_| Error::Authentication)?;
-        if key.public_modulus_len() > limits.modulus_bytes {
-            return Err(Error::Capacity);
-        }
+        let key = provider::SigningKey::from_pkcs8(input, limits.modulus_bytes)?;
         Ok(Self { key, limits })
     }
     /// Import exact standard two-prime RSA JWK components. All decoded private
@@ -188,19 +175,19 @@ impl Rsa {
             let dp = component(root, b"dp", limits.modulus_bytes)?;
             let dq = component(root, b"dq", limits.modulus_bytes)?;
             let qi = component(root, b"qi", limits.modulus_bytes)?;
-            KeyPair::from_components(&KeyPairComponents {
-                public_key: PublicKeyComponents {
-                    n: n.as_slice(),
-                    e: e.as_slice(),
+            provider::SigningKey::from_components(
+                provider::Components {
+                    n: &n,
+                    e: &e,
+                    d: &d,
+                    p: &p,
+                    q: &q,
+                    dp: &dp,
+                    dq: &dq,
+                    qi: &qi,
                 },
-                d: d.as_slice(),
-                p: p.as_slice(),
-                q: q.as_slice(),
-                dP: dp.as_slice(),
-                dQ: dq.as_slice(),
-                qInv: qi.as_slice(),
-            })
-            .map_err(|_| Error::Authentication)
+                limits.modulus_bytes,
+            )
         })?;
         Ok(Self { key, limits })
     }
@@ -208,8 +195,8 @@ impl Rsa {
     /// provider. The backend DER owner and returned buffer erase on Drop. This
     /// does not persist, fingerprint, hash or print private key material.
     pub fn export_pkcs8(&self) -> Result<Zeroizing<Vec<u8>>, Error> {
-        let der: Pkcs8V1Der<'static> = self.key.as_der().map_err(|_| Error::NotReady)?;
-        let bytes: &[u8] = der.as_ref();
+        let der = self.key.export_pkcs8()?;
+        let bytes = der.as_bytes();
         if bytes.len() > self.limits.key_bytes {
             return Err(Error::Capacity);
         }
@@ -219,39 +206,24 @@ impl Rsa {
     }
     /// Actual signature width for this original provider.
     pub fn signature_bytes(&self) -> usize {
-        self.key.public_modulus_len()
+        self.key.signature_bytes()
     }
-    /// Sign one exact message with RSASSA-PKCS1v1.5/SHA256. No encryption/decryption,
-    /// algorithm negotiation, HMAC fallback or arbitrary RSA primitive is exposed.
-    /// AWS-LC uses its own RNG internally; the compatibility SecureRandom argument
-    /// is ignored by that library, rather than falsely called caller entropy.
+    /// Sign one exact message with RSASSA-PKCS1v1.5/SHA256 and OS-fed blinding.
     pub fn sign(&self, message: &[u8], out: &mut [u8]) -> Result<usize, Error> {
         if message.len() > self.limits.message_bytes {
             return Err(Error::Capacity);
         }
-        let n = self.signature_bytes();
-        if n > out.len() {
-            return Err(Error::Capacity);
-        }
-        let mut signature = buffer(n)?;
-        self.key
-            .sign(
-                &signature::RSA_PKCS1_SHA256,
-                &aws_lc_rs::rand::SystemRandom::new(),
-                message,
-                &mut signature,
-            )
-            .map_err(|_| Error::NotReady)?;
-        out[..n].copy_from_slice(&signature);
-        Ok(n)
+        let out = out
+            .get_mut(..self.signature_bytes())
+            .ok_or(Error::Capacity)?;
+        let signature = self.key.sign(message)?;
+        out.copy_from_slice(&signature);
+        Ok(out.len())
     }
-    /// Public JWK derived from this exact original native provider, not an unrelated
-    /// regenerated key. The ring-io feature supplies existing n/e accessors.
+    /// Derive the public verification key from this signer.
     pub fn public(&self) -> Public {
-        let parts: PublicKeyComponents<Vec<u8>> = self.key.public_key().into();
         Public {
-            n: parts.n,
-            e: parts.e,
+            key: self.key.public(),
             limits: self.limits,
         }
     }
@@ -269,8 +241,7 @@ impl Rsa {
         if total > out.len() || total > self.limits.token_bytes {
             return Err(Error::Capacity);
         }
-        let mut signature = buffer(n)?;
-        self.sign(&input, &mut signature)?;
+        let signature = self.key.sign(&input)?;
         out[..input.len()].copy_from_slice(&input);
         out[input.len()] = b'.';
         base64::encode(&signature, &mut out[input.len() + 1..total], true, false)?;
@@ -280,14 +251,13 @@ impl Rsa {
 impl core::fmt::Debug for Rsa {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Rsa")
-            .field("backend", &"aws-lc-rs1.19.0/non-fips/native")
+            .field("modulus_bytes", &self.signature_bytes())
             .finish_non_exhaustive()
     }
 }
-/// Bounded public RSA material only. No private components are retained here.
+/// Validated public RSA key for repeated RS256 verification.
 pub struct Public {
-    n: Vec<u8>,
-    e: Vec<u8>,
+    key: provider::VerificationKey,
     limits: Limits,
 }
 impl Public {
@@ -296,26 +266,17 @@ impl Public {
         jwk(input, limits, false, |root| {
             let n = component(root, b"n", limits.modulus_bytes)?;
             let e = component(root, b"e", 5)?;
-            let copy = |b: &[u8]| -> Result<Vec<u8>, Error> {
-                let mut v = Vec::new();
-                v.try_reserve_exact(b.len()).map_err(|_| Error::Capacity)?;
-                v.extend_from_slice(b);
-                Ok(v)
-            };
-            if n.len() < 256 {
-                return Err(Error::Authentication);
-            }
             Ok(Self {
-                n: copy(&n)?,
-                e: copy(&e)?,
+                key: provider::VerificationKey::from_components(&n, &e, limits.modulus_bytes)?,
                 limits,
             })
         })
     }
     /// Encode one standard public JWK. Complete output is capacity-checked first.
     pub fn write_jwk(&self, out: &mut [u8]) -> Result<usize, Error> {
-        let n64 = base64::encoded_len(self.n.len(), false)?;
-        let e64 = base64::encoded_len(self.e.len(), false)?;
+        let (n, e) = self.key.components();
+        let n64 = base64::encoded_len(n.len(), false)?;
+        let e64 = base64::encoded_len(e.len(), false)?;
         let prefix = b"{\"kty\":\"RSA\",\"alg\":\"RS256\",\"use\":\"sig\",\"n\":\"";
         let middle = b"\",\"e\":\"";
         let tail = b"\"}";
@@ -329,27 +290,23 @@ impl Public {
         let out = out.get_mut(..total).ok_or(Error::Capacity)?;
         let mut at = prefix.len();
         out[..at].copy_from_slice(prefix);
-        base64::encode(&self.n, &mut out[at..at + n64], true, false)?;
+        base64::encode(&n, &mut out[at..at + n64], true, false)?;
         at += n64;
         out[at..at + middle.len()].copy_from_slice(middle);
         at += middle.len();
-        base64::encode(&self.e, &mut out[at..at + e64], true, false)?;
+        base64::encode(&e, &mut out[at..at + e64], true, false)?;
         at += e64;
         out[at..].copy_from_slice(tail);
         Ok(total)
     }
-    /// Verify exactly RS256 with the actual backend's public operation. No private
-    /// key arithmetic, padding rejection/decryption oracle or downgrade is exposed.
+    /// Verify an RS256 signature using this public key.
     pub fn verify(&self, message: &[u8], signature: &[u8]) -> Result<(), Error> {
-        if message.len() > self.limits.message_bytes || signature.len() != self.n.len() {
+        if message.len() > self.limits.message_bytes
+            || signature.len() != self.key.signature_bytes()
+        {
             return Err(Error::Capacity);
         }
-        PublicKeyComponents {
-            n: self.n.as_slice(),
-            e: self.e.as_slice(),
-        }
-        .verify(&signature::RSA_PKCS1_2048_8192_SHA256, message, signature)
-        .map_err(|_| Error::Authentication)
+        self.key.verify(message, signature)
     }
     /// Verify a compact JWT's exact original RS256 header/signing input, then copy
     /// its validated payload into caller output. No issuer/audience/time claim is
@@ -364,7 +321,11 @@ impl Public {
             signature,
             payload,
         } = parts(token, b"RS256", self.limits)?;
-        let mut raw = buffer(base64::decoded_len(signature, true)?)?;
+        let length = base64::decoded_len(signature, true)?;
+        if length != self.key.signature_bytes() {
+            return Err(Error::Capacity);
+        }
+        let mut raw = buffer(length)?;
         base64::decode(signature, &mut raw, true)?;
         self.verify(signed, &raw)?;
         decoded_payload(payload, out, self.limits).map(|bytes| VerifiedPayload {
@@ -376,7 +337,7 @@ impl Public {
 impl core::fmt::Debug for Public {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("RsaPublic")
-            .field("modulus_bytes", &self.n.len())
+            .field("modulus_bytes", &self.key.signature_bytes())
             .finish_non_exhaustive()
     }
 }

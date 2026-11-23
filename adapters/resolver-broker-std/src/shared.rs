@@ -6,7 +6,7 @@ use crate::{
 use gnunet_client::{
     resolver::MAX_HOSTNAME_LEN,
     resolver_handle::{
-        Completion, Event as CoreEvent, Hostname, RequestId, ResolverHandle as Core,
+        Completion, Event as CoreEvent, HeapResolverHandle as Core, Hostname, RequestId,
     },
 };
 use gnunet_config::Configuration;
@@ -256,7 +256,7 @@ impl<const R: usize, const N: usize> Context<R, N> {
         Ok(Self {
             shared: Arc::new(Shared {
                 state: Mutex::new(State {
-                    core: Core::new(profile, configured)?,
+                    core: Core::new_heap(profile, configured)?,
                     mq: Mq::new(limits)?,
                     pending_error: None,
                     credits,

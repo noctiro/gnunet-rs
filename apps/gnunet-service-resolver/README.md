@@ -1,7 +1,7 @@
 # GNUnet Resolver service
 
-`gnunet-service-resolver` composes the bounded Resolver core, native IDNA backend
-and UDP DNS stub over official request4/response5. It uses shared SERVICE options:
+`gnunet-service-resolver` serves official Resolver request4/response5 over native
+local and TCP sockets. It uses shared SERVICE options:
 `-h/--help`, `-v/--version`, `-c/--config`, `-L/--log`, `-l/--logfile` and
 `-d/--daemonize`. Protocol state and machine-input acquisition belong to
 [the Resolver adapter](../../adapters/resolver-std/README.md).
@@ -15,9 +15,16 @@ gnunet-service-resolver -c /path/to/official.conf
 Windows uses the same command with native paths, for example
 `gnunet-service-resolver.exe -c C:\GNUnet\gnunet.conf`. The standard entry loads
 `[resolver]` settings and constructs actual configured local/TCP listeners. It
-installs the same `SharedClock` used by logging and testing skew before machine
-data or lookups become active. No key file, C resolver process or system DNS/NSS
-lookup fallback is introduced.
+installs the same `SharedClock` used by logging and testing skew before enabling
+lookups.
+
+## DNS backend
+
+macOS and Windows delegate A, AAAA and PTR queries to their live system DNS
+service. The OS controls routing and name resolution; the app skips static hosts,
+upstream and search-domain snapshots. Other Unix targets read `/etc/hosts` and
+`/etc/resolv.conf` once, with a 16 MiB limit per file, and send DNS through the
+Rust UDP stub. File errors are reported and leave the failed input empty.
 
 ## Unix process startup
 
@@ -29,17 +36,13 @@ and child PID metadata refreshes after fork.
 
 Startup preserves activation sockets, prepares new TCP listeners, applies
 configured `USERNAME` through native account transitions, then creates new local
-listeners under that identity. Machine input reads literal `/etc/hosts` and
-`/etc/resolv.conf` once, with a 16 MiB limit per file. Account/group lookup for
-startup or local credential policy is a separate native boundary.
+listeners and initializes the DNS backend under that identity.
 
 ## Windows process startup
 
 Startup captures the private parent-pipe location once and validates configured
 `USERNAME` against the actual primary-token SID before binding. It does not
-impersonate a thread or switch the process account. Machine input uses the system
-Windows hosts file and native adapter DNS endpoints, preserving port, scope and
-configured attempt order. Input failures remain observable diagnostics.
+impersonate a thread or switch the process account.
 
 The normal entry supports foreground operation, configured AF_UNIX/TCP listeners,
 private parent control and native console events. Standalone `-d/--daemonize`
@@ -73,16 +76,16 @@ identity to match the current process; it never changes whole-process identity.
 
 ## Readiness, shutdown and errors
 
-`READY resolver` and startup status publication follow actual Host/core/stub/IDNA,
-policy, machine-data and listener construction. The shared startup path awaits
+`READY resolver` and startup status publication follow initialization of the
+Resolver, selected DNS backend and listeners. The shared startup path awaits
 native asynchronous publication when needed. A Windows write submission confirms
 Tokio/Mio acceptance; the parent confirms startup only after reading the actual
 `.` from its qualified original-child connection. See
 [bootstrap ownership](../../adapters/service-startup/README.md#windows-parent-bootstrap).
 
 SIGINT/SIGTERM on Unix, native Windows console events, matching parent control,
-selected-log failure and original drive/clock errors stop admission and close
-original client streams, UDP owners and listeners. Parent-control EOF does not
+selected-log failure and original drive/clock errors stop admission, retire DNS
+work and close client streams and listeners. Parent-control EOF does not
 request shutdown. Default shutdown is Immediate, matching official
 `GNUNET_SERVICE_OPTION_NONE`. Original runtime errors and independent cleanup,
 logging or startup-status errors remain observable. Only newly owned local nodes

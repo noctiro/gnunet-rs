@@ -5,7 +5,8 @@
     reason = "Real cryptographic core cases assert original bytes, historical attribution and refusal atomicity"
 )]
 use super::*;
-use crate::archive::CommittedArchive;
+use crate::CommittedArchive;
+use alloc::vec::Vec;
 use gnunet_identity::SecretKey;
 use gnunet_types::AbsoluteTime;
 use wire::{body::Body, envelope::Kind, padding, profile::Profile};
@@ -129,7 +130,10 @@ fn two_healthy_identities_preserve_signed_history_and_restore_no_current_authori
     let original_wire = match &core.check_binding(old)?.job {
         Job::Wire {
             frame: Some(frame), ..
-        } => (frame.expose().as_ptr(), frame.expose().len()),
+        } => {
+            let bytes = core.work.expose(frame)?;
+            (bytes.as_ptr(), bytes.len())
+        }
         _ => return Err(Fault::Conflict.into()),
     };
     assert!(core.take_service_signing_work(room)?.is_none());
@@ -140,7 +144,10 @@ fn two_healthy_identities_preserve_signed_history_and_restore_no_current_authori
     let preserved_wire = match &core.check_binding(old)?.job {
         Job::Wire {
             frame: Some(frame), ..
-        } => (frame.expose().as_ptr(), frame.expose().len()),
+        } => {
+            let bytes = core.work.expose(frame)?;
+            (bytes.as_ptr(), bytes.len())
+        }
         _ => return Err(Fault::Conflict.into()),
     };
     assert_eq!(preserved_wire, original_wire);
@@ -201,13 +208,45 @@ fn two_healthy_identities_preserve_signed_history_and_restore_no_current_authori
     assert!(!core.is_own_signer(&pr));
     let image = core.prepare_archive(1 << 20)?;
     assert_eq!(image.historical_peer(), Some(pb));
+    let archive = Trusted(image.into_body());
+    let recovery_limits = Limits {
+        frame_bytes: 1024,
+        name_bytes: 1024,
+        ..limits()
+    };
+    let mut frame_slots = [OriginalSlot::EMPTY; 3];
+    let mut frame_bytes = [0xa5; 1024];
+    let mut frame_instance = OriginalPoolInstance::new();
+    {
+        let mut failed_instance = Instance::new();
+        let mut temporary = [0; 1024];
+        let pool = OriginalPool::new(&mut frame_instance, &mut frame_slots[..2], &mut frame_bytes);
+        assert!(matches!(
+            Core::recover_archive_with_frame_pool(
+                &mut failed_instance,
+                &archive,
+                recovery_limits,
+                PROFILE,
+                1 << 20,
+                pool,
+                &mut temporary,
+            ),
+            Err(Error::Protocol(Fault::Capacity)),
+        ));
+    }
+    assert!(frame_bytes.iter().all(|&byte| byte == 0));
+
+    let pool = OriginalPool::new(&mut frame_instance, &mut frame_slots, &mut frame_bytes);
+    let mut temporary = [0; 1024];
     let mut restored_instance = Instance::new();
-    let (mut restored, generation, historical) = Core::recover_archive(
+    let (mut restored, generation, historical) = Core::recover_archive_with_frame_pool(
         &mut restored_instance,
-        &Trusted(image.into_body()),
-        limits(),
+        &archive,
+        recovery_limits,
         PROFILE,
         1 << 20,
+        pool,
+        &mut temporary,
     )?
     .into_parts();
     assert_eq!((generation, historical), (1, Some(pb)));
@@ -219,10 +258,7 @@ fn two_healthy_identities_preserve_signed_history_and_restore_no_current_authori
         (ha, pa, original_a.as_slice()),
         (hb, pb, original_b.as_slice()),
     ] {
-        let message = restored
-            .retained_messages(restored_room)?
-            .find(|m| m.hash() == &hash)
-            .ok_or(Fault::NotFound)?;
+        let message = restored.message(restored_room, &hash)?;
         assert!(message.original().is_some_and(|raw| raw == bytes));
         assert_eq!(
             message.provenance().role(),

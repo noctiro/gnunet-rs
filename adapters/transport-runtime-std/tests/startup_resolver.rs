@@ -83,6 +83,7 @@ async fn pending_identity_does_not_repoll_completed_original_resolver_future()
             config: &cfg,
             activation: Activation::default(),
             state_directory: d.0.join("state"),
+            included_hellos: None,
             local_key: LocalKeyCapability {
                 ikm_file: d.0.join("unused-key"),
             },

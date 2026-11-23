@@ -2,9 +2,9 @@
 use super::{TreeBudget, TreeLimits, TreePublishCause};
 use crate::input_tree::FrameSource;
 use crate::input_tree::{Kind, Stamp};
-use gnunet_fs::{Content, directory as dir, metadata as md};
+use gnunet_fs::{Content, Location, Uri, directory as dir, metadata as md};
 use gnunet_types::Error as ProtocolError;
-use std::{fs::File, path::PathBuf};
+use std::{fs::File, num::NonZeroUsize, path::PathBuf};
 
 pub(crate) fn allocation(length: usize) -> Result<Vec<u8>, TreePublishCause> {
     let mut bytes = Vec::new();
@@ -75,6 +75,7 @@ pub(crate) fn metadata(items: &[md::Item<'_>], cap: usize) -> Result<Vec<u8>, Tr
 }
 pub(crate) struct Entry {
     pub(crate) content: Option<Content>,
+    pub(crate) location: Option<NonZeroUsize>,
     pub(crate) metadata: Vec<u8>,
     pub(crate) record: Vec<u8>,
 }
@@ -200,6 +201,7 @@ pub(crate) fn frame(
         )?;
         entries.push(Entry {
             content: None,
+            location: None,
             metadata: bytes,
             record: allocation(length)?,
         });
@@ -253,6 +255,15 @@ impl<'a> DirectoryPlan<'a> {
         root_metadata: &'a [u8],
         limits: TreeLimits,
     ) -> Result<Self, TreePublishCause> {
+        Self::prepare_with_locations(entries, root_metadata, limits, &[])
+    }
+
+    pub(crate) fn prepare_with_locations(
+        entries: &'a mut [Entry],
+        root_metadata: &'a [u8],
+        limits: TreeLimits,
+        locations: &[(usize, Location)],
+    ) -> Result<Self, TreePublishCause> {
         let md_limits = md::Limits {
             max_coded_bytes: limits.max_metadata_bytes,
             max_plain_bytes: limits.max_metadata_bytes,
@@ -263,6 +274,16 @@ impl<'a> DirectoryPlan<'a> {
             .try_reserve_exact(entries.len())
             .map_err(|_| ProtocolError::Capacity)?;
         for entry in entries {
+            let content = entry.content.ok_or(ProtocolError::NotReady)?;
+            let target = if let Some(slot) = entry.location {
+                let &(_, location) = locations
+                    .get(slot.get() - 1)
+                    .filter(|(_, location)| location.content() == content)
+                    .ok_or(ProtocolError::InvalidInput)?;
+                Uri::Location(location)
+            } else {
+                content.uri()
+            };
             let metadata = dir::PreparedMetadata::validate(
                 &entry.metadata,
                 &mut [],
@@ -270,7 +291,7 @@ impl<'a> DirectoryPlan<'a> {
                 md_limits,
             )?;
             prepared.push(dir::PreparedEntry::prepare(
-                entry.content.ok_or(ProtocolError::NotReady)?.uri(),
+                target,
                 metadata,
                 &mut entry.record,
             )?);

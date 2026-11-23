@@ -8,11 +8,13 @@ import argparse
 from collections import Counter
 import hashlib
 import json
+import os
 import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 REQUIRED = ('util statistics testbed arm peerstore nat nat-auto pils transport core nse hostlist topology dns identity namecache namestore datacache datastore dht cadet seti setu regex revocation vpn gns zonemaster fs exit pt reclaim messenger rest').split()
+TYPE_LOCATION = re.compile(r'(\((?:anonymous|unnamed \w+) at )(.+?)(:\d+:\d+\))')
 
 
 def sha(path):
@@ -25,8 +27,28 @@ def save(path, value):
     path.write_text(json.dumps(value, separators=(',', ':'), ensure_ascii=True) + '\n')
 
 
+def portable_declaration_types(row, capture_source, capture_build):
+    def portable_type(match):
+        # Clang emits both absolute paths and paths relative to the compile cwd.
+        path = Path(os.path.normpath(capture_build / match[2]))
+        if capture_build != capture_source and path.is_relative_to(capture_build):
+            reference = '@build/' + path.relative_to(capture_build).as_posix()
+        elif path.is_relative_to(capture_source):
+            reference = path.relative_to(capture_source).as_posix()
+        else:
+            return match[0]
+        return match[1] + reference + match[3]
+
+    for item in (row, *row.get('parameters', []), *row.get('fields', [])):
+        for key in ('type', 'canonical_type'):
+            if item.get(key):
+                item[key] = TYPE_LOCATION.sub(portable_type, item[key])
+
+
 def build(capture, source, output):
     raw = json.loads((capture / 'configured-api-inventory.json').read_text())
+    capture_source = Path(raw['source'])
+    capture_build = Path(raw['build'])
     operations = json.loads((capture / 'api-operation-catalog.json').read_text())
     by_header = {Path(row['path']).name: row for row in operations['headers']}
     install_plan=Path(raw['build'])/'meson-info/intro-install_plan.json'
@@ -60,6 +82,7 @@ def build(capture, source, output):
         ids = []
         for original in header['declarations']:
             row = {key: value for key, value in original.items() if key not in ('documentation_brief', 'documentation_tags')}
+            portable_declaration_types(row, capture_source, capture_build)
             row['id'] = header['path'].split('/')[-1] + ':' + row['kind'] + ':' + row['name'] + ':' + str(row.get('offset'))
             row['header'] = origin['path']
             row['availability'] = availability
@@ -76,7 +99,7 @@ def build(capture, source, output):
                         'gap': gap, 'declaration_ids': ids,
                         'compiler': {'ast_exit_code': header['clang_exit_code'], 'preprocessor_exit_code': header['preprocess_exit_code'],
                                      'ast_sha256': header['ast_sha256'], 'preprocessed_sha256': header['preprocessed_sha256'],
-                                     'translation_unit': header['translation_unit'], 'translation_unit_sha256': header['translation_unit_sha256']},
+                                     'translation_unit_sha256': header['translation_unit_sha256']},
                         'conditional_directives': header['conditional_directives'], 'include_guard': header['include_guard'],
                         'macros': [macro_metadata(macro) for macro in header['macros']], 'scope_review': {'status': 'pending', 'reason': None},
                         'conditional_review': {'status': 'pending', 'reason': None}})

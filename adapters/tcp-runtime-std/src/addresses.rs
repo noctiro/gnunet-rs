@@ -6,7 +6,10 @@ use gnunet_client_host::EndpointSource;
 use gnunet_crypto::EddsaPublicKey;
 use gnunet_nat_client_host as nat;
 use gnunet_native::interfaces::{self, InterfaceAddress};
-use gnunet_service_runtime::clock::{ClockSubscription, RuntimeClock};
+use gnunet_service_runtime::{
+    clock::{ClockSubscription, RuntimeClock},
+    network_change::NetworkChanges,
+};
 use gnunet_tcp_communicator_host::HostError;
 use gnunet_types::Error as Fault;
 use std::{
@@ -293,16 +296,64 @@ struct Row {
     network: u32,
     published: bool,
 }
+
+pub(crate) struct NatSource<'id> {
+    pub(crate) instance: &'id nat::Instance,
+    pub(crate) endpoint: EndpointSource,
+}
+
+struct ConfiguredNat<'id> {
+    source: NatSource<'id>,
+    registration: Option<nat::Registration<'id>>,
+}
+
 /// Exclusive wrapper of the original Pool and its address-ID namespace. The
 /// caller continues real session/IPC work through `pool_mut`; no second queue,
 /// Pool, connection or clock is manufactured. Adopt before any address ADD.
 /// Listeners stay borrowed, so the advertised physical listening owner survives.
 pub struct PublishedPool<'id, 'pool, 'listeners> {
-    pool: Option<Pool<'pool>>,
+    state: Box<State<'id, 'listeners>>,
+    port: Option<Port<'pool>>,
+}
+enum Port<'pool> {
+    Peers(Box<Pool<'pool>>),
+    Retained(gnunet_tcp_communicator_host::Resources),
+}
+impl<'pool> Port<'pool> {
+    fn transport_epoch(&self) -> u64 {
+        match self {
+            Self::Peers(pool) => pool.transport_epoch(),
+            Self::Retained(original) => original.transport_epoch(),
+        }
+    }
+    fn transport_online(&self) -> bool {
+        match self {
+            Self::Peers(pool) => pool.transport_online(),
+            Self::Retained(original) => original.transport_online(),
+        }
+    }
+    fn advertise(&mut self, id: u32, address: &[u8], network: u32) -> Result<(), HostError> {
+        match self {
+            Self::Peers(pool) => pool.advertise(id, address, network),
+            Self::Retained(original) => original.advertise(id, address, network),
+        }
+    }
+    fn withdraw(&mut self, id: u32) -> Result<(), HostError> {
+        match self {
+            Self::Peers(pool) => pool.withdraw(id),
+            Self::Retained(original) => original.withdraw(id),
+        }
+    }
+    fn owns_reversal(&self, reversal: &crate::Reversal<'pool>) -> Result<(), Fault> {
+        match self {
+            Self::Peers(pool) => pool.owns_reversal(reversal),
+            Self::Retained(_) => Err(Fault::NotReady),
+        }
+    }
+}
+struct State<'id, 'listeners> {
     transport_epoch: u64,
     listeners: &'listeners Listeners,
-    instance: &'id nat::Instance,
-    source: EndpointSource,
     clock: Arc<dyn RuntimeClock>,
     subscription: Option<Box<dyn ClockSubscription>>,
     revision: u64,
@@ -316,7 +367,7 @@ pub struct PublishedPool<'id, 'pool, 'listeners> {
     interface_valid: bool,
     interface_hard: Instant,
     next_id: u32,
-    nat: Option<nat::Registration<'id>>,
+    nat: Option<ConfiguredNat<'id>>,
     pending_end: Option<nat::End<'id>>,
     pending_expired: Option<nat::WriteEnd<'id>>,
     reverse_notified: Option<ReverseNotification<'id>>,
@@ -382,20 +433,103 @@ fn socket(a: nat::ipc::Address<'_>) -> Result<SocketAddr, Fault> {
         nat::ipc::Address::Unix(_) => Err(Fault::Malformed),
     }
 }
+impl<'id, 'listeners> PublishedPool<'id, 'static, 'listeners> {
+    pub(crate) fn resume_identity<'next>(
+        self,
+        setup: crate::Setup<'next, ()>,
+    ) -> Result<PublishedPool<'id, 'next, 'listeners>, Failure> {
+        let Self { state, port } = self;
+        let Some(Port::Retained(services)) = port else {
+            return Err(Fault::Conflict.into());
+        };
+        let socket_policy = state.listeners.socket_policy().clone();
+        let pool = Pool::resume(crate::Setup {
+            services,
+            identity: setup.identity,
+            scope: setup.scope,
+            slots: setup.slots,
+            buffers: setup.buffers,
+            policy: setup.policy,
+            ipc: setup.ipc,
+            capacity: setup.capacity,
+            disable_v6: setup.disable_v6,
+        })
+        .map_err(Failure::Transport)?
+        .with_socket_policy(socket_policy);
+        Ok(PublishedPool {
+            state,
+            port: Some(Port::Peers(Box::new(pool))),
+        })
+    }
+}
 impl<'id, 'pool, 'listeners> PublishedPool<'id, 'pool, 'listeners> {
+    pub(crate) fn retain_identity_resources(
+        mut self,
+    ) -> Result<
+        (
+            PublishedPool<'id, 'static, 'listeners>,
+            crate::epoch::Quiescent,
+        ),
+        gnunet_types::Rejected<Self>,
+    > {
+        let Some(Port::Peers(pool)) = self.port.take() else {
+            return Err(gnunet_types::Rejected {
+                reason: Fault::NotReady,
+                value: self,
+            });
+        };
+        match (*pool).into_resources() {
+            Ok((resources, proof)) => {
+                let Self { state, .. } = self;
+                Ok((
+                    PublishedPool {
+                        state,
+                        port: Some(Port::Retained(resources)),
+                    },
+                    proof,
+                ))
+            }
+            Err(rejected) => {
+                self.port = Some(Port::Peers(Box::new(rejected.value)));
+                Err(gnunet_types::Rejected {
+                    reason: rejected.reason,
+                    value: self,
+                })
+            }
+        }
+    }
     /// Perform every fallible validation/reservation before taking the original
     /// Pool. Failure leaves `pool` untouched and performs no registration IO.
     /// The source must be the caller's actual NAT selector on the same process
     /// clock/Resolver. The pool's address namespace must not have prior ADDs.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "All fallible source, metadata and registration preparation precedes the single original Pool transfer"
-    )]
     pub fn try_adopt(
         pool: &mut Option<Pool<'pool>>,
         listeners: &'listeners Listeners,
         instance: &'id nat::Instance,
         source: EndpointSource,
+        clock: Arc<dyn RuntimeClock>,
+        options: Options,
+        limits: Limits,
+    ) -> Result<Self, Failure> {
+        let endpoint = source.snapshot().map_err(nat::Error::from)?;
+        Self::try_adopt_with_nat(
+            pool,
+            listeners,
+            Some(NatSource { instance, endpoint }),
+            clock,
+            options,
+            limits,
+        )
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "All fallible source, metadata and registration preparation precedes the single original Pool transfer"
+    )]
+    pub(crate) fn try_adopt_with_nat(
+        pool: &mut Option<Pool<'pool>>,
+        listeners: &'listeners Listeners,
+        nat: Option<NatSource<'id>>,
         clock: Arc<dyn RuntimeClock>,
         options: Options,
         limits: Limits,
@@ -413,8 +547,10 @@ impl<'id, 'pool, 'listeners> PublishedPool<'id, 'pool, 'listeners> {
             return Err(Fault::InvalidInput.into());
         }
         let at = Instant::now();
-        let source = source.snapshot().map_err(nat::Error::from)?;
-        if !Arc::ptr_eq(&clock, &source.clock()) {
+        if nat
+            .as_ref()
+            .is_some_and(|source| !Arc::ptr_eq(&clock, &source.endpoint.clock()))
+        {
             return Err(Fault::InvalidInput.into());
         }
         let sample = clock.sample().map_err(Failure::Clock)?;
@@ -464,7 +600,10 @@ impl<'id, 'pool, 'listeners> PublishedPool<'id, 'pool, 'listeners> {
                 bindings.push(a);
             }
         }
-        if bindings.is_empty() {
+        if bindings.is_empty() && listeners.mode() != crate::settings::PeerMode::OutboundOnly {
+            return Err(Fault::InvalidInput.into());
+        }
+        if listeners.mode() == crate::settings::PeerMode::OutboundOnly && nat.is_some() {
             return Err(Fault::InvalidInput.into());
         }
         let mut rows = reserve(limits.addresses)?;
@@ -496,7 +635,15 @@ impl<'id, 'pool, 'listeners> PublishedPool<'id, 'pool, 'listeners> {
         }
         let desired = reserve(limits.claims)?;
         let subscription = clock.subscribe().map_err(Failure::Clock)?;
-        let registration = Self::registration(instance, &source, &bindings, options, limits)?;
+        let nat = nat
+            .map(|source| {
+                let registration = Self::open_nat(&source, &bindings, options, limits)?;
+                Ok::<_, Failure>(ConfiguredNat {
+                    source,
+                    registration: Some(registration),
+                })
+            })
+            .transpose()?;
         if hard.is_some_and(|bound| Instant::now() >= bound) {
             return Err(Fault::Deadline.into());
         }
@@ -505,43 +652,42 @@ impl<'id, 'pool, 'listeners> PublishedPool<'id, 'pool, 'listeners> {
         let transport_epoch = pool.as_ref().ok_or(Fault::Closed)?.transport_epoch();
         let original = pool.take();
         Ok(Self {
-            pool: original,
-            transport_epoch,
-            listeners,
-            instance,
-            source,
-            clock,
-            subscription: Some(subscription),
-            revision: sample.revision,
-            options,
-            limits,
-            bindings,
-            rows,
-            claims,
-            desired,
-            interfaces: Vec::new(),
-            interface_valid: false,
-            interface_hard: at,
-            next_id,
-            nat: Some(registration),
-            pending_end: None,
-            pending_expired: None,
-            reverse_notified: None,
-            hard,
-            next_scan: at,
-            retry: None,
-            cursor: 0,
-            alarm,
-            closing: false,
-            close_hard: None,
-            close_error: None,
-            terminal: false,
-            aborted: false,
+            port: original.map(|pool| Port::Peers(Box::new(pool))),
+            state: Box::new(State {
+                transport_epoch,
+                listeners,
+                clock,
+                subscription: Some(subscription),
+                revision: sample.revision,
+                options,
+                limits,
+                bindings,
+                rows,
+                claims,
+                desired,
+                interfaces: Vec::new(),
+                interface_valid: false,
+                interface_hard: at,
+                next_id,
+                nat,
+                pending_end: None,
+                pending_expired: None,
+                reverse_notified: None,
+                hard,
+                next_scan: at,
+                retry: None,
+                cursor: 0,
+                alarm,
+                closing: false,
+                close_hard: None,
+                close_error: None,
+                terminal: false,
+                aborted: false,
+            }),
         })
     }
-    fn registration(
-        instance: &'id nat::Instance,
-        source: &EndpointSource,
+    fn open_nat(
+        source: &NatSource<'id>,
         bindings: &[SocketAddr],
         options: Options,
         limits: Limits,
@@ -554,6 +700,7 @@ impl<'id, 'pool, 'listeners> PublishedPool<'id, 'pool, 'listeners> {
             writer.push(wire(address))?;
         }
         let now = source
+            .endpoint
             .clock()
             .sample()
             .map_err(Failure::Clock)?
@@ -565,8 +712,8 @@ impl<'id, 'pool, 'listeners> PublishedPool<'id, 'pool, 'listeners> {
             .ok_or(Fault::Overflow)?
             .min(options.until);
         Ok(nat::Registration::new(
-            instance,
-            source.duplicate().map_err(nat::Error::from)?,
+            source.instance,
+            source.endpoint.duplicate().map_err(nat::Error::from)?,
             nat::RegistrationRequest {
                 flags: nat::ipc::ADDRESSES | nat::ipc::REVERSAL,
                 protocol: 6,
@@ -582,30 +729,48 @@ impl<'id, 'pool, 'listeners> PublishedPool<'id, 'pool, 'listeners> {
             limits.nat,
         )?)
     }
+
+    fn registration(&self) -> Option<&nat::Registration<'id>> {
+        self.state.nat.as_ref()?.registration.as_ref()
+    }
+
+    fn registration_mut(&mut self) -> Option<&mut nat::Registration<'id>> {
+        self.state.nat.as_mut()?.registration.as_mut()
+    }
+
+    fn take_registration(&mut self) -> Option<nat::Registration<'id>> {
+        self.state.nat.as_mut()?.registration.take()
+    }
     /// Original Pool only; the enclosing caller fairly drives its actual queues,
     /// session callbacks and retirement using the same original ClockPort.
     pub fn pool_mut(&mut self) -> Option<&mut Pool<'pool>> {
-        self.pool.as_mut()
+        match self.port.as_mut()? {
+            Port::Peers(pool) => Some(pool.as_mut()),
+            Port::Retained(_) => None,
+        }
+    }
+    pub(crate) fn retained_input_idle(&self) -> bool {
+        matches!(&self.port, Some(Port::Retained(original)) if original.input_idle())
     }
     /// Original still-borrowed physical listener owner.
     pub fn listeners(&self) -> &Listeners {
-        self.listeners
+        self.state.listeners
     }
     /// Same actual clock/Resolver domain retained by the fixed endpoint selector.
     pub fn clock(&self) -> Arc<dyn RuntimeClock> {
-        self.clock.clone()
+        self.state.clock.clone()
     }
     fn guard_nat(&mut self, cx: &mut Context<'_>) -> Result<(), Failure> {
         // Return the retained original observation before admitting another
         // action; a getter must not overwrite or silently consume its result.
-        if self.pending_end.is_some() || self.pending_expired.is_some() {
+        if self.state.pending_end.is_some() || self.state.pending_expired.is_some() {
             return Err(Fault::WouldBlock.into());
         }
-        let registration = self.nat.as_mut().ok_or(Fault::NotReady)?;
+        let registration = self.registration_mut().ok_or(Fault::NotReady)?;
         match registration.poll_native_guard(cx, None) {
             Poll::Pending => Ok(()),
             Poll::Ready(Ok(nat::Progress::WriteExpired(write))) => {
-                self.pending_expired = Some(write);
+                self.state.pending_expired = Some(write);
                 cx.waker().wake_by_ref();
                 Err(Fault::WouldBlock.into())
             }
@@ -615,9 +780,9 @@ impl<'id, 'pool, 'listeners> PublishedPool<'id, 'pool, 'listeners> {
                     nat::Cause::Clock(_) | nat::Cause::Error(nat::Error::Clock(_))
                 );
                 self.retire_nat_claims();
-                self.nat = None;
-                self.reverse_notified = None;
-                self.pending_end = Some(end);
+                drop(self.take_registration());
+                self.state.reverse_notified = None;
+                self.state.pending_end = Some(end);
                 cx.waker().wake_by_ref();
                 if clock_failed {
                     self.begin_close();
@@ -638,22 +803,27 @@ impl<'id, 'pool, 'listeners> PublishedPool<'id, 'pool, 'listeners> {
     /// owner's existing NAT Registration. Success is immutable local admission,
     /// not whole write, NAT acceptance or authenticated reversal completion.
     /// The caller retains its original CREATE/deadline until actual resolution.
+    /// An owner without a configured NAT endpoint refuses new reversals.
     pub fn request_reversal(
         &mut self,
         cx: &mut Context<'_>,
         reversal: &crate::Reversal<'pool>,
         until: u64,
     ) -> Result<ReverseWrite<'id, 'pool>, Failure> {
+        if self.state.nat.is_none() {
+            return Err(Fault::Unavailable.into());
+        }
         self.guard_nat(cx)?;
         if self.is_retiring() {
             return Err(Fault::Closed.into());
         }
         self.check_native()?;
-        self.pool
+        self.port
             .as_ref()
             .ok_or(Fault::Closed)?
             .owns_reversal(reversal)?;
         let local = self
+            .state
             .bindings
             .iter()
             .find_map(|address| match address {
@@ -664,7 +834,12 @@ impl<'id, 'pool, 'listeners> PublishedPool<'id, 'pool, 'listeners> {
             })
             .ok_or(Fault::Unavailable)?;
         let remote = SocketAddrV4::new(reversal.remote(), 0);
-        let registration = self.nat.as_mut().ok_or(Fault::NotReady)?;
+        let registration = self
+            .state
+            .nat
+            .as_mut()
+            .and_then(|nat| nat.registration.as_mut())
+            .ok_or(Fault::NotReady)?;
         let epoch = registration.epoch().ok_or(Fault::NotReady)?;
         if !registration.is_current(epoch)
             || !matches!(
@@ -682,11 +857,17 @@ impl<'id, 'pool, 'listeners> PublishedPool<'id, 'pool, 'listeners> {
             }
             _ => return Err(Fault::Conflict.into()),
         };
-        let now = self.clock.sample().map_err(Failure::Clock)?.now.as_micros();
+        let now = self
+            .state
+            .clock
+            .sample()
+            .map_err(Failure::Clock)?
+            .now
+            .as_micros();
         if until == u64::MAX
             || until <= now
-            || until > self.options.until
-            || self.hard.is_some_and(|hard| Instant::now() >= hard)
+            || until > self.state.options.until
+            || self.state.hard.is_some_and(|hard| Instant::now() >= hard)
         {
             return Err(Fault::Deadline.into());
         }
@@ -712,7 +893,7 @@ impl<'id, 'pool, 'listeners> PublishedPool<'id, 'pool, 'listeners> {
         })
     }
     fn check_reverse_write(&self, original: &ReverseWrite<'id, 'pool>) -> Result<(), Failure> {
-        let registration = self.nat.as_ref().ok_or(Fault::Stale)?;
+        let registration = self.registration().ok_or(Fault::Stale)?;
         if registration.session() != original.session || !registration.is_current(original.epoch) {
             return Err(Fault::Stale.into());
         }
@@ -726,8 +907,7 @@ impl<'id, 'pool, 'listeners> PublishedPool<'id, 'pool, 'listeners> {
     ) -> Result<nat::Submission, Failure> {
         self.check_reverse_write(original)?;
         Ok(self
-            .nat
-            .as_ref()
+            .registration()
             .ok_or(Fault::Stale)?
             .submission(original.write)?)
     }
@@ -742,7 +922,7 @@ impl<'id, 'pool, 'listeners> PublishedPool<'id, 'pool, 'listeners> {
     ) -> Result<Option<nat::WriteEnd<'id>>, Failure> {
         self.guard_nat(cx)?;
         self.check_reverse_write(original)?;
-        let registration = self.nat.as_mut().ok_or(Fault::Stale)?;
+        let registration = self.registration_mut().ok_or(Fault::Stale)?;
         match registration.submission(original.write) {
             Ok(nat::Submission::Unsent) => {}
             Ok(_) | Err(nat::Error::Protocol(Fault::Stale)) => return Ok(None),
@@ -755,15 +935,15 @@ impl<'id, 'pool, 'listeners> PublishedPool<'id, 'pool, 'listeners> {
                 // Preserve any actual unexpected retirement instead of losing
                 // the original End or pretending the write was unexposed.
                 self.retire_nat_claims();
-                self.nat = None;
-                self.reverse_notified = None;
-                self.pending_end = Some(end);
+                drop(self.take_registration());
+                self.state.reverse_notified = None;
+                self.state.pending_end = Some(end);
                 Err(Fault::OutcomeUnknown.into())
             }
         }
     }
     fn current_reverse(&self) -> Result<Option<ReverseNotification<'id>>, Failure> {
-        let Some(registration) = &self.nat else {
+        let Some(registration) = self.registration() else {
             return Ok(None);
         };
         let Some(notification) = registration.notification()? else {
@@ -791,6 +971,9 @@ impl<'id, 'pool, 'listeners> PublishedPool<'id, 'pool, 'listeners> {
         &mut self,
         cx: &mut Context<'_>,
     ) -> Result<Option<ReverseNotification<'id>>, Failure> {
+        if self.state.nat.is_none() {
+            return Ok(None);
+        }
         self.guard_nat(cx)?;
         if self.is_retiring() {
             return Err(Fault::Closed.into());
@@ -807,8 +990,7 @@ impl<'id, 'pool, 'listeners> PublishedPool<'id, 'pool, 'listeners> {
         if self.current_reverse()? != Some(*original) {
             return Err(Fault::Stale.into());
         }
-        self.nat
-            .as_ref()
+        self.registration()
             .ok_or(Fault::Stale)?
             .notification()?
             .ok_or_else(|| Fault::Stale.into())
@@ -821,21 +1003,20 @@ impl<'id, 'pool, 'listeners> PublishedPool<'id, 'pool, 'listeners> {
         if self.current_reverse()? != Some(*original) {
             return Err(Fault::Stale.into());
         }
-        self.nat
-            .as_mut()
+        self.registration_mut()
             .ok_or(Fault::Stale)?
             .release_notification()?;
-        self.reverse_notified = None;
+        self.state.reverse_notified = None;
         Ok(())
     }
     fn offer_reverse(&mut self) -> Result<ReverseOffer<'id>, Failure> {
         let Some(notification) = self.current_reverse()? else {
             return Ok(ReverseOffer::Absent);
         };
-        if self.reverse_notified == Some(notification) {
+        if self.state.reverse_notified == Some(notification) {
             Ok(ReverseOffer::Held)
         } else {
-            self.reverse_notified = Some(notification);
+            self.state.reverse_notified = Some(notification);
             Ok(ReverseOffer::Ready(notification))
         }
     }
@@ -843,6 +1024,9 @@ impl<'id, 'pool, 'listeners> PublishedPool<'id, 'pool, 'listeners> {
     /// original claims retired. It cannot extend the owner hard/absolute targets,
     /// retarget live configuration or replay a prior reverse/mapping mutation.
     pub fn restart_nat(&mut self) -> Result<(), Failure> {
+        if self.state.nat.is_none() {
+            return Err(Fault::Unavailable.into());
+        }
         let result = self.restart_nat_inner();
         if result.is_err() && !matches!(&result, Err(Failure::Protocol(Fault::Conflict))) {
             self.begin_close();
@@ -850,112 +1034,131 @@ impl<'id, 'pool, 'listeners> PublishedPool<'id, 'pool, 'listeners> {
         result
     }
     fn restart_nat_inner(&mut self) -> Result<(), Failure> {
-        if self.closing
-            || self.nat.is_some()
-            || self.pending_end.is_some()
-            || self.pending_expired.is_some()
+        if self.state.closing
+            || self.registration().is_some()
+            || self.state.pending_end.is_some()
+            || self.state.pending_expired.is_some()
             || self
+                .state
                 .claims
                 .iter()
                 .any(|c| matches!(c.origin, Origin::Nat(..)))
             || self
+                .state
                 .rows
                 .iter()
-                .any(|row| !self.claims.iter().any(|c| c.address == row.address))
+                .any(|row| !self.state.claims.iter().any(|c| c.address == row.address))
         {
             return Err(Fault::Conflict.into());
         }
         self.check_native()?;
-        if self.options.until != u64::MAX
-            && self.clock.sample().map_err(Failure::Clock)?.now.as_micros() >= self.options.until
+        if self.state.options.until != u64::MAX
+            && self
+                .state
+                .clock
+                .sample()
+                .map_err(Failure::Clock)?
+                .now
+                .as_micros()
+                >= self.state.options.until
         {
             return Err(Fault::Deadline.into());
         }
-        let registration = Self::registration(
-            self.instance,
-            &self.source,
-            &self.bindings,
-            self.options,
-            self.limits,
+        let configured = self.state.nat.as_ref().ok_or(Fault::Unavailable)?;
+        let registration = Self::open_nat(
+            &configured.source,
+            &self.state.bindings,
+            self.state.options,
+            self.state.limits,
         )?;
         self.check_native()?;
-        self.nat = Some(registration);
+        self.state
+            .nat
+            .as_mut()
+            .ok_or(Fault::Unavailable)?
+            .registration = Some(registration);
         Ok(())
     }
     fn check_native(&self) -> Result<(), Failure> {
-        if self.hard.is_some_and(|bound| Instant::now() >= bound) {
+        if self.state.hard.is_some_and(|bound| Instant::now() >= bound) {
             Err(Fault::Deadline.into())
         } else {
             Ok(())
         }
     }
     fn retire_nat_claims(&mut self) {
-        self.claims.retain(|c| !matches!(c.origin, Origin::Nat(..)));
+        self.state
+            .claims
+            .retain(|c| !matches!(c.origin, Origin::Nat(..)));
     }
     /// Clock-free stop of fresh work and actual NAT MQ close. Original removals
     /// retain their exact FIFO intent until enqueue or this owner's forced drop.
     pub fn begin_close(&mut self) {
-        if self.closing {
+        if self.state.closing {
             return;
         }
-        self.closing = true;
-        self.reverse_notified = None;
-        self.subscription = None;
-        self.claims.clear();
+        self.state.closing = true;
+        self.state.reverse_notified = None;
+        self.state.subscription = None;
+        self.state.claims.clear();
         let now = Instant::now();
-        let anchor = self.hard.map_or(now, |bound| now.min(bound));
-        self.close_hard = anchor.checked_add(self.options.retirement);
-        if self.close_hard.is_none() {
-            self.close_hard = Some(now);
-            self.close_error = Some(Fault::Overflow.into());
+        let anchor = self.state.hard.map_or(now, |bound| now.min(bound));
+        self.state.close_hard = anchor.checked_add(self.state.options.retirement);
+        if self.state.close_hard.is_none() {
+            self.state.close_hard = Some(now);
+            self.state.close_error = Some(Fault::Overflow.into());
         }
-        if let Some(mut registration) = self.nat.take() {
-            self.pending_end = registration.close();
+        if let Some(mut registration) = self.take_registration() {
+            self.state.pending_end = registration.close();
         }
-        self.retry = None;
+        self.state.retry = None;
     }
     /// Physical abort of this original Pool/NAT MQ. No clean epoch receipt is
     /// produced; original queued/partial work is lost with its original owner.
     pub fn abort(&mut self) {
         self.begin_close();
-        self.pool = None;
-        self.rows.clear();
-        self.aborted = true;
+        self.port = None;
+        self.state.rows.clear();
+        self.state.aborted = true;
     }
     /// Permanent gate for fresh accepts/CREATE/session admissions by the enclosing
     /// caller. Cleanup may still drive the same Pool without sampling a new clock.
     pub fn is_retiring(&self) -> bool {
-        self.closing || self.aborted || self.pool.is_none()
+        self.state.closing || self.state.aborted || self.port.is_none()
     }
     /// Whether all removals have been queued and NAT closed. This says nothing
     /// about the Pool's actual write/peer/drain/clean-epoch obligations.
     pub fn is_closed(&self) -> bool {
-        self.terminal && !self.aborted
+        self.state.terminal && !self.state.aborted
     }
     /// Transfer the exact same original Pool after address retirement. Any queued
     /// 1201 remains in that real FIFO and must still be driven to write or loss.
     /// This address-ID namespace must not be reused by another owner on this MQ.
     pub fn take_pool(&mut self) -> Result<Pool<'pool>, Fault> {
         if !self.is_closed()
-            || self.pending_end.is_some()
-            || self.pending_expired.is_some()
-            || !self.rows.is_empty()
+            || self.state.pending_end.is_some()
+            || self.state.pending_expired.is_some()
+            || !self.state.rows.is_empty()
         {
             return Err(Fault::WouldBlock);
         }
-        self.pool.take().ok_or(Fault::Closed)
+        match self.port.take().ok_or(Fault::Closed)? {
+            Port::Peers(pool) => Ok(*pool),
+            Port::Retained(original) => {
+                self.port = Some(Port::Retained(original));
+                Err(Fault::NotReady)
+            }
+        }
     }
     fn network(&self, address: SocketAddr) -> u32 {
         if address.ip().is_loopback() {
             return 1;
         }
-        if !self.interface_valid || Instant::now() >= self.interface_hard {
+        if !self.state.interface_valid || Instant::now() >= self.state.interface_hard {
             return 0;
         }
-        if self
-            .interfaces
-            .iter()
-            .any(|row| match (address.ip(), row.address.ip(), row.netmask) {
+        if self.state.interfaces.iter().any(|row| {
+            match (address.ip(), row.address.ip(), row.netmask) {
                 (IpAddr::V4(a), IpAddr::V4(b), Some(IpAddr::V4(m))) => a
                     .octets()
                     .into_iter()
@@ -969,123 +1172,136 @@ impl<'id, 'pool, 'listeners> PublishedPool<'id, 'pool, 'listeners> {
                     .zip(m.octets())
                     .all(|((a, b), m)| a & m == b & m),
                 _ => false,
-            })
-        {
+            }
+        }) {
             2
         } else {
             3
         }
     }
     fn new_row(&mut self, address: SocketAddr) -> Result<(), Fault> {
-        if self.rows.iter().any(|r| r.address == address) {
+        if self.state.rows.iter().any(|r| r.address == address) {
             return Ok(());
         }
-        if self.rows.len() == self.limits.addresses {
+        if self.state.rows.len() == self.state.limits.addresses {
             return Err(Fault::Capacity);
         }
-        let id = self.next_id.checked_add(1).ok_or(Fault::Overflow)?;
+        let id = self.state.next_id.checked_add(1).ok_or(Fault::Overflow)?;
         let text = Text::new(address)?;
         let network = self.network(address);
-        self.rows.push(Row {
+        self.state.rows.push(Row {
             address,
             text,
             id,
             network,
             published: false,
         });
-        self.next_id = id;
+        self.state.next_id = id;
         Ok(())
     }
     fn refresh(&mut self) -> Result<usize, Failure> {
         let started = Instant::now();
-        self.next_scan = started
-            .checked_add(self.options.scan_interval)
+        self.state.next_scan = started
+            .checked_add(self.state.options.scan_interval)
             .ok_or(Fault::Overflow)?;
         self.check_native()?;
-        let rows = interfaces::snapshot(self.limits.interfaces).map_err(Failure::Interfaces)?;
+        let rows =
+            interfaces::snapshot(self.state.limits.interfaces).map_err(Failure::Interfaces)?;
         self.check_native()?;
-        if self.options.until != u64::MAX
-            && self.clock.sample().map_err(Failure::Clock)?.now.as_micros() >= self.options.until
+        if self.state.options.until != u64::MAX
+            && self
+                .state
+                .clock
+                .sample()
+                .map_err(Failure::Clock)?
+                .now
+                .as_micros()
+                >= self.state.options.until
         {
             return Err(Fault::Deadline.into());
         }
-        self.desired.clear();
+        self.state.desired.clear();
         for row in &rows {
             if !row.is_up() {
                 continue;
             }
-            for bound in &self.bindings {
+            for bound in &self.state.bindings {
                 if !bound.ip().is_unspecified() || bound.is_ipv4() != row.address.is_ipv4() {
                     continue;
                 }
                 let mut address = candidate(row.address);
                 address.set_port(bound.port());
-                if usable(address, self.options.disable_v6) && !self.desired.contains(&address) {
-                    if self.desired.len() == self.limits.claims {
+                if usable(address, self.state.options.disable_v6)
+                    && !self.state.desired.contains(&address)
+                {
+                    if self.state.desired.len() == self.state.limits.claims {
                         return Err(Fault::Capacity.into());
                     }
-                    self.desired.push(address);
+                    self.state.desired.push(address);
                 }
             }
         }
         let others = self
+            .state
             .claims
             .iter()
             .filter(|c| c.origin != Origin::Interface)
             .count();
         let new_rows = self
+            .state
             .desired
             .iter()
-            .filter(|a| !self.rows.iter().any(|r| r.address == **a))
+            .filter(|a| !self.state.rows.iter().any(|r| r.address == **a))
             .count();
         if others
-            .checked_add(self.desired.len())
-            .is_none_or(|n| n > self.limits.claims)
+            .checked_add(self.state.desired.len())
+            .is_none_or(|n| n > self.state.limits.claims)
             || self
+                .state
                 .rows
                 .len()
                 .checked_add(new_rows)
-                .is_none_or(|n| n > self.limits.addresses)
+                .is_none_or(|n| n > self.state.limits.addresses)
             || u32::try_from(new_rows)
                 .ok()
-                .and_then(|n| self.next_id.checked_add(n))
+                .and_then(|n| self.state.next_id.checked_add(n))
                 .is_none()
         {
             return Err(Fault::Capacity.into());
         }
         // Preflight formatting before replacing any old snapshot claims.
-        for &address in &self.desired {
+        for &address in &self.state.desired {
             Text::new(address)?;
         }
         let fresh = started
-            .checked_add(self.options.freshness)
+            .checked_add(self.state.options.freshness)
             .ok_or(Fault::Overflow)?;
-        let fresh = self.hard.map_or(fresh, |bound| fresh.min(bound));
+        let fresh = self.state.hard.map_or(fresh, |bound| fresh.min(bound));
         if Instant::now() >= fresh {
             return Err(Fault::Deadline.into());
         }
-        self.interfaces = rows;
-        self.interface_valid = true;
-        self.interface_hard = fresh;
-        self.claims.retain(|c| c.origin != Origin::Interface);
-        for i in 0..self.desired.len() {
-            let address = self.desired[i];
+        self.state.interfaces = rows;
+        self.state.interface_valid = true;
+        self.state.interface_hard = fresh;
+        self.state.claims.retain(|c| c.origin != Origin::Interface);
+        for i in 0..self.state.desired.len() {
+            let address = self.state.desired[i];
             self.new_row(address)?;
-            self.claims.push(Claim {
+            self.state.claims.push(Claim {
                 origin: Origin::Interface,
                 address,
                 hard: Some(fresh),
             });
         }
-        for i in 0..self.rows.len() {
-            if !self.rows[i].published {
-                self.rows[i].network = self.network(self.rows[i].address);
+        for i in 0..self.state.rows.len() {
+            if !self.state.rows[i].published {
+                self.state.rows[i].network = self.network(self.state.rows[i].address);
             }
         }
-        Ok(self.desired.len())
+        Ok(self.state.desired.len())
     }
     fn notification(&mut self) -> Result<Option<bool>, Failure> {
-        let Some(registration) = &self.nat else {
+        let Some(registration) = self.registration() else {
             return Ok(None);
         };
         let Some(observation) = registration.notification()? else {
@@ -1108,56 +1324,63 @@ impl<'id, 'pool, 'listeners> PublishedPool<'id, 'pool, 'listeners> {
         let id = observation.address_id.ok_or(Fault::Stale)?;
         let origin = Origin::Nat(observation.session, observation.epoch, id);
         let address = candidate(socket(address.address())?);
-        if add_remove == 1 && nat_usable(address, self.options.disable_v6) {
-            if !self.claims.iter().any(|c| c.origin == origin) {
-                if self.claims.len() == self.limits.claims {
+        if add_remove == 1 && nat_usable(address, self.state.options.disable_v6) {
+            if !self.state.claims.iter().any(|c| c.origin == origin) {
+                if self.state.claims.len() == self.state.limits.claims {
                     return Ok(Some(false));
                 }
-                if !self.rows.iter().any(|r| r.address == address)
-                    && self.rows.len() == self.limits.addresses
+                if !self.state.rows.iter().any(|r| r.address == address)
+                    && self.state.rows.len() == self.state.limits.addresses
                 {
                     return Ok(Some(false));
                 }
                 self.new_row(address)?;
-                self.claims.push(Claim {
+                self.state.claims.push(Claim {
                     origin,
                     address,
-                    hard: self.hard,
+                    hard: self.state.hard,
                 });
             }
         } else if add_remove == 0 {
-            self.claims.retain(|c| c.origin != origin);
+            self.state.claims.retain(|c| c.origin != origin);
         }
-        self.nat
-            .as_mut()
+        self.registration_mut()
             .ok_or(Fault::Closed)?
             .release_notification()?;
         Ok(Some(true))
     }
     fn alarm(&mut self, cx: &mut Context<'_>) {
-        let mut at = if self.closing {
-            self.close_hard.unwrap_or_else(Instant::now)
+        let mut at = if self.state.closing {
+            self.state.close_hard.unwrap_or_else(Instant::now)
+        } else if self.state.bindings.is_empty() {
+            // No listener/interface/NAT claims exist in outbound-only mode.
+            // Preserve a caller's finite lifetime without a periodic scan wake.
+            match self.state.hard {
+                Some(bound) => bound,
+                None => return,
+            }
         } else {
-            self.hard
-                .map_or(self.next_scan, |bound| bound.min(self.next_scan))
+            self.state.hard.map_or(self.state.next_scan, |bound| {
+                bound.min(self.state.next_scan)
+            })
         };
-        if let Some(retry) = self.retry {
+        if let Some(retry) = self.state.retry {
             at = at.min(retry);
         }
-        for claim in &self.claims {
+        for claim in &self.state.claims {
             if let Some(bound) = claim.hard {
                 at = at.min(bound);
             }
         }
-        self.alarm.as_mut().reset(at);
-        if self.alarm.as_mut().poll(cx).is_ready() {
+        self.state.alarm.as_mut().reset(at);
+        if self.state.alarm.as_mut().poll(cx).is_ready() {
             cx.waker().wake_by_ref();
         }
     }
     fn defer_retry(&mut self) -> Option<Event<'id>> {
-        match Instant::now().checked_add(self.limits.capacity_retry) {
+        match Instant::now().checked_add(self.state.limits.capacity_retry) {
             Some(at) => {
-                self.retry = Some(at);
+                self.state.retry = Some(at);
                 None
             }
             None => {
@@ -1170,37 +1393,38 @@ impl<'id, 'pool, 'listeners> PublishedPool<'id, 'pool, 'listeners> {
         // Remove old unsupported claims before offering any new ADD. Aggregated
         // references keep one shared address live across interface/NAT turnover.
         if let Some(i) = self
+            .state
             .rows
             .iter()
-            .position(|r| !self.claims.iter().any(|c| c.address == r.address))
+            .position(|r| !self.state.claims.iter().any(|c| c.address == r.address))
         {
-            if !self.rows[i].published {
-                self.rows.remove(i);
+            if !self.state.rows[i].published {
+                self.state.rows.remove(i);
                 return Ok(Some(Event::Ignored));
             }
-            let id = self.rows[i].id;
-            self.pool
+            let id = self.state.rows[i].id;
+            self.port
                 .as_mut()
                 .ok_or(Fault::Closed)?
                 .withdraw(id)
                 .map_err(Failure::Transport)?;
-            self.rows.remove(i);
+            self.state.rows.remove(i);
             return Ok(Some(Event::RemoveQueued { id }));
         }
-        if !self.closing
-            && self.pool.as_ref().is_some_and(Pool::transport_online)
-            && let Some(i) = self.rows.iter().position(|r| !r.published)
+        if !self.state.closing
+            && self.port.as_ref().is_some_and(Port::transport_online)
+            && let Some(i) = self.state.rows.iter().position(|r| !r.published)
         {
-            let row = &self.rows[i];
-            self.pool
+            let row = &self.state.rows[i];
+            self.port
                 .as_mut()
                 .ok_or(Fault::Closed)?
                 .advertise(row.id, row.text.bytes(), row.network)
                 .map_err(Failure::Transport)?;
-            self.rows[i].published = true;
+            self.state.rows[i].published = true;
             return Ok(Some(Event::AddQueued {
-                id: self.rows[i].id,
-                address: self.rows[i].address,
+                id: self.state.rows[i].id,
+                address: self.state.rows[i].address,
             }));
         }
         Ok(None)
@@ -1217,8 +1441,8 @@ impl<'id, 'pool, 'listeners> PublishedPool<'id, 'pool, 'listeners> {
                     nat::Cause::Clock(_) | nat::Cause::Error(nat::Error::Clock(_))
                 );
                 self.retire_nat_claims();
-                self.nat = None;
-                self.reverse_notified = None;
+                drop(self.take_registration());
+                self.state.reverse_notified = None;
                 if clock_failed {
                     self.begin_close();
                 }
@@ -1258,10 +1482,10 @@ impl<'id, 'pool, 'listeners> PublishedPool<'id, 'pool, 'listeners> {
         }
     }
     fn poll_nat(&mut self, cx: &mut Context<'_>, retry_ready: bool) -> Option<Event<'id>> {
-        if self.closing {
+        if self.state.closing {
             return None;
         }
-        let registration = self.nat.as_mut()?;
+        let registration = self.registration_mut()?;
         match registration.poll(cx, None) {
             Poll::Ready(Ok(progress)) => return self.nat_progress(progress, retry_ready),
             Poll::Ready(Err(e)) => {
@@ -1305,26 +1529,29 @@ impl<'id, 'pool, 'listeners> PublishedPool<'id, 'pool, 'listeners> {
             ))) => self.defer_retry(),
             Err(e) => {
                 self.begin_close();
-                self.pool = None;
-                self.rows.clear();
-                self.aborted = true;
+                self.port = None;
+                self.state.rows.clear();
+                self.state.aborted = true;
                 Some(Event::Failed(e))
             }
         }
     }
     fn scan_event(&mut self) -> Option<Event<'id>> {
-        if self.closing || Instant::now() < self.next_scan {
+        if self.state.closing
+            || self.state.bindings.is_empty()
+            || Instant::now() < self.state.next_scan
+        {
             return None;
         }
         Some(match self.refresh() {
             Ok(candidates) => Event::Scanned { candidates },
             Err(e @ (Failure::Clock(_) | Failure::Protocol(Fault::Deadline | Fault::Overflow))) => {
-                self.interface_valid = false;
+                self.state.interface_valid = false;
                 self.begin_close();
                 Event::Failed(e)
             }
             Err(e) => {
-                self.interface_valid = false;
+                self.state.interface_valid = false;
                 Event::ScanFailed(e)
             }
         })
@@ -1336,43 +1563,43 @@ impl<'id, 'pool, 'listeners> PublishedPool<'id, 'pool, 'listeners> {
         clippy::too_many_lines,
         reason = "One synchronous bounded turn preserves original callback, publication and clock-free retirement ordering without another task or queue"
     )]
-    pub fn poll(&mut self, cx: &mut Context<'_>) -> Poll<Event<'id>> {
-        if let Some(pool) = &self.pool
-            && pool.transport_epoch() != self.transport_epoch
+    pub fn poll(&mut self, cx: &mut Context<'_>, changes: &mut NetworkChanges) -> Poll<Event<'id>> {
+        if let Some(pool) = &self.port
+            && pool.transport_epoch() != self.state.transport_epoch
         {
-            let generation = self.transport_epoch;
-            self.transport_epoch = pool.transport_epoch();
-            let admitted = self.rows.iter().filter(|row| row.published).count();
-            for row in &mut self.rows {
+            let generation = self.state.transport_epoch;
+            self.state.transport_epoch = pool.transport_epoch();
+            let admitted = self.state.rows.iter().filter(|row| row.published).count();
+            for row in &mut self.state.rows {
                 row.published = false;
             }
             // Only an old TRANSPORT FIFO-capacity retry is retired. This does
             // not renew a listener/interface claim, NAT request, scan or clock.
-            self.retry = None;
+            self.state.retry = None;
             cx.waker().wake_by_ref();
             return Poll::Ready(Event::TransportRetired {
                 generation,
-                next_generation: self.transport_epoch,
+                next_generation: self.state.transport_epoch,
                 admitted,
             });
         }
-        if let Some(write) = self.pending_expired.take() {
+        if let Some(write) = self.state.pending_expired.take() {
             return Poll::Ready(Event::Nat(nat::Progress::WriteExpired(write)));
         }
-        if let Some(end) = self.pending_end.take() {
+        if let Some(end) = self.state.pending_end.take() {
             return Poll::Ready(Event::Nat(nat::Progress::Ended(end)));
         }
-        if let Some(error) = self.close_error.take() {
+        if let Some(error) = self.state.close_error.take() {
             return Poll::Ready(Event::Failed(error));
         }
-        if self.aborted {
+        if self.state.aborted {
             return Poll::Ready(Event::Aborted);
         }
-        if self.terminal {
+        if self.state.terminal {
             return Poll::Ready(Event::Closed);
         }
-        if !self.closing
-            && let Some(registration) = &mut self.nat
+        if !self.state.closing
+            && let Some(registration) = self.registration_mut()
         {
             match registration.poll_native_guard(cx, None) {
                 Poll::Ready(Ok(progress)) => {
@@ -1388,22 +1615,23 @@ impl<'id, 'pool, 'listeners> PublishedPool<'id, 'pool, 'listeners> {
                 Poll::Pending => {}
             }
         }
-        if !self.closing {
-            if self.hard.is_some_and(|bound| Instant::now() >= bound) {
+        if !self.state.closing {
+            if self.state.hard.is_some_and(|bound| Instant::now() >= bound) {
                 self.begin_close();
             } else {
                 let sampled = (|| {
                     let subscription = self
+                        .state
                         .subscription
                         .as_mut()
                         .ok_or(Failure::Protocol(Fault::Closed))?;
-                    match subscription.poll_changed(cx, self.revision) {
+                    match subscription.poll_changed(cx, self.state.revision) {
                         Poll::Ready(Err(e)) => return Err(Failure::Clock(e)),
-                        Poll::Ready(Ok(s)) => self.revision = s.revision,
+                        Poll::Ready(Ok(s)) => self.state.revision = s.revision,
                         Poll::Pending => {}
                     }
-                    let sample = self.clock.sample().map_err(Failure::Clock)?;
-                    self.revision = sample.revision;
+                    let sample = self.state.clock.sample().map_err(Failure::Clock)?;
+                    self.state.revision = sample.revision;
                     match subscription.poll_changed(cx, sample.revision) {
                         Poll::Ready(Err(e)) => return Err(Failure::Clock(e)),
                         Poll::Ready(Ok(_)) => cx.waker().wake_by_ref(),
@@ -1417,8 +1645,9 @@ impl<'id, 'pool, 'listeners> PublishedPool<'id, 'pool, 'listeners> {
                         return Poll::Ready(Event::Failed(e));
                     }
                     Ok(now)
-                        if self.options.until != u64::MAX && now >= self.options.until
-                            || self.hard.is_some_and(|bound| Instant::now() >= bound) =>
+                        if self.state.options.until != u64::MAX
+                            && now >= self.state.options.until
+                            || self.state.hard.is_some_and(|bound| Instant::now() >= bound) =>
                     {
                         self.begin_close()
                     }
@@ -1426,52 +1655,71 @@ impl<'id, 'pool, 'listeners> PublishedPool<'id, 'pool, 'listeners> {
                 }
             }
         }
-        if let Some(end) = self.pending_end.take() {
+        if let Some(end) = self.state.pending_end.take() {
             return Poll::Ready(Event::Nat(nat::Progress::Ended(end)));
         }
-        if self.closing && self.close_hard.is_some_and(|at| Instant::now() >= at) {
+        if self.state.closing && self.state.close_hard.is_some_and(|at| Instant::now() >= at) {
             self.abort();
             return Poll::Ready(Event::Aborted);
         }
         let now = Instant::now();
-        self.claims
+        self.state
+            .claims
             .retain(|claim| claim.hard.is_none_or(|bound| now < bound));
-        let retry_ready = self.retry.is_none_or(|at| now >= at);
+        let retry_ready = self.state.retry.is_none_or(|at| now >= at);
         if retry_ready {
-            self.retry = None;
+            self.state.retry = None;
+        }
+        if let Some(Port::Retained(original)) = &mut self.port {
+            let now = match self.state.clock.sample() {
+                Ok(sample) => sample.now.as_micros(),
+                Err(error) => return Poll::Ready(Event::Failed(Failure::Clock(error))),
+            };
+            match original.poll(cx, now) {
+                Poll::Ready(Err(error)) => {
+                    return Poll::Ready(Event::Failed(Failure::Transport(error.cause)));
+                }
+                Poll::Ready(Ok(_)) => cx.waker().wake_by_ref(),
+                Poll::Pending => {}
+            }
         }
         // Each ready class receives its turn, even for a legitimately tiny
         // scan interval or continuous NAT traffic. Native deadlines were already
         // checked above and cannot be hidden by a ready scan/publication event.
         for offset in 0..3 {
-            let part = (self.cursor + offset) % 3;
+            let part = (self.state.cursor + offset) % 3;
             let event = match part {
                 0 => self.poll_nat(cx, retry_ready),
-                1 => self.scan_event(),
+                1 => {
+                    if !self.state.closing
+                        && !self.state.bindings.is_empty()
+                        && changes.poll_changed(cx).is_ready()
+                    {
+                        self.state.next_scan = Instant::now();
+                    }
+                    self.scan_event()
+                }
                 _ => self.poll_publication(retry_ready),
             };
             if let Some(event) = event {
-                self.cursor = (part + 1) % 3;
+                self.state.cursor = (part + 1) % 3;
                 cx.waker().wake_by_ref();
                 return Poll::Ready(event);
             }
         }
-        self.cursor = (self.cursor + 1) % 3;
-        if self.closing && self.rows.is_empty() {
-            self.terminal = true;
+        self.state.cursor = (self.state.cursor + 1) % 3;
+        if self.state.closing && self.state.rows.is_empty() {
+            self.state.terminal = true;
             return Poll::Ready(Event::Closed);
         }
         self.alarm(cx);
         Poll::Pending
     }
 }
-impl Drop for PublishedPool<'_, '_, '_> {
+impl Drop for State<'_, '_> {
     fn drop(&mut self) {
-        if let Some(registration) = &mut self.nat {
+        if let Some(registration) = self.nat.as_mut().and_then(|nat| nat.registration.as_mut()) {
             let _end = registration.close();
         }
-        // No async Drop, false drain, clean epoch or detached native queue. A
-        // caller that needs ordinary close must poll and take back this Pool.
-        self.pool = None;
     }
 }

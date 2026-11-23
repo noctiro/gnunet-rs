@@ -61,11 +61,13 @@ revalidated. Files must be private, ordinary and single-link. Unix checks the
 effective owner/mode; Windows checks the process-user owner and restrictive DACL.
 Final symlinks and name-surrogate reparse points are refused.
 
-Commit requires the expected generation, a bounded pending write, file flush,
-original-source replacement, exact checksum/body readback and final namespace
-fence. Unix completes directory synchronization; Windows flushes the renamed
-file and reports `DirectorySync::Unavailable`. Its file flush and readback do not
-assert power-loss durability of directory entries. An attempted publication or
+Commit requires the expected generation, a bounded pending write and an actual
+file flush and writer close before replacement. Commit and reopen verify the
+exact header and body in chunks through the same retained read-only file. Unix
+completes directory synchronization. Windows flushes the renamed original
+through a separate identity-checked handle and reports
+`DirectorySync::Unavailable`. Recovery combines its store and parent directory
+barrier results. An attempted publication or
 lost fence reports `Unknown` and permanently stops this writer. The first cause
 and independent cleanup error are retained, with any unresolved original file.
 

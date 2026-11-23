@@ -38,7 +38,7 @@ class Tools(unittest.TestCase):
         value=self.good_reference();value['kind']='extracted-component'
         with self.assertRaises(ValueError):v.validate_reference_details(value,'/owned/source')
     def test_dependency_feature_change_is_detected(self):
-        base={'name':'test','version':'0.1.0','edition':'2024','license':'MPL-2.0','rust_version':'1.99.1','features':{},'dependencies':[{'name':'dep','req':'=1.0.0','source':None,'kind':None,'rename':None,'optional':False,'uses_default_features':False,'target':None,'path':'/owned/dep','features':[]}]}
+        base={'name':'test','version':'0.1.0','edition':'2024','license':'MPL-2.0','rust_version':'1.100.0','features':{},'dependencies':[{'name':'dep','req':'=1.0.0','source':None,'kind':None,'rename':None,'optional':False,'uses_default_features':False,'target':None,'path':'/owned/dep','features':[]}]}
         changed=copy.deepcopy(base);changed['dependencies'][0]['features']=['alloc'];self.assertNotEqual(v.package_contract(base),v.package_contract(changed));changed=copy.deepcopy(base);changed['dependencies'][0]['source']='different';self.assertNotEqual(v.package_contract(base),v.package_contract(changed))
     def test_pair_empty_or_duplicate_actual_cases_is_rejected(self):
         rows=[]

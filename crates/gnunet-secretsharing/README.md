@@ -69,12 +69,17 @@ FAIR production and complete authenticated multi-participant780→783 remain ope
 `FairProver` implements a checked original-domain construction attempt. It owns
 the scalar and the Paillier encryption witness, samples the full
 original2048-bit beta and a bounded unit randomizer, and computes the exact
-public transcript equations. Only group exponentiation uses beta modq or modn;
+public transcript equations. It checks whether the original beta alone fits
+the response field before advancing the Paillier exponentiation. Only group
+exponentiation uses beta modq or modn;
 the response remains the complete integer beta+e*x. A response wider than the
 original128-byte field produces sticky `Source(TooLarge)`, erases the attempt,
 and causes no truncation, modq substitution, share restriction or challenge retry. Thus this supplies construction code and representable transcript output,
 not a generally usable FAIR profile or a knowledge/range certificate. The known
-response-size obstruction remains open. Successful bounded construction uses
+nonce/response range conflict remains open: for nonnegative x and e, fitting
+beta+e*x into1024 bits requires the full2048-bit beta draw to be below2^1024,
+even when x is zero. A smaller signed or rational share representative alone
+does not establish a complete construction or its security. Successful bounded construction uses
 the same canonical wire encoder as the original parser. Entropy buffers,
 randomizers, integer products, division quotients/remainders and powers are
 zeroizing owners. No native signer, write receipt or DKG completion is inferred.
@@ -123,7 +128,9 @@ inconsistent. Its128-byte z stores `(r+e*x) modq`, while the Paillier equation
 needs an integer response compatible with an unknown-order group; r is drawn
 with2048 bits and e is a512-bit hash. The producer also multiplies g*r instead
 of exponentiating, and its verifier has a wrong-width read, overwritten temporary
-and reversed equality checks. These bugs are not copied. `FairEquationCheck`
+and reversed equality checks. In particular, it rejects the correct Paillier
+equation itself, independently of the response-width conflict. These bugs are
+not copied. `FairEquationCheck`
 checks the exact original c516||h128||t1_128||t2_512 transcript, unit/membership
 conditions and two equations, but returns only `FairEquationResult`. It is deliberately not named or usable as `VerifiedFairProof`: no general fair
 proof producer, zero-knowledge/range/security theorem or full DKG is implemented. No challenge shortening, extra field or private wire is introduced to conceal

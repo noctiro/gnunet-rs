@@ -59,7 +59,7 @@ fn run(startup: gnunet_service_startup::ClientStartup) -> Result<u8, Failure> {
         helpers::{self, Target},
         logging::Logger,
         policy::Level,
-        program::{self, Defaults, Invocation, NlsDisabled, Preparation},
+        program::{self, Defaults, Invocation, Preparation},
         reporting::Reporter,
         shared_clock::SharedClock,
     };
@@ -95,7 +95,7 @@ fn run(startup: gnunet_service_startup::ClientStartup) -> Result<u8, Failure> {
         peer.clone(),
     ));
     let mut logger = Logger::new(b"gnunet-scalarproduct", std::process::id(), false)?;
-    let prepared = program::prepare(config, Invocation { binary_name: b"gnunet-scalarproduct", help: Some(b"Compute an official SCALARPRODUCT using -e 'key1,value1;key2,value2;' -k TRANSACTION_ID [-p PEERID]. With peer: requester/alice; without peer: responder/bob. Original key labels and session identifier are hashed as GNUnet bytes. Requester success prints a signed uppercase hexadecimal scalar product. Uses ordinary role configuration, one shared clock and explicit Resolver; no service is spawned."), select_default_filename: true, defaults: Defaults::Native }, options, std::env::args_os(), &program::Environment::capture(), &mut NlsDisabled, &mut logger, &clock, &mut io::stdout().lock(), &mut io::stderr().lock());
+    let prepared = program::prepare_installed(config, Invocation { binary_name: b"gnunet-scalarproduct", help: Some(b"Compute an official SCALARPRODUCT using -e 'key1,value1;key2,value2;' -k TRANSACTION_ID [-p PEERID]. With peer: requester/alice; without peer: responder/bob. Original key labels and session identifier are hashed as GNUnet bytes. Requester success prints a signed uppercase hexadecimal scalar product. Uses ordinary role configuration, one shared clock and explicit Resolver; no service is spawned."), select_default_filename: true, defaults: Defaults::Native }, options, std::env::args_os(), &program::Environment::capture(), &mut logger, &clock, &mut io::stdout().lock(), &mut io::stderr().lock());
     let reporter = Reporter::new(logger, clock.clone());
     #[cfg(unix)]
     if let Some(notice) = startup.notice {

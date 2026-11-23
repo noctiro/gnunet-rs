@@ -235,7 +235,9 @@ impl<'a, 'id, I: gnunet_dns::Idna> Server<'a, 'id, I> {
         let peer = accepted.peer();
         let allowed = match peer {
             PeerAddress::Tcp(addr) => self.options.access.allows(addr.ip()),
-            PeerAddress::Unix => self.unix.allows(accepted.connection())?,
+            PeerAddress::Unix => self
+                .unix
+                .admits(accepted.connection(), |event| observe(Event::Socket(event))),
         };
         if !allowed || self.stopping || self.closed {
             drop(accepted);
@@ -630,10 +632,12 @@ async fn connection_job<I: gnunet_dns::Idna>(
                     name: b"Allow",
                     value: allow,
                 });
-                if response.status == 200 && matches!(endpoint, Some(Endpoint::Options(_))) {
+                if response.status == 200
+                    && let Some(Endpoint::Options(family)) = endpoint
+                {
                     headers.push(Header {
                         name: b"Access-Control-Allow-Methods",
-                        value: allow,
+                        value: family.cors_methods(),
                     });
                 }
             }
@@ -781,15 +785,7 @@ fn matched_origin(
     }
 }
 fn allow_methods(family: Family) -> &'static [u8] {
-    match family {
-        Family::Identity => b"GET, POST, PUT, DELETE, OPTIONS",
-        Family::Namestore => b"GET, POST, PUT, DELETE, OPTIONS",
-        Family::Reclaim => b"GET, POST, DELETE, OPTIONS",
-        Family::Copying => b"GET, OPTIONS",
-        Family::Config => b"GET, POST, OPTIONS",
-        Family::Gns => b"GET, OPTIONS",
-        Family::Openid => b"GET, POST, OPTIONS",
-    }
+    family.allow_methods()
 }
 pub(crate) fn error_response(
     error: &Error,
@@ -837,19 +833,10 @@ pub(crate) fn error_response(
             .header(b"Pragma", b"no-cache");
     }
     let (status, code, hint) = match error {
-        Error::Service(200) => (404, 200, "Ego not found"),
-        Error::Service(201) => (409, 201, "Identifier already in use"),
-        Error::Service(202) => (500, 202, "The given ego is invalid or malformed."),
-        Error::Service(5002) => (404, 5002, "Zone not found"),
-        Error::Service(5003) => (404, 5003, "Record not found"),
-        Error::Service(5005) => (404, 5005, "Zone empty"),
-        Error::Service(5007) => (400, 5007, "No records given"),
-        Error::Service(5008) => (400, 5008, "Record data invalid"),
-        Error::Service(5009) => (400, 5009, "No label given"),
-        Error::Service(5010) => (404, 5010, "No results"),
-        Error::Service(5011) => (409, 5011, "Record exists"),
-        Error::Service(5015) => (400, 5015, "Label invalid"),
-        Error::Service(code) => (500, *code, "Service error"),
+        Error::Service(code) => {
+            let (status, hint) = gnunet_rest::contracts::service_error(*code);
+            (status, *code, hint)
+        }
         Error::Core(Fault::Capacity | Fault::TooLarge) => (413, 1, "Resource limit"),
         Error::Core(Fault::Malformed | Fault::InvalidInput | Fault::Conflict) => {
             (400, 1, "Invalid request")

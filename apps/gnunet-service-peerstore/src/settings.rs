@@ -53,8 +53,7 @@ pub(crate) struct Settings {
     pub(crate) worker: usize,
     pub(crate) access: UnixAccess,
     pub(crate) options: ServiceOptions,
-    pub(crate) hellos: Option<PathBuf>,
-    pub(crate) hello_files: usize,
+    pub(crate) hellos: Option<gnunet_peerstore_host::bootstrap::Directory>,
     pub(crate) shutdown_grace: Duration,
 }
 impl Settings {
@@ -126,16 +125,7 @@ impl Settings {
         {
             return Err("SHUTDOWN_GRACE must be finite, nonzero and representable".into());
         }
-        let hellos = if yes(c, b"USE_INCLUDED_HELLOS")? {
-            Some(if c.get(b"peerstore-rust", b"HELLO_DIRECTORY").is_some() {
-                c.get_filename(b"peerstore-rust", b"HELLO_DIRECTORY", &ProcessEnvironment)?
-            } else {
-                c.get_filename(b"PATHS", b"DATADIR", &ProcessEnvironment)?
-                    .join("hellos")
-            })
-        } else {
-            None
-        };
+        let hellos = gnunet_peerstore_host::bootstrap::Directory::configured(c)?;
         Ok(Self {
             directory,
             backend,
@@ -150,7 +140,6 @@ impl Settings {
             },
             options: service_options(c, b"peerstore", ShutdownMode::Soft)?,
             hellos,
-            hello_files: number(c, b"MAX_INCLUDED_HELLOS", 1024)?,
             shutdown_grace: Duration::from_micros(grace),
         })
     }

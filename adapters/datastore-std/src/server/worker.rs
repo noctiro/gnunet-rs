@@ -237,6 +237,17 @@ where
         source: Box::new(error),
     })
 }
+
+fn work_error<E>(error: WorkError<E>) -> Arc<Error>
+where
+    E: BackendError + std::error::Error + Send + Sync + 'static,
+{
+    match error {
+        WorkError::Protocol(error) => Arc::new(Error::Protocol(error)),
+        WorkError::Backend(error) => backend_error(error),
+    }
+}
+
 fn bytes(length: usize) -> Result<Vec<u8>, Arc<Error>> {
     let mut bytes = Vec::new();
     bytes
@@ -292,7 +303,7 @@ where
         return service
             .shutdown(&mut backend)
             .map(|_| ())
-            .map_err(backend_error);
+            .map_err(work_error);
     }
     let mut random = Random { error: None };
     let mut first_fatal = None;
@@ -378,16 +389,11 @@ where
                         .now
                         .as_micros(),
                 );
-                service
-                    .maintain(&mut backend, now)
-                    .map_err(|error| match error {
-                        WorkError::Protocol(error) => Arc::new(Error::Protocol(error)),
-                        WorkError::Backend(error) => backend_error(error),
-                    })?;
+                service.maintain(&mut backend, now).map_err(work_error)?;
                 Ok(Action::Maintained)
             }
             Command::Stop => {
-                let dropped = service.shutdown(&mut backend).map_err(backend_error)?;
+                let dropped = service.shutdown(&mut backend).map_err(work_error)?;
                 Ok(Action::Stopped { dropped })
             }
         })();
@@ -412,6 +418,6 @@ where
     let shutdown = service
         .shutdown(&mut backend)
         .map(|_| ())
-        .map_err(backend_error);
+        .map_err(work_error);
     first_fatal.map_or(shutdown, Err)
 }

@@ -2,7 +2,7 @@
 use crate::input::{Selection, Settings};
 use gnunet_program_host::{program::Prepared, reporting::Reporter, shared_clock::SharedClock};
 use gnunet_scalarproduct_client_host::{
-    Bounds, Client, EndpointSource, Epoch, Loss, Progress, Receipt, Response, ResponseStatus, Role,
+    Bounds, Client, EndpointSource, Epoch, Loss, Progress, Receipt, ResponseStatus, Role,
 };
 use gnunet_service_runtime::clock::RuntimeClock;
 use gnunet_service_startup::{ClientStartup, StopSignals};
@@ -231,15 +231,6 @@ fn same(actual: &Epoch, expected: &Option<Epoch>) -> Result<(), Failure> {
     }
     Ok(())
 }
-/// C scans signed MPI STD, then adds for range>0 and subtracts otherwise.
-/// A leading sign-padding byte and a negative MPI are not unsigned magnitudes.
-pub(super) fn result_value(response: &Response) -> num_bigint::BigInt {
-    if response.product.is_empty() {
-        return num_bigint::BigInt::from(0u8);
-    }
-    let value = num_bigint::BigInt::from_signed_bytes_be(&response.product);
-    if response.range > 0 { value } else { -value }
-}
 struct Inputs {
     resolver: Resolver,
     live: gnunet_client_host::LiveConfiguration,
@@ -395,16 +386,7 @@ async fn run(input: Inputs) -> Result<(), Failure> {
                     );
                     match role {
                         Role::Alice { .. } => {
-                            let maximum = response.product.len().checked_mul(2)
-                                .and_then(|n| n.checked_add(2))
-                                .ok_or("SCALARPRODUCT result display size overflow")?;
-                            if maximum > settings.max_output {
-                                return Err("SCALARPRODUCT signed result display exceeds stdout budget".into());
-                            }
-                            let mut text = result_value(&response).to_str_radix(16);
-                            text.make_ascii_uppercase();
-                            text.push('\n');
-                            output.admit(text.into_bytes())?;
+                            output.admit_result(&response)?;
                         }
                         Role::Bob { .. } => {
                             reporter.message(
@@ -440,28 +422,5 @@ async fn run(input: Inputs) -> Result<(), Failure> {
             retirement,
             receipt: Some(native.client.receipt()),
         })),
-    }
-}
-
-#[cfg(test)]
-mod mpi_cases {
-    use super::result_value;
-    use gnunet_scalarproduct_client_host::{Response, ResponseStatus};
-    #[test]
-    fn signed_std_bytes_and_independent_range_follow_c_result_operation() {
-        let cases: &[(&[u8], i32, &str)] = &[
-            (&[0xff], 1, "-1"),
-            (&[0x80], -1, "128"),
-            (&[0x00, 0x80], 0, "-128"),
-            (&[], -1, "0"),
-        ];
-        for &(bytes, range, expected) in cases {
-            let response = Response {
-                status: ResponseStatus::SUCCESS,
-                range,
-                product: bytes.to_vec(),
-            };
-            assert_eq!(result_value(&response).to_str_radix(10), expected);
-        }
     }
 }

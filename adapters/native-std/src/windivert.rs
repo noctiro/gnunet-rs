@@ -1,11 +1,13 @@
 //! Explicit WinDivert packet capture/injection with original overlapped I/O loans.
 mod abi;
+mod handle;
 mod observations;
 mod operation;
 mod route;
 use crate::library::Library;
 use abi::Api;
-pub use operation::{Completion, InjectionLengthError, Request};
+use operation::Control;
+pub use operation::{Completion, CompletionStatusUnavailable, InjectionLengthError, Request};
 pub use route::{CapturedAddress, ReplyAddress, RouteUnavailable};
 use std::{
     ffi::CStr,
@@ -82,7 +84,8 @@ impl Driver {
         }
         let compartment = crate::interfaces::compartment();
         let (since, identities) = route::interface_snapshot()?;
-        let observations = observations::History::new(since, identities)?;
+        let observations =
+            observations::History::new(since, identities, route::observation_age()?)?;
         // SAFETY: terminated filter remains live; NETWORK=0, NO_INSTALL=0x10.
         let handle = unsafe { (self.0.open)(filter.as_ptr(), 0, priority, 0x10) };
         if handle == INVALID_HANDLE_VALUE {
@@ -92,7 +95,7 @@ impl Driver {
             api: Arc::clone(&self.0),
             compartment,
             observations: Mutex::new(observations),
-            handle: Mutex::new(Some(handle as usize)),
+            handle: Mutex::new(Control::new(handle as usize)),
             receive: AtomicBool::new(false),
             send: AtomicBool::new(false),
         }));
@@ -159,7 +162,7 @@ struct Device {
     pub api: Arc<Api>,
     pub compartment: u32,
     observations: Mutex<observations::History>,
-    handle: Mutex<Option<usize>>,
+    handle: Mutex<Control>,
     pub receive: AtomicBool,
     pub send: AtomicBool,
 }
@@ -178,26 +181,15 @@ impl Device {
             .handle
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let raw = guard.ok_or(io::ErrorKind::NotConnected)?;
+        let raw = guard.original()?;
         operation(raw as HANDLE)
     }
-    #[expect(
-        unsafe_code,
-        reason = "The original handle is removed under its mutex and closed once; callbacks cannot query or cancel a numerically reused handle"
-    )]
     fn close(&self) -> io::Result<()> {
         let mut guard = self
             .handle
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let Some(raw) = guard.take() else {
-            return Ok(());
-        };
-        // SAFETY: this is the one original handle, still excluded from other calls.
-        if unsafe { (self.api.close)(raw as HANDLE) } == 0 {
-            return Err(io::Error::last_os_error());
-        }
-        Ok(())
+        guard.close(&self.api)
     }
 }
 impl Drop for Device {
@@ -248,13 +240,14 @@ impl Session {
     }
     /// Inject a complete reply using metadata from this exact original session.
     /// Checksums must already be correct; no payload or checksum is rewritten.
+    /// Recheck the same route after resource preparation, under original native
+    /// handle admission. This observation does not pin the kernel interface.
     pub fn send(&self, packet: Vec<u8>, address: &ReplyAddress) -> io::Result<Request> {
         let packet = zeroize::Zeroizing::new(packet);
         if !std::sync::Weak::ptr_eq(&address.owner, &Arc::downgrade(&self.0)) {
             return Err(io::ErrorKind::InvalidInput.into());
         }
-        address.check().map_err(io::Error::other)?;
-        Request::send(Arc::clone(&self.0), packet, address.raw)
+        Request::send(Arc::clone(&self.0), packet, address)
     }
     /// Stop queuing and injecting new packets. Existing loans still need completion.
     #[expect(
@@ -272,6 +265,7 @@ impl Session {
     }
     /// Close this original filter exactly once. This is independent of whether
     /// a pending send committed; its completion and unknown exposure remain separate.
+    /// Repeated calls preserve the original native close result without retrying.
     pub fn close(&self) -> io::Result<()> {
         self.0.close()
     }

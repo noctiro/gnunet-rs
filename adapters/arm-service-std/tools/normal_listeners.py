@@ -4,11 +4,16 @@ No Rust daemon/native-launcher equivalence is claimed by this component probe.
 """
 import argparse, hashlib, json, os, pathlib, socket, stat, struct, subprocess, sys, time
 sys.dont_write_bytecode = True
+TOOLS=pathlib.Path(__file__).resolve().parents[3]/"tools"
+sys.path.insert(0,str(TOOLS))
+from cargo_artifacts import CargoArtifacts
+from rust_toolchain import rust_channel
 PIN = "346358e26d4dcc2dc4f51bef5d52dca29c7d8165"
 def sha(path): return hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()
 def main():
- p=argparse.ArgumentParser();p.add_argument('--repository',required=True);p.add_argument('--source',required=True);p.add_argument('--reference',required=True);p.add_argument('--manifest',required=True);p.add_argument('--output',required=True);a=p.parse_args()
+ p=argparse.ArgumentParser();p.add_argument('--repository',required=True);p.add_argument('--source',required=True);p.add_argument('--reference',required=True);p.add_argument('--manifest',required=True);p.add_argument('--output',required=True);p.add_argument('--toolchain');a=p.parse_args()
  repo=pathlib.Path(a.repository).resolve();source=pathlib.Path(a.source).resolve();reference=pathlib.Path(a.reference).resolve();manifest=pathlib.Path(a.manifest).resolve();out=pathlib.Path(a.output).resolve()
+ cargo=['cargo','+'+rust_channel(repo,a.toolchain)]
  for owned_source in (repo,source,manifest.parent):
   if out==owned_source or owned_source in out.parents: raise ValueError('output must be external to every source tree')
  out.mkdir(mode=0o700)
@@ -21,20 +26,22 @@ def main():
  assert pathlib.Path(setups[0]['argv'][2]).resolve()==pathlib.Path(receipt['build']).resolve() and pathlib.Path(setups[0]['argv'][3]).resolve()==source
  assert build_reference.source_state(source)==receipt['upstream']
  def discover():
-  inputs={reference,pathlib.Path(__file__).resolve(),repo/'tools/reference/build_reference.py',repo/'Cargo.toml',repo/'Cargo.lock'}
+  inputs={reference,pathlib.Path(__file__).resolve(),repo/'tools/reference/build_reference.py',repo/'Cargo.toml',repo/'Cargo.lock',repo/'rust-toolchain.toml',TOOLS/'cargo_artifacts.py',TOOLS/'rust_toolchain.py'}
   for value in list(receipt['artifacts'].values())+receipt['libraries']+receipt['default_configurations']+[receipt['generated_config']]:
    path=pathlib.Path(value['path']);assert sha(path)==value['sha256'];inputs.add(path)
   # Every local package consumed by this manifest, including include_str docs,
   # plus entire C tracked/gitlink state (recomputed separately before/after).
-  metadata=json.loads(subprocess.check_output(['cargo','+1.99.1','metadata','--manifest-path',str(manifest),'--offline','--format-version','1'],cwd=str(repo)))
+  metadata=json.loads(subprocess.check_output(cargo+['metadata','--manifest-path',str(manifest),'--offline','--format-version','1'],cwd=str(repo)))
   for package in metadata['packages']:
    if package['source'] is not None: continue
    directory=pathlib.Path(package['manifest_path']).parent
    for child in directory.rglob('*'):
     if child.is_file() and not any(part in ('target','.git','__pycache__') for part in child.relative_to(directory).parts):inputs.add(child.resolve())
   return {str(path):sha(path) for path in sorted(inputs,key=lambda path:os.fsencode(path))}
- before=discover();subprocess.run(['cargo','+1.99.1','build','--manifest-path',str(manifest),'--bin','gnunet-arm-listener-child-fixture','--locked','--offline','--jobs','2','--target-dir',str(out/'target')],cwd=str(repo),stdout=open(out/'build.stdout','wb'),stderr=open(out/'build.stderr','wb'),check=True)
- fixture=out/'target/debug/gnunet-arm-listener-child-fixture';binary_sha=sha(fixture)
+ before=discover()
+ with (out/'build.stdout').open('wb') as stdout,(out/'build.stderr').open('wb') as stderr:
+  subprocess.run(cargo+['build','--manifest-path',str(manifest),'--bin','gnunet-arm-listener-child-fixture','--locked','--offline','--jobs','2','--target-dir',str(out/'target'),'--message-format=json'],cwd=str(repo),stdout=stdout,stderr=stderr,check=True)
+ fixture=CargoArtifacts((out/'build.stdout').read_bytes()).binary('gnunet-arm-listener-child-fixture',manifest);binary_sha=sha(fixture)
  sandbox=out/'no-ip.sb';sandbox.write_text('(version 1)\n(allow default)\n(deny network-outbound (remote ip))\n')
  cases=[]
  def frame(sock):

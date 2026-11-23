@@ -117,8 +117,6 @@
     }
   ],
   "PROGRAM": {
-    "owner": "/root/official_config",
-    "tree": "/private/tmp/gnunet-program-next-20261027",
     "port": "Program ResolverConnect uses Context::connect(cfg.duplicate()?) at fixed native pre-main callsites; one SharedClock Subscription implements RuntimeClock. The same broker/driver must be supplied through process context to all service clients.",
     "source_sites": [
       "src/lib/util/program.c:94 scheduled after SPEEDUP_start and shutdown stop registration, before run",

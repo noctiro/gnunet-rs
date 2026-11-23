@@ -2,14 +2,28 @@
 use super::*;
 use std::os::fd::AsRawFd;
 
+/// Observe the effective UID and GID on the original connected Darwin socket.
+#[cfg(target_vendor = "apple")]
+#[expect(
+    unsafe_code,
+    reason = "getpeereid writes two initialized native credential values while the socket stays borrowed"
+)]
+pub fn unix_peer_ids(stream: BorrowedStream<'_>) -> io::Result<(libc::uid_t, libc::gid_t)> {
+    let mut uid = 0;
+    let mut gid = 0;
+    // SAFETY: the borrowed descriptor stays live and each output is distinct and writable.
+    status(unsafe { libc::getpeereid(stream.as_raw_fd(), &mut uid, &mut gid) })?;
+    Ok((uid, gid))
+}
+
 trait Operations {
     fn get_fd(&mut self, fd: i32) -> io::Result<i32>;
     fn set_fd(&mut self, fd: i32, flags: i32) -> io::Result<()>;
     fn get_fl(&mut self, fd: i32) -> io::Result<i32>;
     fn set_fl(&mut self, fd: i32, flags: i32) -> io::Result<()>;
-    #[cfg(target_os = "macos")]
+    #[cfg(target_vendor = "apple")]
     fn get_no_sigpipe(&mut self, fd: i32) -> io::Result<bool>;
-    #[cfg(target_os = "macos")]
+    #[cfg(target_vendor = "apple")]
     fn no_sigpipe(&mut self, fd: i32) -> io::Result<()>;
     fn no_delay(&mut self, fd: i32) -> io::Result<()>;
 }
@@ -60,7 +74,7 @@ impl Operations for Native {
         // from F_GETFL while adding the native O_NONBLOCK bit.
         status(unsafe { libc::fcntl(fd, libc::F_SETFL, flags) })
     }
-    #[cfg(target_os = "macos")]
+    #[cfg(target_vendor = "apple")]
     #[expect(
         unsafe_code,
         reason = "getsockopt writes one initialized native integer and its checked length while the original fd stays borrowed"
@@ -90,7 +104,7 @@ impl Operations for Native {
         // Darwin returns the socket's flag mask, not necessarily the integer 1.
         Ok(value != 0)
     }
-    #[cfg(target_os = "macos")]
+    #[cfg(target_vendor = "apple")]
     fn no_sigpipe(&mut self, fd: i32) -> io::Result<()> {
         option(fd, libc::SOL_SOCKET, libc::SO_NOSIGPIPE)
     }
@@ -175,7 +189,7 @@ fn initialize_policy(
     if let Err(error) = nonblocking {
         return Err(fatal(error, diagnostics));
     }
-    #[cfg(target_os = "macos")]
+    #[cfg(target_vendor = "apple")]
     {
         // A std/mio listener already enables this option, and Darwin inherits
         // it on accept. A peer can close before initialization; Darwin then
@@ -277,12 +291,12 @@ mod tests {
             self.flags = value;
             Ok(())
         }
-        #[cfg(target_os = "macos")]
+        #[cfg(target_vendor = "apple")]
         fn get_no_sigpipe(&mut self, _fd: i32) -> io::Result<bool> {
             self.step("getnosigpipe")?;
             Ok(false)
         }
-        #[cfg(target_os = "macos")]
+        #[cfg(target_vendor = "apple")]
         fn no_sigpipe(&mut self, _fd: i32) -> io::Result<()> {
             self.step("nosigpipe")
         }
@@ -302,7 +316,7 @@ mod tests {
                 .is_empty()
         );
         let mut expected = vec!["getfd", "setfd", "getfl", "setfl"];
-        #[cfg(target_os = "macos")]
+        #[cfg(target_vendor = "apple")]
         expected.push("nosigpipe");
         expected.push("nodelay");
         assert_eq!(t.calls, expected);
@@ -382,11 +396,11 @@ mod tests {
             fn set_fl(&mut self, fd: i32, v: i32) -> io::Result<()> {
                 self.0.set_fl(fd, v)
             }
-            #[cfg(target_os = "macos")]
+            #[cfg(target_vendor = "apple")]
             fn get_no_sigpipe(&mut self, fd: i32) -> io::Result<bool> {
                 self.0.get_no_sigpipe(fd)
             }
-            #[cfg(target_os = "macos")]
+            #[cfg(target_vendor = "apple")]
             fn no_sigpipe(&mut self, fd: i32) -> io::Result<()> {
                 self.0.no_sigpipe(fd)
             }
@@ -434,11 +448,11 @@ mod tests {
             fn set_fl(&mut self, _fd: i32, _v: i32) -> io::Result<()> {
                 Ok(())
             }
-            #[cfg(target_os = "macos")]
+            #[cfg(target_vendor = "apple")]
             fn get_no_sigpipe(&mut self, _fd: i32) -> io::Result<bool> {
                 Ok(false)
             }
-            #[cfg(target_os = "macos")]
+            #[cfg(target_vendor = "apple")]
             fn no_sigpipe(&mut self, _fd: i32) -> io::Result<()> {
                 Ok(())
             }
@@ -456,7 +470,7 @@ mod tests {
             Some(libc::EIO)
         );
     }
-    #[cfg(target_os = "macos")]
+    #[cfg(target_vendor = "apple")]
     #[test]
     fn darwin_nosigpipe_failure_is_fatal_before_nodelay() {
         let mut t = Trace {

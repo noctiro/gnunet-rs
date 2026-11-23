@@ -46,6 +46,11 @@ original Channel and separate local/remote suspension flags. Invalid directions
 and phases fail without partial admission; stale local CIDs are ignored. Suspended incoming audio is consumed without delivery. No media playback,
 codec/device negotiation, remote delivery or human acceptance is claimed.
 
+New outgoing audio supersedes only an unadmitted audio tail of its original
+call's send queue. Media exceeding queue capacity or expiring before native
+admission is dropped without ending the call. Earlier native effects and
+control ordering stay under their original owners and deadlines.
+
 ## Effects and retirement
 
 All physical effects retain their original IDs, bytes, deadlines and source

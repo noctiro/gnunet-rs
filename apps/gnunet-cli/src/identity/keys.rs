@@ -86,7 +86,15 @@ pub(super) fn extract(args: &mut [OsString]) -> Result<Option<Imported>> {
     let Some(argument) = first else {
         return Ok(None);
     };
-    let encoded = &argument.bytes[argument.start..];
+    let key = decode(&argument.bytes[argument.start..])?;
+    Ok(Some(Imported {
+        at: argument.at,
+        width: argument.width,
+        key,
+    }))
+}
+
+pub(super) fn decode(encoded: &[u8]) -> Result<SecretKey> {
     if encoded.len() != TEXT_LEN {
         return Err("private key must be one58-character official typed Base32GNS value".into());
     }
@@ -95,12 +103,7 @@ pub(super) fn extract(args: &mut [OsString]) -> Result<Option<Imported>> {
     if used != ipc::KEY_LEN {
         return Err(Fault::Malformed.into());
     }
-    let key = SecretKey::from_serialized(&raw[..])?;
-    Ok(Some(Imported {
-        at: argument.at,
-        width: argument.width,
-        key,
-    }))
+    Ok(SecretKey::from_serialized(&raw[..])?)
 }
 fn encoded(key: &SecretKey) -> Result<Zeroizing<[u8; TEXT_LEN]>> {
     let mut bytes = Zeroizing::new([0; TEXT_LEN]);
@@ -115,6 +118,36 @@ fn encoded(key: &SecretKey) -> Result<Zeroizing<[u8; TEXT_LEN]>> {
 pub(super) fn line(out: &mut impl Write, key: &SecretKey) -> Result<()> {
     let bytes = encoded(key)?;
     out.write_all(&bytes[..])?;
+    out.write_all(b"\n")?;
+    out.flush()?;
+    Ok(())
+}
+
+pub(super) fn text(
+    out: &mut impl Write,
+    name: Option<&[u8]>,
+    key: &SecretKey,
+    private: bool,
+) -> Result<()> {
+    let public = gnsrecord::ZoneKey::from_wire(&key.public_key()?)?;
+    let mut public_text = [0; TEXT_LEN];
+    let public_text = public.write_ztld(&mut public_text)?;
+    if let Some(name) = name {
+        out.write_all(name)?;
+        out.write_all(b" - ")?;
+    }
+    out.write_all(public_text.as_bytes())?;
+    if private {
+        let private_text = encoded(key)?;
+        out.write_all(b" - ")?;
+        out.write_all(&private_text[..])?;
+    }
+    if name.is_some() {
+        out.write_all(match public.kind() {
+            gnsrecord::ZoneKeyType::Pkey => b" - ECDSA",
+            gnsrecord::ZoneKeyType::Edkey => b" - EdDSA",
+        })?;
+    }
     out.write_all(b"\n")?;
     out.flush()?;
     Ok(())

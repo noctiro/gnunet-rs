@@ -5,7 +5,9 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 [dependencies]
+gnunet-tls-crypto-host.workspace = true
 gnunet-types.workspace = true
+gnunet-dns = { workspace = true, features = ["tlsa-hash"] }
 gnunet-config.workspace = true
 gnunet-client-host.workspace = true
 gnunet-gns-host.workspace = true
@@ -24,10 +26,8 @@ hyper = { workspace = true, features = ["client", "server", "http1"] }
 hyper-util = { workspace = true, features = ["tokio"] }
 tokio-rustls.workspace = true
 rustls.workspace = true
-rcgen = { workspace = true, features = ["aws_lc_rs", "x509-parser", "zeroize"] }
 webpki.workspace = true
 x509-parser.workspace = true
-aws-lc-rs.workspace = true
 webpki-roots.workspace = true
 time.workspace = true
 yasna.workspace = true

@@ -44,14 +44,9 @@ pub struct Ports {
     pub abi: ArmAbi,
 }
 impl Ports {
-    /// Select the native ABI and, on Unix, discover the colocated or ProjectData
-    /// helper. Unknown alignment profiles require explicit caller selection.
-    pub fn native() -> Result<Self> {
-        if std::mem::align_of::<u64>() != 8 {
-            return Err(
-                "untested native ARM ABI; supply an explicit validated Ports profile".into(),
-            );
-        }
+    /// Read the peer ABI and discover the colocated or installed Unix helper.
+    pub fn configured(config: &Configuration) -> Result<Self> {
+        let abi = ArmAbi::configured(config.get(b"arm-rust", b"ABI"))?;
         #[cfg(unix)]
         let helper = {
             let executable = std::env::current_exe()?;
@@ -68,7 +63,7 @@ impl Ports {
         Ok(Self {
             #[cfg(unix)]
             helper,
-            abi: ArmAbi::U64Align8,
+            abi,
         })
     }
 }
@@ -778,7 +773,10 @@ async fn execute(
 /// Standalone source argv entry, using real selected PROGRAM logging while
 /// retaining the source ARM-specific parser, business phases and status bytes.
 pub fn main_from(args: impl IntoIterator<Item = OsString>) -> u8 {
-    main_with_locale(args, &mut gnunet_program_host::program::NlsDisabled)
+    main_with_locale(
+        args,
+        &mut gnunet_program_host::locale::InstalledLocale::default(),
+    )
 }
 /// Standalone PROGRAM entry with an explicit locale/catalog installer. Setup
 /// precedes parsing, configuration, logging and runtime owners. The same backend
@@ -856,7 +854,7 @@ pub fn main_with_locale(
         let _original = logs.finish::<()>(Err(Box::new(error)));
         return 1;
     }
-    let ports = match Ports::native() {
+    let ports = match Ports::configured(&config) {
         Ok(ports) => ports,
         Err(error) => {
             logs.error("arm.cli.deployment.failed", format_args!("{error}"));

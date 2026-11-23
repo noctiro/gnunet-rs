@@ -259,18 +259,6 @@ impl Runner {
         self.bytes(program, args, input, until, OnFailure::Retire)
             .await
     }
-    #[cfg(target_os = "freebsd")]
-    pub async fn run_until(
-        &mut self,
-        program: &Path,
-        args: &[&str],
-        input: &[u8],
-        hard: Instant,
-    ) -> io::Result<Output> {
-        let until = self.deadline(Some(hard))?;
-        self.bytes(program, args, input, until, OnFailure::Retire)
-            .await
-    }
     /// Read-only probes fail before waiting for child retirement so their
     /// caller can fence packet admission first. Cleanup retains this runner.
     pub async fn observe_until(

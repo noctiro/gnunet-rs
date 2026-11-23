@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
 """Source-bound independent broker validation. Outputs never enter source trees."""
 import argparse, json, os, pathlib, re, subprocess, sys, time
-from common import sha, disjoint, local_files, expected_tests, observed_tests, check_actor_result, rust_library, workspace_files, workspace_contract, copy_workspace, normalized_metadata, apply_overlay, witness_inventory, normal_receipt_inputs
+
+ARTIFACT_HELPER = pathlib.Path(__file__).resolve().parents[3] / 'tools/cargo_artifacts.py'
+sys.dont_write_bytecode = True
+from common import sha, disjoint, local_files, expected_tests, observed_tests, check_actor_result, workspace_files, workspace_contract, copy_workspace, normalized_metadata, apply_overlay, witness_inventory, normal_receipt_inputs
+sys.path.insert(0, str(ARTIFACT_HELPER.parent))
+from cargo_artifacts import CargoArtifacts
+from rust_toolchain import rust_channel
 
 CONTROL_NAMES=['test_actual_library_artifact_selected_without_glob', 'test_actual_second_lock_is_required', 'test_compile_source_in_different_clone_rejected', 'test_compile_source_relative_cwd_is_bound', 'test_duplicate_actual_rejected', 'test_duplicate_library_artifact_rejected', 'test_duplicate_local_cargo_identity_rejected', 'test_empty_actor_rejected', 'test_empty_actual_rejected', 'test_empty_expected_rejected', 'test_foreign_actual_library_manifest_rejected', 'test_foreign_actual_library_package_id_rejected', 'test_foreign_local_cargo_identity_rejected', 'test_ignored_actual_rejected', 'test_missing_library_artifact_rejected', 'test_named_nonempty_positive', 'test_optimized_actual_decoder_rejects_malformed_header', 'test_source_bytes_mutation_changes_digest', 'test_source_overlap_rejected', 'test_valid_json_nonzero_actor_rejected', 'test_workspace_addition_and_deletion_change_file_set', 'test_wrong_name_rejected']
 CONTROL_COUNT=len(CONTROL_NAMES)
@@ -16,7 +22,7 @@ def main():
     p.add_argument('--normal-resolver-base', type=pathlib.Path, required=True)
     p.add_argument('--normal-resolver-receipt', type=pathlib.Path, required=True)
     p.add_argument('--reference-helper', type=pathlib.Path, required=True)
-    p.add_argument('--toolchain', default='1.99.1')
+    p.add_argument('--toolchain')
     p.add_argument('--profile', choices=['clock-source','native-retry'],default='native-retry')
     p.add_argument('--overlay-manifest',type=pathlib.Path)
     p.add_argument('--preflight',action='store_true',help='Copy/metadata/source/normal receipt and exact guard checks only; no compilation or actors')
@@ -24,6 +30,7 @@ def main():
     a = p.parse_args()
     a.package = a.package.resolve()
     a.repo = a.repo.resolve()
+    a.toolchain = rust_channel(a.repo, a.toolchain)
     a.output = a.output.resolve()
     disjoint(a.output, a.package, a.repo, a.upstream, a.normal_receipt.parent, a.normal_statistics_receipt.parent, a.normal_resolver_base.parent, a.normal_resolver_receipt.parent)
     a.output.mkdir(exist_ok=False, parents=True)
@@ -79,7 +86,7 @@ def main():
         if not upstream_before == json.loads(a.normal_receipt.read_text())['upstream']:
             raise ValueError('required condition failed at original line 12')
         result['upstream'] = upstream_before
-        external = {str(p.resolve()): sha(p) for p in [a.normal_receipt, a.normal_statistics_receipt, a.normal_resolver_base, a.normal_resolver_receipt, a.reference_helper]}
+        external = {str(p.resolve()): sha(p) for p in [a.normal_receipt, a.normal_statistics_receipt, a.normal_resolver_base, a.normal_resolver_receipt, a.reference_helper, ARTIFACT_HELPER, ARTIFACT_HELPER.with_name('rust_toolchain.py')]}
         result['external_inputs'] = external
         normal_inputs={};normal_profiles=[]
         for receipt_path in [a.normal_receipt,a.normal_statistics_receipt,a.normal_resolver_base,a.normal_resolver_receipt]:
@@ -121,22 +128,24 @@ def main():
         if not (docs.count(' ... ok') == 2 and 'compile fail ... ok' in docs and ('compile ... ok' in docs)):
             raise ValueError('required condition failed at original line 21')
         result['doctests'] = 2
-        run('examples-build', cargo + ['build', *cargo_args, '-p', 'gnunet-resolver-broker', '--examples'])
+        examples = CargoArtifacts(run('examples-build', cargo + ['build', *cargo_args, '-p', 'gnunet-resolver-broker', '--examples', '--message-format=json']))
         for target in ['thumbv6m-none-eabi', 'thumbv7em-none-eabi']:
             run('embedded-' + target, cargo + ['check', *cargo_args, '-p', 'gnunet-client', '--no-default-features', '--target', target])
-        binary = a.output / 'target/debug/examples/public_broker'
-        config_binary = a.output / 'target/debug/examples/configuration'
-        two_binary = a.output / 'target/debug/examples/two_services'
+        binary = examples.example('public_broker', manifest)
+        config_binary = examples.example('configuration', manifest)
+        two_binary = examples.example('two_services', manifest)
         binary_hashes = {str(p): sha(p) for p in [binary, config_binary, two_binary]}
         result['rust_binaries'] = binary_hashes
-        deps = a.output / 'target/debug/deps'
-        artifacts=run('ui-library-build', cargo + ['build', *cargo_args, '-p', 'gnunet-resolver-broker', '--lib', '--message-format=json'])
-        rlib = rust_library(artifacts, 'gnunet_resolver_broker',manifest,next(row['id']for row in copied_metadata['packages']if pathlib.Path(row['manifest_path']).resolve()==manifest))
+        artifacts = CargoArtifacts(run('ui-library-build', cargo + ['build', *cargo_args, '-p', 'gnunet-resolver-broker', '--lib', '--message-format=json']))
+        package_id = next(row['id'] for row in copied_metadata['packages']
+                          if pathlib.Path(row['manifest_path']).resolve() == manifest)
+        rlib = artifacts.rlib('gnunet_resolver_broker', manifest, package_id=package_id)
+        dependency_args = artifacts.rustc_dependency_args()
         if not rlib.is_file():
             raise ValueError('required condition failed at original line 26')
         result['ui_library'] = {'path': str(rlib), 'sha256': sha(rlib)}
         for (name, ok) in [('lease_live', False), ('lease_returned', True)]:
-            argv = ['rustc', '+' + a.toolchain, '--edition', '2024', '--crate-type', 'lib', '--crate-name', name,'--error-format=json', str(a.package / ('tests/ui/' + name + '.rs')), '-L', 'dependency=' + str(deps), '--extern', 'gnunet_resolver_broker=' + str(rlib), '--out-dir', str(a.output / 'ui')]
+            argv = ['rustc', '+' + a.toolchain, '--edition', '2024', '--crate-type', 'lib', '--crate-name', name,'--error-format=json', str(a.package / ('tests/ui/' + name + '.rs')), *dependency_args, '--extern', 'gnunet_resolver_broker=' + str(rlib), '--out-dir', str(a.output / 'ui')]
             (a.output / 'ui').mkdir(exist_ok=True)
             proc = subprocess.run(argv, cwd=a.package, env=env, capture_output=True, timeout=30)
             (a.output / (name + '.stdout')).write_bytes(proc.stdout)

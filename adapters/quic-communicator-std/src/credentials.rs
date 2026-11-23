@@ -20,10 +20,10 @@ impl std::fmt::Debug for Tls {
 /// Actual configuration failure; never a synthetic successful TLS witness.
 #[derive(Debug)]
 pub enum Failure {
-    /// Existing Rustls/TLS configuration invalid for QUIC1RTT.
-    Quinn(quinn::crypto::rustls::NoInitialCipherSuite),
     /// Invalid profile/resource option.
     Protocol(Error),
+    /// Operating-system entropy for the QUIC handshake token key was unavailable.
+    Entropy(std::io::Error),
     /// Actual fresh certificate generation failed.
     #[cfg(feature = "fresh-tls")]
     Certificate(rcgen::Error),
@@ -58,13 +58,12 @@ impl Tls {
         server.alpn_protocols = alpn;
         server.max_early_data_size = 0;
         server.send_tls13_tickets = 0;
-        let client =
-            quinn::crypto::rustls::QuicClientConfig::try_from(client).map_err(Failure::Quinn)?;
-        let server =
-            quinn::crypto::rustls::QuicServerConfig::try_from(server).map_err(Failure::Quinn)?;
+        let client = crate::quic_tls::Client::new(client).map_err(Failure::Rustls)?;
+        let server = crate::quic_tls::Server::new(server).map_err(Failure::Rustls)?;
+        let token_key = crate::local_keys::handshake_token_key().map_err(Failure::Entropy)?;
         Ok(Self {
             client: quinn::ClientConfig::new(Arc::new(client)),
-            server: quinn::ServerConfig::with_crypto(Arc::new(server)),
+            server: quinn::ServerConfig::new(Arc::new(server), token_key),
             profile,
         })
     }
@@ -73,30 +72,29 @@ impl Tls {
     pub const fn profile(&self) -> Profile {
         self.profile
     }
-    /// Actual optional fresh in-memory TLS server certificate using existing
-    /// AWS-LC backend. No PILS secret, existing key/certificate file or static
-    /// private key is read. The caller still supplies actual client trust policy.
+    /// Generate a fresh P-256 server certificate in memory and configure the
+    /// shared Rust TLS provider. Profile policy governs client verification.
     #[cfg(feature = "fresh-tls")]
     pub fn fresh(profile: Profile, names: Vec<String>) -> Result<Self, Failure> {
-        use rustls::pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer};
-        use zeroize::Zeroizing;
+        use gnunet_tls_crypto_host::certificate::P256Key;
         if names.is_empty() || names.len() > 16 || names.iter().any(|n| n.len() > 253) {
             return Err(Failure::Protocol(Error::InvalidInput));
         }
-        let key = zeroize::Zeroizing::new(
-            rcgen::KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256)
-                .map_err(Failure::Certificate)?,
-        );
-        let params = rcgen::CertificateParams::new(names).map_err(Failure::Certificate)?;
-        let certificate = params.self_signed(&*key).map_err(Failure::Certificate)?;
-        let mut serialized = Zeroizing::new(key.serialize_der());
-        let private =
-            PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(core::mem::take(&mut *serialized)));
-        let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
-        let client = crate::tls::client(provider.clone(), profile).map_err(Failure::Rustls)?;
-        let server =
-            crate::tls::server(provider, vec![certificate.der().clone()], private, profile)
-                .map_err(Failure::Rustls)?;
+        let key = P256Key::generate().map_err(Failure::Certificate)?;
+        let certificate = key.self_signed(names).map_err(Failure::Certificate)?;
+        Self::from_generated(profile, certificate.into(), key)
+    }
+
+    #[cfg(feature = "fresh-tls")]
+    pub(super) fn from_generated(
+        profile: Profile,
+        certificate: rustls::pki_types::CertificateDer<'static>,
+        key: gnunet_tls_crypto_host::certificate::P256Key,
+    ) -> Result<Self, Failure> {
+        let provider = gnunet_tls_crypto_host::provider();
+        let client = crate::tls::client(Arc::clone(&provider), profile).map_err(Failure::Rustls)?;
+        let server = crate::tls::server_with_generated_key(provider, certificate, key, profile)
+            .map_err(Failure::Rustls)?;
         Self::from_configs(client, server, profile)
     }
 }

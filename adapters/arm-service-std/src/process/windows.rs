@@ -1,10 +1,13 @@
 //! Windows ARM policy: native image selection and original-handle supervision.
 use super::*;
 use gnunet_native::process::{Console, LaunchLimits, Stdio};
+use gnunet_native::socket_activation::Source;
 use gnunet_service_runtime::process::RegistryError;
 use gnunet_service_startup::{ParentRole, launch};
-use std::{ffi::OsString, os::windows::io::AsSocket, sync::Arc};
+use std::{os::windows::io::AsSocket, sync::Arc};
+mod account;
 mod control;
+pub(crate) use account::AccountPreparation;
 pub(crate) use control::{Control, poll_control, poll_stop, take_signal_notice};
 
 /// Borrowed native child context; Windows creates the selected image directly.
@@ -52,44 +55,14 @@ pub(crate) fn spawn(
     {
         return Err(LaunchError::Capacity);
     }
-    let argv = match request.recipe {
-        Recipe::Gnunet(command) => {
-            if command.len() > limits.max_command_bytes {
-                return Err(LaunchError::Capacity);
-            }
-            gnunet_service_runtime::process::parse_command(
-                command,
-                limits.native.arguments.saturating_add(1),
-            )?
-        }
-        Recipe::Native {
-            text,
-            prefix,
-            binary,
-            arguments,
-            options,
-        } => {
-            if text.len() > limits.max_command_bytes {
-                return Err(LaunchError::Capacity);
-            }
-            gnunet_service_runtime::process::compose_arguments(
-                prefix,
-                binary,
-                arguments,
-                options,
-                limits.native.arguments.saturating_add(1),
-            )?
-        }
-        Recipe::Simple { argv0, options, .. } => vec![argv0.clone(), options.clone()],
-    };
-    let filename = match request.recipe {
-        Recipe::Gnunet(_) | Recipe::Native { .. } => {
-            argv.first().map(OsString::as_os_str).unwrap_or_default()
-        }
-        Recipe::Simple { filename, .. } => filename.as_os_str(),
-    };
+    if matches!(request.recipe, Recipe::Native { text, .. } if text.len() > limits.max_command_bytes)
+    {
+        return Err(LaunchError::Capacity);
+    }
+    let (filename, argv) =
+        native_arguments(request.recipe, limits.native.arguments.saturating_add(1))?;
     let executable = match gnunet_service_runtime::process::resolve_executable(
-        filename,
+        &filename,
         request.context.environment,
     ) {
         Ok(executable) => executable,
@@ -100,11 +73,6 @@ pub(crate) fn spawn(
             error: Some(io::ErrorKind::InvalidInput.into()),
         });
     };
-    let mut environment = Vec::new();
-    environment
-        .try_reserve_exact(request.context.environment.values().len())
-        .map_err(|_| LaunchError::Capacity)?;
-    environment.extend_from_slice(request.context.environment.values());
     // Publish from private source descriptors. Managed-listener retirement can
     // close its own originals before the receiving child confirms import.
     let mut sources = Vec::new();
@@ -121,24 +89,54 @@ pub(crate) fn spawn(
     published
         .try_reserve_exact(sources.len())
         .map_err(|_| LaunchError::Capacity)?;
-    published.extend(sources.iter().map(AsSocket::as_socket));
+    published.extend(
+        sources
+            .iter()
+            .zip(&request.listeners)
+            .map(|(socket, original)| {
+                let source = Source::new(socket.as_socket());
+                match original.protection() {
+                    Some(protection) => source.with_protection(protection),
+                    None => source,
+                }
+            }),
+    );
     // Reserve retained control backing before admitting the native process.
     let control_backing = control::Prepared::new();
-    let launched = launch::launch(
-        children,
-        launch::Command {
-            executable: &executable,
-            argv0,
-            arguments,
-            environment,
-            directory: request.context.environment.current_dir(),
-            stdio: [Stdio::Null, Stdio::Inherit, Stdio::Inherit],
-            console: Console::Inherit,
-            role: ParentRole::Supervisor,
-            listeners: &published,
-        },
-        limits.native,
-    );
+    let launched = if let Some(profile) = request.profile {
+        launch::launch_as(
+            children,
+            launch::AccountCommand {
+                executable: &executable,
+                argv0,
+                arguments,
+                profile,
+                listeners: &published,
+            },
+            limits.native,
+        )
+    } else {
+        let mut environment = Vec::new();
+        environment
+            .try_reserve_exact(request.context.environment.values().len())
+            .map_err(|_| LaunchError::Capacity)?;
+        environment.extend_from_slice(request.context.environment.values());
+        launch::launch(
+            children,
+            launch::Command {
+                executable: &executable,
+                argv0,
+                arguments,
+                environment,
+                directory: request.context.environment.current_dir(),
+                stdio: [Stdio::Null, Stdio::Inherit, Stdio::Inherit],
+                console: Console::Inherit,
+                role: ParentRole::Supervisor,
+                listeners: &published,
+            },
+            limits.native,
+        )
+    };
     let (child, initial, diagnostic) = match launched {
         Ok(parent) => (
             parent.child().clone(),

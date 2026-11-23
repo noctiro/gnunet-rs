@@ -9,6 +9,14 @@ license.workspace = true
 name = "gnunet-testbed"
 path = "src/main.rs"
 
+[[bin]]
+name = "gnunet-testing-netjail-launcher"
+path = "src/bin/gnunet-testing-netjail-launcher.rs"
+
+[[bin]]
+name = "gnunet-cmds-helper"
+path = "src/bin/gnunet-cmds-helper.rs"
+
 [dependencies]
 gnunet-testbed-host.workspace = true
 gnunet-program-host.workspace = true
@@ -16,6 +24,10 @@ gnunet-config.workspace = true
 gnunet-types.workspace = true
 gnunet-service-startup.workspace = true
 tokio = { workspace = true, features = ["rt", "net", "time", "signal"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+gnunet-nat.workspace = true
+libc.workspace = true
 
 [lints]
 workspace = true

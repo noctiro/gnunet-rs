@@ -326,6 +326,9 @@ pub use gnunet_vpn_host as vpn_host;
 /// Official GNUnet framing and P2P codecs.
 pub use gnunet_wire::official as wire;
 
+/// Allocation-free composition of one original TCP, TRANSPORT and CORE peer.
+#[cfg(feature = "direct-peer")]
+pub use gnunet_direct_peer as direct_peer;
 /// Official TCP record/session core; full communicator and CORE owners remain pending.
 pub use gnunet_tcp_communicator_core as tcp;
 /// Optional caller-driven TCP session host with actual official local service IPC.

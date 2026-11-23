@@ -249,7 +249,7 @@ pub(super) async fn run(input: Inputs<'_>) -> Result<(), Failure> {
         let cadet_source =
             EndpointSource::live(live.clone(), b"cadet", context.resolution_context());
         let pils_source = EndpointSource::live(live.clone(), b"pils", context.resolution_context());
-        let entropy = SystemEntropy::open()?;
+        let entropy = SystemEntropy;
         let server = Server::<_, 16>::new(
             &mut core_instance,
             &mut cadet_instance,

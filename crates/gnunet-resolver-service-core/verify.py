@@ -1,15 +1,20 @@
 #!/usr/bin/env python3
 """Source-bound pure Rust candidate verification; never starts C/network/NSS."""
-import argparse,hashlib,json,os,re,subprocess,time
+import argparse,hashlib,json,os,re,subprocess,sys,time
 from pathlib import Path
 HERE=Path(__file__).resolve().parent
 ROOT=HERE.parents[1]
+ARTIFACT_HELPER=ROOT/'tools/cargo_artifacts.py'
+sys.dont_write_bytecode=True
+sys.path.insert(0,str(ARTIFACT_HELPER.parent))
+from cargo_artifacts import CargoArtifacts
+from rust_toolchain import rust_channel
 INV=HERE/'official-profile.json'
 UPSTREAM=None
 API_BUILD=None
 def digest(path):return hashlib.sha256(path.read_bytes()).hexdigest()
 def sources():
-    files={INV,ROOT/'Cargo.toml',ROOT/'Cargo.lock',ROOT/'rust-toolchain.toml'}
+    files={INV,ROOT/'Cargo.toml',ROOT/'Cargo.lock',ROOT/'rust-toolchain.toml',ARTIFACT_HELPER,ARTIFACT_HELPER.with_name('rust_toolchain.py')}
     for base in [HERE]+[ROOT/'crates'/n for n in ['gnunet-client','gnunet-types','gnunet-wire','gnunet-dns','gnunet-dnsstub']]:
         for path in base.rglob('*'):
             if 'target' in path.relative_to(base).parts:continue
@@ -33,7 +38,8 @@ def main():
     global UPSTREAM,API_BUILD
     parser=argparse.ArgumentParser(description=__doc__)
     for name in ['output','upstream','api-build']:parser.add_argument('--'+name,required=True,type=Path)
-    args=parser.parse_args();UPSTREAM=args.upstream.resolve();API_BUILD=args.api_build.resolve()
+    parser.add_argument('--toolchain')
+    args=parser.parse_args();toolchain='+'+rust_channel(ROOT,args.toolchain);UPSTREAM=args.upstream.resolve();API_BUILD=args.api_build.resolve()
     output=args.output.resolve()
     for source in [HERE,UPSTREAM,API_BUILD]:
         if output.is_relative_to(source) or source.is_relative_to(output):raise RuntimeError('receipt output and sources must be disjoint')
@@ -49,28 +55,28 @@ def main():
         if (expect==0 and p.returncode!=0) or (expect!=0 and p.returncode==0):raise RuntimeError(name+' unexpected exit '+str(p.returncode))
         return p.stdout.decode('utf-8','replace')+'\n'+p.stderr.decode('utf-8','replace')
     common=['--manifest-path',HERE/'Cargo.toml','--target-dir',TARGET,'--offline','--locked','--no-default-features','-p','gnunet-resolver-service-core']
-    run('toolchain',['rustc','+1.99.1','-Vv']);run('cargo-version',['cargo','+1.99.1','-V'])
-    run('fmt',['cargo','+1.99.1','fmt','--manifest-path',HERE/'Cargo.toml','--','--check'])
-    runtime=run('candidate-tests',['cargo','+1.99.1','test',*common,'--tests'])
+    run('toolchain',['rustc',toolchain,'-Vv']);run('cargo-version',['cargo',toolchain,'-V'])
+    run('fmt',['cargo',toolchain,'fmt','--manifest-path',HERE/'Cargo.toml','--','--check'])
+    runtime=run('candidate-tests',['cargo',toolchain,'test',*common,'--tests'])
     expected=declared_tests(list((HERE/'src').glob('*.rs'))+list((HERE/'tests').glob('*.rs')))
     actual=actual_tests(runtime)
     if len(actual)!=len(expected) or {n.split('::')[-1] for n in actual}!=expected:raise RuntimeError('candidate executed-test set differs from source')
-    doc=run('rustdoc-tests',['cargo','+1.99.1','test',*common,'--doc'])
+    doc=run('rustdoc-tests',['cargo',toolchain,'test',*common,'--doc'])
     docnames=actual_tests(doc)
     # Rustdoc prints a separate compile-fail suffix, parse both actual groups.
     docnames=re.findall(r'^test (.+?) \.\.\. ok$',doc,re.M)
     if len(docnames)!=4 or sum('compile fail' in n for n in docnames)!=2:raise RuntimeError('rustdoc controls missing')
-    inherited=run('existing-resolver-tests',['cargo','+1.99.1','test','--manifest-path',ROOT/'crates/gnunet-client/Cargo.toml','--target-dir',TARGET,'--offline','--locked','-p','gnunet-client','--test','resolver'])
+    inherited=run('existing-resolver-tests',['cargo',toolchain,'test','--manifest-path',ROOT/'crates/gnunet-client/Cargo.toml','--target-dir',TARGET,'--offline','--locked','-p','gnunet-client','--test','resolver'])
     inherited_expected=declared_tests([ROOT/'crates/gnunet-client/tests/resolver.rs'])
     inherited_actual=actual_tests(inherited)
     if set(inherited_actual)!=inherited_expected or len(inherited_actual)!=len(inherited_expected):raise RuntimeError('existing resolver test set incomplete')
-    run('clippy',['cargo','+1.99.1','clippy',*common,'--all-targets','--','-D','warnings'])
+    run('clippy',['cargo',toolchain,'clippy',*common,'--all-targets','--','-D','warnings'])
     env=os.environ.copy();env['RUSTDOCFLAGS']='-D warnings'
-    run('docs',['cargo','+1.99.1','doc',*common,'--no-deps'],env=env)
-    run('thumb',['cargo','+1.99.1','check',*common,'--target','thumbv6m-none-eabi'])
-    meta=run('metadata',['cargo','+1.99.1','metadata','--manifest-path',HERE/'Cargo.toml','--offline','--locked','--no-default-features','--format-version','1'])
+    run('docs',['cargo',toolchain,'doc',*common,'--no-deps'],env=env)
+    run('thumb',['cargo',toolchain,'check',*common,'--target','thumbv6m-none-eabi'])
+    meta=run('metadata',['cargo',toolchain,'metadata','--manifest-path',HERE/'Cargo.toml','--offline','--locked','--no-default-features','--format-version','1'])
     metadata=json.loads((output/'metadata.stdout').read_text())
-    tree=run('production-tree',['cargo','+1.99.1','tree','--manifest-path',HERE/'Cargo.toml','--offline','--locked','--no-default-features','-p','gnunet-resolver-service-core','--edges','normal','--prefix','none','--format','{p}|{f}'])
+    tree=run('production-tree',['cargo',toolchain,'tree','--manifest-path',HERE/'Cargo.toml','--offline','--locked','--no-default-features','-p','gnunet-resolver-service-core','--edges','normal','--prefix','none','--format','{p}|{f}'])
     tree=(output/'production-tree.stdout').read_text()
     allowed={'gnunet-resolver-service-core','gnunet-client','gnunet-types','gnunet-wire','gnunet-dns','gnunet-dnsstub'}
     used=set()
@@ -81,20 +87,16 @@ def main():
         used.add(package.split()[0])
     if used!=allowed:raise RuntimeError('unexpected/missing production dependency '+str(used))
     if any(p['source'] is not None for p in metadata['packages'] if p['name'] in used):raise RuntimeError('unexpected registry dependency')
-    store=run('storage',['cargo','+1.99.1','run',*common,'--example','storage'])
+    store=run('storage',['cargo',toolchain,'run',*common,'--example','storage'])
     storage=json.loads((output/'storage.stdout').read_text())
     if not storage.get('constructed') or not storage.get('stop_released') or storage['max_record_bytes']!=65535 or storage['pair_vector_reserved_bytes']>=24*1024*1024:raise RuntimeError('fullwidth construction proof failed')
     # Use Cargo's actual artifact dependency graph; modification-time guesses can
     # select a different feature/profile incarnation of the same crate.
-    run('ui-artifacts',['cargo','+1.99.1','build',*common,'--lib','--message-format=json'])
-    libraries={}
-    for line in (output/'ui-artifacts.stdout').read_text().splitlines():
-        artifact=json.loads(line)
-        if artifact.get('reason')=='compiler-artifact':
-            for name in artifact['filenames']:
-                if name.endswith('.rlib'):libraries[artifact['target']['name']]=name
-    deps=TARGET/'debug/deps'
-    rust=['rustc','+1.99.1','--edition=2024','--crate-type=lib','--emit=metadata','--error-format=json','-L','dependency='+str(deps),'--extern','gnunet_resolver_service_core='+libraries['gnunet_resolver_service_core'],'--extern','gnunet_types='+libraries['gnunet_types']]
+    run('ui-artifacts',['cargo',toolchain,'build',*common,'--lib','--message-format=json'])
+    artifacts=CargoArtifacts((output/'ui-artifacts.stdout').read_bytes())
+    own=artifacts.rlib('gnunet_resolver_service_core',HERE/'Cargo.toml')
+    types=artifacts.rlib('gnunet_types',ROOT/'crates/gnunet-types/Cargo.toml')
+    rust=['rustc',toolchain,'--edition=2024','--crate-type=lib','--emit=metadata','--error-format=json',*artifacts.rustc_dependency_args(),'--extern','gnunet_resolver_service_core='+str(own),'--extern','gnunet_types='+str(types)]
     ui=[]
     for name,code in [('staging_no_authority','E0599'),('effect_after_release','E0502'),('controls',None)]:
         text=run('ui-'+name,[*rust,HERE/'tests/ui'/ (name+'.rs'),'-o',output/(name+'.rmeta')],expect=1 if code else 0)

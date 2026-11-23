@@ -18,9 +18,9 @@ fn socket_error() -> io::Error {
     io::Error::from_raw_os_error(unsafe { WSAGetLastError() })
 }
 
-/// Reserve a fresh TCP listener's address exclusively before binding it.
-/// Windows SO_REUSEADDR can permit another listener to steal traffic, so native
-/// service listeners use the Windows ownership option instead of Unix reuse.
+/// Reserve a fresh unicast socket's address exclusively before binding it.
+/// Windows SO_REUSEADDR permits overlapping binds, so TCP listeners and UDP
+/// endpoints with one address owner use this option instead of Unix reuse.
 #[expect(
     unsafe_code,
     reason = "SO_EXCLUSIVEADDRUSE borrows the live unbound socket and reads exactly one initialized BOOL-sized integer"

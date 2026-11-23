@@ -1,0 +1,37 @@
+[package]
+name = "gnunet-node-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+gnunet-cadet-host = { workspace = true, features = ["startup"] }
+gnunet-client-host.workspace = true
+gnunet-config.workspace = true
+gnunet-core-host.workspace = true
+gnunet-dht-service-host = { workspace = true, features = ["startup"] }
+gnunet-nat-client-host.workspace = true
+gnunet-nat-host = { workspace = true, features = ["service"] }
+gnunet-native.workspace = true
+gnunet-nse-host.workspace = true
+gnunet-pils-host = { workspace = true, features = ["service"] }
+gnunet-quic-communicator-host = { workspace = true, features = ["embedded-config", "h3-profile"] }
+gnunet-regex-server-host.workspace = true
+gnunet-resolver-host.workspace = true
+gnunet-service-runtime.workspace = true
+gnunet-tcp-communicator-runtime.workspace = true
+gnunet-transport-runtime.workspace = true
+gnunet-udp-communicator-runtime.workspace = true
+gnunet-vpn-host.workspace = true
+tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
+
+[target.'cfg(unix)'.dependencies]
+gnunet-unix-communicator-host = { workspace = true, features = ["embedded-config"] }
+
+[dev-dependencies]
+gnunet-hello.workspace = true
+gnunet-wire.workspace = true
+
+[lints]
+workspace = true

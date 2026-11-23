@@ -59,7 +59,7 @@ fn run(startup: gnunet_service_startup::ClientStartup) -> Result<u8, Failure> {
         helpers::{self, Target},
         logging::Logger,
         policy::Level,
-        program::{self, Defaults, Invocation, NlsDisabled, Preparation},
+        program::{self, Defaults, Invocation, Preparation},
         reporting::Reporter,
         shared_clock::SharedClock,
     };
@@ -93,7 +93,7 @@ fn run(startup: gnunet_service_startup::ClientStartup) -> Result<u8, Failure> {
         seed.clone(),
     ));
     let mut logger = Logger::new(b"gnunet-rps", std::process::id(), false)?;
-    let prepared=program::prepare(config,Invocation{binary_name:b"gnunet-rps",help:Some(b"Request random peer identities (optional N, default1). -s/--seed PEER_ID writes one standard seed frame locally, with no service acknowledgement. -V/--view [N] outputs actual view batches (default0, continuous). -S/--stream outputs explicitly biased stream batches. Exactly one mode. Uses selected ordinary rps configuration, shared PROGRAM Resolver/clock and finite original local resource deadlines. No service is spawned."),select_default_filename:true,defaults:Defaults::Native},options,std::env::args_os(),&program::Environment::capture(),&mut NlsDisabled,&mut logger,&clock,&mut io::stdout().lock(),&mut io::stderr().lock());
+    let prepared=program::prepare_installed(config,Invocation{binary_name:b"gnunet-rps",help:Some(b"Request random peer identities (optional N, default1). -s/--seed PEER_ID writes one standard seed frame locally, with no service acknowledgement. -V/--view [N] outputs actual view batches (default0, continuous). -S/--stream outputs explicitly biased stream batches. Exactly one mode. Uses selected ordinary rps configuration, shared PROGRAM Resolver/clock and finite original local resource deadlines. No service is spawned."),select_default_filename:true,defaults:Defaults::Native},options,std::env::args_os(),&program::Environment::capture(),&mut logger,&clock,&mut io::stdout().lock(),&mut io::stderr().lock());
     let reporter = Reporter::new(logger, clock.clone());
     #[cfg(unix)]
     if let Some(notice) = startup.notice {

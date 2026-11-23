@@ -262,7 +262,7 @@ mod windows {
                 let sockets: Vec<_> = activation
                     .sockets()
                     .iter()
-                    .map(|socket| socket.as_socket())
+                    .map(gnunet_service_runtime::ActivatedSocket::launch_source)
                     .collect();
                 match launch::launch(
                     &mut children.registry,

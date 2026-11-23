@@ -54,15 +54,10 @@ impl CapturedAddress {
             if raw.flags & abi::LOOPBACK != 0 || raw.flags & abi::OUTBOUND == 0 {
                 return Ok(None);
             }
-            if raw.timestamp > counter()? {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "capture timestamp exceeds native observation clock",
-                ));
-            }
             let observations = owner.route_observations();
+            let now = counter()?;
             observations
-                .get(raw.timestamp, raw.data[0] as u32)
+                .get(raw.timestamp, now, raw.data[0] as u32)
                 .cloned()
                 .map(Some)
         })()
@@ -147,6 +142,12 @@ impl fmt::Debug for ReplyAddress {
     }
 }
 impl ReplyAddress {
+    /// Whether this reply retains a checked non-loopback interface observation.
+    /// WinDivert ignores interface indices for loopback injection. This does
+    /// not pin the interface or certify a later injection; `check` still applies.
+    pub fn has_interface_scope(&self) -> bool {
+        self.interface.is_some() && self.raw.flags & abi::LOOPBACK == 0
+    }
     /// Recheck the original route without adopting a replacement interface.
     /// This observation does not lock the kernel route through later injection.
     pub fn check(&self) -> Result<(), RouteUnavailable> {
@@ -190,4 +191,67 @@ fn counter() -> io::Result<i64> {
 pub(super) fn interface_snapshot() -> io::Result<(i64, Vec<Identity>)> {
     let identities = Identity::snapshot(super::observations::MAX_INTERFACES)?;
     Ok((counter()?, identities))
+}
+
+/// Allow missed refreshes without letting a failed observer authorize new
+/// captures indefinitely. The DNS host normally refreshes once per second.
+#[expect(
+    unsafe_code,
+    reason = "QueryPerformanceFrequency writes one initialized native clock scalar without retaining memory"
+)]
+pub(super) fn observation_age() -> io::Result<i64> {
+    const MAXIMUM_SECONDS: i64 = 5;
+    let mut frequency = 0i64;
+    // SAFETY: one initialized exclusive scalar remains live for this call.
+    if unsafe { windows_sys::Win32::System::Performance::QueryPerformanceFrequency(&mut frequency) }
+        == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    frequency
+        .checked_mul(MAXIMUM_SECONDS)
+        .filter(|ticks| *ticks > 0)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid capture clock frequency",
+            )
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn numeric_capture_indices_and_loopback_do_not_supply_interface_scope() -> io::Result<()> {
+        let mut reply = ReplyAddress {
+            raw: abi::Address {
+                flags: abi::OUTBOUND,
+                data: [7 | (3 << 32), 0, 0, 0, 0, 0, 0, 0],
+                ..Default::default()
+            },
+            owner: Weak::new(),
+            compartment: 1,
+            interface: None,
+        };
+        if reply.has_interface_scope() {
+            return Err(io::Error::other(
+                "numeric capture indices supplied an unobserved interface scope",
+            ));
+        }
+        reply.interface = Some(Identity::fixture(7, 1));
+        if !reply.has_interface_scope() {
+            return Err(io::Error::other(
+                "original retained interface observation lost its scope",
+            ));
+        }
+        reply.raw.flags |= abi::LOOPBACK;
+        if reply.has_interface_scope() {
+            return Err(io::Error::other(
+                "loopback admitted interface indices ignored by native injection",
+            ));
+        }
+        Ok(())
+    }
 }

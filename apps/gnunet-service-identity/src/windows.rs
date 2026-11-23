@@ -115,7 +115,7 @@ pub(super) fn run() -> Result<ExitCode, Failure> {
             ))?
         } else {
             let _entered = runtime.enter();
-            BoundListeners::from_activation(activation)?
+            BoundListeners::from_activation_with_access(activation, settings.unix)?
         };
         runtime.block_on(foreground::run(
             foreground::Inputs {

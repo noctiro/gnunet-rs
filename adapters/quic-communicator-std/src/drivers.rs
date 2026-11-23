@@ -75,11 +75,10 @@ impl Runtime for OwnedRuntime {
         quinn::TokioRuntime.new_timer(at)
     }
     fn wrap_udp_socket(&self, socket: std::net::UdpSocket) -> io::Result<Arc<dyn AsyncUdpSocket>> {
-        let inner = quinn::TokioRuntime.wrap_udp_socket(socket)?;
-        Ok(Arc::new(crate::socket::Socket::new(
-            inner,
+        Ok(Arc::new(crate::socket::Socket::from_std(
+            socket,
             self.gate.clone(),
-        )))
+        )?))
     }
     fn now(&self) -> Instant {
         quinn::TokioRuntime.now()

@@ -100,7 +100,7 @@ pub enum LossCause {
     Protocol(ProtocolError),
     /// A preflighted output could not be retained.
     Resource(ProtocolError),
-    /// Explicit physical reconnect request.
+    /// Deliberate physical retirement, without recording a transport failure.
     Requested,
     /// Permanent caller close.
     Closed,
@@ -250,7 +250,7 @@ impl<'a> Client<'a> {
     pub fn request_id(&self, get: GetId<'a>) -> Result<ipc::RequestId, Error> {
         Ok(self.core.request_id(get)?)
     }
-    fn retire(&mut self, cause: LossCause) -> Result<Progress<'a>, Error> {
+    fn retire_failed(&mut self, cause: LossCause) -> Result<Progress<'a>, Error> {
         let epoch = self.core.epoch().ok_or(ProtocolError::NotReady)?;
         self.physical.stop();
         self.core.lost(epoch)?;
@@ -267,34 +267,40 @@ impl<'a> Client<'a> {
         self.core.completion()
     }
     /// Explicitly retire the old stream, retaining only safe logical intent.
+    /// Deliberate retirement adds no failure delay; an existing native failure
+    /// retry keeps its original source-domain timer.
     pub fn reconnect(&mut self) -> Result<Progress<'a>, Error> {
         if self.closed {
             return Err(ProtocolError::Closed.into());
         }
-        self.retire(LossCause::Requested)
+        if self.core.epoch().is_none() {
+            return Err(ProtocolError::NotReady.into());
+        }
+        self.retire_io()?
+            .ok_or_else(|| ProtocolError::NotReady.into())
     }
     /// Physically retire this original MQ or pending native connection attempt
     /// without sampling a clock or starting replacement IO. Every original
     /// one-shot is lost rather than replayed; retained terminal notices remain
     /// available through `take_completion`. No epoch returns None, which does
     /// not imply that no native connection attempt was present. Later callers
-    /// may drive the same client again for independent logical work.
+    /// may drive the same client again for independent logical work. Deliberate
+    /// retirement neither increments failure backoff nor renews a pending retry:
+    /// its original timer remains owned until it expires or the client closes.
     pub fn retire_io(&mut self) -> Result<Option<Progress<'a>>, Error> {
         if self.closed {
             return Err(ProtocolError::Closed.into());
         }
         let epoch = self.core.epoch();
-        self.physical.stop();
+        self.physical.detach();
         if let Some(epoch) = epoch {
             self.core.lost(epoch)?;
-            self.physical.schedule();
             Ok(Some(Progress::Lost {
                 epoch,
                 cause: LossCause::Requested,
                 retained: self.core.snapshot(),
             }))
         } else {
-            self.physical.schedule();
             Ok(None)
         }
     }
@@ -334,7 +340,7 @@ impl<'a> Client<'a> {
         let received = match self.core.receive(epoch, input) {
             Ok(event) => event,
             Err(ProtocolError::Capacity) => return Ok(Progress::Capacity(epoch)),
-            Err(error) => return self.retire(LossCause::Protocol(error)),
+            Err(error) => return self.retire_failed(LossCause::Protocol(error)),
         };
         if !self
             .physical
@@ -344,6 +350,12 @@ impl<'a> Client<'a> {
             .release_frame()
         {
             return Err(ProtocolError::Stale.into());
+        }
+        // An accepted connection alone may immediately close again. Reset the
+        // failure streak only after a whole valid response addresses an
+        // original live recipient; unrelated/canceled input grants no health.
+        if !matches!(received.event(), Event::Ignored(_)) {
+            self.physical.backoff = 0;
         }
         Ok(Progress::Inbound(received))
     }
@@ -365,7 +377,9 @@ impl<'a> Client<'a> {
         if let Err(rejected) =
             framed.enqueue_owned(OwnedFrame::new(bytes), attempt, Class::Ordinary)
         {
-            return self.retire(LossCause::Resource(rejected.reason)).map(Some);
+            return self
+                .retire_failed(LossCause::Resource(rejected.reason))
+                .map(Some);
         }
         Ok(None)
     }
@@ -382,7 +396,7 @@ impl<'a> Client<'a> {
             .poll_write(cx)
         {
             Poll::Pending => Poll::Pending,
-            Poll::Ready(Err(error)) => Poll::Ready(self.retire(LossCause::Io(error))),
+            Poll::Ready(Err(error)) => Poll::Ready(self.retire_failed(LossCause::Io(error))),
             Poll::Ready(Ok(progress)) => {
                 self.read_first = true;
                 if progress.complete {
@@ -415,8 +429,8 @@ impl<'a> Client<'a> {
             .poll_read(cx)
         {
             Poll::Pending => Poll::Pending,
-            Poll::Ready(Err(error)) => Poll::Ready(self.retire(LossCause::Io(error))),
-            Poll::Ready(Ok(ReadStep::Eof)) => Poll::Ready(self.retire(LossCause::Eof)),
+            Poll::Ready(Err(error)) => Poll::Ready(self.retire_failed(LossCause::Io(error))),
+            Poll::Ready(Ok(ReadStep::Eof)) => Poll::Ready(self.retire_failed(LossCause::Eof)),
             Poll::Ready(Ok(ReadStep::Progress { bytes, complete })) => {
                 self.read_first = false;
                 if complete {
@@ -539,3 +553,6 @@ impl Drop for Client<'_> {
         self.physical.subscription = None;
     }
 }
+
+#[cfg(test)]
+mod tests;

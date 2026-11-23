@@ -8,8 +8,9 @@ the provider and optional NSS helper; `-o` repeats a bounded status summary.
 
 ## Credential publication
 
-A normal invocation creates a self-signed P-256/SHA-256 CA with the GNS Proxy CA
-subject, critical CA constraints, certificate-signing usage and 3650-day validity.
+A normal invocation uses OS entropy and RustCrypto P-256 to create a self-signed
+P-256/SHA-256 CA. The certificate has the GNS Proxy CA subject, critical CA
+constraints, certificate-signing usage and 3650-day validity.
 Expanded `[gns-proxy] PROXY_CACERT` receives the certificate and unencrypted
 PKCS#8 key in one PEM file. The serialized private key is erased before launching
 an NSS helper. Existing destinations, including symlinks, are refused.

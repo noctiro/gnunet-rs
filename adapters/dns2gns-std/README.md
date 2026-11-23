@@ -10,10 +10,13 @@ task is created here.
 ## Public interface
 
 Each bounded slot owns its original query future through full-name routing,
-ordinary DNS only after `NotGns`, optional VPN allocation, and the reply
-on the original listener. Every phase uses the original finite canonical/native
-query targets. VPN reply TTL is capped by both the original GNS expiration and
-the original requested lease target; allocation/cancel/close do not prove remote
+ordinary DNS only after `NotGns`, optional VPN allocation, and the reply on the
+original listener. On Linux, FreeBSD, macOS and Windows, wildcard listeners retain
+the local address and ingress from each datagram. Replies use that address and
+carry the original zone for link-local IPv6. The listener discards datagrams
+with missing or conflicting packet information. Every phase uses the original
+finite canonical and native query targets. VPN reply TTL is capped by both the
+original GNS expiration and requested lease target. Allocation, cancellation and close do not prove remote
 forwarding or lease revocation. Unsupported GNS records may produce a normal
 zero-answer DNS reply, with source-record, skipped and packed counts kept apart.
 

@@ -30,7 +30,6 @@ zeroize.workspace = true
 gnunet-native.workspace = true
 
 [target.'cfg(unix)'.dependencies]
-uzers.workspace = true
 nix = { workspace = true, features = ["user"] }
 
 [lints]

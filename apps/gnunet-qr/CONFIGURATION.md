@@ -20,10 +20,10 @@ platform library basenames with NOW/LOCAL loading.
 ## Inputs and bounds
 
 `--png FILE` uses lossless native path decoding. `--device DEVICE` selects an
-opaque native ZBar device identifier; otherwise `DEVICE` supplies it. Unix
-camera default is `/dev/video0`; Windows requires explicit selection. Device
-identifiers admit at most 4096 non-NUL bytes. `--no-display` overrides `DISPLAY`,
-which defaults to YES.
+opaque native ZBar device identifier; otherwise `DEVICE` supplies it. The
+Linux V4L2 default is `/dev/video0`. The other supported platforms require an
+explicit identifier for camera input. Identifiers admit at most 4096 non-NUL
+bytes. `--no-display` overrides `DISPLAY`, which defaults to YES.
 
 | `[qr-rust]` key | Default |
 | --- | --- |

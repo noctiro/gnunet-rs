@@ -1,33 +1,47 @@
-//! Narrow actual Unix datagram boundary. Nix owns recvmsg/sendto and truncation
-//! handling; shared RegisteredIo owns the stable descriptor/reactor contract.
-#![forbid(unsafe_code)]
+//! Native Unix datagrams and stable descriptor ownership.
 use gnunet_service_runtime::readiness::RegisteredIo;
-use nix::{
-    fcntl::{FcntlArg, FdFlag, fcntl},
-    sys::socket::{self, MsgFlags, SockaddrLike, UnixAddr, sockopt},
-};
+use socket2::{Domain, SockAddr, SockRef, Socket, Type};
 use std::{
-    fmt, fs,
-    io::{self, IoSliceMut},
+    fmt, fs, io,
+    mem::offset_of,
     os::{
-        fd::{AsRawFd, OwnedFd},
+        fd::OwnedFd,
         unix::{
             ffi::OsStrExt,
             fs::{DirBuilderExt, FileTypeExt, MetadataExt},
-            net::UnixDatagram,
         },
     },
-    path::PathBuf,
+    path::{Path, PathBuf},
     task::{Context, Poll},
+};
+mod receive;
+
+const PATH_OFFSET: usize = offset_of!(libc::sockaddr_un, sun_path);
+const PATH_CAPACITY: usize = size_of::<libc::sockaddr_un>() - PATH_OFFSET;
+
+pub(crate) const DATAGRAM_LIMIT: usize = if cfg!(any(target_os = "macos", target_os = "ios")) {
+    2048
+} else {
+    65535
 };
 
 /// Literal source/destination address, preserving the actual native address and
 /// its length. Abstract names use the pinned full sun_path zero-filled profile.
-#[derive(Clone, Eq, PartialEq)]
+#[derive(Clone)]
 pub struct Address {
-    raw: UnixAddr,
+    raw: SockAddr,
     path: Vec<u8>,
 }
+impl PartialEq for Address {
+    fn eq(&self, other: &Self) -> bool {
+        match (self.is_abstract(), other.is_abstract()) {
+            (false, false) => self.path == other.path,
+            (true, true) => self.raw == other.raw,
+            _ => false,
+        }
+    }
+}
+impl Eq for Address {}
 impl fmt::Debug for Address {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("UnixAddress")
@@ -45,13 +59,12 @@ fn copy(input: &[u8]) -> io::Result<Vec<u8>> {
     Ok(data)
 }
 impl Address {
-    /// Build the actual filesystem endpoint or exact C full-width Linux abstract
-    /// name without truncation. Native kernel address length stays preserved;
-    /// filename comparison does not duplicate the C internal sockaddr-padding bug.
-    pub fn new(path: &[u8]) -> io::Result<Self> {
+    pub(crate) fn validate(path: &[u8]) -> io::Result<()> {
         if !cfg!(any(
             target_os = "linux",
+            target_os = "android",
             target_os = "macos",
+            target_os = "ios",
             target_os = "freebsd"
         )) {
             return Err(io::Error::new(
@@ -59,51 +72,47 @@ impl Address {
                 "Unix address profile is not qualified for this OS",
             ));
         }
-        let profile = UnixAddr::new(std::path::Path::new("")).map_err(io::Error::from)?;
-        let capacity = profile.as_ref().sun_path.len();
-        if path.is_empty() || path.contains(&0) || path.len() >= capacity {
+        if path.is_empty() || path.contains(&0) || path.len() >= PATH_CAPACITY {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "invalid or overlong Unix path",
             ));
         }
+        if path.starts_with(b"@") && !cfg!(any(target_os = "linux", target_os = "android")) {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "abstract Unix namespace requires the Linux socket ABI",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Build a filesystem endpoint or the full-width Linux ABI abstract name.
+    pub fn new(path: &[u8]) -> io::Result<Self> {
+        Self::validate(path)?;
         let raw = if path[0] == b'@' {
-            #[cfg(target_os = "linux")]
-            {
-                // The C producer passes sizeof(sockaddr_un): Linux abstract names
-                // therefore include the full remaining zero-filled sun_path.
-                let mut name = Vec::new();
-                name.try_reserve_exact(capacity - 1)
-                    .map_err(io::Error::other)?;
-                name.resize(capacity - 1, 0);
-                name[..path.len() - 1].copy_from_slice(&path[1..]);
-                UnixAddr::new_abstract(&name).map_err(io::Error::from)?
-            }
-            #[cfg(not(target_os = "linux"))]
-            {
-                return Err(io::Error::new(
-                    io::ErrorKind::Unsupported,
-                    "abstract Unix namespace is Linux-only",
-                ));
-            }
+            // The original full sockaddr includes the remaining zero padding
+            // in the abstract name on the supported Linux socket ABI.
+            let mut name = [0; PATH_CAPACITY];
+            name[1..path.len()].copy_from_slice(&path[1..]);
+            SockAddr::unix(Path::new(std::ffi::OsStr::from_bytes(&name)))?
         } else {
-            UnixAddr::new(std::path::Path::new(std::ffi::OsStr::from_bytes(path)))
-                .map_err(io::Error::from)?
+            SockAddr::unix(Path::new(std::ffi::OsStr::from_bytes(path)))?
         };
         Ok(Self {
             raw,
             path: copy(path)?,
         })
     }
-    fn received(raw: UnixAddr) -> io::Result<Self> {
-        if let Some(path) = raw.path() {
-            return Ok(Self {
-                path: copy(path.as_os_str().as_bytes())?,
-                raw,
-            });
-        }
-        #[cfg(target_os = "linux")]
-        if let Some(name) = raw.as_abstract() {
+    fn received(raw: SockAddr) -> io::Result<Self> {
+        let invalid = || {
+            io::Error::new(
+                io::ErrorKind::AddrNotAvailable,
+                "unnamed or unrepresentable Unix sender",
+            )
+        };
+        let name = receive::path_bytes(&raw).ok_or_else(invalid)?;
+        if let Some(name) = raw.as_abstract_namespace() {
             let end = name.iter().position(|b| *b == 0).unwrap_or(name.len());
             let mut path = Vec::new();
             path.try_reserve_exact(end + 1).map_err(io::Error::other)?;
@@ -111,10 +120,16 @@ impl Address {
             path.extend_from_slice(&name[..end]);
             return Ok(Self { raw, path });
         }
-        Err(io::Error::new(
-            io::ErrorKind::AddrNotAvailable,
-            "unnamed or unrepresentable Unix sender",
-        ))
+        // BSD can report the pathname without a terminator. Honor the native
+        // returned extent and preserve every non-NUL filename byte.
+        let path = name.strip_suffix(&[0]).unwrap_or(name);
+        if path.is_empty() || path.contains(&0) {
+            return Err(invalid());
+        }
+        Ok(Self {
+            path: copy(path)?,
+            raw,
+        })
     }
     /// Original path bytes, including an abstract at-sign; no UTF8 inference.
     pub fn path(&self) -> &[u8] {
@@ -124,9 +139,9 @@ impl Address {
     pub fn native_len(&self) -> usize {
         self.raw.len() as usize
     }
-    /// Whether this address belongs to Linux's abstract namespace.
+    /// Whether this address belongs to the native abstract namespace.
     pub fn is_abstract(&self) -> bool {
-        self.path.first() == Some(&b'@')
+        self.raw.as_abstract_namespace().is_some()
     }
 }
 struct PathOwner {
@@ -270,27 +285,26 @@ impl OwnedDatagram {
         send_buffer: usize,
         receive_buffer: usize,
     ) -> Result<Self, Failure> {
-        let socket = UnixDatagram::unbound().map_err(|cause| Failure {
+        let socket = Socket::new(Domain::UNIX, Type::DGRAM, None).map_err(|cause| Failure {
             cause,
             cleanup: Close::none(),
         })?;
-        let fd: OwnedFd = socket.into();
         let mut path = None;
         let mut unobserved_bound_name = false;
         let configured = (|| {
-            if send_buffer == 0 || receive_buffer == 0 {
+            if send_buffer == 0
+                || receive_buffer == 0
+                || i32::try_from(send_buffer).is_err()
+                || i32::try_from(receive_buffer).is_err()
+            {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
-                    "zero Unix buffer bound",
+                    "invalid Unix socket buffer bound",
                 ));
             }
-            let flags = fcntl(&fd, FcntlArg::F_GETFL).map_err(io::Error::from)?;
-            let flags =
-                nix::fcntl::OFlag::from_bits_truncate(flags) | nix::fcntl::OFlag::O_NONBLOCK;
-            fcntl(&fd, FcntlArg::F_SETFL(flags)).map_err(io::Error::from)?;
-            fcntl(&fd, FcntlArg::F_SETFD(FdFlag::FD_CLOEXEC)).map_err(io::Error::from)?;
-            socket::setsockopt(&fd, sockopt::SndBuf, &send_buffer).map_err(io::Error::from)?;
-            socket::setsockopt(&fd, sockopt::RcvBuf, &receive_buffer).map_err(io::Error::from)?;
+            socket.set_nonblocking(true)?;
+            socket.set_send_buffer_size(send_buffer)?;
+            socket.set_recv_buffer_size(receive_buffer)?;
             if !address.is_abstract() {
                 let filename = PathBuf::from(std::ffi::OsStr::from_bytes(address.path()));
                 let parent = filename
@@ -302,7 +316,7 @@ impl OwnedDatagram {
                     .mode(0o700)
                     .create(parent)?;
             }
-            socket::bind(fd.as_raw_fd(), &address.raw).map_err(io::Error::from)?;
+            socket.bind(&address.raw)?;
             if !address.is_abstract() {
                 unobserved_bound_name = true;
                 path = Some(PathOwner::capture(PathBuf::from(
@@ -311,10 +325,11 @@ impl OwnedDatagram {
                 unobserved_bound_name = false;
             }
             Ok::<_, io::Error>(Buffers {
-                send: socket::getsockopt(&fd, sockopt::SndBuf).map_err(io::Error::from)?,
-                receive: socket::getsockopt(&fd, sockopt::RcvBuf).map_err(io::Error::from)?,
+                send: socket.send_buffer_size()?,
+                receive: socket.recv_buffer_size()?,
             })
         })();
+        let fd: OwnedFd = socket.into();
         let buffers = match configured {
             Ok(v) => v,
             Err(cause) => {
@@ -369,61 +384,21 @@ impl OwnedDatagram {
                 "Unix socket closed",
             )));
         };
-        io.poll_read_with(cx, |fd| {
-            let mut slices = [IoSliceMut::new(buffer)];
-            let result = socket::recvmsg::<UnixAddr>(
-                fd.as_raw_fd(),
-                &mut slices,
-                None,
-                MsgFlags::MSG_DONTWAIT,
-            )
-            .map_err(io::Error::from)?;
-            let (source, source_error) = match result.address {
-                Some(raw) => match Address::received(raw) {
-                    Ok(a) => (Some(a), None),
-                    Err(e) => (None, Some(e)),
-                },
-                None => (
-                    None,
-                    Some(io::Error::new(
-                        io::ErrorKind::AddrNotAvailable,
-                        "missing Unix source address",
-                    )),
-                ),
-            };
-            Ok(Received {
-                bytes: result.bytes,
-                source,
-                source_error,
-                truncated: result.flags.contains(MsgFlags::MSG_TRUNC),
-                ancillary_truncated: result.flags.contains(MsgFlags::MSG_CTRUNC),
-            })
-        })
+        io.poll_read_with(cx, |fd| receive::datagram(fd, buffer))
     }
-    /// One actual datagram send. Caller retains the immutable packet on
-    /// WouldBlock, treats a short result as OutcomeUnknown, and never retries a
-    /// suffix as another datagram. Other original kernel errno values remain raw.
-    pub fn poll_send(
-        &mut self,
-        cx: &mut Context<'_>,
-        destination: &Address,
-        packet: &[u8],
-    ) -> Poll<io::Result<usize>> {
-        let Some(io) = &self.io else {
-            return Poll::Ready(Err(io::Error::new(
-                io::ErrorKind::NotConnected,
-                "Unix socket closed",
-            )));
-        };
-        io.poll_write_with(cx, |fd| {
-            socket::sendto(
-                fd.as_raw_fd(),
-                packet,
-                &destination.raw,
-                MsgFlags::MSG_DONTWAIT,
-            )
-            .map_err(io::Error::from)
-        })
+    /// One actual nonblocking datagram send, preserving the original errno.
+    /// Backpressure can depend on the destination rather than the writable
+    /// readiness of this unconnected socket.
+    pub fn try_send(&self, destination: &Address, packet: &[u8]) -> io::Result<usize> {
+        let io = self
+            .io
+            .as_ref()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotConnected, "Unix socket closed"))?;
+        SockRef::from(io.descriptor()).send_to_with_flags(
+            packet,
+            &destination.raw,
+            libc::MSG_DONTWAIT,
+        )
     }
     /// Physically deregister/close exactly once, then independently remove only
     /// the observed original socket inode. No clock or successful ACK is needed.
@@ -434,8 +409,34 @@ impl OwnedDatagram {
         }
     }
 }
+
 impl Drop for OwnedDatagram {
     fn drop(&mut self) {
         let _outcome = self.close();
+    }
+}
+
+#[cfg(all(test, any(target_os = "linux", target_os = "android")))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn abstract_address_retains_the_full_native_name() -> io::Result<()> {
+        let path = b"@gnunet-\xff";
+        let address = Address::new(path)?;
+        let name = address
+            .raw
+            .as_abstract_namespace()
+            .ok_or_else(|| io::Error::other("missing native abstract address"))?;
+        let end = path.len() - 1;
+        if address.native_len() != size_of::<libc::sockaddr_un>()
+            || name.len() != 107
+            || name[..end] != path[1..]
+            || name[end..].iter().any(|byte| *byte != 0)
+            || Address::received(address.raw)?.path() != path
+        {
+            return Err(io::Error::other("changed native abstract address bytes"));
+        }
+        Ok(())
     }
 }

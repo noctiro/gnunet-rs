@@ -270,13 +270,19 @@ impl<'id> Session<'id> {
                 self.begin_close(id, EndReason::Failed(Error::Timeout), now, None)?;
             }
         }
-        let expired = self
-            .effects
-            .iter()
-            .find(|e| !e.action.close() && !e.cancelled && now >= e.deadline)
-            .and_then(|e| e.action.call());
-        if let Some(id) = expired {
-            self.begin_close(id, EndReason::Failed(Error::Deadline), now, None)?;
+        let expired = self.effects.iter().position(|effect| {
+            !effect.action.close()
+                && !effect.cancelled
+                && now >= effect.deadline
+                && (!effect.unadmitted_audio() || self.eligible(effect))
+        });
+        if let Some(at) = expired {
+            if self.effects[at].unadmitted_audio() {
+                // Its predecessors have settled and no native owner exists.
+                drop(self.remove_effect(at)?);
+            } else if let Some(id) = self.effects[at].action.call() {
+                self.begin_close(id, EndReason::Failed(Error::Deadline), now, None)?;
+            }
         }
         Ok(())
     }
@@ -285,6 +291,7 @@ impl<'id> Session<'id> {
     pub fn next_deadline(&self) -> Option<u64> {
         self.effects
             .iter()
+            .filter(|effect| !effect.unadmitted_audio() || self.eligible(effect))
             .map(|e| e.deadline)
             .chain(self.calls.iter().flatten().filter_map(|c| {
                 if c.notify_hangup {

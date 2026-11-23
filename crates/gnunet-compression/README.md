@@ -1,9 +1,16 @@
 # Bounded compression
 
-An independent complete-member zlib primitive extracted from the existing SETU
-provider. Caller-owned reusable miniz compressor/inflater state writes into
-explicitly bounded caller storage and rejects trailing or truncated members. The default feature allocates nothing; `alloc` enables that concrete state.
+Complete-member zlib for protocol owners such as SETU. Callers provide input
+and output storage. Both backends reject trailing bytes, truncated members and
+invalid checksums.
 
-Protocol-specific compressed/uncompressed selection, exact output lengths,
-retained memory accounting and original operation ownership remain with each
-protocol. This package grants no SET/SETU wire or interoperability equivalence.
+## Backends
+
+- `fixed-zlib` provides `FixedZlib::new()` for allocation-free workspace. Its
+  encoder uses fixed Huffman blocks and a 32 KiB DEFLATE history window.
+- `alloc` provides `Zlib::new()` with the reusable miniz compressor.
+
+Both types expose `compress(input, output)` and `decompress(input, output)`,
+returning the exact number of output bytes. Treat output as usable only after
+success. The protocol owner chooses the output size and decides whether to
+send the compressed member.

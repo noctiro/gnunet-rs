@@ -22,13 +22,18 @@ hostname boundaries; lookalike hostname prefixes are not rewritten. Upgrades
 and nested HTTP CONNECT are explicitly refused, not silently passed as raw data.
 
 Local HTTPS requires an explicit configured combined CA certificate/private-key
-PEM. The provider validates CA constraints, validity and key match,
-then signs a browser-domain/IP SAN certificate. It does not install OS trust or
-claim the browser trusts that CA. Upstream TLS uses rustls CertificateVerify
-and either genuine PKIX hostname verification or selected GNS TLSA/DANE. TLSA
-usages0–3/selectors0–1/matching0–2 use mature providers and verified paths. Unusable associations are reported and skipped. A set with no usable associations
-uses ordinary PKIX; a mismatch among usable associations remains fatal. Usage2/0/0 can supply the omitted CA from
-the association. Configured public PEM roots join Mozilla anchors;
+PEM. The authority checks certificate constraints and loads an issuer only
+after its private key matches the CA public key. The issuer signs a DNS or IP
+SAN certificate for the browser connection. The operator manages browser trust.
+Both TLS directions use the
+[shared Rust provider](../tls-crypto-std/README.md). Upstream TLS uses rustls
+CertificateVerify and either PKIX hostname verification or selected GNS TLSA/DANE. TLSA
+supports usages 0–3, selectors 0–1 and matching types 0–2. It compares the
+original certificate or public-key DER directly or via the shared SHA-256 and
+SHA-512 helpers. Unusable associations are reported and skipped. A set with no
+usable associations uses ordinary PKIX. A mismatch among usable associations
+remains fatal. Usage 2/0/0 can supply an omitted CA from the association.
+Configured public PEM roots join Mozilla anchors;
 retained full DER is needed for usage0 hashed full-certificate root associations
 when the server omits that root. No trust-store mutation or libgnunet FFI exists. Session certificate resolver guards, exact service/hostname binding and original
 expiry stay live; resumption/early data are disabled and ALPN is HTTP/1.1.

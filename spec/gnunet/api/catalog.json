@@ -4040,7 +4040,7 @@
     {
       "role": "declarations",
       "path": "spec/gnunet/api/declarations.json",
-      "sha256": "5a8a63a931d5e97f3a0cd267218f8d0df8450709c6665e1af3ac1ece924c80b8"
+      "sha256": "e2b046aae1e2c85bcc83245abf951c0ad0790b68bee8693e0226d42d5daea656"
     },
     {
       "role": "operations",

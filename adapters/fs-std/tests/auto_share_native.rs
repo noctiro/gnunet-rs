@@ -8,7 +8,7 @@
 mod local_peer;
 use gnunet_client_host::EndpointSource;
 use gnunet_fs_host::auto_share::{Event, Limits, Options, Owner, Stop};
-use gnunet_native::{DirectorySync, filesystem::Directory};
+use gnunet_native::filesystem::Directory;
 use gnunet_service_runtime::{clock::SystemClock, local::Stream};
 use gnunet_types::AbsoluteTime;
 use gnunet_wire::official::{datastore, fs as wire};
@@ -167,6 +167,56 @@ fn replaced_live_catalog_refuses_new_intent_without_overwriting_the_foreign_imag
 }
 
 #[test]
+fn changed_catalog_after_preparation_refuses_original_task_admission() -> Result {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?
+        .block_on(async {
+            let temporary = Temporary::new()?;
+            let parent = Directory::open(&temporary.0)?;
+            drop(parent.create_private_directory("source".as_ref())?);
+            let source = temporary.0.join("source");
+            fs::write(source.join("one.txt"), b"original indexed source")?;
+            let fs_path = temporary.0.join("fs.sock");
+            let ds_path = temporary.0.join("ds.sock");
+            let fs_listener = Listener::bind(&fs_path).await?;
+            let ds_listener = Listener::bind(&ds_path).await?;
+            let clock = Arc::new(SystemClock);
+            let fs = EndpointSource::unix_with_clock(fs_path, clock.clone());
+            let ds = EndpointSource::unix_with_clock(ds_path, clock);
+            let mut owner = Owner::open(&source, fs, ds, options(), limits(), Stop::default())?;
+            let state = source.join(".auto-share-rust");
+            let replacement = b"independent change";
+            let mut mutation = None;
+            let failed = timeout(
+                WAIT,
+                owner.run(|event| {
+                    if mutation.is_none() && matches!(event, Event::Prepared { .. }) {
+                        mutation = Some((|| -> io::Result<()> {
+                            let mut file = Directory::open(&state)?
+                                .open_file_for_update("catalog.image".as_ref())?;
+                            file.set_len(0)?;
+                            file.write_all(replacement)?;
+                            file.sync_all()
+                        })());
+                    }
+                }),
+            )
+            .await?
+            .err()
+            .ok_or("changed catalog admitted a prepared publication")?;
+            mutation.ok_or("prepared catalog was not exercised")??;
+            assert!(failed.cause.is_some());
+            assert_eq!((failed.report.prepared, failed.report.published), (1, 0));
+            assert_eq!(owner.catalog_directory_sync(), None);
+            assert_eq!(fs::read(state.join("catalog.image"))?, replacement);
+            assert!(!state.join("catalog.next").exists());
+            quiet(&fs_listener).await?;
+            quiet(&ds_listener).await
+        })
+}
+
+#[test]
 fn prepared_nested_tree_reopens_publishes_original_objects_and_never_replays_complete_work()
 -> Result {
     tokio::runtime::Builder::new_current_thread()
@@ -226,15 +276,11 @@ fn prepared_nested_tree_reopens_publishes_original_objects_and_never_replays_com
                 ),
                 (1, 0, 0, 0)
             );
-            #[cfg(unix)]
+            let source_barrier = Directory::open_source(&source)?.sync()?;
+            let state_barrier = Directory::open(&source.join(".auto-share-rust"))?.sync()?;
             assert_eq!(
                 owner.catalog_directory_sync(),
-                Some(DirectorySync::Synchronized)
-            );
-            #[cfg(windows)]
-            assert_eq!(
-                owner.catalog_directory_sync(),
-                Some(DirectorySync::Unavailable)
+                Some(source_barrier.combine(state_barrier))
             );
             quiet(&fs_listener).await?;
             quiet(&ds_listener).await?;

@@ -18,28 +18,24 @@ endpoint ACLs retain native policy. Immediate shutdown is the default.
 
 ## Operations and ownership
 
-The actual `gnunet-secretsharing-host::Server` composes standard781 with the
-installed original-share decrypt owner. READY is printed only after actual
-listeners are bound and the IPC owner can admit; it explicitly says
-`decrypt781=available generate780=singleton-only`. It is not proof of a current
-PILS peer, successful threshold computation, available quorum or full SS/DKG. Dependency identity/proof/source readiness is checked by each original
-request. Threshold-one781 uses the local purpose23 signature, sealed
-PartialVerifier and original Combine/public-key interpolation checks without
-constructing Consensus. It retains the full original share and waits for the
-original start; no525/insert receipt is invented. Higher-threshold781 retains
-the cooperative Consensus workflow. Standard780 is implemented only for threshold1 with an empty peer list
-or exactly the current verified PILS local peer. It returns one real430-byte783
-with threshold/count1, local/original index0, local peer and sigma/public
-key equal to the existing commitment job's g^a0. Existing nonzero1..q-1 sampling
-and original-index Horner supply the secret. Foreign, duplicate or larger
-rosters and other thresholds are refused; no remote FAIR proof is invented.
+`READY` reports bound listeners and active IPC admission. PILS identity and
+CONSENSUS readiness are checked as each request needs them.
 
-Random preparation may precede the original absolute start, while output waits
-for that time and stays within the original finite admission/rawdeadline minimum. The same quota, client EOF/duplicate, partial output and independent cleanup
-paths cover both request kinds. The PILS source is retired and checked
-idle before zeroizing783 secure queue admission; no Consensus MQ is started for
-this singleton. This does not establish multi-peer DKG or legacy-peer identity
-compatibility.
+- `DECRYPT` (781) uses the supplied share. Threshold-one decryption verifies
+  the local partial signature and interpolates the result locally. Higher
+  thresholds use CONSENSUS to collect verified partials.
+- `GENERATE` (780) uses a local path for threshold one with an empty roster or
+  the verified local PILS peer as its only member. On success it returns a
+  430-byte `SECRET_READY` (783) frame. Local preparation can begin before the
+  requested start time. The service waits until that time and retires the PILS
+  connection before queueing the result. Multi-peer generation uses the native
+  CONSENSUS workflow, subject to admission and the
+  [FAIR construction limits](../../crates/gnunet-secretsharing/README.md#fair-construction).
+
+Each connection admits one request. The configured quota and the earlier of the
+service's operation deadline and the request deadline bound the work. The
+service records local completion after writing the full response frame and
+retires client and dependency connections independently during cleanup.
 
 ## Resource policy
 
@@ -57,17 +53,4 @@ the singleton and general generation owners. It defaults to `reference029`
 (alias `reference-0.29.1`); `deterministic`/`reference-deterministic` selects the
 official conditional address-derived mode. Explicit `lsd0014-text` remains the
 separate published textual interpretation, without official C compatibility
-credit. Unknown selections fail and verification never falls back. This choice
-does not change `INDEX_ORDER`, original identity/epoch/request bounds, or the
-documented general multiparty FAIR limitation.
-
-Each admitted original MQ owns one780 or781, its fixed admission/absolute-deadline
-intersection, native source and output receipts. No private-key file,
-Share fixture or DKG transcript is loaded by this app. The original private
-request is passed only to the decrypt owner. No worker or implicit
-service process is spawned. Signal, Logger or Resolver failure fences ordinary
-source IO; cleanup independently retires original clients and dependencies and
-retains debts before STOPPED. Only complete136-byte782 or430-byte783 whole writes count
-as local result writes; they do not acknowledge client processing.
-
-General multi-peer FAIR production/DKG remains unfinished. Normal C client interoperability and failure/platform acceptance remain open.
+credit. Unknown profile names fail at startup.

@@ -1,6 +1,9 @@
-//! Address scope and the official registration-to-notification selection.
+//! Portable Internet socket addresses and NAT advertisement policy.
+mod policy;
+
 use gnunet_types::Error;
 use gnunet_wire::official::nat::{Address, AddressClass};
+pub use policy::{AddressPolicy, Advertised};
 /// Allocation-free Internet socket address; no native padding or platform ABI.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub enum SocketAddress {
@@ -138,45 +141,6 @@ impl SocketAddress {
             class
         }
     }
-}
-/// Select a local/manual/UPnP observation for one original binding. A wildcard
-/// binding normally hides loopback and IPv6 link-local addresses. A zero
-/// observation port adopts this binding's original port.
-pub fn select(
-    binding: SocketAddress,
-    observation: SocketAddress,
-    class: AddressClass,
-    return_local: bool,
-) -> Option<SocketAddress> {
-    match (binding, observation) {
-        (SocketAddress::V4 { .. }, SocketAddress::V4 { .. })
-        | (SocketAddress::V6 { .. }, SocketAddress::V6 { .. }) => {}
-        _ => return None,
-    };
-    let wildcard = binding.is_unspecified();
-    if !return_local && wildcard && (observation.is_loopback() || observation.is_v6_link_local()) {
-        return None;
-    }
-    if !wildcard && binding.is_loopback() != observation.is_loopback() {
-        return None;
-    }
-    if class.0 & AddressClass::EXTERN.0 != 0 && !wildcard && !binding.is_private() {
-        return None;
-    }
-    if !wildcard && !binding.is_private() && !binding.same_ip(observation) {
-        return None;
-    }
-    if binding.is_v6_link_local()
-        && class.0 & AddressClass::EXTERN.0 == 0
-        && !binding.same_ip(observation)
-    {
-        return None;
-    }
-    Some(if observation.port() == 0 {
-        observation.with_port(binding.port())
-    } else {
-        observation
-    })
 }
 /// Parse a literal dotted IPv4 address without DNS, allocation or libc.
 pub fn parse_ipv4(input: &[u8]) -> Result<[u8; 4], Error> {

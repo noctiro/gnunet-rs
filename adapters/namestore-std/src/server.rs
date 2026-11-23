@@ -1,5 +1,5 @@
 //! Actual official NAMESTORE IPC, original durable effects and bounded streams.
-use crate::{backend, worker};
+use crate::{backend, snapshot, worker};
 use gnunet_namestore::{
     Change, ChangeKind, Code, Core, Decision, Filter, Monitor, Query, Reply, StreamProgress,
     Transaction, Write, ZoneIterator,
@@ -21,9 +21,9 @@ use std::{
 };
 use tokio::time::{Instant, Sleep};
 use zeroize::Zeroizing;
-mod snapshot;
 mod streams;
 mod types;
+pub use crate::Error;
 use streams::{Driver, Target};
 pub use types::*;
 #[derive(Clone, Copy)]
@@ -186,7 +186,7 @@ impl Limits {
             || self.output_frames == 0
             || self.output_frames > 64
             || self.output_bytes < self.frame_bytes
-            || self.snapshot_body_bytes < 12
+            || self.snapshot_body_bytes < snapshot::EMPTY_BYTES
             || self.snapshot_body_bytes > 64 * 1024 * 1024
         {
             return Err(Fault::Capacity);
@@ -208,50 +208,6 @@ impl Limits {
     }
 }
 impl<'worker> Server<'worker> {
-    /// Recover one exact qualified NAMESTORE owner. A fresh namespace consumes
-    /// a real empty canonical image under this original lease before returning.
-    /// No await/cancellation boundary splits fresh open from initialization;
-    /// the foreground starts its worker and declares READY only afterward.
-    /// Existing missing/empty canonical state is never silently reset.
-    pub fn recover(
-        store: &mut backend::Store,
-        loaded: backend::Loaded,
-        limits: gnunet_namestore::Limits,
-        critical: fn(gnunet_namestore::RecordType) -> bool,
-    ) -> Result<(Core, u64), Error> {
-        let namespace = gnunet_snapshot_host::Namespace::Namestore;
-        if loaded.namespace() != namespace || store.namespace() != namespace {
-            return Err(Fault::PermissionDenied.into());
-        }
-        let generation = loaded.generation();
-        if generation != store.generation() {
-            return Err(Fault::Stale.into());
-        }
-        let created = loaded.created_directory();
-        let body = loaded.into_body();
-        if generation == 0 {
-            if !created || !body.is_empty() {
-                return Err(Fault::Storage.into());
-            }
-            // Empty authority is a real versioned GNMCORE1/count0 image, not
-            // the absent-image sentinel. This is startup storage, not a client
-            // mutation or monitor event, and contributes no business receipt.
-            let core = Core::new(limits, Vec::new(), critical)?;
-            let image = snapshot::encode(&core.snapshot()?, 12)?;
-            let receipt = store.commit(0, image).map_err(Error::Storage)?;
-            if receipt.namespace() != namespace
-                || receipt.generation() != 1
-                || store.generation() != receipt.generation()
-            {
-                return Err(Fault::OutcomeUnknown.into());
-            }
-            return Ok((core, receipt.generation()));
-        }
-        // Committed empty authority has the same valid 12-byte body as every
-        // ordinary empty snapshot. A zero-length committed body is corruption.
-        let rows = snapshot::decode(body, limits)?;
-        Ok((Core::new(limits, rows, critical)?, generation))
-    }
     /// Retain actual explicit inventory, worker and shared SERVICE ports. This
     /// allocates bounded metadata and one clock subscription; no MQ is opened.
     pub fn new(
@@ -314,7 +270,10 @@ impl<'worker> Server<'worker> {
         }
         let allowed = match address {
             PeerAddress::Tcp(p) => self.ports.options.access.allows(p.ip()),
-            PeerAddress::Unix => self.ports.unix.allows(&connection)?,
+            PeerAddress::Unix => self
+                .ports
+                .unix
+                .admits(&connection, |event| observe(Event::Socket(event))),
         };
         if !allowed {
             drop(connection);

@@ -17,10 +17,12 @@ import shutil
 import signal
 import socket
 import subprocess
+import sys
 import tempfile
 import time
 
 from build_reference import REVISION, source_state
+from linux_images import Images
 from source_fingerprint import fingerprints
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -30,11 +32,19 @@ TRANSIENT = "transient"
 
 
 def digest(path):
-    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    value = hashlib.sha256()
+    with Path(path).open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            value.update(chunk)
+    return value.hexdigest()
 
 
 def save(path, data):
     Path(path).write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
+
+
+def artifact(path, output):
+    return {"path": path.relative_to(output).as_posix(), "sha256": digest(path)}
 
 
 def signal_owned(process, signum):
@@ -71,7 +81,7 @@ def read_dump(path):
 
 
 class Harness:
-    def __init__(self, output, env):
+    def __init__(self, output, env, images=None):
         self.output = output
         self.env = env
         self.commands = []
@@ -80,7 +90,9 @@ class Harness:
         self.cleanup_errors = []
         self.probes = []
         self.diagnostics = {"commands": [], "checks": [], "probes": []}
+        self.configurations = {}
         self.serial = 0
+        self.images = images
 
     def check(self, name, condition, detail=None, diagnostic=False):
         row = {"name": name, "passed": bool(condition)}
@@ -94,7 +106,7 @@ class Harness:
         # Normal one-shot clients are owned just like daemons. An interruption
         # must leave them visible to the enclosing suite's actual cleanup.
         started = time.monotonic()
-        owned = self.start(name, argv)
+        owned = self.start(name, argv, one_shot=True)
         process, row = owned["process"], owned["row"]
         timed_out = False
         try:
@@ -113,12 +125,17 @@ class Harness:
         self.check(name + "-exit", code == expected and not timed_out, {"actual": code, "expected": expected})
         return owned["out_path"].read_bytes()
 
-    def start(self, name, argv, watch=False, diagnostic=False, pass_fds=(), env=None):
+    def start(self, name, argv, watch=False, diagnostic=False, pass_fds=(), env=None, one_shot=False):
         self.serial += 1
         stem = f"{self.serial:02d}-{name}"
         out, err = self.output / (stem + ".stdout"), self.output / (stem + ".stderr")
         row = {"name": name, "argv": [str(arg) for arg in argv],
-               "stdout": out.name, "stderr": err.name, "owned_process_group": True, "diagnostic": diagnostic}
+               "stdout": out.name, "stderr": err.name, "owned_process_group": True,
+               "diagnostic": diagnostic, "one_shot": one_shot}
+        for flag, value in zip(row["argv"][1:], row["argv"][2:]):
+            if flag == "-c" and value in self.configurations:
+                row["configuration"] = self.configurations[value]
+                break
         if pass_fds:
             row["inherited_fds"] = list(pass_fds)
         owned = {"process": None, "row": row, "stdout": None, "stderr": None,
@@ -184,6 +201,8 @@ class Harness:
 
     def finish(self, owned, expected=0):
         process = owned["process"]
+        if "ready_images" in owned["row"]:
+            self.capture_images(owned, "pre_stop_images")
         if process.poll() is None:
             signal_owned(process, signal.SIGTERM)
         try:
@@ -235,7 +254,9 @@ class Harness:
                     attempt(label + "-close", stream.close)
                 ok, value = attempt(label + "-digest", lambda: digest(owned["out_path" if label == "stdout" else "err_path"]))
                 if ok:
-                    owned["row"][label + "_sha256"] = value
+                    key = label + "_sha256"
+                    if owned["row"].setdefault(key, value) != value:
+                        self.cleanup_error(owned, label + "-digest", ValueError("retained log changed"))
         if owned["process"] is not None:
             ok, value = attempt("exit-observation", owned["process"].poll)
             if ok:
@@ -281,6 +302,71 @@ class Harness:
             except BaseException as error:
                 self.cleanup_error(owned, "owned-cleanup", error)
 
+    def capture_images(self, owned, phase):
+        row = owned["row"]
+        if self.images is None or row["diagnostic"]:
+            return
+        try:
+            row[phase] = self.images.capture(owned["process"], row["argv"][0])
+        except (OSError, ValueError) as error:
+            row[phase] = {"unavailable": str(error)}
+
+    def retain_config(self, path, socket_path, database, name):
+        config(path, socket_path, database)
+        target = self.output / name
+        shutil.copy2(path, target)
+        self.configurations[str(path)] = artifact(target, self.output)
+
+    def configurations_unchanged(self):
+        return all(digest(original) == digest(self.output / ref["path"]) == ref["sha256"]
+                   for original, ref in self.configurations.items())
+
+    def image_coverage(self, participants, normal_passed):
+        # A passing behavior run may lack mapped-file proof. Keep the image
+        # qualification explicit and scope it to actual long-lived actors.
+        coverage = {"status": "not-requested"}
+        if self.images is None:
+            return coverage
+        staged = {row["snapshot"]: row["sha256"] for row in participants.values()}
+        observed, uncovered, errors, checked = [], [], [], {}
+        for row in self.commands:
+            command = row["stdout"]
+            if row["one_shot"]:
+                uncovered.append(command)
+                continue
+            try:
+                ready, final = row.get("ready_images", {}), row.get("pre_stop_images", {})
+                if "binary" not in ready or "binary" not in final:
+                    raise ValueError("missing live image snapshot")
+                if ready != final:
+                    raise ValueError("mapped images changed between observations")
+                if staged.get(row["argv"][0]) != ready["binary"]["sha256"]:
+                    raise ValueError("mapped executable differs from the staged actor")
+                binary, *dependencies = [entry["artifact"] for entry in ready["mapped_files"]]
+                loaded = {ref["path"]: ref["sha256"] for ref in dependencies}
+                if binary != ready["binary"] or loaded != ready["loaded_files"]:
+                    raise ValueError("mapped-file inventory disagrees with retained artifacts")
+                if (type(row.get("exit_code")) is not int or row["exit_code"] != 0
+                        or row.get("forced_kill") or row.get("forced_cleanup")
+                        or row.get("launch_failure")):
+                    raise ValueError("missing normal actor exit")
+                for path, expected in {**loaded, binary["path"]: binary["sha256"]}.items():
+                    if path not in checked:
+                        checked[path] = digest(self.output / path)
+                    if checked[path] != expected:
+                        raise ValueError("retained mapped-file bytes changed")
+            except (OSError, ValueError) as error:
+                errors.append({"stdout": command, "reason": str(error)})
+            else:
+                observed.append(command)
+        return {
+            "status": "matched-long-lived-actors" if normal_passed and observed and not errors else "incomplete",
+            "matched_long_lived": observed,
+            "unobserved_one_shot": uncovered,
+            "excluded_diagnostic": [row["stdout"] for row in self.diagnostics["commands"]],
+            "failures": errors,
+        }
+
     def ready(self, owned, path, stdout_line=None):
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline:
@@ -300,12 +386,14 @@ class Harness:
                     probe.settimeout(.1)
                     try:
                         probe.connect(str(path))
-                        if stdout_line is not None:
-                            self.check(owned["row"]["name"] + "-initialized-stdout", True, {"owned_pid": owned["process"].pid, "line": stdout_line.decode().rstrip("\n")}, diagnostic=owned["row"]["diagnostic"])
-                        self.check(owned["row"]["name"] + "-listening", True, diagnostic=owned["row"]["diagnostic"])
-                        return
                     except (ConnectionRefusedError, FileNotFoundError, socket.timeout):
-                        pass
+                        time.sleep(.02)
+                        continue
+                if stdout_line is not None:
+                    self.check(owned["row"]["name"] + "-initialized-stdout", True, {"owned_pid": owned["process"].pid, "line": stdout_line.decode().rstrip("\n")}, diagnostic=owned["row"]["diagnostic"])
+                self.check(owned["row"]["name"] + "-listening", True, diagnostic=owned["row"]["diagnostic"])
+                self.capture_images(owned, "ready_images")
+                return
             time.sleep(.02)
         raise ValueError("service readiness deadline elapsed: " + owned["row"]["name"])
 
@@ -439,16 +527,34 @@ def rust_set(harness, binary, path, name, value, persistent=False, relative=Fals
     harness.check("rust-set-" + name + "-confirmed", [json.loads(line) for line in raw.splitlines()] == [{"event": "statistics_set_confirmed"}])
 
 
+def text_selector(binary, conf, name, *, quiet=False):
+    argv = [str(binary), "-c", str(conf), "-L", "ERROR"]
+    if quiet:
+        argv.append("-q")
+    return [*argv, "-s", SUBSYSTEM, "-n", name]
+
+
 def c_get(harness, binary, conf, name, expected):
-    raw = harness.command("c-get-" + name, [str(binary), "-c", str(conf), "-L", "ERROR", "-q", "-s", SUBSYSTEM, "-n", name])
+    raw = harness.command("c-get-" + name, text_selector(binary, conf, name, quiet=True))
     harness.check("c-get-" + name + "-value", raw.strip() == str(expected).encode(), {"actual": raw.decode(errors="replace"), "expected": expected})
+    return raw
 
 
 def c_set(harness, binary, conf, name, value, persistent=False):
-    argv = [str(binary), "-c", str(conf), "-L", "ERROR", "-s", SUBSYSTEM, "-n", name]
+    argv = text_selector(binary, conf, name)
     if persistent:
         argv.append("-p")
     harness.command("c-set-" + name, [*argv, str(value)])
+
+
+def standalone_rust_roundtrip(harness, rust, reference, conf, name, value):
+    raw = harness.command("rust-statistics-set-" + name, [*text_selector(rust, conf, name), "-p", str(value)])
+    harness.check("rust-statistics-set-" + name + "-stdout", raw == b"", raw.decode(errors="replace"))
+    actual = harness.command("rust-statistics-get-" + name, text_selector(rust, conf, name, quiet=True))
+    c_output = c_get(harness, reference, conf, name, value)
+    expected = f"{value:16}\n"
+    harness.check("rust-statistics-get-" + name + "-text", actual == c_output == expected.encode(),
+                  {"rust": actual.decode(errors="replace"), "c": c_output.decode(errors="replace"), "expected": expected})
 
 
 def snapshot(binary, directory, name):
@@ -460,19 +566,155 @@ def snapshot(binary, directory, name):
     return target
 
 
+def normal_cases(harness, active, owned, report, normal_only):
+    output = harness.output
+    # Rust client against the actual unmodified reference daemon.
+    c_socket, c_dump, c_conf = owned / "c.sock", owned / "c.dat", owned / "c.conf"
+    harness.retain_config(c_conf, c_socket, c_dump, "c-service.conf")
+    c_server = harness.start("c-service-first", [str(active["c_service"]), "-c", str(c_conf), "-L", "ERROR"])
+    harness.ready(c_server, c_socket)
+    report["full_c_statistics_daemon"] = True
+    rust_set(harness, active["rust_client"], c_socket, COUNTER, 41, persistent=True)
+    rust_get(harness, active["rust_client"], c_socket, COUNTER, 41, True)
+    c_get(harness, active["c_client"], c_conf, COUNTER, 41)
+    if not normal_only:
+        harness.malformed("c-service", c_socket)
+        c_get(harness, active["c_client"], c_conf, COUNTER, 41)
+    standalone_rust_roundtrip(harness, active["rust_statistics"], active["c_client"], c_conf, COUNTER, 43)
+    rust_get(harness, active["rust_client"], c_socket, COUNTER, 43, True)
+    c_set(harness, active["c_client"], c_conf, COUNTER, 57)
+    rust_get(harness, active["rust_client"], c_socket, COUNTER, 57, False)
+    rust_set(harness, active["rust_client"], c_socket, COUNTER, 99, persistent=True)
+    rust_set(harness, active["rust_client"], c_socket, TRANSIENT, 7)
+    c_get(harness, active["c_client"], c_conf, TRANSIENT, 7)
+    harness.finish(c_server)
+    c_retained = output / "c-statistics.dat"
+    shutil.copy2(c_dump, c_retained)
+    c_rows = read_dump(c_retained)
+    harness.check("c-dump-official-set-stream", any(row["subsystem"] == SUBSYSTEM.encode().hex() and row["name"] == COUNTER.encode().hex() and row["value"] == 99 for row in c_rows), c_rows)
+    c_restart = harness.start("c-service-restart", [str(active["c_service"]), "-c", str(c_conf), "-L", "ERROR"])
+    harness.ready(c_restart, c_socket)
+    rust_get(harness, active["rust_client"], c_socket, COUNTER, 99, True)
+    rust_get(harness, active["rust_client"], c_socket, TRANSIENT, None)
+    harness.finish(c_restart)
+    if not normal_only:
+        # Keep the known invalid-message reference bug off the successful
+        # persistent-restart instances. It cannot earn compatibility credit.
+        bad_socket, bad_conf = owned / "bad-c.sock", owned / "bad-c.conf"
+        config(bad_conf, bad_socket, owned / "bad-c.dat")
+        bad_reference = harness.start("c-service-known-invalid-message-variance", [str(active["c_service"]), "-c", str(bad_conf), "-L", "ERROR"], diagnostic=True)
+        harness.ready(bad_reference, bad_socket)
+        harness.unknown_type("c-service", bad_socket, expect_timeout=True)
+        harness.reference_unknown_shutdown(bad_reference)
+    # Unmodified reference C client against the real Rust service host.
+    r_socket, r_dump, r_conf = owned / "r.sock", owned / "r.dat", owned / "r.conf"
+    harness.retain_config(r_conf, r_socket, r_dump, "rust-service.conf")
+    def start_rust(generation, configuration=r_conf, socket_path=r_socket):
+        command = [str(active["rust_service"]), "-c", str(configuration), "-L", "ERROR"]
+        service = harness.start("rust-service-" + str(generation), command)
+        harness.ready(service, socket_path, b"READY statistics persistence=official-set-snapshot\n")
+        return service
+    rust_server = start_rust(0)
+    c_set(harness, active["c_client"], r_conf, COUNTER, 55, persistent=True)
+    rust_get(harness, active["rust_client"], r_socket, COUNTER, 55, True)
+    c_get(harness, active["c_client"], r_conf, COUNTER, 55)
+    if not normal_only:
+        harness.malformed("rust-service", r_socket)
+        harness.unknown_type("rust-service", r_socket, expect_timeout=False)
+        c_get(harness, active["c_client"], r_conf, COUNTER, 55)
+    watcher = harness.start("c-watch-rust-service", [str(active["c_client"]), "-c", str(r_conf), "-L", "ERROR", "-q", "-w", "-s", SUBSYSTEM, "-n", COUNTER], watch=True)
+    harness.watch_value(watcher, 55)
+    harness.capture_images(watcher, "ready_images")
+    rust_set(harness, active["rust_client"], r_socket, COUNTER, 57, persistent=True)
+    harness.watch_value(watcher, 57)
+    rust_set(harness, active["rust_client"], r_socket, COUNTER, -9, persistent=True, relative=True)
+    harness.watch_value(watcher, 48)
+    harness.finish(watcher)
+    harness.check("c-watch-exact-notifications", watcher["out_path"].read_bytes().splitlines() == [b"55", b"57", b"48"])
+    c_get(harness, active["c_client"], r_conf, COUNTER, 48)
+    c_set(harness, active["c_client"], r_conf, TRANSIENT, 7)
+    rust_get(harness, active["rust_client"], r_socket, TRANSIENT, 7, False)
+    harness.finish(rust_server)
+    harness.check("rust-first-socket-cleanup", not r_socket.exists())
+    r_retained = output / "rust-statistics.dat"
+    shutil.copy2(r_dump, r_retained)
+    r_rows = read_dump(r_retained)
+    harness.check("rust-dump-official-set-stream", any(row["subsystem"] == SUBSYSTEM.encode().hex() and row["name"] == COUNTER.encode().hex() and row["value"] == 48 for row in r_rows), r_rows)
+    report["persistent_dumps"] = [artifact(path, output) for path in (c_retained, r_retained)]
+    rust_restart = start_rust(1)
+    c_get(harness, active["c_client"], r_conf, COUNTER, 48)
+    rust_get(harness, active["rust_client"], r_socket, COUNTER, 48, True)
+    rust_get(harness, active["rust_client"], r_socket, TRANSIENT, None)
+    harness.finish(rust_restart)
+    harness.check("rust-restart-socket-cleanup", not r_socket.exists())
+    # Load each implementation's real persistent file with the other
+    # implementation; byte inspection alone would not establish this.
+    cross_c_socket, cross_c_conf, cross_c_dump = owned / "xc.sock", owned / "xc.conf", owned / "xc.dat"
+    shutil.copy2(r_retained, cross_c_dump)
+    harness.retain_config(cross_c_conf, cross_c_socket, cross_c_dump, "c-load-rust-dump.conf")
+    cross_c = harness.start("c-service-load-rust-dump", [str(active["c_service"]), "-c", str(cross_c_conf), "-L", "ERROR"])
+    harness.ready(cross_c, cross_c_socket)
+    c_get(harness, active["c_client"], cross_c_conf, COUNTER, 48)
+    rust_get(harness, active["rust_client"], cross_c_socket, COUNTER, 48, True)
+    harness.finish(cross_c)
+    cross_r_socket, cross_r_conf, cross_r_dump = owned / "xr.sock", owned / "xr.conf", owned / "xr.dat"
+    shutil.copy2(c_retained, cross_r_dump)
+    harness.retain_config(cross_r_conf, cross_r_socket, cross_r_dump, "rust-load-c-dump.conf")
+    cross_r = start_rust("load-c-dump", cross_r_conf, cross_r_socket)
+    c_get(harness, active["c_client"], cross_r_conf, COUNTER, 99)
+    rust_get(harness, active["rust_client"], cross_r_socket, COUNTER, 99, True)
+    harness.finish(cross_r)
+    harness.check("rust-cross-load-socket-cleanup", not cross_r_socket.exists())
+
+
+def watch_initial(harness, active, owned, report):
+    value = 55
+    socket_path, database, configuration = owned / "watch.sock", owned / "watch.dat", owned / "watch.conf"
+    names = SUBSYSTEM.encode() + b"\0" + COUNTER.encode() + b"\0"
+    # Public SET dump framing, independent of the Rust store encoder.
+    frame = (16 + len(names)).to_bytes(2, "big") + b"\x00\xa8\x00\x00\x00\x02"
+    fixture = harness.output / "watch-initial-input.dat"
+    fixture.write_bytes(frame + value.to_bytes(8, "big") + names)
+    report["persistent_dumps"] = [artifact(fixture, harness.output)]
+    shutil.copy2(fixture, database)
+    harness.retain_config(configuration, socket_path, database, "watch-initial.conf")
+
+    service = harness.start("rust-service-watch-initial",
+                            [str(active["rust_service"]), "-c", str(configuration), "-L", "ERROR"])
+    harness.ready(service, socket_path, b"READY statistics persistence=official-set-snapshot\n")
+    command = [str(active["c_client"]), "-c", str(configuration), "-L", "ERROR",
+               "-q", "-w", "-s", SUBSYSTEM, "-n", COUNTER]
+    watcher = harness.start("c-watch-initial", command, watch=True)
+    harness.watch_value(watcher, value)
+    harness.capture_images(watcher, "ready_images")
+    harness.finish(watcher)
+    harness.check("c-watch-exact-initial-value",
+                  watcher["out_path"].read_bytes().splitlines() == [str(value).encode()])
+    harness.finish(service)
+    harness.check("watch-initial-socket-cleanup", not socket_path.exists())
+
+
 def run_suite(args):
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
+    capture_requested = getattr(args, "capture_linux_images", False)
+    watch_initial_only = getattr(args, "watch_initial_only", False)
     report = {"schema": 1, "kind": "official-c-statistics-daemon-ipc", "status": "failed",
               "full_c_statistics_daemon": False, "full_gnunet_peer": False, "p2p_peer_interoperation": False,
-              "scope": "Actual upstream STATISTICS daemon and CLI in both directions, WATCH and observed graceful persistent restart. No whole GNUnet peer, ARM activation, crash consistency or full API-inventory certification.",
+              "scope": "Actual upstream STATISTICS daemon and CLI in both directions, standalone Rust CLI absolute SET and selector GET, WATCH and observed graceful persistent restart. No whole GNUnet peer, ARM activation, crash consistency or full API-inventory certification.",
               "selected_profile": "first-normal" if args.normal_only else "normal-with-protocol-diagnostics",
               "unexecuted_profiles": ["malformed/partial-EOF", "unknown-message-type"] if args.normal_only else [],
-              "executed_checks": 0, "commands": [], "checks": []}
+              "executed_checks": 0, "commands": [], "checks": [],
+              "linux_image_capture": {"status": "incomplete" if capture_requested else "not-requested"}}
+    if watch_initial_only:
+        report.update(selected_profile="watch-initial-only",
+                      scope="Official C WATCH initial numeric notification from an actual Rust STATISTICS daemon over private Unix IPC. Startup uses an independently encoded persistent SET fixture.",
+                      unexecuted_profiles=["SET", "GET", "WATCH changes", "persistence restart", "diagnostics"])
     harness = None
     owned = None
     try:
-        receipt = json.loads(args.reference.read_text())
+        raw_receipt = args.reference.read_bytes()
+        receipt = json.loads(raw_receipt)
         if receipt.get("status") != "passed" or receipt.get("kind") != "unmodified-official-c-reference-build" or receipt["upstream"]["revision"] != REVISION:
             raise ValueError("a successful pinned unmodified-C build receipt is required")
         original_state = source_state(Path(receipt["source"]))
@@ -485,11 +727,19 @@ def run_suite(args):
         before = fingerprints(ROOT)
         report["input_fingerprints"] = before
         report["upstream"] = receipt["upstream"]
-        report["reference_receipt"] = {"path": str(args.reference.resolve()), "sha256": digest(args.reference)}
+        frozen_receipt = output / "reference-build.json"
+        frozen_receipt.write_bytes(raw_receipt)
+        report["reference_receipt"] = {"path": str(args.reference.resolve()),
+                                       "sha256": hashlib.sha256(raw_receipt).hexdigest()}
+        report["retained_reference_receipt"] = artifact(frozen_receipt, output)
         binaries = output / "binaries"
         binaries.mkdir()
-        participants = {"c_client": Path(receipt["artifacts"]["client"]["path"]), "c_service": Path(receipt["artifacts"]["service"]["path"]),
-                        "rust_client": args.rust_client.resolve(), "rust_service": args.rust_service.resolve()}
+        participants = {"c_client": Path(receipt["artifacts"]["client"]["path"]),
+                        "rust_service": args.rust_service.resolve()}
+        if not watch_initial_only:
+            participants.update(c_service=Path(receipt["artifacts"]["service"]["path"]),
+                                rust_client=args.rust_client.resolve(),
+                                rust_statistics=args.rust_statistics.resolve())
         report["participants"] = {name: {"original": str(path), "sha256": digest(path)} for name, path in participants.items()}
         active = {name: snapshot(path, binaries, name) for name, path in participants.items()}
         for name, path in active.items():
@@ -498,10 +748,19 @@ def run_suite(args):
         # overrides replace these private fixtures. HOME is left untouched;
         # task-specific XDG locations isolate configuration/data without
         # changing the user's actual environment or home directory.
-        env = {name: value for name, value in os.environ.items() if not name.startswith("GNUNET_")}
+        excluded = ("GNUNET_", "LD_", "DYLD_") if watch_initial_only else ("GNUNET_",)
+        env = {name: value for name, value in os.environ.items() if not name.startswith(excluded)}
+        if watch_initial_only:
+            prefix = Path(receipt["prefix"])
+            expected_env = {"GNUNET_PREFIX": str(prefix), "LD_LIBRARY_PATH": str(prefix / "lib"),
+                            "DYLD_LIBRARY_PATH": str(prefix / "lib")}
+            if receipt["runtime_environment"] != expected_env:
+                raise ValueError("reference runtime environment must match the normal staged library prefix")
         env.update(receipt["runtime_environment"], LC_ALL="C")
-        harness = Harness(output, env)
+        images = Images(output) if capture_requested else None
+        harness = Harness(output, env, images)
         report["commands"], report["checks"] = harness.commands, harness.checks
+        report["configurations"] = harness.configurations
         report["diagnostics"] = harness.diagnostics
         report["malformed_probes"] = harness.probes
         owned = Path(tempfile.mkdtemp(prefix="gn-iop-"))
@@ -512,109 +771,30 @@ def run_suite(args):
             directory.mkdir(mode=0o700)
             env[name] = str(directory)
         report["owned_runtime"] = str(owned)
-        # Rust client against the actual unmodified reference daemon.
-        c_socket, c_dump, c_conf = owned / "c.sock", owned / "c.dat", owned / "c.conf"
-        config(c_conf, c_socket, c_dump)
-        shutil.copy2(c_conf, output / "c-service.conf")
-        c_server = harness.start("c-service-first", [str(active["c_service"]), "-c", str(c_conf), "-L", "ERROR"])
-        harness.ready(c_server, c_socket)
-        report["full_c_statistics_daemon"] = True
-        rust_set(harness, active["rust_client"], c_socket, COUNTER, 41, persistent=True)
-        rust_get(harness, active["rust_client"], c_socket, COUNTER, 41, True)
-        c_get(harness, active["c_client"], c_conf, COUNTER, 41)
-        if not args.normal_only:
-            harness.malformed("c-service", c_socket)
-            c_get(harness, active["c_client"], c_conf, COUNTER, 41)
-        c_set(harness, active["c_client"], c_conf, COUNTER, 57)
-        rust_get(harness, active["rust_client"], c_socket, COUNTER, 57, False)
-        rust_set(harness, active["rust_client"], c_socket, COUNTER, 99, persistent=True)
-        rust_set(harness, active["rust_client"], c_socket, TRANSIENT, 7)
-        c_get(harness, active["c_client"], c_conf, TRANSIENT, 7)
-        harness.finish(c_server)
-        c_rows = read_dump(c_dump)
-        harness.check("c-dump-official-set-stream", any(row["subsystem"] == SUBSYSTEM.encode().hex() and row["name"] == COUNTER.encode().hex() and row["value"] == 99 for row in c_rows), c_rows)
-        shutil.copy2(c_dump, output / "c-statistics.dat")
-        c_restart = harness.start("c-service-restart", [str(active["c_service"]), "-c", str(c_conf), "-L", "ERROR"])
-        harness.ready(c_restart, c_socket)
-        rust_get(harness, active["rust_client"], c_socket, COUNTER, 99, True)
-        rust_get(harness, active["rust_client"], c_socket, TRANSIENT, None)
-        harness.finish(c_restart)
-        if not args.normal_only:
-            # Keep the known invalid-message reference bug off the successful
-            # persistent-restart instances. It cannot earn compatibility credit.
-            bad_socket, bad_conf = owned / "bad-c.sock", owned / "bad-c.conf"
-            config(bad_conf, bad_socket, owned / "bad-c.dat")
-            bad_reference = harness.start("c-service-known-invalid-message-variance", [str(active["c_service"]), "-c", str(bad_conf), "-L", "ERROR"], diagnostic=True)
-            harness.ready(bad_reference, bad_socket)
-            harness.unknown_type("c-service", bad_socket, expect_timeout=True)
-            harness.reference_unknown_shutdown(bad_reference)
-        # Unmodified reference C client against the real Rust service host.
-        r_socket, r_dump, r_conf = owned / "r.sock", owned / "r.dat", owned / "r.conf"
-        config(r_conf, r_socket, r_dump)
-        shutil.copy2(r_conf, output / "rust-service.conf")
-        def start_rust(generation, configuration=r_conf, socket_path=r_socket):
-            command = [str(active["rust_service"]), "-c", str(configuration), "-L", "ERROR"]
-            service = harness.start("rust-service-" + str(generation), command)
-            harness.ready(service, socket_path, b"READY statistics persistence=official-set-snapshot\n")
-            return service
-        rust_server = start_rust(0)
-        c_set(harness, active["c_client"], r_conf, COUNTER, 55, persistent=True)
-        rust_get(harness, active["rust_client"], r_socket, COUNTER, 55, True)
-        c_get(harness, active["c_client"], r_conf, COUNTER, 55)
-        if not args.normal_only:
-            harness.malformed("rust-service", r_socket)
-            harness.unknown_type("rust-service", r_socket, expect_timeout=False)
-            c_get(harness, active["c_client"], r_conf, COUNTER, 55)
-        watcher = harness.start("c-watch-rust-service", [str(active["c_client"]), "-c", str(r_conf), "-L", "ERROR", "-q", "-w", "-s", SUBSYSTEM, "-n", COUNTER], watch=True)
-        harness.watch_value(watcher, 55)
-        rust_set(harness, active["rust_client"], r_socket, COUNTER, 57, persistent=True)
-        harness.watch_value(watcher, 57)
-        rust_set(harness, active["rust_client"], r_socket, COUNTER, -9, persistent=True, relative=True)
-        harness.watch_value(watcher, 48)
-        harness.finish(watcher)
-        harness.check("c-watch-exact-notifications", watcher["out_path"].read_bytes().splitlines() == [b"55", b"57", b"48"])
-        c_get(harness, active["c_client"], r_conf, COUNTER, 48)
-        c_set(harness, active["c_client"], r_conf, TRANSIENT, 7)
-        rust_get(harness, active["rust_client"], r_socket, TRANSIENT, 7, False)
-        harness.finish(rust_server)
-        harness.check("rust-first-socket-cleanup", not r_socket.exists())
-        r_rows = read_dump(r_dump)
-        harness.check("rust-dump-official-set-stream", any(row["subsystem"] == SUBSYSTEM.encode().hex() and row["name"] == COUNTER.encode().hex() and row["value"] == 48 for row in r_rows), r_rows)
-        shutil.copy2(r_dump, output / "rust-statistics.dat")
-        rust_restart = start_rust(1)
-        c_get(harness, active["c_client"], r_conf, COUNTER, 48)
-        rust_get(harness, active["rust_client"], r_socket, COUNTER, 48, True)
-        rust_get(harness, active["rust_client"], r_socket, TRANSIENT, None)
-        harness.finish(rust_restart)
-        harness.check("rust-restart-socket-cleanup", not r_socket.exists())
-        # Load each implementation's real persistent file with the other
-        # implementation; byte inspection alone would not establish this.
-        cross_c_socket, cross_c_conf, cross_c_dump = owned / "xc.sock", owned / "xc.conf", owned / "xc.dat"
-        shutil.copy2(r_dump, cross_c_dump)
-        config(cross_c_conf, cross_c_socket, cross_c_dump)
-        cross_c = harness.start("c-service-load-rust-dump", [str(active["c_service"]), "-c", str(cross_c_conf), "-L", "ERROR"])
-        harness.ready(cross_c, cross_c_socket)
-        c_get(harness, active["c_client"], cross_c_conf, COUNTER, 48)
-        rust_get(harness, active["rust_client"], cross_c_socket, COUNTER, 48, True)
-        harness.finish(cross_c)
-        cross_r_socket, cross_r_conf, cross_r_dump = owned / "xr.sock", owned / "xr.conf", owned / "xr.dat"
-        shutil.copy2(c_dump, cross_r_dump)
-        config(cross_r_conf, cross_r_socket, cross_r_dump)
-        cross_r = start_rust("load-c-dump", cross_r_conf, cross_r_socket)
-        c_get(harness, active["c_client"], cross_r_conf, COUNTER, 99)
-        rust_get(harness, active["rust_client"], cross_r_socket, COUNTER, 99, True)
-        harness.finish(cross_r)
-        harness.check("rust-cross-load-socket-cleanup", not cross_r_socket.exists())
+        if watch_initial_only:
+            watch_initial(harness, active, owned, report)
+        else:
+            normal_cases(harness, active, owned, report, args.normal_only)
         report["source_unchanged"] = fingerprints(ROOT) == before
         report["reference_unchanged"] = source_state(Path(receipt["source"])) == original_state
+        report["reference_receipt_unchanged"] = (digest(args.reference) == digest(frozen_receipt)
+                                                == report["reference_receipt"]["sha256"])
         report["reference_runtime_inputs_unchanged"] = all(digest(row["path"]) == row["sha256"] for row in reference_runtime_inputs)
+        report["configurations_unchanged"] = harness.configurations_unchanged()
         report["participants_unchanged"] = all(digest(path) == report["participants"][name]["sha256"] == digest(active[name]) for name, path in participants.items())
+        report["persistent_dumps_unchanged"] = all(
+            digest(output / ref["path"]) == ref["sha256"] for ref in report["persistent_dumps"]
+        )
         report["reference_diagnostics"] = [{"name": row["name"], "stderr": row["stderr"], "bytes": (output / row["stderr"]).stat().st_size, "stderr_sha256": row["stderr_sha256"]}
                                            for row in harness.commands + harness.diagnostics["commands"] if row["name"].startswith("c-") and (output / row["stderr"]).stat().st_size]
         report["known_variances"] = ["Pinned C WATCH client interprets persistence using the VALUE UID high bit, while the actual C and Rust servers emit flags bit 2. Numeric watch values are checked; this report does not erase that upstream flag interpretation discrepancy."]
-        if not args.normal_only:
+        if not args.normal_only and not watch_initial_only:
             report["known_variances"].append("Pinned C MQ_inject_message does not handle NO for an unmatched type, leaving that invalid-message connection paused and preventing soft shutdown. A separate C diagnostic instance observes the read/soft-shutdown timeout and is explicitly killed and reaped. Normal persistent C instances must exit zero. Rust closes unsupported requests. This is not identical invalid-message behavior or whole-service compatibility credit.")
-        harness.check("all-proof-inputs-unchanged", report["source_unchanged"] and report["reference_unchanged"] and report["reference_runtime_inputs_unchanged"] and report["participants_unchanged"])
+        harness.check("all-proof-inputs-unchanged", all(report[key] for key in (
+            "source_unchanged", "reference_unchanged", "reference_receipt_unchanged",
+            "reference_runtime_inputs_unchanged", "configurations_unchanged",
+            "participants_unchanged", "persistent_dumps_unchanged",
+        )))
         report["status"] = "passed"
     except (Exception, KeyboardInterrupt) as error:
         report["failure"] = type(error).__name__ + ": " + str(error)
@@ -647,6 +827,8 @@ def run_suite(args):
         report["cleanup_errors"] = cleanup_errors
         if cleanup_errors:
             report["status"] = "failed"
+        if harness is not None:
+            report["linux_image_capture"] = harness.image_coverage(report["participants"], report["status"] == "passed")
         try:
             save(output / "result.json", report)
         except BaseException as error:
@@ -662,11 +844,20 @@ def main():
     signal.signal(signal.SIGTERM, interrupted)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--reference", required=True, type=Path, help="build_reference.py build-result.json")
-    parser.add_argument("--rust-client", required=True, type=Path)
+    parser.add_argument("--rust-client", type=Path, help="Rust gnunet-cli binary for the full suite")
+    parser.add_argument("--rust-statistics", type=Path, help="standalone Rust gnunet-statistics binary for the full suite")
     parser.add_argument("--rust-service", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
-    parser.add_argument("--normal-only", action="store_true", help="Select normal Unix GET/SET, C WATCH and graceful persistence restart; exclude protocol-error probes")
-    return run_suite(parser.parse_args())
+    profiles = parser.add_mutually_exclusive_group()
+    profiles.add_argument("--normal-only", action="store_true", help="Select normal Unix GET/SET, C WATCH and graceful persistence restart; exclude protocol-error probes")
+    profiles.add_argument("--watch-initial-only", action="store_true", help="Observe an official C WATCH of preloaded Rust STATISTICS state using only the two long-lived programs")
+    parser.add_argument("--capture-linux-images", action="store_true", help="Retain executable file mappings of ready daemons and the C WATCH client through graceful shutdown")
+    args = parser.parse_args()
+    if not args.watch_initial_only and (args.rust_client is None or args.rust_statistics is None):
+        parser.error("the daemon suite requires --rust-client and --rust-statistics")
+    if args.capture_linux_images and sys.platform != "linux":
+        parser.error("--capture-linux-images requires Linux /proc")
+    return run_suite(args)
 
 
 if __name__ == "__main__":

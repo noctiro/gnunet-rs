@@ -37,8 +37,7 @@ pub struct Settings {
     pub profile: gnunet_pils::Profile,
     /// Original general provider work budget, distinct from queued/written.
     pub operation: Duration,
-    /// Local source-recovery budget and stable-generation interval for restart
-    /// backoff. This policy does not require an accepted client to send a frame.
+    /// Minimum stable native session duration for resetting restart backoff.
     pub recovery: Duration,
     /// Official optional burst orchestration and finite original work budget.
     pub burst: gnunet_transport::burst::Policy,
@@ -323,16 +322,17 @@ impl Settings {
             retirement: grace,
         };
         let stamp_path = if c.get(LOCAL, b"MONOTIME_STORE").is_some() {
-            c.get_filename(LOCAL, b"MONOTIME_STORE", &ProcessEnvironment)?
+            c.get_absolute_filename(LOCAL, b"MONOTIME_STORE", &ProcessEnvironment)?
         } else {
             let raw = b"$GNUNET_DATA_HOME/transport-rust-monotime";
-            let value = c.expand_dollar(raw, &ProcessEnvironment)?;
-            if value == raw {
+            if c.get(b"PATHS", b"GNUNET_DATA_HOME").is_none()
+                && std::env::var_os("GNUNET_DATA_HOME").is_none()
+            {
                 return Err("set GNUNET_DATA_HOME or [transport-rust] MONOTIME_STORE to an independent Rust-owned directory".into());
             }
-            c.expand_filename(&value, &ProcessEnvironment)?
+            c.expand_absolute_filename(raw, &ProcessEnvironment)?
         };
-        if !stamp_path.is_absolute() || stamp_path.file_name().is_none() {
+        if stamp_path.file_name().is_none() {
             return Err("MONOTIME_STORE must be an absolute final directory path".into());
         }
         let dv = crate::dv_settings::Policy::read(c, &stamp_path, operation)?;

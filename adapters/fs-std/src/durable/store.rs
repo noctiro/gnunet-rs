@@ -369,8 +369,8 @@ impl Store {
         store.verify()?;
         Ok(store)
     }
-    /// Actual combined root/parent naming-barrier observation. File/WAL syncs
-    /// remain separate. Windows reports Unavailable without inventing a barrier.
+    /// Combined native naming-barrier result for the root and its parent.
+    /// File and WAL synchronization have separate results.
     #[must_use]
     pub fn directory_sync(&self) -> Option<DirectorySync> {
         self.naming_sync

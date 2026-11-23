@@ -53,7 +53,7 @@ fn entry() -> Result<(), Failure> {
     use gnunet_program_host::{
         logging::Logger,
         policy::Level,
-        program::{self, Defaults, Invocation, NlsDisabled, Preparation},
+        program::{self, Defaults, Invocation, Preparation},
         reporting::Reporter,
         shared_clock::SharedClock,
     };
@@ -67,7 +67,7 @@ fn entry() -> Result<(), Failure> {
     let arguments = options::Arguments::new();
     let mut logger = Logger::new(b"gnunet-ecc", std::process::id(), false)?;
     let help: &[u8] = b"Offline GNUnet raw32 Ed25519 seed files. -p public Base32; -x public HEX::; explicit -P private Base32. -g COUNT FILE [VANITY_PREFIX] streams fresh seeds through a private sibling and atomically publishes the complete flat file. Existing regular empty/raw32 files may be replaced after metadata recheck; symlinks and partial records are refused. -i [-e COUNT] lists on stderr. -E prints actual ECDHE private/public and SHA512(X25519) examples, with no key-file access. C operation precedence E/i/g>0/x/p/P applies. Standard PROGRAM -c/-L/-l; optional --timeout DURATION and --max-attempts COUNT. Signals and parent stop retire the original operation; synchronous filesystem/entropy/stdio/crypto calls are not OS-preemptible.";
-    let prepared = program::prepare(
+    let prepared = program::prepare_installed(
         configuration,
         Invocation {
             binary_name: b"gnunet-ecc",
@@ -78,7 +78,6 @@ fn entry() -> Result<(), Failure> {
         arguments.options(),
         std::env::args_os(),
         &program::Environment::capture(),
-        &mut NlsDisabled,
         &mut logger,
         &clock,
         &mut io::stdout().lock(),

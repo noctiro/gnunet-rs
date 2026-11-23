@@ -14,6 +14,7 @@ use std::{
     time::Duration,
 };
 use zeroize::Zeroizing;
+pub(super) mod standalone;
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum Action {

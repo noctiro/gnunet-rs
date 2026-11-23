@@ -1,5 +1,4 @@
 //! Explicit fallible backing storage; the caller borrows two independent stores.
-use gnunet_dnsstub_host::RequestId;
 use gnunet_resolver_service_core::{
     cache::{BucketMeta, CacheBuffers, RecordEntry, RecordMeta},
     owner::{self, Buffers},
@@ -51,7 +50,7 @@ pub struct Store {
     buckets: Vec<Option<BucketMeta>>,
     records: Vec<Option<RecordEntry>>,
     effects: Vec<owner::EffectSlot>,
-    cleanups: Vec<Option<RequestId>>,
+    cleanups: Vec<Option<owner::QueryCancellation>>,
     blobs: Vec<BlobSlot>,
     bytes: Vec<u8>,
 }

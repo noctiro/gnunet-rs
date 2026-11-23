@@ -11,6 +11,19 @@ pub enum Family {
     /// IPv6.
     V6,
 }
+impl Family {
+    /// Interpret an AF field from any of the four official platform profiles.
+    #[must_use]
+    pub const fn from_official_af(value: u32) -> Option<Self> {
+        if value == AfProfile::LINUX.ipv4 {
+            Some(Self::V4)
+        } else if AfProfile::from_official_ipv6(value).is_some() {
+            Some(Self::V6)
+        } else {
+            None
+        }
+    }
+}
 /// Exact native C AF profile used by an IPC/peer endpoint.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AfProfile {
@@ -43,6 +56,17 @@ impl AfProfile {
             Self::LINUX
         }
     }
+    /// Match an IPv6 value from a supported official native AF profile.
+    #[must_use]
+    pub const fn from_official_ipv6(value: u32) -> Option<Self> {
+        match value {
+            value if value == Self::LINUX.ipv6 => Some(Self::LINUX),
+            value if value == Self::DARWIN.ipv6 => Some(Self::DARWIN),
+            value if value == Self::FREEBSD.ipv6 => Some(Self::FREEBSD),
+            value if value == Self::WINDOWS.ipv6 => Some(Self::WINDOWS),
+            _ => None,
+        }
+    }
     /// Check an actual nonzero distinct native AF profile before using it.
     pub fn validate(self) -> Result<(), Error> {
         if self.ipv4 == 0 || self.ipv6 == 0 || self.ipv4 == self.ipv6 {
@@ -67,6 +91,20 @@ impl AfProfile {
         match family {
             Family::V4 => self.ipv4,
             Family::V6 => self.ipv6,
+        }
+    }
+}
+impl core::str::FromStr for AfProfile {
+    type Err = Error;
+
+    fn from_str(value: &str) -> Result<Self, Error> {
+        match value {
+            "native" => Ok(Self::native()),
+            "linux" => Ok(Self::LINUX),
+            "darwin" => Ok(Self::DARWIN),
+            "freebsd" => Ok(Self::FREEBSD),
+            "windows" => Ok(Self::WINDOWS),
+            _ => Err(Error::InvalidInput),
         }
     }
 }
@@ -462,6 +500,20 @@ impl<'a> Helper<'a> {
     }
 }
 impl<'a> PeerMessage<'a> {
+    /// Read a raw AF from an inbound EXIT request with its complete fixed prefix.
+    /// The typed decoder and forwarding policy still validate the request body.
+    pub fn exit_request_af(b: &[u8]) -> Result<Option<u32>, Error> {
+        let fixed = match Frame::decode(b)?.header().message_type() {
+            mt::VPN_TCP_TO_INTERNET_START => 28,
+            mt::VPN_UDP_TO_INTERNET => 12,
+            mt::VPN_ICMP_TO_INTERNET | mt::VPN_ICMP_TO_SERVICE => 16,
+            _ => return Ok(None),
+        };
+        if b.len() < fixed {
+            return Ok(None);
+        }
+        word(b, 4).map(Some)
+    }
     /// Decode actual native AF profile.
     pub fn decode(b: &'a [u8]) -> Result<Self, Error> {
         Self::decode_with_profile(b, AfProfile::native())

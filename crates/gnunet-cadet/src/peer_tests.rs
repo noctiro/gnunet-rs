@@ -4,6 +4,110 @@
 )]
 use super::*;
 const PAYLOAD: [u8; 8] = [0, 8, 0x12, 0x34, 1, 2, 3, 4];
+
+#[test]
+fn confirmed_tunnel_reopens_original_channel_without_replaying_accepted_data() -> Result<(), Error>
+{
+    let instance = Instance::new();
+    let mut tx_bytes = [[0; 8]; 2];
+    let mut rx_bytes = [[0; 8]; 2];
+    let mut sends = tx_bytes.each_mut().map(|bytes| SendSlot::new(bytes));
+    let mut receives = rx_bytes.each_mut().map(|bytes| ReceiveSlot::new(bytes));
+    let mut owner = ChannelOwner::outbound(
+        &instance,
+        address(7, false),
+        &mut sends,
+        &mut receives,
+        MonoInstant(0),
+        Limits {
+            window: 2,
+            payload_bytes: 8,
+            ..Limits::default()
+        },
+    )?;
+    let mut wire = [0; 256];
+    let (_, n) = emit(&mut owner, 0, &mut wire)?;
+    let original_open = match ChannelMessage::decode(&wire[..n])? {
+        ChannelMessage::Open { h_port, .. } => h_port,
+        _ => return Err(Error::Malformed),
+    };
+    owner.receive(
+        owner.scope(),
+        ChannelMessage::OpenAck {
+            reserved: 0,
+            channel: 7,
+            port: address(7, false).port,
+        },
+        [7; 32],
+        MonoInstant(1),
+    )?;
+    let application = owner.claim_application()?;
+    let accepted = owner.queue_send(&PAYLOAD, MonoInstant(1))?;
+    emit(&mut owner, 1, &mut wire)?;
+    owner.receive(
+        owner.scope(),
+        ChannelMessage::DataAck {
+            channel: 7,
+            mid: accepted.mid().wrapping_add(1),
+            futures: 0,
+        },
+        [7; 32],
+        MonoInstant(2),
+    )?;
+    assert_eq!(
+        owner.completion_for(accepted)?.outcome,
+        Outcome::PeerAccepted
+    );
+    owner.release_send(accepted)?;
+    let outstanding = owner.queue_send(&PAYLOAD, MonoInstant(2))?;
+    let prepared = owner
+        .prepare_next(MonoInstant(2), &mut wire)?
+        .ok_or(Error::NotReady)?;
+    let original_attempt = prepared.attempt();
+    assert_eq!(owner.tunnel_up(MonoInstant(2)), Err(Error::WouldBlock));
+    assert_eq!(owner.pending(), Some(original_attempt));
+    owner.exposed(original_attempt)?;
+    owner.settle(
+        original_attempt,
+        Emission::Sent {
+            connection: [7; 32],
+        },
+        MonoInstant(2),
+    )?;
+    assert!(owner.tunnel_up(MonoInstant(3))?);
+    assert!(owner.application_matches(application));
+    assert_eq!(owner.phase(), Phase::Ready);
+    assert_eq!(owner.available_send(), 0);
+    assert_eq!(
+        owner.queue_send(&PAYLOAD, MonoInstant(3)),
+        Err(Error::WouldBlock)
+    );
+    let (_, n) = emit(&mut owner, 3, &mut wire)?;
+    assert!(matches!(ChannelMessage::decode(&wire[..n])?,
+        ChannelMessage::Open { h_port, channel: 7, .. } if h_port == original_open));
+    assert_eq!(
+        owner.receive(
+            owner.scope(),
+            ChannelMessage::OpenAck {
+                reserved: 0,
+                channel: 7,
+                port: address(7, false).port,
+            },
+            [8; 32],
+            MonoInstant(4)
+        )?,
+        Event::Opened
+    );
+    let (_, n) = emit(&mut owner, 1_000_000, &mut wire)?;
+    assert!(matches!(ChannelMessage::decode(&wire[..n])?,
+        ChannelMessage::Data { channel: 7, mid, payload } if mid == outstanding.mid() && payload == PAYLOAD));
+    assert_ne!(outstanding.mid(), accepted.mid());
+    assert!(matches!(
+        owner.completion_for(accepted),
+        Err(Error::StaleGeneration)
+    ));
+    Ok(())
+}
 fn address(channel: u32, listener: bool) -> Address {
     Address {
         channel,

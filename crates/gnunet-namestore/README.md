@@ -21,10 +21,22 @@ normalization. Multiple active delegation/REDIRECT values remain refused. Record
 per type, then minimum across types), retaining the explicit tombstone floor. Strictly increasing expirations across previously sealed blocks require a
 separate durable publication authority; a record-derived value is not one.
 
+The default `fixed` API uses a caller-owned `Inventory`, `StoreScratch`
+and `ReadScratch`. Choose the per-row byte capacity and the sort offset
+capacity independently. Store and read operations serialize selected records
+directly into their destination, without fixed descriptor tables on the stack.
+A STORE stages only the changed label rows. Its publisher
+borrows the complete after-image and confirms durable state before the
+owner changes its inventory. An editor-only change borrows unchanged
+record bodies and preserves the original serials. The host selects a
+rendering buffer large enough for stored records plus a supplemental
+nickname.
+
 The `alloc` feature adds a bounded immutable authority inventory, staged provider
 transactions, lookup/reverse lookup, advisory edit hints, snapshot iteration and
-credited monitors. Opaque zone owners and record/hint bytes are zeroized and have
-redacted formatting. Snapshots and committed changes share retained references
+credited monitors. The edit response retains the live apex nickname and its
+original flags and expiration. Opaque zone owners and record/hint bytes are
+zeroized and have redacted formatting. Snapshots and committed changes share retained references
 under one aggregate budget; no secret-derived key hash is used as an identifier.
 
 A prepared transaction is not a successful write. Only the original provider's

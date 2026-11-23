@@ -9,8 +9,8 @@ mod policy;
 use files::Files;
 use gnunet_crypto::hash256;
 use gnunet_datastore::backend::{
-    Backend, BackendError, Failure, Maintenance, MaintenancePolicy, Meta, Put, PutPolicy,
-    PutReport, Record, Selection, Usage,
+    Backend, BackendError, Failure, Lifecycle, Maintenance, MaintenancePolicy, Meta, Put,
+    PutPolicy, PutReport, Record, Selection, Usage,
 };
 pub use gnunet_native::DirectorySync;
 use gnunet_types::Error as ProtocolError;
@@ -388,8 +388,8 @@ impl Store {
     }
     /// Last successful observation covering the values, root and parent names.
     /// This is independent of file-data synchronization and logical WAL commit.
-    /// Windows reports Unavailable. A pending naming operation or fenced owner
-    /// has no current observation; this method performs no I/O.
+    /// A pending naming operation or fenced owner has no current observation.
+    /// This method performs no I/O.
     #[must_use]
     pub fn directory_sync(&self) -> Option<DirectorySync> {
         if self.unknown.is_some() {
@@ -751,11 +751,66 @@ impl Store {
     }
 }
 
-impl Backend for Store {
+impl Lifecycle for Store {
     type Error = Error;
     fn usage(&self) -> Usage {
         self.index.usage
     }
+    fn maintain(&mut self, policy: MaintenancePolicy) -> Result<Maintenance, Error> {
+        self.ready()?;
+        self.heaps
+            .prepare(&self.index.rows, None, self.limits.max_records)?;
+        let mut policy = policy;
+        policy.max_evictions = policy.max_evictions.min(self.limits.max_transaction_ops);
+        let (mut deleted, maintenance) =
+            self.heaps
+                .plan(&self.index.rows, None, self.index.usage, policy)?;
+        let mut ops = Vec::new();
+        ops.try_reserve_exact(deleted.len())
+            .map_err(|_| Error::protocol("maintenance-operations", ProtocolError::Capacity))?;
+        deleted.sort_unstable();
+        for uid in deleted {
+            ops.push(Op::Delete(uid));
+        }
+        self.commit(&ops, self.index.highwater)?;
+        // Reclaim crash leftovers in the same bounded maintenance cadence. A
+        // cleanup refusal cannot reverse an already durable logical mutation.
+        if let Err(error) = self.collect_garbage() {
+            self.cleanup = Some(CleanupFailure { source: error });
+        }
+        Ok(maintenance)
+    }
+    fn drop_all(&mut self) -> Result<(), Error> {
+        self.ready()?;
+        self.commit(&[Op::Clear], self.index.highwater)?;
+        // DROP's complete logical clear is already durable. Physical objects are
+        // now orphans; cleanup failures remain separate from that known result.
+        let mut removed_in_pass = 0_usize;
+        loop {
+            match self.collect_garbage() {
+                Ok((removed, more)) => {
+                    removed_in_pass = removed_in_pass.saturating_add(removed);
+                    if !more {
+                        // Directory mutation may affect a live readdir cursor.
+                        // A fresh zero-removal pass proves quiescent cleanup.
+                        if removed_in_pass == 0 {
+                            break;
+                        }
+                        removed_in_pass = 0;
+                        self.files.reset_garbage();
+                    }
+                }
+                Err(error) => {
+                    self.cleanup = Some(CleanupFailure { source: error });
+                    break;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Backend for Store {
     fn put(&mut self, value: Put<'_>, policy: PutPolicy) -> Result<PutReport, Error> {
         let result = (|| {
             self.ready()?;
@@ -943,58 +998,6 @@ impl Backend for Store {
         };
         self.commit(&[Op::Delete(row.meta.uid)], self.index.highwater)?;
         Ok(true)
-    }
-    fn maintain(&mut self, policy: MaintenancePolicy) -> Result<Maintenance, Error> {
-        self.ready()?;
-        self.heaps
-            .prepare(&self.index.rows, None, self.limits.max_records)?;
-        let mut policy = policy;
-        policy.max_evictions = policy.max_evictions.min(self.limits.max_transaction_ops);
-        let (mut deleted, maintenance) =
-            self.heaps
-                .plan(&self.index.rows, None, self.index.usage, policy)?;
-        let mut ops = Vec::new();
-        ops.try_reserve_exact(deleted.len())
-            .map_err(|_| Error::protocol("maintenance-operations", ProtocolError::Capacity))?;
-        deleted.sort_unstable();
-        for uid in deleted {
-            ops.push(Op::Delete(uid));
-        }
-        self.commit(&ops, self.index.highwater)?;
-        // Reclaim crash leftovers in the same bounded maintenance cadence. A
-        // cleanup refusal cannot reverse an already durable logical mutation.
-        if let Err(error) = self.collect_garbage() {
-            self.cleanup = Some(CleanupFailure { source: error });
-        }
-        Ok(maintenance)
-    }
-    fn drop_all(&mut self) -> Result<(), Error> {
-        self.ready()?;
-        self.commit(&[Op::Clear], self.index.highwater)?;
-        // DROP's complete logical clear is already durable. Physical objects are
-        // now orphans; cleanup failures remain separate from that known result.
-        let mut removed_in_pass = 0_usize;
-        loop {
-            match self.collect_garbage() {
-                Ok((removed, more)) => {
-                    removed_in_pass = removed_in_pass.saturating_add(removed);
-                    if !more {
-                        // Directory mutation may affect a live readdir cursor.
-                        // A fresh zero-removal pass proves quiescent cleanup.
-                        if removed_in_pass == 0 {
-                            break;
-                        }
-                        removed_in_pass = 0;
-                        self.files.reset_garbage();
-                    }
-                }
-                Err(error) => {
-                    self.cleanup = Some(CleanupFailure { source: error });
-                    break;
-                }
-            }
-        }
-        Ok(())
     }
 }
 fn rank(random: u64, count: usize) -> usize {

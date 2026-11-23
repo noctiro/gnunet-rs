@@ -5,6 +5,9 @@ mod journal;
 mod monitor;
 mod rules;
 mod scope;
+mod topology;
+pub(super) use scope::Scope;
+pub(super) use topology::Topology;
 #[cfg(any(test, target_os = "freebsd"))]
 mod states;
 use super::Options;
@@ -45,7 +48,6 @@ pub(super) struct Controls {
     state: State,
     label: String,
     canonical: Vec<u8>,
-    scope: Option<scope::Scope>,
 }
 fn require_success(output: Output) -> io::Result<Vec<u8>> {
     if output.status.success() {
@@ -117,7 +119,6 @@ impl Controls {
             state,
             label,
             canonical,
-            scope: None,
         };
         Ok(owner)
     }
@@ -181,15 +182,15 @@ impl Controls {
         let until = hard.map_or(until, |hard| until.min(hard));
         // Down interfaces also belong to the scope: their addresses can become
         // usable without another PF installation when a link comes back up.
-        let native = gnunet_native::interfaces::snapshot(Default::default())?;
+        let native = scope::Scope::new(gnunet_native::interfaces::snapshot(Default::default())?)?;
         let listing = require_success(
             self.runner
                 .observe_until(&self.program, &["-v", "-s", "Interfaces"], until)
                 .await?,
         )?;
         let coverage = coverage::Coverage::parse(&listing)?;
-        for interface in &native {
-            coverage.require(&interface.name)?;
+        for name in native.names() {
+            coverage.require(name)?;
         }
         if let Some(interface) = actual_interface {
             coverage.require(interface.as_bytes())?;
@@ -200,14 +201,14 @@ impl Controls {
                 "PF interface coverage exceeded its original deadline",
             ));
         }
-        Ok(scope::Scope::new(native))
+        Ok(native)
     }
     pub async fn install(
         &mut self,
         options: &Options,
         actual_interface: &str,
         gid: u32,
-    ) -> io::Result<()> {
+    ) -> io::Result<Scope> {
         if self.state != State::Prepared {
             return Err(io::Error::other("PF policy intent already used"));
         }
@@ -271,9 +272,9 @@ impl Controls {
                 "PF DNS delegation changed after policy installation",
             ));
         }
-        self.scope = Some(self.retire_dns_states(actual_interface).await?);
+        let scope = self.retire_dns_states(actual_interface).await?;
         self.state = State::Installed;
-        Ok(())
+        Ok(scope)
     }
     async fn retire_dns_states(&mut self, actual_interface: &str) -> io::Result<scope::Scope> {
         // One original allowance includes interface observation, the complete
@@ -281,39 +282,25 @@ impl Controls {
         let hard = tokio::time::Instant::now()
             .checked_add(std::time::Duration::from_secs(10))
             .ok_or_else(|| io::Error::other("PF DNS state deadline overflow"))?;
-        let interfaces = gnunet_native::interfaces::snapshot(Default::default())?;
-        let mut local = Vec::new();
-        local
-            .try_reserve_exact(interfaces.len())
-            .map_err(io::Error::other)?;
-        for interface in &interfaces {
-            let address = interface.address.ip();
-            if !local.contains(&address) {
-                local.push(address);
-            }
-        }
+        let original = scope::Scope::new(gnunet_native::interfaces::snapshot(Default::default())?)?;
+        let local = original.ip_addresses()?;
         #[cfg(target_os = "freebsd")]
         {
             let targets = self
                 .selected_states(states::Selection::Dns(local), hard)
                 .await?;
-            for target in &targets {
-                self.lease_current()?;
-                let id = target.to_string();
-                require_success(
-                    self.runner
-                        .run_until(&self.program, &["-k", "id", "-k", &id], &[], hard)
-                        .await?,
-                )?;
-            }
             if !targets.is_empty() {
-                let mut original = Vec::new();
-                original
-                    .try_reserve_exact(targets.len())
-                    .map_err(io::Error::other)?;
-                original.extend_from_slice(&targets);
+                let mut owner = gnunet_native::pf_freebsd::StateKiller::open(hard.into_std())?;
+                for target in &targets {
+                    self.lease_current()?;
+                    // A state can close between selection and its exact-ID
+                    // operation. The independent readback still checks it.
+                    let _removed = target.retire(&mut owner)?;
+                    tokio::task::yield_now().await;
+                }
+                self.lease_current()?;
                 if !self
-                    .selected_states(states::Selection::Original(original), hard)
+                    .selected_states(states::Selection::Original(targets), hard)
                     .await?
                     .is_empty()
                 {
@@ -341,7 +328,6 @@ impl Controls {
         }
         // A new address can carry previously unselected state. It cannot adopt
         // this sweep merely because its interface currently has PF enabled.
-        let original = scope::Scope::new(interfaces);
         let current = self.observe(actual_interface, hard).await?;
         original.require_same(&current)?;
         Ok(current)

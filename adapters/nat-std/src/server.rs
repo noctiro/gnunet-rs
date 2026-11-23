@@ -13,11 +13,13 @@ use gnunet_service_runtime::{
     clock::{ClockSubscription, RuntimeClock},
     credentials::UnixAccess,
     framing::{Accounting, Budget, Class, Framed, Limits as FrameLimits, OwnedFrame, ReadStep},
+    network::SocketPolicy,
+    network_change::NetworkChanges,
     service::{Listener, PeerAddress, ServiceOptions, ShutdownMode},
 };
 use gnunet_types::Error as Fault;
 use gnunet_wire::official::{
-    nat::{self, Endian, Profile},
+    nat::{self, Profile},
     nat_auto,
 };
 use std::{
@@ -29,25 +31,9 @@ use std::{
     time::Duration,
 };
 use tokio::time::{Instant, Sleep};
-/// Actual producing ABI, selected from the built target and never guessed from
-/// incoming socket bytes. Other ABIs require an explicit validated implementation.
+/// Match the local SDK socket ABI to an official NAT IPC profile.
 pub fn native_profile() -> Result<Profile, Fault> {
-    let endian = if cfg!(target_endian = "little") {
-        Endian::Little
-    } else {
-        Endian::Big
-    };
-    if cfg!(windows) {
-        Ok(Profile::windows(endian))
-    } else if cfg!(target_os = "linux") {
-        Ok(Profile::linux(endian))
-    } else if cfg!(target_os = "macos") {
-        Ok(Profile::darwin(endian))
-    } else if cfg!(target_os = "freebsd") {
-        Ok(Profile::freebsd(endian))
-    } else {
-        Err(Fault::Unsupported)
-    }
+    gnunet_service_runtime::network::native_sockaddr_profile()
 }
 /// This physical listener's actual official protocol.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -288,11 +274,39 @@ impl Server {
     /// Set up actual bounded owners with the original shared time/Resolver.
     pub fn new(
         config: Configuration,
+        settings: Settings,
+        core: state::Limits,
+        limits: Limits,
+        ports: Ports,
+        mode: Mode,
+        network_changes: NetworkChanges,
+    ) -> Result<Self, Failure> {
+        Self::new_with_socket_policy(
+            config,
+            settings,
+            core,
+            limits,
+            ports,
+            mode,
+            network_changes,
+            SocketPolicy::default(),
+        )
+    }
+
+    /// Construct the original service under the application's native egress policy.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Original IPC, network notifications and application egress are independent capability ports"
+    )]
+    pub fn new_with_socket_policy(
+        config: Configuration,
         mut settings: Settings,
         core: state::Limits,
         limits: Limits,
         ports: Ports,
         mode: Mode,
+        network_changes: NetworkChanges,
+        socket_policy: SocketPolicy,
     ) -> Result<Self, Failure> {
         limits.validate()?;
         if core.sources < limits.clients || !Arc::ptr_eq(&ports.resolver.clock(), &ports.clock) {
@@ -301,18 +315,20 @@ impl Server {
         if mode != Mode::Nat {
             settings.enable_ipscan = false;
             settings.enable_upnp = false;
-            settings.use_stun = false;
+            settings.active_stun = None;
         }
         let subscription = ports.clock.subscribe()?;
         let revision = ports.clock.sample()?.revision;
         let profile = native_profile()?;
         let template = config.duplicate()?;
-        let manager = Manager::new(
+        let manager = Manager::new_with_socket_policy(
             config,
             settings,
             core,
             ports.resolver.clone(),
             ports.clock.clone(),
+            network_changes,
+            socket_policy,
         )?;
         let mut peers = Vec::new();
         peers

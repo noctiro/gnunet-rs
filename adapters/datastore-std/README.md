@@ -76,9 +76,9 @@ Storage roots must be private to the process user; existing public directories
 are refused rather than silently changing their permissions. File-data
 synchronization and logical WAL commit are distinct from naming
 barriers. `Store::directory_sync` reports the last successful observation covering
-the values directory, store root and its parent. Windows reports
-`Some(DirectorySync::Unavailable)`; a pending naming operation or fenced store
-returns `None`. Neither result claims a Windows directory flush.
+the values directory, store root and its parent. A pending naming operation or
+fenced store returns `None`.
+[Native naming barriers](../native-std/API.md#anchored-filesystem-operations)
 
 ## Configuration and examples
 

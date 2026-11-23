@@ -80,6 +80,9 @@ errors, not forged quiescence receipts.
 
 ## Bounded resources and explicit profiles
 
+`[messenger] MESSENGER_GROUP_KEYS` defaults to `YES` and controls automatic
+GROUP proposals in private rooms. Set it to `NO` to disable initiation.
+
 `[messenger-rust]` accepts:
 
 | Key | Default | Allowed |

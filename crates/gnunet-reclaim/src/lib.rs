@@ -12,16 +12,19 @@ extern crate alloc;
 
 #[cfg(feature = "alloc")]
 pub mod business;
+pub mod fixed;
 pub mod ipc;
 pub mod objects;
 #[cfg(feature = "alloc")]
 pub mod owned;
+mod presentation;
 pub mod sequence;
 
 pub use objects::{
     Attribute, AttributeType, Credential, CredentialType, Identifier, Name, Presentation,
     Sensitive, Ticket, Uri,
 };
+pub use presentation::PresentationRequest;
 pub use sequence::{AttributeList, CredentialList, List, ListLimits, PresentationList};
 
 /// Exact public upstream source revision used for these encodings.

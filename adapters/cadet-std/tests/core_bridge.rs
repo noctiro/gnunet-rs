@@ -138,6 +138,33 @@ async fn traffic(
     )
     .await
 }
+async fn acknowledge_create(
+    stream: &mut UnixStream,
+    first_hop: PeerId,
+    path: &[[u8; 32]],
+    connection: [u8; 32],
+) -> Result<(), Failure> {
+    permit(stream, first_hop).await?;
+    let bytes = frame(stream, None).await?;
+    let Request::Send { peer, messages, .. } = Request::decode(&bytes)? else {
+        return Err("missing actual CREATE payload".into());
+    };
+    assert_eq!(peer, first_hop);
+    assert!(
+        matches!(PeerMessage::decode(messages)?, PeerMessage::ConnectionCreate {
+        connection: actual, path: actual_path, ..
+    } if actual == connection && actual_path == PathPeers::new(path))
+    );
+    traffic(
+        stream,
+        first_hop,
+        PeerMessage::ConnectionCreateAck {
+            reserved: 0,
+            connection,
+        },
+    )
+    .await
+}
 #[derive(Default)]
 struct Observe<'book> {
     first: Option<Neighbor<'book>>,
@@ -237,6 +264,172 @@ fn runtime() -> Result<tokio::runtime::Runtime, Failure> {
     Ok(tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?)
+}
+
+#[test]
+fn bounded_multihop_replacement_uses_another_actual_first_hop() -> Result<(), Failure> {
+    let profile = async {
+        const STALLED: PeerId = PeerId([3; 32]);
+        const ALTERNATE: PeerId = PeerId([4; 32]);
+        const DESTINATION: [u8; 32] = [5; 32];
+        const CORE_PEERS: usize = 4;
+        const CORE_SENDS: usize = 2;
+        let original_path = [LOCAL.0, REMOTE.0, DESTINATION];
+        let stalled_path = [LOCAL.0, STALLED.0, DESTINATION];
+        let replacement_path = [LOCAL.0, ALTERNATE.0, DESTINATION];
+        let (socket, listener) = Socket::new()?;
+        let service = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await?;
+            init(&mut stream, REMOTE).await?;
+            acknowledge_create(&mut stream, REMOTE, &original_path, [11; 32]).await?;
+            response(&mut stream, Response::Disconnected(REMOTE)).await?;
+            for peer in [STALLED, ALTERNATE] {
+                response(
+                    &mut stream,
+                    Response::Connected {
+                        peer,
+                        class: PeerClass::ROUTER,
+                    },
+                )
+                .await?;
+            }
+            let request = frame(&mut stream, None).await?;
+            assert!(
+                matches!(Request::decode(&request)?, Request::SendRequest { peer, .. } if peer == STALLED)
+            );
+            // Without a real SEND_READY, the first candidate may never expose CREATE.
+            permit(&mut stream, STALLED).await?;
+            let notice = frame(&mut stream, None).await?;
+            let Request::Send { peer, messages, .. } = Request::decode(&notice)? else {
+                return Err("missing original route teardown".into());
+            };
+            assert_eq!(peer, STALLED);
+            assert!(
+                matches!(PeerMessage::decode(messages)?, PeerMessage::ConnectionDestroy {
+                connection, ..
+            } if connection == [12; 32])
+            );
+            acknowledge_create(&mut stream, ALTERNATE, &replacement_path, [13; 32]).await?;
+            let mut end = [0];
+            assert_eq!(stream.read(&mut end).await?, 0);
+            Ok::<_, Failure>(())
+        });
+        let source = native::EndpointSource::unix(socket.0.clone());
+        let time = Timebase::new(source.clock())?;
+        let mut instance = connection::Instance::new();
+        let mut neighbors = [NeighborSlot::new(); 3];
+        let mut routes = [RouteSlot::<4>::new(); 3];
+        let mut origins = [OriginSlot::new()];
+        let mut buffers = [[0; 512]; 4];
+        let mut frames = buffers.each_mut().map(|bytes| FrameSlot::new(bytes));
+        let mut book = Book::new(
+            &mut instance,
+            LOCAL.0,
+            &mut neighbors,
+            &mut routes,
+            &mut origins,
+            &mut frames,
+            time.elapsed()?,
+            connection::Limits::default(),
+        )?;
+        let mut core = native::Instance::new();
+        let mut peers = [PeerSlot::new(); CORE_PEERS + CORE_SENDS];
+        let mut sends = [SendSlot::new(); CORE_SENDS];
+        let mut host = Bridge::<CORE_PEERS, CORE_SENDS>::new(
+            &mut core,
+            source,
+            &book,
+            &mut peers,
+            &mut sends,
+            bridge::Limits {
+                core: native::Limits {
+                    sends: CORE_SENDS,
+                    ..native::Limits::default()
+                },
+                ..bridge::Limits::default()
+            },
+            time.clone(),
+        )?;
+        let mut observe = Observe::default();
+        while book.current_neighbor(REMOTE.0).is_none() {
+            host.drive(&mut book, &mut observe, None).await?;
+        }
+        let original = book
+            .open(
+                PathPeers::new(&original_path),
+                [11; 32],
+                Authentication::Unsigned,
+                time.elapsed()?,
+            )?
+            .route;
+        while !book.has_ready_endpoint_path(DESTINATION) {
+            host.drive(&mut book, &mut observe, None).await?;
+        }
+        assert_eq!(book.select(DESTINATION), Some(original));
+        while book.current_neighbor(ALTERNATE.0).is_none() {
+            host.drive(&mut book, &mut observe, None).await?;
+        }
+        assert_eq!(book.route_info(original)?.phase, connection::Phase::Retired);
+        assert!(!book.has_endpoint_path(DESTINATION));
+
+        let now = time.elapsed()?;
+        let attempt_until = now.after(gnunet_types::Duration(500_000))?;
+        let repair_until = now.after(gnunet_types::Duration(3_000_000))?;
+        let stalled = book
+            .open_with_deadline(
+                PathPeers::new(&stalled_path),
+                [12; 32],
+                Authentication::Unsigned,
+                now,
+                Some(attempt_until),
+            )?
+            .route;
+        loop {
+            if let Step::SendExpired {
+                expires,
+                outcome: bridge::Expiration::Cancelled(completion),
+                ..
+            } = host.drive(&mut book, &mut observe, None).await?
+            {
+                assert_eq!(expires, attempt_until);
+                assert_eq!(completion.outcome, SendOutcome::CancelledBeforePayload);
+                break;
+            }
+        }
+        assert_eq!(observe.exposed, 1);
+        assert_eq!(book.tick(time.elapsed()?)?, 1);
+        assert!(book.current_neighbor(STALLED.0).is_some());
+        assert_eq!(book.route_info(stalled)?.phase, connection::Phase::Retired);
+        assert!(!book.has_endpoint_path(DESTINATION));
+        let before_teardown = observe.completed;
+        while observe.completed == before_teardown {
+            host.drive(&mut book, &mut observe, None).await?;
+        }
+        let replacement = book
+            .open_with_deadline(
+                PathPeers::new(&replacement_path),
+                [13; 32],
+                Authentication::Unsigned,
+                time.elapsed()?,
+                Some(repair_until),
+            )?
+            .route;
+        while !book.has_ready_endpoint_path(DESTINATION) {
+            host.drive(&mut book, &mut observe, None).await?;
+        }
+        assert_eq!(book.select(DESTINATION), Some(replacement));
+        assert_eq!(book.route_peers(replacement)?, replacement_path);
+        assert_eq!(observe.ready, 2);
+        assert_eq!(observe.exposed, 3);
+        assert!(!observe.bad);
+        let closed = host.close(&mut book, &mut observe)?;
+        assert!(matches!(closed, Some(Step::Lost { .. })));
+        service.await??;
+        Ok::<_, Failure>(())
+    };
+    runtime()?
+        .block_on(async { tokio::time::timeout(Duration::from_secs(6), profile).await })??;
+    Ok(())
 }
 
 #[test]

@@ -1,5 +1,5 @@
 //! Native producer ABIs remain explicit; wrong-family bytes are never normalized.
-use gnunet_wire::official::nat::{Address, Endian, Profile, RawAddress};
+use gnunet_wire::official::nat::{Address, Endian, Profile, RawAddress, Request};
 type Result<T = ()> = std::result::Result<T, gnunet_types::Error>;
 #[test]
 #[expect(
@@ -50,5 +50,30 @@ fn windows_local_address_preserves_every_native_path_byte() -> Result {
         RawAddress::decode(&bytes, Profile::windows(Endian::Little))?.address(),
         address
     );
+    Ok(())
+}
+
+#[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "check both C native length layouts and opaque address bytes"
+)]
+fn global_hint_preserves_ipv6_text_and_checks_the_native_length() -> Result {
+    let address: &[u8; 21] = b"2001:db8:1010:2020::7";
+    let [high, low] = 21u16.to_be_bytes();
+    for (profile, length) in [
+        (Profile::linux(Endian::Little), [high, low, 0, 0]),
+        (Profile::linux(Endian::Big), [0, 0, high, low]),
+    ] {
+        let mut frame = [0; 64];
+        let size = Request::AddGlobal { address }.encode(profile, &mut frame)?;
+        assert_eq!(&frame[4..8], &length);
+        assert!(matches!(
+            Request::decode(&frame[..size], profile)?,
+            Request::AddGlobal { address: decoded } if decoded == address
+        ));
+        frame[4..8].fill(0xff);
+        assert!(Request::decode(&frame[..size], profile).is_err());
+    }
     Ok(())
 }

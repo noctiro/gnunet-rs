@@ -245,7 +245,7 @@ pub(super) async fn run(input: Inputs<'_>) -> Result<(), Cause> {
             let mut output = io::stdout().lock();
             writeln!(
                 output,
-                "READY {} wire=0.29.1 listeners=bound ipc=admitting decrypt781=available generate780=singleton-only",
+                "READY {} wire=0.29.1 listeners=bound ipc=admitting",
                 mode.binary()
             )?;
             output.flush()?;

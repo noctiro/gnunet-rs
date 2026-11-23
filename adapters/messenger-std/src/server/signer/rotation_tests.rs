@@ -147,7 +147,7 @@ async fn complete_control<'c, 'slots, 'p>(
                 .core
                 .retained_messages(room)?
                 .next()
-                .ok_or(Fault::NotFound)?
+                .ok_or(Fault::NotFound)??
                 .hash();
             let markers = (0..server.messages.len())
                 .map(|_| {

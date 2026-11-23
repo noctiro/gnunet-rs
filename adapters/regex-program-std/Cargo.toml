@@ -20,6 +20,9 @@ gnunet-resolver-broker.workspace = true
 gnunet-pils.workspace = true
 gnunet-pils-host = { workspace = true, features = ["client"] }
 gnunet-ipc-unix.workspace = true
+gnunet-native.workspace = true
+gnunet-wire.workspace = true
+getrandom.workspace = true
 tokio = { workspace = true, features = ["rt", "net", "time", "signal"] }
 
 [lints]

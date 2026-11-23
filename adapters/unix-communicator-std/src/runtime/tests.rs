@@ -29,6 +29,37 @@ fn check(value: bool) -> Result<(), Failure> {
         Err("UNIX failed-send recovery regression".into())
     }
 }
+
+#[test]
+fn destination_retry_backs_off_within_the_original_send_deadline() -> Result<(), Failure> {
+    let started = Instant::now();
+    let initial = Duration::from_millis(1);
+    let hard = started + Duration::from_secs(1);
+    for errno in [libc::EAGAIN, libc::ENOBUFS, libc::EINTR] {
+        let error = io::Error::from_raw_os_error(errno);
+        let mut previous = None;
+        let mut now = started;
+        for delay in [1, 2, 4, 8, 16, 32, 64, 64] {
+            let retry = SendRetry::after(&error, previous, now, initial, hard)
+                .ok_or("expected retry after transient Unix datagram error")?;
+            check(retry.at == now + Duration::from_millis(delay))?;
+            previous = Some(retry);
+            now = retry.at;
+        }
+        let retry = SendRetry::after(
+            &error,
+            previous,
+            hard - Duration::from_millis(1),
+            initial,
+            hard,
+        )
+        .ok_or("expected retry to remain subject to the original send deadline")?;
+        check(retry.at == hard)?;
+    }
+    let error = io::Error::from_raw_os_error(libc::ENOENT);
+    check(SendRetry::after(&error, None, started, initial, hard).is_none())
+}
+
 struct Directory(PathBuf);
 impl Directory {
     fn new() -> Result<Self, Failure> {
@@ -226,10 +257,12 @@ async fn recovery(disconnect: bool) -> Result<(), Failure> {
     input(&mut runtime, &mut trace).await?;
     check(runtime.dispatch(now, &mut |event| trace.observe(event))?)?;
     // The destination does not exist: the actual kernel produces the failure.
-    poll_fn(|cx| runtime.poll_send(cx, now, &mut |event| trace.observe(event))).await?;
+    check(runtime.attempt_send(now, &mut |event| trace.observe(event))?)?;
     check(trace.failures == 1 && runtime.statistics().bytes_sent == 0)?;
     runtime.restoring = true;
     check(runtime.send_results(now, &mut |event| trace.observe(event))?)?;
+    check(!runtime.attempt_send(now, &mut |_| {})?)?;
+    check(!runtime.send_results(now, &mut |_| {})?)?;
     check(runtime.outputs.back().is_some_and(|output| {
         matches!(output.role, Role::SendDown(q) if q == old)
             && runtime.restore_fence == output.id.serial
@@ -306,7 +339,7 @@ async fn recovery(disconnect: bool) -> Result<(), Failure> {
     service.write_all(&send(fresh, NEW_MID, &message)?).await?;
     input(&mut runtime, &mut trace).await?;
     check(runtime.dispatch(now, &mut |event| trace.observe(event))?)?;
-    poll_fn(|cx| runtime.poll_send(cx, now, &mut |event| trace.observe(event))).await?;
+    check(runtime.attempt_send(now, &mut |event| trace.observe(event))?)?;
     check(runtime.send_results(now, &mut |event| trace.observe(event))?)?;
     flush(&mut runtime, &mut trace).await?;
     ack(&read_frame(&mut service).await?, fresh, NEW_MID, 1)?;
@@ -470,7 +503,7 @@ async fn changed_identity_preserves_original_packet_and_exposed_ack() -> Result<
         .await?;
     input(&mut runtime, &mut trace).await?;
     check(runtime.dispatch(now, &mut |event| trace.observe(event))?)?;
-    poll_fn(|cx| runtime.poll_send(cx, now, &mut |event| trace.observe(event))).await?;
+    check(runtime.attempt_send(now, &mut |event| trace.observe(event))?)?;
     let mut packet = [0; 2048];
     let length = second.recv(&mut packet).await?;
     check(
@@ -621,7 +654,7 @@ async fn changed_identity_preserves_original_packet_and_exposed_ack() -> Result<
         Request::decode(&read_frame(&mut transport).await?)?,
         Request::QueueUpdate(_)
     ))?;
-    poll_fn(|cx| runtime.poll_send(cx, now, &mut |event| trace.observe(event))).await?;
+    check(runtime.attempt_send(now, &mut |event| trace.observe(event))?)?;
     let length = first.recv(&mut packet).await?;
     let actual = gnunet_unix_communicator::Datagram::decode(&packet[..length], runtime.mtu)?;
     check(actual.claimed_sender == a && actual.message == [0, 5, 0, 0, 0x11])?;
@@ -637,7 +670,7 @@ async fn changed_identity_preserves_original_packet_and_exposed_ack() -> Result<
         .await?;
     input(&mut runtime, &mut trace).await?;
     check(runtime.dispatch(now, &mut |event| trace.observe(event))?)?;
-    poll_fn(|cx| runtime.poll_send(cx, now, &mut |event| trace.observe(event))).await?;
+    check(runtime.attempt_send(now, &mut |event| trace.observe(event))?)?;
     let length = first.recv(&mut packet).await?;
     let actual = gnunet_unix_communicator::Datagram::decode(&packet[..length], runtime.mtu)?;
     check(actual.claimed_sender == b && actual.message == [0, 5, 0, 0, 0x13])?;

@@ -5,7 +5,7 @@ use crate::{
     transport::{basic, socket, unescape, validate_uri},
 };
 use gnunet_client_host::resolution::SharedResolution;
-use gnunet_service_runtime::clock::DeadlineGuard;
+use gnunet_service_runtime::{clock::DeadlineGuard, network::SocketPolicy};
 use std::{
     fmt,
     future::{Future, poll_fn},
@@ -140,6 +140,28 @@ impl Client {
         limits: HttpLimits,
         original_hard: Instant,
     ) -> Result<Self, Error> {
+        Self::new_with_socket_policy(
+            request,
+            resolution,
+            tls,
+            proxy,
+            limits,
+            original_hard,
+            SocketPolicy::default(),
+        )
+    }
+
+    /// Apply one original socket policy to direct, proxy and redirected TCP
+    /// attempts for this request, including every new resolution candidate.
+    pub fn new_with_socket_policy(
+        request: Request,
+        resolution: SharedResolution,
+        tls: Tls,
+        proxy: Option<Arc<Proxy>>,
+        limits: HttpLimits,
+        original_hard: Instant,
+        socket_policy: SocketPolicy,
+    ) -> Result<Self, Error> {
         limits.validate()?;
         if request.uri().len() > limits.uri_bytes {
             return Err(Fault::Capacity.into());
@@ -196,6 +218,7 @@ impl Client {
                     lease.clone(),
                     recording.clone(),
                     limits,
+                    &socket_policy,
                 )
                 .await?;
                 let inherited = if url.origin() == origin {

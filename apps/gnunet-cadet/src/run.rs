@@ -1,6 +1,7 @@
 //! Original command orchestration and consuming teardown.
 mod drive;
 mod failure;
+mod inspect;
 mod scheduling;
 use crate::{
     Cause,
@@ -21,7 +22,6 @@ use std::{io, sync::Arc};
 use tokio::time::Instant;
 
 struct Inputs {
-    settings: Settings,
     live: LiveConfiguration,
     context: Broker<128, 256>,
     resolver: Driver<128, 256>,
@@ -30,9 +30,8 @@ struct Inputs {
     control: Control,
     initial: Budget,
 }
-async fn run(inputs: Inputs) -> Result<Report, Cause> {
+async fn run(settings: Settings, inputs: Inputs) -> Result<Report, Cause> {
     let Inputs {
-        settings,
         live,
         context,
         mut resolver,

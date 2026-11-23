@@ -103,6 +103,14 @@ impl<'a> RangeReader<'a> {
             self.traversal.next()
         }
     }
+    /// Selected consecutive data references with authenticated ancestry.
+    /// The empty file yields its real root. `open_next` remains ordered.
+    pub fn ready_leaves(&self) -> impl Iterator<Item = NodeRef> + '_ {
+        self.empty_pending
+            .then(|| NodeRef::root(self.content))
+            .into_iter()
+            .chain(self.traversal.ready_leaves())
+    }
     /// Authenticate the exact pending node and advance its original range walk.
     /// Index blocks return None; data blocks lend only their selected plaintext.
     /// Framing, capacity or authentication refusal retains the same pending
@@ -148,6 +156,9 @@ pub struct VerifiedFile {
     content: Content,
 }
 impl VerifiedFile {
+    pub(super) fn from_encoder(encoder: &super::FileEncoder<'_>, content: Content) -> Option<Self> {
+        (encoder.content() == Some(content)).then_some(Self { content })
+    }
     /// Complete file identifier whose data and index blocks were checked.
     #[must_use]
     pub const fn content(self) -> Content {
@@ -171,6 +182,10 @@ impl<'a> FileReader<'a> {
     #[must_use]
     pub fn next(&self) -> Option<NodeRef> {
         self.reader.next()
+    }
+    /// Selected consecutive leaf references ready for read-ahead.
+    pub fn ready_leaves(&self) -> impl Iterator<Item = NodeRef> + '_ {
+        self.reader.ready_leaves()
     }
     /// Authenticate the exact pending block and advance its original tree path.
     /// Index blocks return None; data blocks return a sealed source-bound view.

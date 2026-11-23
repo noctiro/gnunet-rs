@@ -1,11 +1,6 @@
 {
   "kind": "proposed-STATISTICS-external-semantic-contracts-and-necessary-case-groups",
   "state": "candidate-source-only-not-canonical",
-  "base_source_map": {
-    "path": "/private/tmp/gnunet-STATISTICS-configured-commands-reference-integration-20261102-9qwhjgum/source-inputs.json",
-    "sha256": "9d472a05b9b1e7cda1b421c2cb66c1d3aa9aead17dd1bed58c779b05f8238726"
-  },
-  "checkpoint": "e7ec521d9807405414a14eb2acbdc6a8cb343e9132fd294765c5ec1e7715d780",
   "official_revision": "346358e26d4dcc2dc4f51bef5d52dca29c7d8165",
   "release": "v0.29.1",
   "scope": "active Meson ordinary STATISTICS service/client/public header,168–175 IPC,public SET database and actual Rust normal producers/consumers; not C helper/ABI parity",
@@ -1896,21 +1891,6 @@
       ]
     }
   ],
-  "execution_policy": {
-    "runtime_paused": true,
-    "this_work_executes_products": false,
-    "authorization_for_future_cases": false,
-    "case_counts_are_completion_credit": false,
-    "canonical_requirements_changed": false,
-    "reference_abi_parity_required": false
-  },
-  "unknowns": [
-    "All listed behavioral case groups are unverified; source-present is neither correctness nor complete interoperability.",
-    "Current native-host static compile receipts are not normal-bin provenance or execution receipts. Actual participant/build/source/state binding remains separate.",
-    "Actual bilateral API, opaque-name/UID/large-list, cancellation/late replies, reconnect/unknown mutation, slow output, TCP/ACL and crash-durability behaviors remain unexecuted.",
-    "A future runtime harness subset cannot satisfy unselected groups by inference. Warm transient state must be observed before post-restart absence.",
-    "No new canonical schema, requirements, lock, gate or overall completion credit is created by this candidate."
-  ],
   "active_build_refs": [
     {
       "path": "src/service/statistics/meson.build",
@@ -1953,89 +1933,5 @@
       "STAT.EXT.normal-cli",
       "STAT.EXT.stream-limits"
     ]
-  },
-  "current_harness_navigation": {
-    "handoff": {
-      "path": "/private/tmp/gnunet-STATISTICS-transient-observation-forward-20261102-lL0iUsNU/handoff.json",
-      "sha256": "4e0c09b403695b876ce337973451c7b36bf432150e235fd0e92b853011f0b93e"
-    },
-    "source_overlay": {
-      "path": "tools/reference/statistics_daemons.py",
-      "operation": "modify",
-      "before_sha256": "e2f14ac69a3a409d728cb4af91f1d8be38975143d3e322c90d01758cd02ed83e",
-      "after_sha256": "d665cd263133bdea7959f3c6933087e297f3724c390b83c71a434b59c980505b"
-    },
-    "matrix": {
-      "path": "/private/tmp/gnunet-STATISTICS-transient-observation-forward-20261102-lL0iUsNU/matrix.json",
-      "sha256": "2b9ad2ca646f19de6f7f9056928db64915d33e234f87854833e1fe85c325b380"
-    },
-    "prepared_only": true,
-    "note": "Warm transient existence GETs are source-prepared before restart absence checks; no harness/helper was executed here and this pointer grants no coverage to unselected contract groups. Baseline map remains9d472.",
-    "runtime_verified": false
-  },
-  "new_confirmed_rust_semantic_gaps": [],
-  "source_review_limit": "Finite source-entry/observable-contract check only; absence of newly determined code gaps is not full implementation or interoperability acceptance.",
-  "current_resource_source_overlay": {
-    "status": "installed-source-and-selected-static-checks-only; no behavior or runtime credit",
-    "base_map": {
-      "path": "/private/tmp/gnunet-STATISTICS-allocated-resource-integration-20261102-zvsh_s17/source-inputs-before.json",
-      "sha256": "5f3f08161c5523fb2e48d158d71f16cac108a978fc48dfd33cf1ec946c21fbc7"
-    },
-    "production_paths": [
-      {
-        "path": "crates/gnunet-statistics/Cargo.toml",
-        "sha256": "2d30a1423b6159e9019edda7806972486a400bf149a57f8f9e61aae2ec45c8bb"
-      },
-      {
-        "path": "crates/gnunet-statistics/src/lib.rs",
-        "sha256": "f006feb728aab3221f1751d22684b23f64086c1dee5d245b9601c5485d93cff8"
-      },
-      {
-        "path": "crates/gnunet-statistics/src/service.rs",
-        "sha256": "b2d0fbd3cc80d974d100fffcf226f3d664dcaac6826597f377933967ed586486"
-      },
-      {
-        "path": "adapters/ipc-unix/Cargo.toml",
-        "sha256": "a2b3ca4d96d2cd509c9beded74f3c8a5086fc5894aa51773a774429cbcb27843"
-      },
-      {
-        "path": "adapters/ipc-unix/src/server.rs",
-        "sha256": "2ce620f486563f077d57f8380043cc74a1c89a92ef211c168b34dec7bbf4973e"
-      },
-      {
-        "path": "crates/gnunet-statistics/src/storage.rs",
-        "sha256": "f6aa413843bc0012ff045505d338fb26588241a1771b6a62e54cea3edab022c2"
-      },
-      {
-        "path": "crates/gnunet-statistics/src/service/snapshot.rs",
-        "sha256": "4573afed0f840991ac0ff2f4cf56eb247f6bebdf6aa66b0c1086a7810d92aaf5"
-      },
-      {
-        "path": "adapters/statistics-store/Cargo.toml",
-        "sha256": "f41ea7eac9d9d3e75a415975e6c2b1053ac552baf56a9ba776c6772038c37b07"
-      },
-      {
-        "path": "adapters/statistics-store/src/store.rs",
-        "sha256": "fbdc3cab1768a646401d35f0bc6cc1ae3f515dc0ea38a8163e2f033769292686"
-      },
-      {
-        "path": "adapters/statistics-store/README.md",
-        "sha256": "dec3dd77f7533b344bc74a382e3cfdfae7000ee5f4d3a0167a1e1babf2bcc0ac"
-      },
-      {
-        "path": "apps/gnunet-service-statistics/src/host.rs",
-        "sha256": "073416284aa0f4fc03824e7382d55118c2cb89d5c49204cfc0b1c1f732ea84cc"
-      },
-      {
-        "path": "apps/gnunet-service-statistics/src/settings.rs",
-        "sha256": "d76890db368c289e1c354bc7263137c6446410b44313cbaf676c755067b8875e"
-      },
-      {
-        "path": "apps/gnunet-service-statistics/README.md",
-        "sha256": "5ec3632d7a7d8666b11823c628a1984260b2f38381757c683b265c19be43331b"
-      }
-    ],
-    "runtime_verified": false,
-    "whole_goal_complete": false
   }
 }

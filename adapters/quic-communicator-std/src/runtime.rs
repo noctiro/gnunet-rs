@@ -11,7 +11,10 @@ use crate::{
 };
 use gnunet_client_host::EndpointSource;
 use gnunet_nat_client_host as nat;
-use gnunet_service_runtime::clock::{ClockSubscription, RuntimeClock};
+use gnunet_service_runtime::{
+    clock::{ClockSubscription, RuntimeClock},
+    network_change::NetworkChanges,
+};
 use gnunet_transport_quic::{
     Role,
     address::{Address, Profile as AddressProfile},
@@ -33,6 +36,9 @@ use tokio::time::{Instant, Sleep};
 
 mod identity;
 mod recovery;
+mod retirement;
+mod send;
+use send::{AdmissionCredit, Sending, Submission};
 #[cfg(all(test, feature = "fresh-tls"))]
 #[path = "runtime/identity/native_tests.rs"]
 mod source_tests;
@@ -68,22 +74,6 @@ impl From<ipc::Failure> for Fault {
         }
     }
 }
-struct Sending {
-    queue: u32,
-    orphaned: bool,
-    id: raw::SendId,
-    mid: [u8; 8],
-    accepted: usize,
-    total: usize,
-    result_queued: bool,
-    result_written: bool,
-    result_bytes: usize,
-    unknown: bool,
-    credit_queued: bool,
-    status: i32,
-    retiring: bool,
-    hard: Instant,
-}
 struct Incoming<'id> {
     id: [u8; 8],
     frame: application::FrameId<'id>,
@@ -104,7 +94,7 @@ struct Row<'id, 'slots, 'buf> {
     peer: Option<[u8; 32]>,
     advertised: bool,
     queue_written: bool,
-    capacity_needed: bool,
+    admission: AdmissionCredit,
     down: bool,
     down_written: bool,
     closing: bool,
@@ -117,6 +107,7 @@ struct Row<'id, 'slots, 'buf> {
 }
 struct Advert<'id> {
     id: nat::AddressId<'id>,
+    socket: Option<SocketAddr>,
     wire: u32,
     written: bool,
 }
@@ -129,6 +120,7 @@ pub struct Runtime<'id, 'pils, 'pool, 'slots, 'buf> {
     ipc: Ipc,
     endpoint: Option<Endpoint>,
     scanner: crate::network::Scanner,
+    network_changes: NetworkChanges,
     nat: Option<nat::Registration<'id>>,
     advertisements: Vec<Advert<'id>>,
     advert_cap: usize,
@@ -174,6 +166,12 @@ pub struct Runtime<'id, 'pils, 'pool, 'slots, 'buf> {
     incoming_lost: usize,
     sends_retired: usize,
 }
+/// Original endpoint resources consumed together before its first bind.
+pub(crate) struct EndpointSetup {
+    pub bind: SocketAddr,
+    pub tls: Tls,
+    pub socket_policy: gnunet_service_runtime::network::SocketPolicy,
+}
 impl<'id, 'pils, 'pool, 'slots, 'buf> Runtime<'id, 'pils, 'pool, 'slots, 'buf> {
     /// Reserve metadata and fixed selector snapshots before actual bind. Frame loans
     /// remain in their caller slots on every failed application-profile admission.
@@ -187,6 +185,34 @@ impl<'id, 'pils, 'pool, 'slots, 'buf> Runtime<'id, 'pils, 'pool, 'slots, 'buf> {
         loans: Buffers<'pool, 'id, 'slots, 'buf>,
         limits: Limits,
     ) -> Result<Self, Fault> {
+        Self::with_endpoint(
+            instance,
+            pils_instance,
+            sources,
+            EndpointSetup {
+                bind,
+                tls,
+                socket_policy: Default::default(),
+            },
+            loans,
+            limits,
+        )
+    }
+    /// Construct the original endpoint with caller-owned egress preparation
+    /// before its first bind. The same endpoint survives healthy identity cuts.
+    pub(crate) fn with_endpoint(
+        instance: &'id Instance,
+        pils_instance: &'pils mut gnunet_pils::client::Instance,
+        sources: Sources,
+        endpoint: EndpointSetup,
+        loans: Buffers<'pool, 'id, 'slots, 'buf>,
+        limits: Limits,
+    ) -> Result<Self, Fault> {
+        let EndpointSetup {
+            bind,
+            tls,
+            socket_policy,
+        } = endpoint;
         let native_epoch = Instant::now();
         tokio::runtime::Handle::try_current().map_err(|_| Protocol::NotReady)?;
         limits.validate()?;
@@ -295,7 +321,8 @@ impl<'id, 'pils, 'pool, 'slots, 'buf> Runtime<'id, 'pils, 'pool, 'slots, 'buf> {
             },
         )?;
         // All fallible heap reservations precede the first actual socket bind.
-        let endpoint = Endpoint::bind(bind, tls, limits.backend, hard)?;
+        let endpoint =
+            Endpoint::bind_with_socket_policy(bind, tls, limits.backend, hard, &socket_policy)?;
         let local = endpoint.local_addr();
         let nat = match (sources.nat, nat_source) {
             (Some(n), Some(source)) => {
@@ -356,6 +383,7 @@ impl<'id, 'pils, 'pool, 'slots, 'buf> Runtime<'id, 'pils, 'pool, 'slots, 'buf> {
             ipc,
             endpoint: Some(endpoint),
             scanner,
+            network_changes: NetworkChanges::default(),
             nat,
             advertisements,
             advert_cap,
@@ -412,6 +440,9 @@ impl<'id, 'pils, 'pool, 'slots, 'buf> Runtime<'id, 'pils, 'pool, 'slots, 'buf> {
             .as_ref()
             .map(Endpoint::local_addr)
             .ok_or_else(|| Protocol::Closed.into())
+    }
+    pub(crate) fn set_network_changes(&mut self, changes: NetworkChanges) {
+        self.network_changes = changes;
     }
     /// True only after actual public identity and whole original registration write.
     pub fn is_ready(&self) -> bool {
@@ -674,13 +705,25 @@ impl<'id, 'pils, 'pool, 'slots, 'buf> Runtime<'id, 'pils, 'pool, 'slots, 'buf> {
                             if self.advertisements.len() == self.advert_cap {
                                 return Err(Protocol::Capacity.into());
                             }
-                            // The original NAT address allocation is authoritative,
-                            // even while the local TRANSPORT MQ is absent. Its
-                            // current bytes are read only when a fresh address
-                            // announcement is actually admitted.
-                            socket_address(address.address()).ok_or(Protocol::Unsupported)?;
+                            let endpoint = self.endpoint.as_ref().ok_or(Protocol::Closed)?;
+                            let socket = socket_address(address.address())
+                                .ok_or(Protocol::Unsupported)
+                                .and_then(|socket| {
+                                    endpoint.validate_peer(socket)?;
+                                    Ok(socket)
+                                });
+                            // Keep the original NAT id for its eventual removal,
+                            // including addresses this socket cannot advertise.
+                            let socket = match socket {
+                                Ok(socket) => Some(socket),
+                                Err(reason) => {
+                                    observe(Event::Rejected(reason.into()));
+                                    None
+                                }
+                            };
                             self.advertisements.push(Advert {
                                 id,
+                                socket,
                                 wire: 0,
                                 written: false,
                             });
@@ -751,7 +794,7 @@ impl<'id, 'pils, 'pool, 'slots, 'buf> Runtime<'id, 'pils, 'pool, 'slots, 'buf> {
             },
             advertised: false,
             queue_written: false,
-            capacity_needed: false,
+            admission: AdmissionCredit::Available,
             down: false,
             down_written: true,
             closing: false,
@@ -765,21 +808,13 @@ impl<'id, 'pils, 'pool, 'slots, 'buf> Runtime<'id, 'pils, 'pool, 'slots, 'buf> {
         self.next_queue = id;
         Ok(index)
     }
-    fn command(
-        &mut self,
-        now: MonoInstant,
-        observe: &mut impl FnMut(Event<'id>),
-    ) -> Result<bool, Fault> {
+    fn command(&mut self, observe: &mut impl FnMut(Event<'id>)) -> Result<bool, Fault> {
         let Some(response) = self.ipc.frame()? else {
             return Ok(false);
         };
         let response_hard = self.ipc.input_hard().ok_or(Protocol::Conflict)?;
         match response {
             Response::Create(request, peer, uri) => {
-                let address = Address::decode(uri)?;
-                if address.profile() != self.profile || address.socket().port() == 0 {
-                    return Err(Protocol::InvalidInput.into());
-                }
                 if !self.ipc.room(1, 8) {
                     return Ok(false);
                 }
@@ -792,12 +827,16 @@ impl<'id, 'pils, 'pool, 'slots, 'buf> Runtime<'id, 'pils, 'pool, 'slots, 'buf> {
                     self.ipc.release()?;
                     return Ok(true);
                 }
-                let connecting = match self
-                    .endpoint
-                    .as_mut()
-                    .ok_or(Protocol::Closed)?
-                    .dial(address.socket())
-                {
+                let address = Address::decode(uri).and_then(|address| {
+                    (address.profile() == self.profile)
+                        .then_some(address.socket())
+                        .ok_or(Protocol::Unsupported)
+                });
+                let endpoint = self.endpoint.as_mut().ok_or(Protocol::Closed)?;
+                let connecting = address
+                    .map_err(endpoint::Failure::from)
+                    .and_then(|remote| endpoint.dial(remote));
+                let connecting = match connecting {
                     Ok(c) => c,
                     Err(e) => {
                         if self.endpoint.as_ref().is_some_and(Endpoint::is_poisoned) {
@@ -826,7 +865,7 @@ impl<'id, 'pils, 'pool, 'slots, 'buf> Runtime<'id, 'pils, 'pool, 'slots, 'buf> {
                 )?;
                 self.ipc.release()?;
             }
-            Response::Send(queue, mid, peer, bytes) => {
+            Response::Send(queue, mid, peer, _) => {
                 let index = self
                     .rows
                     .iter()
@@ -856,45 +895,12 @@ impl<'id, 'pils, 'pool, 'slots, 'buf> Runtime<'id, 'pils, 'pool, 'slots, 'buf> {
                 if row.send.is_some() {
                     return Err(Protocol::Conflict.into());
                 }
-                // Keep this exact held command and its original input deadline
-                // while an earlier HTTP request still owns the last send slot.
-                if !row
-                    .link
-                    .as_ref()
-                    .ok_or(Protocol::NotReady)?
-                    .send_capacity(now)?
-                {
-                    return Ok(false);
-                }
                 let id = raw::SendId(self.next_send.checked_add(1).ok_or(Protocol::Overflow)?);
-                let hard = self
-                    .ipc
-                    .input_hard()
-                    .ok_or(Protocol::Conflict)?
-                    .min(self.hard);
-                // Original held SEND bytes are copied once by the real link before RX release.
-                row.link
-                    .as_mut()
-                    .ok_or(Protocol::NotReady)?
-                    .queue(id, bytes, hard, now)?;
-                row.send = Some(Sending {
-                    queue,
-                    orphaned: false,
-                    id,
-                    mid,
-                    accepted: 0,
-                    total: bytes.len(),
-                    result_queued: false,
-                    result_written: false,
-                    result_bytes: 0,
-                    unknown: false,
-                    credit_queued: false,
-                    status: 1,
-                    retiring: false,
-                    hard,
-                });
+                // This queue's one advertised slot owns the original command,
+                // independently of native stream capacity. Releasing the MQ
+                // cursor lets later FC callbacks free earlier HTTP body rows.
+                row.send = Some(Sending::from_ipc(&mut self.ipc, id, row.mtu, self.hard)?);
                 self.next_send = id.0;
-                self.ipc.release()?;
             }
             Response::Received(flow, peer) => {
                 let i = self
@@ -1050,238 +1056,6 @@ impl<'id, 'pils, 'pool, 'slots, 'buf> Runtime<'id, 'pils, 'pool, 'slots, 'buf> {
                 self.rows[i].as_mut().ok_or(Protocol::Stale)?.down_written = true
             }
             _ => {}
-        }
-        Ok(())
-    }
-    fn retire_row(
-        &mut self,
-        i: usize,
-        observe: &mut impl FnMut(Event<'id>),
-    ) -> Result<bool, Fault> {
-        let bound = self.deadline(self.limits.close_grace)?;
-        let row = self.rows[i].as_mut().ok_or(Protocol::Stale)?;
-        if row.closing {
-            return Ok(false);
-        }
-        row.closing = true;
-        // Late polling cannot turn an expired original operation into a fresh
-        // close allowance. Driver/socket teardown remains original-source work.
-        let mut anchor = Instant::now().min(row.hard).min(row.idle);
-        if let Some(t) = row.input {
-            anchor = anchor.min(t)
-        }
-        if let Some(s) = &row.send {
-            anchor = anchor.min(s.hard)
-        }
-        row.retire_hard = Some(
-            anchor
-                .checked_add(self.limits.close_grace)
-                .ok_or(Protocol::Overflow)?
-                .min(self.hard),
-        );
-        row.input = None;
-        if let Some(connecting) = row.connecting.take() {
-            drop(connecting)
-        }
-        capture_send(row)?;
-        if let Some(link) = &mut row.link {
-            link.close()
-        }
-        if row.send.as_ref().is_some_and(|send| send.orphaned) {
-            row.send = None;
-        }
-        if let Some(send) = &mut row.send
-            && !send.result_queued
-        {
-            send.status = -1;
-            send.retiring = true;
-            send.hard = send
-                .hard
-                .checked_add(self.limits.close_grace)
-                .ok_or(Protocol::Overflow)?
-                .min(bound)
-                .min(self.hard)
-        }
-        if row
-            .send
-            .as_ref()
-            .is_some_and(|s| s.result_written && !s.credit_queued)
-        {
-            let send = row.send.take().ok_or(Protocol::Stale)?;
-            self.sends_retired += 1;
-            observe(Event::SendRetired {
-                epoch: self.epoch,
-                queue: send.queue,
-                message_id: send.mid,
-                accepted: send.accepted,
-                total: send.total,
-                result_written: true,
-                result_bytes: send.result_bytes,
-                unknown: send.unknown,
-            });
-        }
-        observe(Event::QueueRetired {
-            epoch: self.epoch,
-            queue: row.id,
-        });
-        Ok(true)
-    }
-    fn maintenance(
-        &mut self,
-        mono: MonoInstant,
-        observe: &mut impl FnMut(Event<'id>),
-    ) -> Result<bool, Fault> {
-        let mut progress = false;
-        let now = Instant::now();
-        for i in 0..self.rows.len() {
-            let Some(row) = &self.rows[i] else { continue };
-            if row.incoming.as_ref().is_some_and(|d| now >= d.hard) {
-                return Err(Protocol::Deadline.into());
-            }
-            // Actual old completion may retire its original row even when a
-            // later poll observes expiry. It grants no fresh submission.
-            if row.closing
-                && row.send.is_none()
-                && row.incoming.is_none()
-                && row.down_written
-                && self
-                    .endpoint
-                    .as_ref()
-                    .ok_or(Protocol::Closed)?
-                    .driver_done(&row.driver)?
-            {
-                self.reap_row(i)?;
-                progress = true;
-                continue;
-            }
-            if row.closing && row.retire_hard.is_some_and(|t| now >= t) {
-                return Err(Protocol::Deadline.into());
-            }
-            if row
-                .send
-                .as_ref()
-                .is_some_and(|s| !s.orphaned && now >= s.hard && (s.retiring || s.result_queued))
-            {
-                return Err(Protocol::Deadline.into());
-            }
-            if !row.closing
-                && (now >= row.hard
-                    || now >= row.idle
-                    || row.input.is_some_and(|h| now >= h)
-                    || row.send.as_ref().is_some_and(|s| now >= s.hard))
-            {
-                progress |= self.retire_row(i, observe)?
-            }
-            let row = self.rows[i].as_mut().ok_or(Protocol::Stale)?;
-            if row
-                .send
-                .as_ref()
-                .is_some_and(|send| send.orphaned && send.accepted == send.total)
-            {
-                let send = row.send.as_ref().ok_or(Protocol::Stale)?;
-                if !send.result_written {
-                    row.link
-                        .as_mut()
-                        .ok_or(Protocol::Stale)?
-                        .take_accepted(send.id)?;
-                }
-                row.send = None;
-                progress = true;
-            }
-            if let Some(send) = &mut row.send {
-                if send.orphaned {
-                    continue;
-                }
-                if !send.result_queued && (send.accepted == send.total || row.closing) {
-                    let result = Request::Sent {
-                        message_id: send.mid,
-                        queue: row.id,
-                        peer: row.peer.ok_or(Protocol::Stale)?,
-                        status: send.status,
-                    };
-                    if self.ipc.room_request(result)? {
-                        self.ipc
-                            .enqueue(result, ipc::Role::Sent(row.id, send.mid), send.hard)?;
-                        send.result_queued = true;
-                        progress = true
-                    }
-                }
-                if send.result_written
-                    && !send.credit_queued
-                    && !row.closing
-                    && row
-                        .link
-                        .as_ref()
-                        .ok_or(Protocol::NotReady)?
-                        .send_capacity(mono)?
-                {
-                    let hard = send.hard;
-                    let update = Request::QueueUpdate(queue(row, 1)?);
-                    if self.ipc.room_request(update)? {
-                        self.ipc.enqueue(update, ipc::Role::Credit(row.id), hard)?;
-                        // Borrow ends before mutating the same original send row.
-                        row.send.as_mut().ok_or(Protocol::Stale)?.credit_queued = true;
-                        progress = true;
-                    }
-                }
-            }
-            if !row.closing
-                && row.capacity_needed
-                && row.send.is_none()
-                && row.queue_written
-                && row
-                    .link
-                    .as_ref()
-                    .ok_or(Protocol::NotReady)?
-                    .send_capacity(mono)?
-            {
-                let update = Request::QueueUpdate(queue(row, 1)?);
-                if self.ipc.room_request(update)? {
-                    self.ipc
-                        .enqueue(update, ipc::Role::Available(row.id), self.hard)?;
-                    row.capacity_needed = false;
-                    progress = true;
-                }
-            }
-            if row.closing && !row.down {
-                if !row.advertised {
-                    row.down = true;
-                    row.down_written = true
-                } else {
-                    let down = Request::QueueDown(row.id, row.peer.ok_or(Protocol::Stale)?);
-                    if self.ipc.room_request(down)? {
-                        self.ipc.enqueue(down, ipc::Role::Down(row.id), self.hard)?;
-                        row.down = true;
-                        row.down_written = false;
-                        progress = true
-                    }
-                }
-            }
-            let removable = row.closing
-                && row.send.is_none()
-                && row.incoming.is_none()
-                && row.down_written
-                && self
-                    .endpoint
-                    .as_ref()
-                    .ok_or(Protocol::Closed)?
-                    .driver_done(&row.driver)?;
-            if removable {
-                self.reap_row(i)?;
-                progress = true;
-            }
-        }
-        Ok(progress)
-    }
-    fn reap_row(&mut self, i: usize) -> Result<(), Fault> {
-        let row = self.rows[i].as_ref().ok_or(Protocol::Stale)?;
-        self.endpoint
-            .as_mut()
-            .ok_or(Protocol::Closed)?
-            .release_driver(&row.driver)?;
-        let row = self.rows[i].take().ok_or(Protocol::Stale)?;
-        if let Some(link) = row.link {
-            link.recycle(&mut self.loans, i)?
         }
         Ok(())
     }
@@ -1444,19 +1218,21 @@ impl<'id, 'pils, 'pool, 'slots, 'buf> Runtime<'id, 'pils, 'pool, 'slots, 'buf> {
             {
                 let canonical = Address::new(self.profile, row.remote)?.canonical()?;
                 if self.ipc.room(1, 65 + canonical.as_bytes().len()) {
-                    let capacity = row.send.is_none()
-                        && row
-                            .link
-                            .as_ref()
-                            .ok_or(Protocol::NotReady)?
-                            .send_capacity(now)?;
+                    let available = row.send.is_none();
                     self.ipc.enqueue(
-                        Request::QueueSetup(queue(row, u64::from(capacity))?, canonical.as_bytes()),
+                        Request::QueueSetup(
+                            queue(row, u64::from(available))?,
+                            canonical.as_bytes(),
+                        ),
                         ipc::Role::Queue(row.id),
                         row.hard,
                     )?;
                     row.advertised = true;
-                    row.capacity_needed = !capacity;
+                    row.admission = if available {
+                        AdmissionCredit::Available
+                    } else {
+                        AdmissionCredit::Withheld
+                    };
                     row.hard = self.hard;
                     observe(Event::Queue {
                         epoch: self.epoch,
@@ -1544,6 +1320,9 @@ impl<'id, 'pils, 'pool, 'slots, 'buf> Runtime<'id, 'pils, 'pool, 'slots, 'buf> {
             self.bound_event = true;
             progress = true
         }
+        if self.network_changes.poll_changed(cx).is_ready() {
+            self.scanner.request_refresh();
+        }
         match self.scanner.refresh() {
             Ok(changed) => progress |= changed,
             Err(error) => {
@@ -1597,7 +1376,7 @@ impl<'id, 'pils, 'pool, 'slots, 'buf> Runtime<'id, 'pils, 'pool, 'slots, 'buf> {
                 }
                 ipc::Step::Frame => {
                     if self.ready {
-                        progress |= self.command(mono, observe)?
+                        progress |= self.command(observe)?
                     }
                 }
             }
@@ -1648,6 +1427,12 @@ impl<'id, 'pils, 'pool, 'slots, 'buf> Runtime<'id, 'pils, 'pool, 'slots, 'buf> {
                     }
                     Poll::Ready(Err(endpoint::Failure::Protocol(Protocol::Capacity))) => {
                         progress = true
+                    }
+                    Poll::Ready(Err(endpoint::Failure::Protocol(
+                        reason @ (Protocol::Unsupported | Protocol::InvalidInput),
+                    ))) => {
+                        observe(Event::Rejected(reason.into()));
+                        progress = true;
                     }
                     Poll::Ready(Err(e)) => return Poll::Ready(Err(e.into())),
                 }
@@ -1813,6 +1598,7 @@ impl<'id, 'pils, 'pool, 'slots, 'buf> Runtime<'id, 'pils, 'pool, 'slots, 'buf> {
             endpoint.begin_close()
         }
         self.subscription = None;
+        self.network_changes = NetworkChanges::default();
         self.advertisements.clear();
     }
     /// Bounded real driver drain, followed by explicit actual force-drop if needed.
@@ -1952,7 +1738,12 @@ fn queue(row: &Row<'_, '_, '_>, length: u64) -> Result<Queue, Protocol> {
 fn capture_send(row: &mut Row<'_, '_, '_>) -> Result<(), Fault> {
     if let Some((id, known, total)) = row.link.as_ref().and_then(Application::pending_send) {
         let send = row.send.as_mut().ok_or(Protocol::Stale)?;
-        if send.id != id || send.total != total || known < send.accepted || known > total {
+        if !matches!(send.submission, Submission::Native)
+            || send.id != id
+            || send.total != total
+            || known < send.accepted
+            || known > total
+        {
             return Err(Protocol::Conflict.into());
         }
         send.accepted = known;

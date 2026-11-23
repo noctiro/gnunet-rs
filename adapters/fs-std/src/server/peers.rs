@@ -23,7 +23,7 @@ type SharedFailure = Arc<ProviderFailure>;
 pub enum Backend {
     /// Original non-anonymous direct CADET owner.
     Direct,
-    /// Original anonymous CORE GAP owner.
+    /// Original CORE GAP owner.
     Gap,
     /// Original non-anonymous UBLOCK DHT owner.
     Dht,
@@ -281,11 +281,27 @@ enum Selection {
     Anonymity,
     NonAnonymous,
 }
+enum RoutePlan {
+    Direct,
+    Gap,
+    Dht,
+    DirectThenGap,
+    DirectAndGap,
+}
+impl RoutePlan {
+    fn first(&self) -> Backend {
+        match self {
+            Self::Gap => Backend::Gap,
+            Self::Dht => Backend::Dht,
+            Self::Direct | Self::DirectThenGap | Self::DirectAndGap => Backend::Direct,
+        }
+    }
+}
 
 /// Two independently owned optional backends and a fixed-capacity route table.
-/// Anonymity0 selects direct except unknown-target D/I, which use the explicit
-/// GAP capability without changing their numeric level. Every positive level
-/// selects GAP. An unadmitted level0 D/I/UBLOCK may fall back to GAP only after
+/// ANY, positive anonymity and unknown-target D/I select GAP with the original
+/// anonymity level. Other level-zero requests select direct. An unadmitted
+/// level-zero D/I/UBLOCK may fall back to GAP only after
 /// the direct chain reports Idle (no peer effect), is absent or is retired.
 /// Queued work and errors never switch backend. The explicit `discovery`
 /// constructor plans an independent CORE child before first admission, even
@@ -320,7 +336,7 @@ impl<A: PeerRouter, B: PeerRouter> Pair<A, B> {
     /// child before either starts. A nonfatal primary refusal retains its cause
     /// without canceling that original CORE plan. Each actual child keeps its
     /// own timers and native cleanup; no later Ended/error starts a retry.
-    /// Positive anonymity and unknown-target level0 D/I still select only GAP.
+    /// ANY, positive anonymity and unknown-target D/I select only GAP.
     pub fn discovery(
         direct: Option<A>,
         gap: Option<B>,
@@ -372,6 +388,35 @@ impl<A: PeerRouter, B: PeerRouter> Pair<A, B> {
             shutdown_secondary: None,
             pending_fatal: None,
         })
+    }
+
+    fn plan(&self, search: Search<'_>) -> Option<RoutePlan> {
+        let plan = match self.selection {
+            Selection::Anonymity
+                if search.anonymity != 0
+                    || search.block_type == BlockType::ANY
+                    || search.target == [0; 32]
+                        && matches!(search.block_type, BlockType::DBLOCK | BlockType::IBLOCK) =>
+            {
+                RoutePlan::Gap
+            }
+            Selection::Anonymity
+                if matches!(
+                    search.block_type,
+                    BlockType::DBLOCK | BlockType::IBLOCK | BlockType::UBLOCK
+                ) =>
+            {
+                if self.discovery && search.options & SEARCH_LOOPBACK_ONLY == 0 {
+                    RoutePlan::DirectAndGap
+                } else {
+                    RoutePlan::DirectThenGap
+                }
+            }
+            Selection::NonAnonymous if search.anonymity != 0 => return None,
+            Selection::NonAnonymous if search.block_type == BlockType::UBLOCK => RoutePlan::Dht,
+            _ => RoutePlan::Direct,
+        };
+        Some(plan)
     }
     fn secondary_backend(&self) -> Backend {
         match self.selection {
@@ -593,38 +638,13 @@ impl<A: PeerRouter, B: PeerRouter> PeerRouter for Pair<A, B> {
             return Err(Failure::operation(ProtocolError::Capacity));
         }
         self.last_route = route;
-        let mut backend = match self.selection {
-            Selection::Anonymity
-                if search.anonymity != 0
-                    || search.target == [0; 32]
-                        && matches!(
-                            search.block_type,
-                            gnunet_wire::official::fs::BlockType::DBLOCK
-                                | gnunet_wire::official::fs::BlockType::IBLOCK
-                        ) =>
-            {
-                Backend::Gap
-            }
-            Selection::Anonymity => Backend::Direct,
-            Selection::NonAnonymous if search.anonymity != 0 => return Ok(RouteAdmission::Idle),
-            Selection::NonAnonymous
-                if search.block_type == gnunet_wire::official::fs::BlockType::UBLOCK =>
-            {
-                Backend::Dht
-            }
-            Selection::NonAnonymous => Backend::Direct,
+        let Some(plan) = self.plan(search) else {
+            return Ok(RouteAdmission::Idle);
         };
         // This original plan is fixed before the first provider can admit any
         // effect. Its independent CORE child is not inferred later from Idle,
         // Refused, a timeout or Ended.
-        let planned_gap = self.discovery
-            && backend == Backend::Direct
-            && search.anonymity == 0
-            && search.options & SEARCH_LOOPBACK_ONLY == 0
-            && matches!(
-                search.block_type,
-                BlockType::DBLOCK | BlockType::IBLOCK | BlockType::UBLOCK
-            );
+        let mut backend = plan.first();
         // The fixed-capacity parent slot is reserved before either child can
         // admit a native effect. No allocation or fallible parent insertion
         // remains after a child reports Queued.
@@ -637,25 +657,14 @@ impl<A: PeerRouter, B: PeerRouter> PeerRouter for Pair<A, B> {
             additional_ended: false,
         });
         let mut result = self.start_backend(backend, route, search, seen);
-        if !planned_gap
-            && self.selection == Selection::Anonymity
-            && backend == Backend::Direct
-            && search.anonymity == 0
-            && matches!(
-                search.block_type,
-                gnunet_wire::official::fs::BlockType::DBLOCK
-                    | gnunet_wire::official::fs::BlockType::IBLOCK
-                    | gnunet_wire::official::fs::BlockType::UBLOCK
-            )
-            && matches!(&result, Ok(RouteAdmission::Idle))
-        {
+        if matches!(plan, RoutePlan::DirectThenGap) && matches!(&result, Ok(RouteAdmission::Idle)) {
             // Idle is the provider's explicit no-effect contract. No original
             // child route, timer or native debt is transferred or restarted.
             backend = Backend::Gap;
             self.routes[index].backend = backend;
             result = self.start_backend(backend, route, search, seen);
         }
-        if planned_gap {
+        if matches!(plan, RoutePlan::DirectAndGap) {
             let primary_queued = matches!(&result, Ok(RouteAdmission::Queued));
             let primary_refused = match result {
                 Ok(RouteAdmission::Queued | RouteAdmission::Idle) => false,

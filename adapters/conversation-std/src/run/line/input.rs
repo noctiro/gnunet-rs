@@ -179,6 +179,9 @@ impl<'s, 'p, 'c, 'slots> State<'s, 'p, 'c, 'slots> {
         }
     }
     pub(super) fn peer_input(&mut self) -> Result<bool, Error> {
+        if self.expire_cadet_input()? {
+            return Ok(true);
+        }
         let count = self.calls.len();
         for offset in 0..count {
             let index = (self.call_cursor + offset) % count;

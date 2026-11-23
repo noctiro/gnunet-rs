@@ -6,6 +6,15 @@ use gnunet_program_host::{
 };
 use gnunet_qr_host::Limits;
 use std::{path::PathBuf, time::Duration};
+
+const CAMERA_DEVICE_BYTES: usize = 4_096;
+const DEFAULT_CAMERA_DEVICE: Option<&[u8]> =
+    if cfg!(all(target_os = "linux", not(target_env = "ohos"))) {
+        Some(b"/dev/video0")
+    } else {
+        None
+    };
+
 pub(super) struct Arguments {
     png: Target<Option<Vec<u8>>>,
     device: Target<Option<Vec<u8>>>,
@@ -34,7 +43,7 @@ impl Arguments {
             b'd',
             b"device",
             b"DEVICE",
-            b"Explicit actual ZBar camera device (default /dev/video0)",
+            b"Select a camera device identifier understood by ZBar",
             self.device.clone(),
         ));
         o.add(helpers::flag(
@@ -96,9 +105,12 @@ impl Arguments {
                 .transpose()
                 .map(|path| path.map(std::borrow::Cow::into_owned))
         })??;
-        let explicit = self
-            .device
-            .with(|value| value.as_deref().map(|bytes| owned(bytes, 4096)).transpose())??;
+        let explicit = self.device.with(|value| {
+            value
+                .as_deref()
+                .map(|bytes| owned(bytes, CAMERA_DEVICE_BYTES))
+                .transpose()
+        })??;
         if png.is_some() && explicit.is_some() {
             return Err("select either PNG input or a camera device".into());
         }
@@ -106,26 +118,18 @@ impl Arguments {
             Some(path) => Input::Png(path),
             None => Input::Camera(match explicit {
                 Some(device) => device,
-                None => {
-                    #[cfg(unix)]
-                    let device = c.get(section, b"DEVICE").unwrap_or(b"/dev/video0");
-                    #[cfg(windows)]
-                    let device = c
-                        .get(section, b"DEVICE")
-                        .ok_or("Windows camera input requires --device or [qr-rust] DEVICE")?;
-                    owned(device, 4096)?
-                }
+                None => owned(
+                    c.get(section, b"DEVICE").or(DEFAULT_CAMERA_DEVICE).ok_or(
+                        "camera input on this platform requires --device or [qr-rust] DEVICE",
+                    )?,
+                    CAMERA_DEVICE_BYTES,
+                )?,
             }),
         };
         let library = |key: &[u8]| -> Result<Option<PathBuf>, Failure> {
-            let path = c
-                .get(section, key)
-                .map(|_| c.get_filename(section, key, &gnunet_config::ProcessEnvironment))
-                .transpose()?;
-            if path.as_ref().is_some_and(|path| !path.is_absolute()) {
-                return Err("QR provider libraries require explicit absolute paths".into());
-            }
-            Ok(path)
+            Ok(c.get(section, key)
+                .map(|_| c.get_absolute_filename(section, key, &gnunet_config::ProcessEnvironment))
+                .transpose()?)
         };
         let libraries = gnunet_qr_host::LibraryPaths {
             png: library(b"LIBPNG")?,

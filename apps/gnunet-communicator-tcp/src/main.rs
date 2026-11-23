@@ -9,7 +9,7 @@ mod statistics;
 use gnunet_program_host::{
     getopt::Options,
     logging::Logger,
-    program::{self, Defaults, Invocation, NlsDisabled, Preparation, StoppedReason},
+    program::{self, Defaults, Invocation, Preparation, StoppedReason},
     reporting::Reporter,
     shared_clock::SharedClock,
 };
@@ -66,7 +66,7 @@ fn prepare(
         Arc::new(gnunet_config::ProjectData::default()),
         Default::default(),
     )?;
-    program::prepare(
+    program::prepare_installed(
         config,
         Invocation {
             binary_name: b"gnunet-communicator-tcp",
@@ -74,7 +74,7 @@ fn prepare(
             select_default_filename: true, defaults: Defaults::Native,
         },
         Options::new(), std::env::args_os(), &program::Environment::capture(),
-        &mut NlsDisabled, logger, clock,
+        logger, clock,
         &mut io::stdout().lock(), &mut io::stderr().lock(),
     )
 }
@@ -194,7 +194,7 @@ async fn serve(
     if reporter.failed() {
         return Ok(());
     }
-    let mut services = Services::new(&config, Arc::new(clock.clone()))?;
+    let mut services = Services::new(&config, Arc::new(clock.clone()), Default::default())?;
     let shutdown = match shutdown(reporter.clone(), parent) {
         Ok(shutdown) => shutdown,
         Err(error) => return retire_services(services, Some(Box::new(error))),

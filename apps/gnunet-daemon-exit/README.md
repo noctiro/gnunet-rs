@@ -28,6 +28,15 @@ requires no TUN. Windows existing mode verifies configuration without rewriting
 it or acquiring route cleanup authority. Unix descriptor transfer retains its
 original native ownership contract.
 
+FreeBSD managed TUN recovery reopens the exact persistent interface under its
+original checkpoint and FIB. EXIT restores missing addresses and previously
+owned routes, then verifies the interface, routes and IPv6 readiness before
+attaching a fresh packet epoch. Failed or uncertain operations retain the
+original cleanup obligations. If the old interface disappears, EXIT requires
+vacancy of its original native device and FIB route keys. It recreates the
+interface under the same checkpoint lock and records cleanup only for routes
+acknowledged on the new interface. [FreeBSD TUN recovery](../../adapters/tun-std/RECOVERY.md)
+
 Windows session recovery retains the original adapter, verifies its current
 configuration and attaches a fresh packet epoch under one finite outage deadline.
 CADET and DNS keep their independent owners. Physical reopen reconciles the old
@@ -44,12 +53,11 @@ and independent cleanup errors remain attached to their owners.
 [Device preparation](src/network/device.rs) is separate from
 [route and DAD handling](src/network.rs), [scheduling](src/foreground.rs),
 [configuration](src/settings.rs) and [cleanup ownership](src/lifecycle.rs).
-The Windows [recovery controller](src/network/recovery.rs) separates retry policy,
+The [recovery controller](src/network/recovery.rs) separates native reacquisition,
 read-only verification and source admission.
 Protocol engines and native adapters remain independent of PROGRAM startup.
 
 Native calls are synchronous and cannot be preempted by an async timer. Windows
-uses native identity and termination APIs. Select `PEER_AF_PROFILE` for the
-opposite peer's protocol representation when it differs from the local platform.
-See the [native contracts](CONFIGURATION.md) and central
-[open work](../../IMPLEMENTATION_STATUS.md).
+uses native identity and termination APIs. Configure reply address-family
+values by peer identity when VPN clients use different platform values.
+[Peer address families](CONFIGURATION.md#peer-address-families) · [Open work](../../IMPLEMENTATION_STATUS.md)

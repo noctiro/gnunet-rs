@@ -1,6 +1,6 @@
 //! Actual official NAT and per-registration configuration; Rust-only resource
 //! limits do not create private protocol or competing address authorization.
-use crate::{Error, helpers};
+use crate::{Error, helpers, stun};
 use gnunet_config::Configuration;
 use gnunet_nat::{address::SocketAddress, state::Options};
 use gnunet_types::Error as Fault;
@@ -104,6 +104,35 @@ pub struct Registration {
     /// Original source's external address mode.
     pub external: External,
 }
+/// Capability and limits for original native NAT reversal helpers.
+#[derive(Clone, Debug)]
+pub struct Helpers {
+    /// Installed helper executables selected by the owner.
+    pub paths: helpers::Paths,
+    /// Resource and retirement bounds.
+    pub limits: helpers::Limits,
+}
+
+impl Helpers {
+    fn configured(c: &Configuration, paths: helpers::Paths) -> Result<Self, ConfigError> {
+        Ok(Self {
+            paths,
+            limits: helpers::Limits {
+                children: number(c, b"MAX_HELPERS", 256)?,
+                ..helpers::Limits::default()
+            },
+        })
+    }
+}
+
+/// Explicit deployment authorization for scheduled outbound STUN probes.
+#[derive(Clone, Debug)]
+pub struct ActiveStun {
+    pub(crate) servers: stun::Servers,
+    pub(crate) interval: Duration,
+    pub(crate) datagrams: usize,
+}
+
 /// Effective service settings. Each timer is finite; its original native target
 /// is assigned once when scheduled/admitted, never reset by a poll or rollback.
 #[derive(Clone, Debug)]
@@ -116,8 +145,6 @@ pub struct Settings {
     pub disable_v6: bool,
     /// Actual RETURN_LOCAL_ADDRESSES setting.
     pub return_local_addresses: bool,
-    /// Actual USE_STUN setting.
-    pub use_stun: bool,
     /// Configured complete interface-scan interval.
     pub interface_interval: Duration,
     /// Configured periodic dynamic-DNS interval.
@@ -126,12 +153,8 @@ pub struct Settings {
     pub external_interval: Duration,
     /// Configured STUN freshness, independent from query deadline.
     pub stun_stale: Duration,
-    /// Configured STUN refresh interval.
-    pub stun_interval: Duration,
-    /// Bounded original public STUN server entries.
-    pub stun_servers: Vec<(Vec<u8>, u16)>,
-    /// Maximum received datagrams per original dedicated STUN server probe.
-    pub stun_datagrams: usize,
+    /// Outbound probing policy. Passive client STUN observations are independent.
+    pub active_stun: Option<ActiveStun>,
     /// Original per-provider/request network deadline.
     pub job_timeout: Duration,
     /// Independent explicit cleanup deadline.
@@ -144,39 +167,48 @@ pub struct Settings {
     pub mappings: usize,
     /// Actual native interface limits.
     pub interfaces: gnunet_native::interfaces::Limits,
-    /// Actual child bounds.
-    pub helper_limits: helpers::Limits,
-    /// Actual Rust helper paths.
-    pub helper_paths: helpers::Paths,
+    /// Original helper authority, if supplied by the deployment.
+    pub helpers: Option<Helpers>,
 }
 impl Settings {
     /// Read actual official keys and explicit Rust metadata budgets. No socket,
     /// helper launch, permission operation, key or system configuration is touched.
     pub fn read(c: &Configuration) -> Result<Self, ConfigError> {
-        let mut servers = Vec::new();
-        let raw = c
-            .get(b"nat", b"STUN_SERVERS")
-            .unwrap_or(b"stun.gnunet.org stun.services.mozilla.com:3478 stun.ekiga.net:3478");
-        if raw.len() > 8192 {
-            return Err(Fault::TooLarge.into());
-        }
-        let raw = core::str::from_utf8(raw).map_err(|_| Fault::Malformed)?;
-        for token in raw.split_ascii_whitespace() {
-            if servers.len() >= 32 {
-                return Err(Fault::Capacity.into());
-            }
-            let (host, port) = crate::stun::parse_server(token)?;
-            let mut h = Vec::new();
-            h.try_reserve_exact(host.len())
-                .map_err(|_| Fault::Capacity)?;
-            h.extend_from_slice(host.as_bytes());
-            servers.try_reserve(1).map_err(|_| Fault::Capacity)?;
-            servers.push((h, port));
-        }
-        let helper_paths = helpers::Paths {
-            server: c.suid_binary_path(b"gnunet-helper-nat-server")?,
-            client: c.suid_binary_path(b"gnunet-helper-nat-client")?,
+        Self::read_with(c, || {
+            let paths = helpers::Paths {
+                server: c.suid_binary_path(b"gnunet-helper-nat-server")?,
+                client: c.suid_binary_path(b"gnunet-helper-nat-client")?,
+            };
+            Helpers::configured(c, paths).map(Some)
+        })
+    }
+
+    #[cfg(feature = "service")]
+    pub(crate) fn read_embedded(
+        c: &Configuration,
+        helper_paths: Option<helpers::Paths>,
+    ) -> Result<Self, ConfigError> {
+        Self::read_with(c, || {
+            helper_paths
+                .map(|paths| Helpers::configured(c, paths))
+                .transpose()
+        })
+    }
+
+    fn read_with(
+        c: &Configuration,
+        helpers: impl FnOnce() -> Result<Option<Helpers>, ConfigError>,
+    ) -> Result<Self, ConfigError> {
+        let active_stun = if yes(c, b"nat", b"USE_STUN", false)? {
+            Some(ActiveStun {
+                servers: stun::Servers::read(c)?.ok_or(Fault::InvalidInput)?,
+                interval: time(c, b"nat", b"STUN_FREQUENCY", stun::DEFAULT_FREQUENCY_MICROS)?,
+                datagrams: number(c, b"MAX_STUN_DATAGRAMS", 1024)?,
+            })
+        } else {
+            None
         };
+        let helpers = helpers()?;
         let jobs = number(c, b"MAX_JOBS", 256)?;
         let mappings = number(c, b"MAX_MAPPINGS", 256)?;
         Ok(Self {
@@ -184,14 +216,11 @@ impl Settings {
             enable_ipscan: yes(c, b"nat", b"ENABLE_IPSCAN", true)?,
             disable_v6: yes(c, b"nat", b"DISABLEV6", false)?,
             return_local_addresses: yes(c, b"nat", b"RETURN_LOCAL_ADDRESSES", false)?,
-            use_stun: yes(c, b"nat", b"USE_STUN", true)?,
             interface_interval: time(c, b"nat", b"IFC_SCAN_FREQUENCY", 900_000_000)?,
             dyndns_interval: time(c, b"nat", b"DYNDNS_FREQUENCY", 420_000_000)?,
             external_interval: time(c, b"nat", b"HOSTNAME_DNS_FREQUENCY", 1_200_000_000)?,
             stun_stale: time(c, b"nat", b"STUN_STALE", 3_600_000_000)?,
-            stun_interval: time(c, b"nat", b"STUN_FREQUENCY", 300_000_000)?,
-            stun_servers: servers,
-            stun_datagrams: number(c, b"MAX_STUN_DATAGRAMS", 1024)?,
+            active_stun,
             job_timeout: time(c, b"nat-rust", b"JOB_TIMEOUT", 30_000_000)?,
             cleanup_timeout: time(c, b"nat-rust", b"CLEANUP_TIMEOUT", 1_000_000)?,
             mapping_interval: Duration::from_secs(300),
@@ -202,11 +231,7 @@ impl Settings {
                 addresses: number(c, b"MAX_INTERFACE_ADDRESSES", 1024)?,
                 name_bytes: 256,
             },
-            helper_limits: helpers::Limits {
-                children: number(c, b"MAX_HELPERS", 256)?,
-                ..helpers::Limits::default()
-            },
-            helper_paths,
+            helpers,
         })
     }
     /// Parse only the actual caller's REGISTER section and HOLE_EXTERNAL.
@@ -268,5 +293,39 @@ impl Settings {
             External::None
         };
         Ok(Registration { options, external })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ConfigError, Configuration, Settings, stun};
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "assert the selected policy while propagating fixture configuration errors"
+    )]
+    fn outbound_stun_requires_explicit_enablement_and_servers() -> Result<(), ConfigError> {
+        let mut config = Configuration::default();
+        config.set_value(b"nat", b"STUN_SERVERS", Some(b"127.0.0.1:3479 [::1]"))?;
+        assert!(
+            Settings::read_with(&config, || Ok(None))?
+                .active_stun
+                .is_none()
+        );
+
+        config.set_value(b"nat", b"USE_STUN", Some(b"YES"))?;
+        let selected = Settings::read_with(&config, || Ok(None))?.active_stun;
+        assert_eq!(
+            selected
+                .as_ref()
+                .map(|stun| stun.servers.iter().collect::<Vec<_>>()),
+            Some(vec![(&b"127.0.0.1"[..], 3479), (&b"::1"[..], 3478)]),
+        );
+
+        config.set_value(b"nat", b"STUN_SERVERS", None)?;
+        assert!(stun::Servers::read(&config)?.is_none());
+        assert!(Settings::read_with(&config, || Ok(None)).is_err());
+        Ok(())
     }
 }

@@ -1,0 +1,13 @@
+JIS X 0213:2004 8-bit code vs Unicode mapping table, 3 May 2009.
+https://x0213.org/codetable/jisx0213-2004-8bit-std.txt
+
+Copyright (C) 2001 earthian@tama.or.jp, All Rights Reserved.
+Copyright (C) 2001 I'O, All Rights Reserved.
+Copyright (C) 2009 Project X0213, All Rights Reserved.
+You can use, modify, distribute this table freely.
+
+The packed derivative contains all 94 rows of plane 1 followed by the
+assigned rows of plane 2, in row and cell order. Each entry uses three
+little-endian bytes. Zero indicates an unassigned cell. Values from
+0x110000 index the two-scalar mappings in plane 1. For ISO-IR 229, the
+original JIS X 0213:2000 association maps 2-93-27 to U+9B1D (WG2 N2926 T.10).

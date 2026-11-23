@@ -51,7 +51,7 @@ fn main() -> ExitCode {
 fn execute(startup: gnunet_service_startup::ClientStartup) -> Result<(), Cause> {
     use gnunet_program_host::{
         logging::Logger,
-        program::{self, Defaults, Invocation, NlsDisabled, Preparation},
+        program::{self, Defaults, Invocation, Preparation},
         reporting::Reporter,
         shared_clock::SharedClock,
     };
@@ -63,11 +63,11 @@ fn execute(startup: gnunet_service_startup::ClientStartup) -> Result<(), Cause> 
     )?;
     let mut logger = Logger::new(b"gnunet-cadet", std::process::id(), false)?;
     let selection = options::Selection::new();
-    let preparation=program::prepare(config,Invocation {
+    let preparation=program::prepare_installed(config,Invocation {
         binary_name:b"gnunet-cadet",
-        help: Some(b"Binary CADET stream. Use PEER [PORT] (default port name: default), or -o PORT to listen for one incoming channel. -e enables periodic echo probes or an echo listener. Only official CADET_CLI messages are used. Peer and port options select routes, not authentication proofs. Management inspection remains available in gnunet-cli cadet. Standard -c/-L/-l/-h/-v select actual PROGRAM configuration and diagnostics."),
+        help: Some(b"Connect to PEER [PORT], listen with -o PORT, or enable echo with -e. Use -P to list peers, -T to list tunnels, or -p PEER to inspect paths."),
         select_default_filename:true,defaults:Defaults::Native,
-    },selection.options(),std::env::args_os(),&program::Environment::capture(),&mut NlsDisabled,&mut logger,&clock,&mut io::stdout().lock(),&mut io::stderr().lock());
+    },selection.options(),std::env::args_os(),&program::Environment::capture(),&mut logger,&clock,&mut io::stdout().lock(),&mut io::stderr().lock());
     let reporter = Reporter::new(logger, clock.clone());
     #[cfg(unix)]
     if let Some(notice) = startup.notice {
@@ -93,14 +93,14 @@ fn execute(startup: gnunet_service_startup::ClientStartup) -> Result<(), Cause> 
                 .into());
             }
         };
-        let settings = selection.finish(prepared.main().config, prepared.main().arguments)?;
+        let command = selection.finish(prepared.main().config, prepared.main().arguments)?;
         let configuration = prepared.main().config.duplicate()?;
-        Ok(Some((prepared, settings, configuration)))
+        Ok(Some((prepared, command, configuration)))
     })();
     let result = match selected {
         Ok(None) => Ok(()),
         Err(error) => Err(error),
-        Ok(Some((prepared, settings, configuration))) => {
+        Ok(Some((prepared, command, configuration))) => {
             match tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
@@ -108,7 +108,7 @@ fn execute(startup: gnunet_service_startup::ClientStartup) -> Result<(), Cause> 
                 Err(error) => Err(Box::new(error) as Cause),
                 Ok(runtime) => runtime.block_on(run::scheduled(
                     prepared,
-                    settings,
+                    command,
                     configuration,
                     clock.clone(),
                     reporter.clone(),

@@ -2,11 +2,11 @@
 //! before core application. Pure phase/effect declarations never become success.
 use crate::{
     UPSTREAM_SOCKETS, Upstream,
-    core::{self, Destination, Request, Resolve, Source, Work},
-    packet_source::{self, OutputStop, Packet, PacketSource, Retirement, Route, SourceEvent},
+    core::{Request, Resolve, Source},
+    packet_source::{OriginalInput, PacketSource, ReplyPermit, Retirement},
     server::{Error, Event, Progress, Report, Server},
 };
-use gnunet_dnsstub_host::{Event as StubEvent, Flow, RequestId};
+use gnunet_dnsstub_host::RequestId;
 use gnunet_service_runtime::{framing::OwnedFrame, service::Listener};
 use gnunet_types::Error as Fault;
 use std::{
@@ -16,7 +16,11 @@ use std::{
     time::Duration,
 };
 use tokio::time::{Instant, Sleep};
-use zeroize::Zeroizing;
+mod construction;
+mod input;
+mod lifecycle;
+mod work;
+
 /// Original request policy, independent from per-MQ IO and caller waits.
 #[derive(Clone, Copy, Debug)]
 pub struct GatewayLimits {
@@ -72,6 +76,14 @@ pub enum GatewayProgress<'id> {
         /// Actual original pre-admission or retired-operation error.
         reason: Error,
     },
+    /// One original application flow stopped without closing other flows.
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    FlowStopped {
+        /// Original SDK flow allocation identity.
+        flow: gnunet_native::dns_proxy::FlowId,
+        /// Actual local stop cause, without a fabricated DNS response.
+        reason: Error,
+    },
     /// A native route-table observation failed without dropping a packet or
     /// replacing the last complete interface views.
     #[cfg(windows)]
@@ -117,6 +129,14 @@ pub struct GatewayReport {
     pub resolver_evictions: u64,
     /// Original process exit or device-close observation.
     pub source_retirement: Option<Retirement>,
+    /// Original source generations revoked before a fresh native attachment.
+    pub source_outages: u64,
+    /// Replacement source generations that actually became ready.
+    pub source_recoveries: u64,
+    /// First closed source generation's independent retirement observations.
+    pub first_source_loss: Option<Retirement>,
+    /// Original upstream sockets or native connection callback retirement.
+    pub upstream_retirement: Option<crate::UpstreamRetirement>,
     /// First original fatal cause.
     pub first: Option<Error>,
     /// First independent cleanup fault.
@@ -131,7 +151,11 @@ struct ResolveMap<'id> {
 struct Span<'id> {
     request: Request<'id>,
     hard: Instant,
-    route: Route,
+    permit: Option<ReplyPermit<'id>>,
+    #[cfg(target_os = "linux")]
+    ingress: Option<gnunet_native::transparent_dns::exclusion::IngressObservation>,
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    flow: Option<gnunet_native::dns_proxy::FlowId>,
 }
 enum Captured {
     Datagram {
@@ -155,19 +179,17 @@ pub struct Gateway<'id> {
     maps: Vec<Option<ResolveMap<'id>>>,
     spans: Vec<Option<Span<'id>>>,
     limits: GatewayLimits,
-    scratch: Zeroizing<Vec<u8>>,
-    held_input: Option<(Packet, Instant)>,
+    held_input: Option<(OriginalInput, Instant)>,
     cursor: usize,
     class: usize,
     closing: bool,
     source_done: bool,
+    upstream_done: bool,
+    source_settled: bool,
+    source_attached: bool,
+    source_suspended: bool,
     timer: Pin<Box<Sleep>>,
     report: GatewayReport,
-}
-struct Parts<'id> {
-    maps: Vec<Option<ResolveMap<'id>>>,
-    spans: Vec<Option<Span<'id>>>,
-    scratch: Vec<u8>,
 }
 /// Failed composition retains actual original owners; caller must physically
 /// close MQs and drive the same packet source through retirement.
@@ -189,582 +211,6 @@ impl std::fmt::Debug for RejectedGateway<'_> {
     }
 }
 impl<'id> Gateway<'id> {
-    /// Packet source must already own its native resources. Attaching it is not
-    /// a routing-setup ACK. Resolver construction alone opens/sends no socket.
-    #[expect(
-        clippy::result_large_err,
-        reason = "Rejected construction retains both original physical owners for explicit no-clock retirement, without a fallible error allocation"
-    )]
-    pub fn new(
-        server: Server<'id>,
-        packets: PacketSource<'id>,
-        exit: std::net::IpAddr,
-        limits: GatewayLimits,
-    ) -> Result<Self, RejectedGateway<'id>> {
-        let mut stub = match Upstream::start(limits.resolver_sockets, core::MAX_DNS_BYTES) {
-            Ok(stub) => stub,
-            Err(error) => {
-                return Err(RejectedGateway {
-                    error: error.into(),
-                    server,
-                    packets,
-                    upstream: None,
-                });
-            }
-        };
-        if let Err(error) = stub.add_dns_sa(std::net::SocketAddr::new(exit, 53)) {
-            return Err(RejectedGateway {
-                error: error.into(),
-                server,
-                packets,
-                upstream: Some(stub),
-            });
-        }
-        Self::with_upstream(server, packets, stub, limits)
-    }
-    /// Adopt the original configured upstream, including sockets reserved before
-    /// capture opened. A mismatched capture exemption refuses construction.
-    #[expect(
-        clippy::result_large_err,
-        reason = "Rejected construction retains original native owners for explicit retirement"
-    )]
-    pub fn with_upstream(
-        mut server: Server<'id>,
-        mut packets: PacketSource<'id>,
-        stub: Upstream,
-        limits: GatewayLimits,
-    ) -> Result<Self, RejectedGateway<'id>> {
-        if let Some(error) = packets.take_startup_error() {
-            return Err(RejectedGateway {
-                error: Error::Io(error),
-                server,
-                packets,
-                upstream: Some(stub),
-            });
-        }
-        let prepared = (|| -> Result<Parts<'id>, Error> {
-            if !packets.initialized()
-                || !packets.matches_upstream(&stub)
-                || stub.slot_count() != limits.resolver_sockets
-                || stub.is_stopped()
-                || !(1..=UPSTREAM_SOCKETS).contains(&limits.resolver_sockets)
-                || limits.request_lifetime.is_zero()
-                || limits.request_hard_lifetime < limits.request_lifetime
-            {
-                return Err(Fault::InvalidInput.into());
-            }
-            for d in [limits.request_lifetime, limits.request_hard_lifetime] {
-                if Instant::now().checked_add(d).is_none() || u64::try_from(d.as_micros()).is_err()
-                {
-                    return Err(Fault::Overflow.into());
-                }
-            }
-            let count = server.engine().request_capacity();
-            let mut maps = Vec::new();
-            maps.try_reserve_exact(UPSTREAM_SOCKETS)
-                .map_err(|_| Fault::Capacity)?;
-            maps.resize_with(UPSTREAM_SOCKETS, || None);
-            let mut spans = Vec::new();
-            spans
-                .try_reserve_exact(count)
-                .map_err(|_| Fault::Capacity)?;
-            spans.resize_with(count, || None);
-            let mut scratch = Vec::new();
-            scratch
-                .try_reserve_exact(65535)
-                .map_err(|_| Fault::Capacity)?;
-            scratch.resize(65535, 0);
-            Ok(Parts {
-                maps,
-                spans,
-                scratch,
-            })
-        })();
-        let Parts {
-            maps,
-            spans,
-            scratch,
-        } = match prepared {
-            Ok(p) => p,
-            Err(error) => {
-                return Err(RejectedGateway {
-                    error,
-                    server,
-                    packets,
-                    upstream: Some(stub),
-                });
-            }
-        };
-        let source = match server.engine_mut().attach_source() {
-            Ok(source) => source,
-            Err(error) => {
-                return Err(RejectedGateway {
-                    error: error.into(),
-                    server,
-                    packets,
-                    upstream: Some(stub),
-                });
-            }
-        };
-        Ok(Self {
-            server,
-            packets,
-            source,
-            stub,
-            maps,
-            spans,
-            limits,
-            scratch: Zeroizing::new(scratch),
-            held_input: None,
-            cursor: 0,
-            class: 0,
-            closing: false,
-            source_done: false,
-            timer: Box::pin(tokio::time::sleep_until(Instant::now())),
-            report: GatewayReport::default(),
-        })
-    }
-    /// Actual captured outcomes, not a full-node/cryptographic acceptance claim.
-    pub const fn report(&self) -> &GatewayReport {
-        &self.report
-    }
-    /// Close local owners and retain their observations. Native device-close
-    /// receipts are captured synchronously; helper exit requires driving
-    /// `Stopped` first. This method never waits for a child or certifies routing
-    /// cleanup. Missing source retirement remains unconfirmed.
-    pub fn into_report(mut self) -> GatewayReport {
-        self.close(None, &mut |_| {});
-        std::mem::take(&mut self.report)
-    }
-    /// Exact live local totals for the six upstream nonpersistent DNS statistics.
-    /// The answered label means helper queue admission as in the C producer,
-    /// never a TUN write, response delivery or STATISTICS processing receipt.
-    pub fn statistics(&self) -> [u64; 6] {
-        [
-            self.report.outputs_queued,
-            self.report.resolver_socket_failures,
-            self.report.resolver_discarded,
-            self.server.report().client_responses_discarded,
-            self.report.non_dns_udp,
-            self.report.packets,
-        ]
-    }
-    fn cleanup(&mut self, error: Error) {
-        self.report.cleanup_count = self.report.cleanup_count.saturating_add(1);
-        if self.report.cleanup.is_none() {
-            self.report.cleanup = Some(error)
-        }
-    }
-    /// Stop physical admission and retain native owners before logical settlement.
-    /// Canonical clock is not sampled, and child wait/firewall cleanup stays owned.
-    pub fn close(&mut self, cause: Option<Error>, observe: &mut impl FnMut(Event<'id>)) {
-        if self.report.first.is_none() {
-            self.report.first = cause;
-        }
-        if self.closing {
-            return;
-        }
-        self.closing = true;
-        if let Some(error) = self.server.close_all(observe) {
-            self.cleanup(error)
-        }
-        self.held_input = None;
-        let pending = self.packets.pending();
-        self.packets.request_stop();
-        if !self.source_done
-            && let Some(retirement) = self.packets.take_immediate_retirement()
-        {
-            self.report.source_retirement = Some(retirement);
-            self.source_done = true;
-        }
-        if let Some(pending) = pending {
-            observe(Event::PacketOutputLost {
-                effect: pending.effect,
-                exposure: pending.exposure,
-                total: pending.total,
-            });
-        }
-        let _stopped = self.stub.stop();
-        if let Err(e) = self.server.engine_mut().source_lost(self.source) {
-            self.cleanup(e.into())
-        }
-        for i in 0..self.maps.len() {
-            if let Some(map) = self.maps[i].take()
-                && let Err(e) = self.server.engine_mut().resolve_stopped(map.job)
-            {
-                self.cleanup(e.into())
-            }
-        }
-        for i in 0..self.spans.len() {
-            if let Some(span) = self.spans[i].take() {
-                if let Err(e) = self.server.engine_mut().abort(span.request) {
-                    self.cleanup(e.into());
-                }
-                if let Err(e) = self.server.engine_mut().retire(span.request) {
-                    self.cleanup(e.into())
-                }
-            }
-        }
-        self.report.ipc = self.server.report();
-    }
-    fn hard_expire(&mut self) -> Result<(), Error> {
-        let now = Instant::now();
-        for span in self.spans.iter().flatten() {
-            if now >= span.hard {
-                self.server.engine_mut().abort(span.request)?;
-            }
-        }
-        Ok(())
-    }
-    fn core_work(
-        &mut self,
-        observe: &mut impl FnMut(Event<'id>),
-        admit: bool,
-    ) -> Result<Option<GatewayProgress<'id>>, Error> {
-        let cap = self.server.engine().request_capacity();
-        for n in 0..cap {
-            let i = (self.cursor + n) % cap;
-            let Some(request) = self.server.engine().request_at(i) else {
-                continue;
-            };
-            let work = match self.server.engine_mut().next_work(request) {
-                Ok(w) => w,
-                Err(Fault::WouldBlock) => continue,
-                Err(e) => return Err(e.into()),
-            };
-            match work {
-                Work::Resolve(request) => {
-                    if !admit {
-                        continue;
-                    }
-                    let Some(slot) = self.maps.iter().position(Option::is_none) else {
-                        continue;
-                    };
-                    // DNSSTUB admission does no IO and all fallible preflights
-                    // precede its mutation. A refusal affects only this query.
-                    let admission = match self.stub.resolve(self.server.engine().payload(request)?)
-                    {
-                        Ok(admission) => admission,
-                        Err(reason) => {
-                            self.server.engine_mut().abort(request)?;
-                            self.report.resolver_refusals =
-                                self.report.resolver_refusals.saturating_add(1);
-                            self.cursor = (i + 1) % cap;
-                            return Ok(Some(GatewayProgress::ResolverRefused { request, reason }));
-                        }
-                    };
-                    if let Some(evicted) = admission.evicted {
-                        let old = self
-                            .maps
-                            .iter_mut()
-                            .find(|m| m.as_ref().is_some_and(|m| m.native == evicted))
-                            .and_then(Option::take)
-                            .ok_or(Fault::StaleGeneration)?;
-                        self.server.engine_mut().resolve_stopped(old.job)?;
-                        self.report.resolver_evictions =
-                            self.report.resolver_evictions.saturating_add(1);
-                    }
-                    let job = match self.server.engine_mut().resolving(request) {
-                        Ok(job) => job,
-                        Err(e) => {
-                            let _cancel = self.stub.resolve_cancel(admission.request);
-                            return Err(e.into());
-                        }
-                    };
-                    self.maps[slot] = Some(ResolveMap {
-                        job,
-                        native: admission.request,
-                    });
-                    self.cursor = (i + 1) % cap;
-                    self.report.resolver_queries = self.report.resolver_queries.saturating_add(1);
-                    return Ok(Some(GatewayProgress::ResolverQueued {
-                        request,
-                        native: admission.request,
-                    }));
-                }
-                Work::Cancel(job) => {
-                    let index = self
-                        .maps
-                        .iter()
-                        .position(|m| m.as_ref().is_some_and(|m| m.job == job))
-                        .ok_or(Fault::StaleGeneration)?;
-                    let map = self.maps[index].as_ref().ok_or(Fault::StaleGeneration)?;
-                    self.stub.resolve_cancel(map.native)?;
-                    self.server.engine_mut().resolve_stopped(job)?;
-                    self.maps[index] = None;
-                    self.cursor = (i + 1) % cap;
-                    return Ok(Some(GatewayProgress::Activity));
-                }
-                Work::Helper { request, source } => {
-                    if !admit {
-                        continue;
-                    }
-                    if source != self.source {
-                        return Err(Fault::StaleGeneration.into());
-                    }
-                    if !self.packets.writable() {
-                        continue;
-                    }
-                    let span = self
-                        .spans
-                        .iter()
-                        .flatten()
-                        .find(|s| s.request == request)
-                        .ok_or(Fault::StaleGeneration)?;
-                    let (effect, len) = self.packets.prepare(
-                        self.server.engine_mut(),
-                        request,
-                        &mut self.scratch,
-                    )?;
-                    let frame = match OwnedFrame::copy_from(&self.scratch[..len]) {
-                        Ok(f) => f,
-                        Err(e) => {
-                            self.server.engine_mut().reject_prepared(effect)?;
-                            return Err(e.into());
-                        }
-                    };
-                    match self.packets.queue(effect, frame, span.hard, &span.route) {
-                        Ok(()) => {
-                            self.server.engine_mut().queued(effect)?;
-                            self.report.outputs_queued =
-                                self.report.outputs_queued.saturating_add(1);
-                        }
-                        Err((e, _)) => {
-                            self.server.engine_mut().reject_prepared(effect)?;
-                            if packet_source::route_refusal(&e) {
-                                self.server.engine_mut().abort(request)?;
-                                self.report.packet_refusals =
-                                    self.report.packet_refusals.saturating_add(1);
-                                self.cursor = (i + 1) % cap;
-                                return Ok(Some(GatewayProgress::PacketRefused {
-                                    request: Some(request),
-                                    reason: e,
-                                }));
-                            }
-                            return Err(e);
-                        }
-                    }
-                    self.cursor = (i + 1) % cap;
-                    return Ok(Some(GatewayProgress::Activity));
-                }
-                Work::Close(Destination::Helper(source)) => {
-                    if source != self.source {
-                        return Err(Fault::StaleGeneration.into());
-                    }
-                    match self.packets.cancel_output(request)? {
-                        OutputStop::Requested => continue,
-                        OutputStop::SourceRequired => return Err(Fault::Deadline.into()),
-                    }
-                }
-                Work::Close(Destination::Client(client)) => {
-                    self.server
-                        .close_client(client, Fault::Deadline.into(), observe)?;
-                    return Ok(Some(GatewayProgress::Activity));
-                }
-                Work::Retire(request) => {
-                    self.server.engine_mut().retire(request)?;
-                    for slot in &mut self.spans {
-                        if slot.as_ref().is_some_and(|s| s.request == request) {
-                            *slot = None;
-                            break;
-                        }
-                    }
-                    self.cursor = (i + 1) % cap;
-                    return Ok(Some(GatewayProgress::Activity));
-                }
-                _ => {}
-            }
-        }
-        Ok(None)
-    }
-    fn source_event(
-        &mut self,
-        event: SourceEvent<'id>,
-        observe: &mut impl FnMut(Event<'id>),
-    ) -> Result<GatewayProgress<'id>, Error> {
-        match event {
-            SourceEvent::Packet(frame) => {
-                if self.held_input.is_some() {
-                    return Err(Fault::Conflict.into());
-                }
-                let hard = Instant::now()
-                    .checked_add(self.limits.request_hard_lifetime)
-                    .ok_or(Fault::Overflow)?;
-                self.held_input = Some((frame, hard));
-                Ok(GatewayProgress::Activity)
-            }
-            SourceEvent::Written {
-                effect,
-                observation,
-            } => {
-                if observation.exposed() {
-                    self.server.engine_mut().exposed(effect)?;
-                }
-                if observation.complete() {
-                    self.server.engine_mut().written(effect)?;
-                    self.report.outputs_written = self.report.outputs_written.saturating_add(1);
-                }
-                Ok(GatewayProgress::Activity)
-            }
-            SourceEvent::OutputStopped {
-                effect,
-                exposure,
-                total,
-                reason,
-            } => {
-                self.server.engine_mut().packet_stopped(effect)?;
-                observe(Event::PacketOutputLost {
-                    effect,
-                    exposure,
-                    total,
-                });
-                self.report.packet_refusals = self.report.packet_refusals.saturating_add(1);
-                Ok(GatewayProgress::PacketRefused {
-                    request: Some(effect.request()),
-                    reason,
-                })
-            }
-            #[cfg(windows)]
-            SourceEvent::Refused(reason) => {
-                self.report.packet_refusals = self.report.packet_refusals.saturating_add(1);
-                Ok(GatewayProgress::PacketRefused {
-                    request: None,
-                    reason,
-                })
-            }
-            #[cfg(windows)]
-            SourceEvent::RouteObservationFailed(reason) => {
-                self.report.route_observation_failures =
-                    self.report.route_observation_failures.saturating_add(1);
-                Ok(GatewayProgress::RouteObservationFailed { reason })
-            }
-            SourceEvent::Activity => Ok(GatewayProgress::Activity),
-            SourceEvent::Failed(e) => Err(e.into()),
-            SourceEvent::Retired(exit) => {
-                self.source_done = true;
-                self.report.source_retirement = Some(exit);
-                self.close(Some(Fault::Closed.into()), observe);
-                Ok(GatewayProgress::SourceRetired)
-            }
-        }
-    }
-    fn admit_input(&mut self, now: u64) -> Result<Option<GatewayProgress<'id>>, Error> {
-        let Some((frame, hard)) = self.held_input.take() else {
-            return Ok(None);
-        };
-        if Instant::now() >= hard {
-            return Ok(Some(GatewayProgress::PacketDropped(Fault::Deadline)));
-        }
-        let duration =
-            u64::try_from(self.limits.request_lifetime.as_micros()).map_err(|_| Fault::Overflow)?;
-        let until = now
-            .checked_add(duration)
-            .filter(|n| *n != u64::MAX)
-            .ok_or(Fault::Overflow)?;
-        let packet = match frame.bytes() {
-            Ok(p) => p,
-            Err(e) => return Ok(Some(GatewayProgress::PacketDropped(e))),
-        };
-        if let Ok(parsed) = gnunet_vpn::packet::Packet::parse(packet)
-            && parsed.protocol() == gnunet_vpn::packet::UDP
-            && (parsed.ports().is_ok_and(|p| p.1 != 53) || parsed.segment().len() < 20)
-        {
-            self.report.non_dns_udp = self.report.non_dns_udp.saturating_add(1);
-        }
-        let Some(slot) = self.spans.iter().position(Option::is_none) else {
-            return Ok(Some(GatewayProgress::PacketDropped(Fault::Capacity)));
-        };
-        match self
-            .server
-            .engine_mut()
-            .intercept(self.source, packet, now, until)
-        {
-            Ok(request) => {
-                self.spans[slot] = Some(Span {
-                    request,
-                    hard,
-                    route: frame.into_route(),
-                });
-                self.report.packets = self.report.packets.saturating_add(1);
-                Ok(Some(GatewayProgress::Activity))
-            }
-            Err(e) => Ok(Some(GatewayProgress::PacketDropped(e))),
-        }
-    }
-    fn poll_stub(&mut self, cx: &mut Context<'_>) -> Poll<Result<GatewayProgress<'id>, Error>> {
-        let mut captured = None;
-        let progress = {
-            let future = self.stub.drive(None, |event, _| {
-                captured = Some(match event {
-                    StubEvent::Datagram(packet) => match OwnedFrame::copy_from(packet.bytes) {
-                        Ok(frame) => Captured::Datagram {
-                            request: packet.request,
-                            frame,
-                        },
-                        Err(reason) => Captured::Refused {
-                            request: packet.request,
-                            reason,
-                        },
-                    },
-                    StubEvent::SocketOpened { result: Err(_), .. } => Captured::SocketFailure,
-                    _ => Captured::Activity,
-                });
-                Flow::Return
-            });
-            let mut future = std::pin::pin!(future);
-            future.as_mut().poll(cx)
-        };
-        match progress {
-            Poll::Pending => Poll::Pending,
-            Poll::Ready(Err(e)) => Poll::Ready(Err(Error::Io(std::io::Error::other(e)))),
-            Poll::Ready(Ok(_)) => match captured.ok_or(Fault::Conflict)? {
-                Captured::Activity => Poll::Ready(Ok(GatewayProgress::Activity)),
-                Captured::SocketFailure => {
-                    self.report.resolver_socket_failures =
-                        self.report.resolver_socket_failures.saturating_add(1);
-                    Poll::Ready(Ok(GatewayProgress::Activity))
-                }
-                Captured::Refused { request, reason } => {
-                    Poll::Ready(Ok(GatewayProgress::ResolverDiscarded {
-                        native: request,
-                        reason,
-                    }))
-                }
-                Captured::Datagram { request, frame } => {
-                    let Some(index) = self
-                        .maps
-                        .iter()
-                        .position(|m| m.as_ref().is_some_and(|m| m.native == request))
-                    else {
-                        self.report.resolver_discarded =
-                            self.report.resolver_discarded.saturating_add(1);
-                        return Poll::Ready(Ok(GatewayProgress::ResolverDiscarded {
-                            native: request,
-                            reason: Fault::StaleGeneration,
-                        }));
-                    };
-                    let job = self.maps[index].as_ref().ok_or(Fault::StaleGeneration)?.job;
-                    match self.server.engine_mut().resolved(job, frame.bytes()) {
-                        Ok(()) => {
-                            self.stub.resolve_cancel(request)?;
-                            self.maps[index] = None;
-                            self.report.resolver_answers =
-                                self.report.resolver_answers.saturating_add(1);
-                            Poll::Ready(Ok(GatewayProgress::Activity))
-                        }
-                        Err(reason) => {
-                            self.report.resolver_discarded =
-                                self.report.resolver_discarded.saturating_add(1);
-                            Poll::Ready(Ok(GatewayProgress::ResolverDiscarded {
-                                native: request,
-                                reason,
-                            }))
-                        }
-                    }
-                }
-            },
-        }
-    }
     /// One caller-driven fair SERVICE/helper/resolver step, no detached worker.
     /// Native hard bounds precede canonical clock coherency or any provider wait.
     pub fn poll(
@@ -775,13 +221,25 @@ impl<'id> Gateway<'id> {
         observe: &mut impl FnMut(Event<'id>),
     ) -> Poll<Result<GatewayProgress<'id>, Error>> {
         if self.closing {
-            if self.source_done {
+            if !self.upstream_done
+                && let Poll::Ready(retirement) = self.stub.poll_retirement(cx)
+            {
+                self.report.upstream_retirement = Some(retirement);
+                self.upstream_done = true;
+            }
+            if self.source_done && self.upstream_done {
+                self.settle_source();
                 return Poll::Ready(Ok(GatewayProgress::Stopped));
             }
-            if let Poll::Ready(exit) = self.packets.poll_retirement(cx) {
+            if !self.source_done
+                && let Poll::Ready(exit) = self.packets.poll_retirement(cx)
+            {
                 self.report.source_retirement = Some(exit);
                 self.source_done = true;
-                return Poll::Ready(Ok(GatewayProgress::Stopped));
+                if self.upstream_done {
+                    self.settle_source();
+                    return Poll::Ready(Ok(GatewayProgress::Stopped));
+                }
             }
             if let Some(until) = until {
                 if Instant::now() >= until {
@@ -801,6 +259,9 @@ impl<'id> Gateway<'id> {
             self.hard_expire()?;
             if let Poll::Ready(event) = self.packets.poll_guard(cx) {
                 return Poll::Ready(self.source_event(event, observe));
+            }
+            if let Poll::Ready(progress) = self.poll_stub_guard(cx) {
+                return Poll::Ready(progress);
             }
             if let Poll::Ready(progress) = self.server.poll_native_guard(cx, until, observe) {
                 return Poll::Ready(progress.map(|_| GatewayProgress::Activity));
@@ -836,14 +297,16 @@ impl<'id> Gateway<'id> {
                 Err(error) => return Poll::Ready(Err(error)),
             };
             self.server.engine_mut().expire(now);
-            if let Some(progress) = self.admit_input(now)? {
+            if !self.source_suspended
+                && let Some(progress) = self.admit_input(now)?
+            {
                 return Poll::Ready(Ok(progress));
             }
 
             if until.is_some_and(|d| Instant::now() >= d) {
                 return Poll::Ready(Ok(GatewayProgress::WaitDeadline));
             }
-            if let Some(work) = self.core_work(observe, true)? {
+            if let Some(work) = self.core_work(observe, !self.source_suspended)? {
                 return Poll::Ready(Ok(work));
             }
             for n in 0..3 {
@@ -857,7 +320,10 @@ impl<'id> Gateway<'id> {
                         }
                         Poll::Ready(Ok(_)) => Poll::Ready(Ok(GatewayProgress::Activity)),
                     },
-                    1 => match self.packets.poll(cx) {
+                    1 => match self
+                        .packets
+                        .poll(cx, self.spans.iter().any(Option::is_none))
+                    {
                         Poll::Pending => Poll::Pending,
                         Poll::Ready(e) => Poll::Ready(self.source_event(e, observe)),
                     },
@@ -899,10 +365,5 @@ impl<'id> Gateway<'id> {
         mut observe: impl FnMut(Event<'id>),
     ) -> Result<GatewayProgress<'id>, Error> {
         poll_fn(|cx| self.poll(cx, listeners, until, &mut observe)).await
-    }
-}
-impl Drop for Gateway<'_> {
-    fn drop(&mut self) {
-        self.close(None, &mut |_| {});
     }
 }

@@ -479,18 +479,20 @@ struct FinishFailure {
     frontier: Option<epoch::FinishRejected>,
     timeout: Option<io::Error>,
     missing_proof: bool,
+    resources: Option<Failure>,
 }
 impl std::fmt::Display for FinishFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "TCP original replay retirement: original={:?}; report={:?}; worker={:?}; frontier={:?}; timeout={:?}; missing_epoch_proof={}",
+            "TCP original replay retirement: original={:?}; report={:?}; worker={:?}; frontier={:?}; timeout={:?}; missing_epoch_proof={}; resources={:?}",
             self.original,
             self.report,
             self.shutdown,
             self.frontier,
             self.timeout,
-            self.missing_proof
+            self.missing_proof,
+            self.resources,
         )
     }
 }
@@ -498,6 +500,7 @@ impl std::error::Error for FinishFailure {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         self.original
             .as_deref()
+            .or(self.resources.as_deref())
             .or_else(|| {
                 self.frontier
                     .as_ref()
@@ -513,14 +516,21 @@ pub(super) async fn finish(
     outcome: Result<Report, Failure>,
     hard: Option<Instant>,
     diagnose: &mut dyn FnMut(Diagnostic),
+    poll_resources: &mut dyn FnMut(&mut Context<'_>) -> Result<bool, Failure>,
 ) -> Result<Report, Failure> {
     let hard = hard.unwrap_or_else(|| Instant::now() + Duration::from_secs(30));
     let mut timer = std::pin::pin!(tokio::time::sleep_until(hard));
     let mut timeout = None;
+    let mut resources = None;
     let shutdown = {
         let mut closing =
             std::pin::pin!(ports.shutdown(|event| diagnose(Diagnostic::History(event))));
         poll_fn(|cx| {
+            if resources.is_none()
+                && let Err(error) = poll_resources(cx)
+            {
+                resources = Some(error);
+            }
             if timeout.is_none() && timer.as_mut().poll(cx).is_ready() {
                 timeout = Some(io::Error::new(
                     io::ErrorKind::TimedOut,
@@ -547,6 +557,7 @@ pub(super) async fn finish(
         report.clean = true;
     }
     if original.is_none()
+        && resources.is_none()
         && !missing_proof
         && frontier.is_none()
         && timeout.is_none()
@@ -563,5 +574,6 @@ pub(super) async fn finish(
         frontier,
         timeout,
         missing_proof,
+        resources,
     }))
 }

@@ -3,8 +3,6 @@ use super::{
     Address, Allocation, Bound, Counter, Event, Failure, Fault, Job, Owner, Replacement, Request,
     addr, allocated, retryable, vpn,
 };
-use tokio::time::Instant;
-
 impl<'a, 'slots> Owner<'a, 'slots> {
     pub(super) fn on_vpn_retirement(
         &mut self,
@@ -12,10 +10,10 @@ impl<'a, 'slots> Owner<'a, 'slots> {
     ) -> Result<Event, Failure> {
         self.blocked &= !4;
         match progress {
-            vpn::Progress::Lost { .. } => self.vpn_input_hard = None,
+            vpn::Progress::Lost { .. } => {}
             vpn::Progress::Completed {
                 operation,
-                outcome: vpn::Outcome::Local { .. },
+                outcome: vpn::Outcome::Local { reason, submission },
                 ..
             } => {
                 if let Some(index) = self
@@ -23,10 +21,14 @@ impl<'a, 'slots> Owner<'a, 'slots> {
                     .iter()
                     .position(|row| row.operation == Some(operation))
                 {
-                    let row = self.allocations.remove(index);
-                    match self.core.cancel(row.request) {
-                        Ok(()) | Err(Fault::Stale) => {}
-                        Err(error) => return Err(error.into()),
+                    if reason == vpn::Reason::Lost && submission == vpn::Submission::Unsent {
+                        self.allocations[index].operation = None;
+                    } else {
+                        let row = self.allocations.remove(index);
+                        match self.core.cancel(row.request) {
+                            Ok(()) | Err(Fault::Stale) => {}
+                            Err(error) => return Err(error.into()),
+                        }
                     }
                 }
             }
@@ -46,25 +48,6 @@ impl<'a, 'slots> Owner<'a, 'slots> {
             return self.on_vpn_retirement(p);
         }
         self.blocked &= !4;
-        match &p {
-            vpn::Progress::Activity { read_bytes, .. } if *read_bytes > 0 => {
-                if self.vpn_input_hard.is_none() {
-                    self.vpn_input_hard = Some(
-                        Instant::now()
-                            .checked_add(self.limits.control_timeout)
-                            .ok_or(Fault::Overflow)?,
-                    );
-                }
-            }
-            vpn::Progress::Connected(_)
-            | vpn::Progress::Closed
-            | vpn::Progress::Ignored(_)
-            | vpn::Progress::Completed {
-                outcome: vpn::Outcome::Allocation(_),
-                ..
-            } => self.vpn_input_hard = None,
-            _ => {}
-        }
         if let vpn::Progress::Unavailable(error) = p {
             self.blocked |= 4;
             self.delay()?;

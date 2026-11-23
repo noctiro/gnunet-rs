@@ -15,12 +15,7 @@ use crate::{
 use catalog::{Directory, Kind, Policy, Registration};
 use gnunet_client_host::EndpointSource;
 use gnunet_types::{AbsoluteTime, Error as ProtocolError};
-use std::{
-    fs::File,
-    io::{self, Read},
-    path::Path,
-    sync::Arc,
-};
+use std::{io, path::Path, sync::Arc};
 
 pub(crate) enum Run {
     Skipped {
@@ -319,32 +314,20 @@ fn deadline(source: &EndpointSource, slice_us: u64) -> Result<AbsoluteTime, Erro
     }
     Ok(AbsoluteTime::from_micros(end))
 }
-struct LeafEntropy {
-    file: File,
-    cause: Option<io::Error>,
-}
+#[derive(Default)]
+struct LeafEntropy(Option<io::Error>);
 impl gnunet_crypto::Entropy for LeafEntropy {
     fn fill(&mut self, output: &mut [u8]) -> Result<(), ProtocolError> {
-        match self.file.read_exact(output) {
-            Ok(()) => Ok(()),
-            Err(cause) => {
-                self.cause = Some(cause);
-                Err(ProtocolError::Entropy)
-            }
-        }
+        gnunet_native::entropy::fill(output).map_err(|cause| {
+            self.0 = Some(cause);
+            ProtocolError::Entropy
+        })
     }
 }
 fn select_leaf(content: gnunet_fs::Content) -> Result<u64, Error> {
-    // No entropy descriptor is needed when only the actual leaf0 exists.
-    if gnunet_fs::content::Layout::new(content.size).leaf_count() == 1 {
-        return Ok(0);
-    }
-    let mut entropy = LeafEntropy {
-        file: File::open("/dev/urandom").map_err(Error::Io)?,
-        cause: None,
-    };
+    let mut entropy = LeafEntropy::default();
     probe::sample_leaf(content, &mut entropy)
-        .map_err(|cause| entropy.cause.map_or(Error::Protocol(cause), Error::Io))
+        .map_err(|cause| entropy.0.map_or(Error::Protocol(cause), Error::Io))
 }
 fn not_started(error: Error) -> Run {
     Run::Finished {

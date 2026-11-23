@@ -888,6 +888,7 @@ impl<'a> Publisher<'a> {
                 now,
                 self.bounds,
                 self.maximum,
+                journal.hello_profiles().managed,
             )?;
             let set = server.address_snapshot()?.id().clone();
             self.hello = Some(Aggregate { candidate, set });
@@ -900,7 +901,7 @@ impl<'a> Publisher<'a> {
                 &self.authority,
                 client.identity().ok_or(ProtocolError::NotReady)?,
             )?;
-            return match plan.admit(hello, client, &mut self.scratch) {
+            return match plan.admit(hello, client) {
                 HelloSignatureAdmission::Queued(original) => {
                     self.native = Some(Native::Hello {
                         original,

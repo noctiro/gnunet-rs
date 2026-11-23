@@ -8,7 +8,7 @@ use gnunet_gnsrecord::ZoneKey;
 use gnunet_reclaim::{AttributeList, ListLimits, PresentationList, Uri};
 use gnunet_reclaim_client_host::{Client, Iterator, Outcome, Progress, ipc};
 use gnunet_rest::{
-    oidc::{self, base64},
+    base64, oidc,
     route::Endpoint,
 };
 use gnunet_service_runtime::clock::RuntimeClock;
@@ -16,12 +16,13 @@ use gnunet_types::Error as Fault;
 use std::{cell::RefCell, future::poll_fn, rc::Rc, sync::Arc, time::Duration};
 use tokio::time::Instant;
 use zeroize::Zeroizing;
+mod authorization;
 mod claims;
 /// Explicit owned signer/issued-state storage and actual durable commit driver.
 pub mod persistence;
 /// The algorithm is selected by explicit caller authority, never a JWT header.
 pub enum Signer {
-    /// Actual mature non-FIPS AWS-LC native/asm RS256 backend.
+    /// RS256 with an owned RSA key and OS-backed signature blinding.
     Rs256(gnunet_oidc_crypto_host::Rsa),
     /// Explicit HS512 provider; never an RSA failure fallback.
     Hs512(gnunet_oidc_crypto_host::Hs512),
@@ -531,6 +532,7 @@ fn location(
 fn redirect(uri: &[u8]) -> Result<Response, Error> {
     Response::empty(302).header(b"Location", uri)
 }
+
 // Only call after the actual client zone registered this exact redirect URI.
 // OAuth request errors return to that original callback; independent provider,
 // clock, native and resource causes remain their original typed failures.
@@ -698,33 +700,16 @@ impl<I: gnunet_dns::Idna> Context<'_, I> {
                 return trusted_authorization_error(error, &uri, &state, self.limits.output_bytes);
             }
         };
-        let nonce = request
-            .parameter(b"nonce", self.limits.bytes)?
-            .unwrap_or(copy(b"")?);
-        let challenge = request
-            .parameter(b"code_challenge", self.limits.bytes)?
-            .unwrap_or(copy(b"")?);
-        let method = request.parameter(b"code_challenge_method", self.limits.bytes)?;
-        if !challenge.is_empty() && method.as_deref().map(Vec::as_slice) != Some(b"S256") {
-            return trusted_authorization_error(
-                oauth(
-                    400,
-                    "invalid_request",
-                    "Only S256 code challenges are supported",
-                ),
-                &uri,
-                &state,
-                self.limits.output_bytes,
-            );
-        }
-        if challenge.is_empty() && method.is_some() {
-            return trusted_authorization_error(
-                oauth(400, "invalid_request", "Missing code challenge"),
-                &uri,
-                &state,
-                self.limits.output_bytes,
-            );
-        }
+        let code_inputs = match authorization::CodeInputs::parse(
+            &request,
+            self.limits.bytes,
+            provider.limits.code.nonce,
+        ) {
+            Ok(inputs) => inputs,
+            Err(error) => {
+                return trusted_authorization_error(error, &uri, &state, self.limits.output_bytes);
+            }
+        };
         let identity = cookie_identity(request.cookie.as_deref().map(Vec::as_slice))?;
         if identity == Some(b"Denied") {
             return redirect(&location(
@@ -835,8 +820,8 @@ impl<I: gnunet_dns::Idna> Context<'_, I> {
         };
         let code = oidc::Code {
             ticket,
-            nonce: &nonce,
-            challenge: &challenge,
+            nonce: &code_inputs.nonce,
+            challenge: &code_inputs.challenge,
             attributes: idtoken,
             presentations,
         };

@@ -35,20 +35,29 @@ impl<'a> Name<'a> {
         if wire.len() > MAX_WIRE_NAME_LENGTH {
             return Err(Error::TooLarge);
         }
+        let (name, trailing) = Self::uncompressed_prefix(wire)?;
+        if !trailing.is_empty() {
+            return Err(Error::Malformed);
+        }
+        Ok(name)
+    }
+
+    /// Borrow the first uncompressed DNS name and remaining field bytes.
+    pub(crate) fn uncompressed_prefix(wire: &'a [u8]) -> Result<(Self, &'a [u8]), Error> {
         let mut pos = 0;
         loop {
             let length = usize::from(*wire.get(pos).ok_or(Error::Truncated)?);
             pos += 1;
             if length == 0 {
-                return if pos == wire.len() {
-                    Ok(Self {
-                        wire,
+                let (name, trailing) = wire.split_at(pos);
+                return Ok((
+                    Self {
+                        wire: name,
                         native_trailing_dot: false,
                         compressed_text_max_len: None,
-                    })
-                } else {
-                    Err(Error::Malformed)
-                };
+                    },
+                    trailing,
+                ));
             }
             if length > MAX_LABEL_LENGTH {
                 return Err(Error::Malformed);
@@ -56,6 +65,9 @@ impl<'a> Name<'a> {
             pos = pos.checked_add(length).ok_or(Error::Overflow)?;
             if pos > wire.len() {
                 return Err(Error::Truncated);
+            }
+            if pos >= MAX_WIRE_NAME_LENGTH {
+                return Err(Error::TooLarge);
             }
         }
     }

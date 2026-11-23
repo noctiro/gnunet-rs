@@ -1,6 +1,6 @@
 //! Explicit NAMESTORE maintenance over the original IDENTITY inventory and
 //! credited NAMESTORE sources. No cross-service transaction or replay exists.
-use super::{Result, records_json, row, string_json, text};
+use super::{DirectEndpoints, Result, records_json, row, string_json, text};
 use gnunet::{
     clients::{identity, namestore as ns},
     types::Error as Fault,
@@ -24,7 +24,7 @@ const DEFAULT_LIMIT: usize = 1000;
 const DEFAULT_PLAN_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Action {
+pub(super) enum Action {
     List,
     PurgeOrphans,
     PurgeZone,
@@ -40,15 +40,14 @@ impl Action {
 }
 struct Settings {
     action: Action,
-    socket: PathBuf,
-    identity: PathBuf,
     ego: Option<Vec<u8>>,
+    filter: u16,
     timeout: Duration,
     limit: usize,
     plan_bytes: usize,
 }
 impl Settings {
-    fn read(args: &[OsString]) -> Result<Self> {
+    fn read(args: &[OsString]) -> Result<(Self, DirectEndpoints)> {
         let action = match args.first().and_then(|v| v.to_str()) {
             Some("list-orphans") => Action::List,
             Some("purge-orphans") => Action::PurgeOrphans,
@@ -120,15 +119,20 @@ impl Settings {
         if Instant::now().checked_add(timeout).is_none() {
             return Err("native maintenance deadline overflow".into());
         }
-        Ok(Self {
-            action,
-            socket: PathBuf::from(socket),
-            identity,
-            ego,
-            timeout,
-            limit,
-            plan_bytes,
-        })
+        Ok((
+            Self {
+                action,
+                ego,
+                filter: 0,
+                timeout,
+                limit,
+                plan_bytes,
+            },
+            DirectEndpoints {
+                namestore: PathBuf::from(socket),
+                identity,
+            },
+        ))
     }
 }
 
@@ -457,11 +461,16 @@ async fn guarded<T>(
     .await
 }
 
-async fn execute(settings: Settings, out: &mut impl Write) -> Result<()> {
-    let source = ns::EndpointSource::unix(settings.socket.clone());
+pub(super) type ListOrphan<'a> =
+    dyn for<'row> FnMut(&'row ns::SecretKey, &'row [u8], ns::ipc::Records<'row>) -> Result<()> + 'a;
+
+async fn execute(
+    settings: Settings,
+    [source, identity_source]: [ns::EndpointSource; 2],
+    out: &mut impl Write,
+    mut list_orphan: Option<&mut ListOrphan<'_>>,
+) -> Result<()> {
     let clock = source.clock();
-    let identity_source =
-        ns::EndpointSource::unix_with_clock(settings.identity.clone(), clock.clone());
     let time = Time {
         until: clock
             .sample()?
@@ -497,7 +506,11 @@ async fn execute(settings: Settings, out: &mut impl Write) -> Result<()> {
         ..identity::Limits::default()
     };
     let mut inventory = Inventory {
-        client: identity::Client::monitor(&identity_instance, identity_source, identity_limits)?,
+        client: identity::Client::monitor(
+            &identity_instance,
+            identity_source.duplicate()?,
+            identity_limits,
+        )?,
         ready: false,
         epoch: None,
     };
@@ -521,7 +534,7 @@ async fn execute(settings: Settings, out: &mut impl Write) -> Result<()> {
             "epoch":inventory.epoch.map(|epoch|epoch.diagnostic())})).map_err(Cause::Output)?;
         let selected_zone = if let Some(name) = &settings.ego {
             lookup = Some(identity::Lookup::exact(&lookup_instance,
-                ns::EndpointSource::unix_with_clock(settings.identity.clone(), clock.clone()), name, time.until, identity_limits).map_err(Cause::Identity)?);
+                identity_source.duplicate().map_err(Cause::Identity)?, name, time.until, identity_limits).map_err(Cause::Identity)?);
             let owner = lookup.as_mut().ok_or(Fault::NotReady)?;
             let operation = owner.operation();
             loop {
@@ -566,7 +579,7 @@ async fn execute(settings: Settings, out: &mut impl Write) -> Result<()> {
                 }
             }
         } else { None };
-        iterator = Some(ns::ZoneIterator::new(&ns_instance, source, selected_zone.as_ref(), 0, time.until, limits).map_err(Cause::Namestore)?);
+        iterator = Some(ns::ZoneIterator::new(&ns_instance, source.duplicate().map_err(Cause::Namestore)?, selected_zone.as_ref(), settings.filter, time.until, limits).map_err(Cause::Namestore)?);
         let stream = iterator.as_mut().ok_or(Fault::NotReady)?;
         let operation = stream.operation();
         loop {
@@ -591,7 +604,9 @@ async fn execute(settings: Settings, out: &mut impl Write) -> Result<()> {
                     if selected {
                         facts.selected += 1;
                         if let Some(plan) = plan.as_mut() { plan.push(key, label.bytes())?; }
-                        else {
+                        else if let Some(render) = &mut list_orphan {
+                            render(&key, label.bytes(), records).map_err(Cause::Output)?;
+                        } else {
                             let public = json!({"event":"namestore_orphan_records","ordinal":facts.selected,
                                 "label":string_json(label.bytes()),"expires_us":expires.as_micros(),"records":records_json(records).map_err(Cause::Output)?});
                             crate::identity::private_key_row(out, &public, &key).map_err(Cause::Output)?;
@@ -629,7 +644,7 @@ async fn execute(settings: Settings, out: &mut impl Write) -> Result<()> {
             "plan_bytes":plan.as_ref().map_or(0, |plan|plan.bytes),"natural_end":true})).map_err(Cause::Output)?;
         if let Some(plan) = plan.as_ref() {
             writer = Some(ns::Client::new(&ns_instance,
-                ns::EndpointSource::unix_with_clock(settings.socket.clone(), clock.clone()), limits).map_err(Cause::Namestore)?);
+                source, limits).map_err(Cause::Namestore)?);
             let client = writer.as_mut().ok_or(Fault::NotReady)?;
             for (index, marked) in plan.labels.iter().enumerate() {
                 if (settings.action == Action::PurgeOrphans && inventory.contains(&marked.key))
@@ -776,11 +791,31 @@ fn deletion(outcome: ns::Outcome, ordinal: usize, facts: &mut Facts) -> Work<()>
 }
 
 pub(super) fn run(args: &[OsString], out: &mut impl Write) -> Result<()> {
-    let settings = Settings::read(args)?;
+    let (settings, paths) = Settings::read(args)?;
+    let source = ns::EndpointSource::unix(paths.namestore);
+    let identity = ns::EndpointSource::unix_with_clock(paths.identity, source.clock());
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?
-        .block_on(execute(settings, out))
+        .block_on(execute(settings, [source, identity], out, None))
+}
+
+pub(super) async fn run_configured(
+    action: Action,
+    ego: Option<Vec<u8>>,
+    filter: u16,
+    endpoints: [ns::EndpointSource; 2],
+    list_orphan: Option<&mut ListOrphan<'_>>,
+) -> Result<()> {
+    let settings = Settings {
+        action,
+        ego,
+        filter,
+        timeout: Duration::from_secs(30),
+        limit: DEFAULT_LIMIT,
+        plan_bytes: DEFAULT_PLAN_BYTES,
+    };
+    execute(settings, endpoints, &mut io::sink(), list_orphan).await
 }
 pub(super) fn help(out: &mut impl Write) -> Result<()> {
     writeln!(

@@ -24,6 +24,13 @@ impl OwnedFrame {
     pub fn new(bytes: Vec<u8>) -> Self {
         Self(Zeroizing::new(bytes))
     }
+    /// Transfer the allocation without copying or changing its bytes.
+    /// The recipient assumes responsibility for wiping the returned storage;
+    /// the consumed frame no longer owns or wipes it.
+    #[must_use]
+    pub fn into_bytes(mut self) -> Vec<u8> {
+        std::mem::take(&mut *self.0)
+    }
     /// Allocate and freeze one exact copy, without performing I/O.
     pub fn copy_from(bytes: &[u8]) -> Result<Self, Error> {
         let mut owned = Vec::new();

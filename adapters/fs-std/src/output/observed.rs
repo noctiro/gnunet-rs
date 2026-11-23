@@ -1,5 +1,9 @@
 //! Typed state observations of the single native output finalizer.
-use super::{FileIdentity, OutputDir, Temporary, components, ensure_absent, invalid_name};
+#[cfg(any(test, feature = "service"))]
+use super::TemporaryNames;
+use super::{
+    FileIdentity, FilePlacement, OutputDir, Temporary, components, ensure_absent, invalid_name,
+};
 use crate::{
     BlockSource, Buffers, Control, Error, Limits, Progress, ReadFile, Result as HostResult,
 };
@@ -189,10 +193,21 @@ impl OutputDir {
         buffers: &mut Buffers,
         limits: Limits,
         control: impl FnMut(Progress) -> Control,
+        temporary: Option<TemporaryNames<'_>>,
         observer: impl for<'a> FnMut(OutputObservation<'a>) -> Result<(), E>,
     ) -> Result<ReadFile, Box<ObservedFailure<E>>> {
         self.write_file_inner(
-            relative, source, content, buffers, limits, control, false, observer,
+            relative,
+            source,
+            content,
+            buffers,
+            limits,
+            control,
+            FilePlacement {
+                temporary,
+                ..FilePlacement::EXISTING_PARENT
+            },
+            observer,
         )
     }
     #[cfg(feature = "service")]
@@ -209,10 +224,22 @@ impl OutputDir {
         cache: Option<&mut crate::Repository>,
         options: crate::network::DownloadOptions,
         control: impl FnMut(Progress) -> Control,
+        temporary: Option<TemporaryNames<'_>>,
         observer: impl for<'a> FnMut(OutputObservation<'a>) -> Result<(), E>,
     ) -> Result<ReadFile, Box<ObservedFailure<E>>> {
         self.download_file_inner(
-            relative, source, content, buffers, cache, options, control, false, observer,
+            relative,
+            source,
+            content,
+            buffers,
+            cache,
+            options,
+            control,
+            FilePlacement {
+                temporary,
+                ..FilePlacement::EXISTING_PARENT
+            },
+            observer,
         )
         .await
     }
@@ -229,7 +256,7 @@ impl OutputDir {
         buffers: &mut Buffers,
         limits: Limits,
         mut control: impl FnMut(Progress) -> Control,
-        create_parents: bool,
+        placement: FilePlacement<'_>,
         mut observer: impl for<'a> FnMut(OutputObservation<'a>) -> Result<(), E>,
     ) -> Result<ReadFile, Box<ObservedFailure<E>>> {
         let parts = components(relative.as_ref()).map_err(ObservedFailure::operation)?;
@@ -240,7 +267,7 @@ impl OutputDir {
             .split_last()
             .ok_or_else(invalid_name)
             .map_err(ObservedFailure::operation)?;
-        let parent = if create_parents {
+        let parent = if placement.create_parents {
             self.parent(directories)
         } else {
             self.parent_existing(directories)
@@ -250,11 +277,15 @@ impl OutputDir {
         let parent_id = FileIdentity::of(parent.as_file())
             .map_err(Error::from)
             .map_err(ObservedFailure::operation)?;
+        let (temporary_parent, temporary_parent_id) = placement
+            .temporary_parent(&parent, parent_id)
+            .map_err(Error::from)
+            .map_err(ObservedFailure::operation)?;
         let mut temporary = self
-            .temporary(&parent, name)
+            .temporary_with_reservations(temporary_parent, name, placement.temporary)
             .map_err(ObservedFailure::operation)?;
         let observer_error = observer(OutputObservation::TempOwned(
-            temporary.record(parent_id, content),
+            temporary.record(temporary_parent_id, content),
         ))
         .err();
         let result = if observer_error.is_none() {
@@ -269,7 +300,7 @@ impl OutputDir {
                 identity: parent_id,
                 name,
             },
-            parent_id,
+            temporary_parent_id,
             content,
             result,
             observer_error,
@@ -291,7 +322,7 @@ impl OutputDir {
         cache: Option<&mut crate::Repository>,
         options: crate::network::DownloadOptions,
         mut control: impl FnMut(Progress) -> Control,
-        create_parents: bool,
+        placement: FilePlacement<'_>,
         mut observer: impl for<'a> FnMut(OutputObservation<'a>) -> Result<(), E>,
     ) -> Result<ReadFile, Box<ObservedFailure<E>>> {
         let parts = components(relative.as_ref()).map_err(ObservedFailure::operation)?;
@@ -302,7 +333,7 @@ impl OutputDir {
             .split_last()
             .ok_or_else(invalid_name)
             .map_err(ObservedFailure::operation)?;
-        let parent = if create_parents {
+        let parent = if placement.create_parents {
             self.parent(directories)
         } else {
             self.parent_existing(directories)
@@ -312,11 +343,15 @@ impl OutputDir {
         let parent_id = FileIdentity::of(parent.as_file())
             .map_err(Error::from)
             .map_err(ObservedFailure::operation)?;
+        let (temporary_parent, temporary_parent_id) = placement
+            .temporary_parent(&parent, parent_id)
+            .map_err(Error::from)
+            .map_err(ObservedFailure::operation)?;
         let mut temporary = self
-            .temporary(&parent, name)
+            .temporary_with_reservations(temporary_parent, name, placement.temporary)
             .map_err(ObservedFailure::operation)?;
         let observer_error = observer(OutputObservation::TempOwned(
-            temporary.record(parent_id, content),
+            temporary.record(temporary_parent_id, content),
         ))
         .err();
         let result = if observer_error.is_none() {
@@ -342,7 +377,7 @@ impl OutputDir {
                 identity: parent_id,
                 name,
             },
-            parent_id,
+            temporary_parent_id,
             content,
             result,
             observer_error,

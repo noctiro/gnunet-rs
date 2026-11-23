@@ -199,15 +199,32 @@ pub fn encode_result(
     output: &mut [u8],
 ) -> Result<usize, Error> {
     let body = gnunet_gnsrecord::serialized_len(records)?;
+    let count = u32::try_from(records.len()).map_err(|_| Error::TooLarge)?;
+    let n = encode_result_header(id, count, body, output)?;
+    gnunet_gnsrecord::serialize(records, &mut output[RESULT_HEADER_LEN..n])?;
+    Ok(n)
+}
+
+/// Encode the result header for a canonical record body held in the same buffer.
+///
+/// The caller supplies the exact count and extent returned by its serializer.
+/// This writes only the header and leaves the body unchanged.
+pub fn encode_result_header(
+    id: WireId,
+    count: u32,
+    body: usize,
+    output: &mut [u8],
+) -> Result<usize, Error> {
+    if (count == 0) != (body == 0) {
+        return Err(Error::InvalidInput);
+    }
     let n = RESULT_HEADER_LEN.checked_add(body).ok_or(Error::Overflow)?;
     let header = MessageHeader::from_total_size(message_type::GNS_LOOKUP_RESULT, n)?;
-    let count = u32::try_from(records.len()).map_err(|_| Error::TooLarge)?;
     if output.len() < n {
         return Err(Error::Capacity);
     }
     header.encode(output)?;
     output[4..8].copy_from_slice(&id.0);
     output[8..12].copy_from_slice(&count.to_be_bytes());
-    gnunet_gnsrecord::serialize(records, &mut output[RESULT_HEADER_LEN..n])?;
     Ok(n)
 }

@@ -48,3 +48,5 @@ that exposes this owner to unchanged official C CORE/application processes.
 
 The [native CORE host](../../adapters/core-std/README.md) owns application IPC,
 monitoring, PILS integration and service composition around this peer engine.
+The [direct peer composition](../gnunet-direct-peer/README.md) uses the same
+session with caller-owned buffers and a validated TCP carrier.

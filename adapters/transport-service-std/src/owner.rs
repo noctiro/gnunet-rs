@@ -3,7 +3,7 @@
 //! durable-publication authority. No communicator/helper process is hidden here.
 use crate::{
     Failure, discovery,
-    generation::{self, Reservations},
+    generation::{self, Reservations, retirement},
     hello::HelloSink,
     pils,
     publication::{self, HelloTask, Publications, SignTask, StoreTask},
@@ -63,25 +63,25 @@ pub struct Sources {
 pub enum Event<'id> {
     /// Verified original PILS identity; local admission becomes available.
     Ready(Identity<'id>),
-    /// Actual PID change began physical old-Engine retirement on the same
-    /// PILS source. Neither observation authorizes old callbacks as new work.
-    EpochRetiring {
-        /// Original old Engine identity observation.
+    /// A verified local peer change fenced admissions while the previous
+    /// identity's operations settle.
+    IdentityRetiring {
+        /// Original active identity observation.
         previous: Identity<'id>,
         /// Latest real ordered announcement that triggered this retirement.
         observed: Identity<'id>,
     },
-    /// New Engine brand created after all old original debts settled.
-    EpochStarted {
-        /// Current real PILS observation used by the new Engine brand.
+    /// New identity authority after all original debts settled.
+    IdentityActivated {
+        /// Current real PILS observation installed on the original Engine.
         identity: Identity<'id>,
         /// Checked local allocation sequence only; never a wire token.
         generation: u64,
     },
     /// Exact retired foreign-address effect and actual result/no-admission.
     ValidatedRetired(crate::validated::RetiredValidation<'id>),
-    /// Actual old public stamp completion; it is never a new publication token.
-    ReservationRetired(crate::epoch::ReservationOutcome<'id>),
+    /// Terminal result of an admitted stamp or range for a retired authority.
+    ReservationRetired(retirement::ReservationOutcome<'id>),
     /// Original actual FLOW range outcome, retaining the genuine receipt.
     FlowRange(crate::sender::Outcome<'id>),
     /// Actual matching live DV reservation. Caller must still match its original
@@ -203,6 +203,11 @@ struct Validation<'id> {
     signature: Option<[u8; 64]>,
     retiring: bool,
 }
+struct Rotation<'id> {
+    next: Identity<'id>,
+    outputs_drained: bool,
+    deadline: Pin<Box<Sleep>>,
+}
 /// Caller-driven real owners. The storage worker is passed by its real owner;
 /// canceling a poll never discards its original actual completion.
 pub struct Owner<'id, E: Entropy> {
@@ -215,7 +220,6 @@ pub struct Owner<'id, E: Entropy> {
     server: Option<Server>,
     burst: crate::burst::Port,
     burst_policy: gnunet_transport::burst::Policy,
-    retired_burst: Option<gnunet_transport::burst::Outcome>,
     publications: Option<Publications<'id>>,
     sender: crate::sender::Sender<'id>,
     dv_range: Option<crate::sender::DvReservation<'id>>,
@@ -239,13 +243,9 @@ pub struct Owner<'id, E: Entropy> {
     next_tick: Instant,
     alarm: Option<Pin<Box<Sleep>>>,
     stopped: bool,
-    rotating: bool,
-    next_identity: Option<Identity<'id>>,
-    reservation_drain: Option<crate::epoch::Drain<'id>>,
-    recovery: Option<crate::epoch::Recovery>,
-    recovery_window: Duration,
-    recovery_quiet: Duration,
-    engine_generation: u64,
+    rotation: Option<Rotation<'id>>,
+    reservation_drain: Option<retirement::Drain<'id>>,
+    identity_generation: u64,
     restart_native: bool,
 }
 impl<'id, E: Entropy> Owner<'id, E> {
@@ -338,7 +338,6 @@ impl<'id, E: Entropy> Owner<'id, E> {
             server: None,
             burst: crate::burst::Port::default(),
             burst_policy: settings.burst,
-            retired_burst: None,
             publications: None,
             sender: crate::sender::Sender::new(settings.sender_monotime_horizon),
             dv_range: None,
@@ -362,24 +361,16 @@ impl<'id, E: Entropy> Owner<'id, E> {
             next_tick: Instant::now(),
             alarm: None,
             stopped: false,
-            rotating: false,
-            next_identity: None,
+            rotation: None,
             reservation_drain: None,
-            recovery: None,
-            recovery_window: settings.recovery.min(settings.operation),
-            recovery_quiet: settings
-                .tick
-                .checked_mul(4)
-                .ok_or(Fault::Overflow)?
-                .min(Duration::from_millis(500)),
-            engine_generation: 0,
+            identity_generation: 0,
             restart_native: false,
         })
     }
     /// Admission is possible only after a real original-source public identity.
     pub fn ready(&self) -> bool {
         !self.stopped
-            && !self.rotating
+            && self.rotation.is_none()
             && self
                 .server
                 .as_ref()
@@ -389,7 +380,8 @@ impl<'id, E: Entropy> Owner<'id, E> {
     /// A different Actor PILS source must be independently checked by its owner;
     /// equal peer bytes never equate their native epochs or operation ledgers.
     pub fn dv_identity(&self) -> Option<Identity<'id>> {
-        if self.stopped || self.rotating || self.server.is_none() || !self.pils.reusable() {
+        if self.stopped || self.rotation.is_some() || self.server.is_none() || !self.pils.reusable()
+        {
             None
         } else {
             self.identity
@@ -410,9 +402,9 @@ impl<'id, E: Entropy> Owner<'id, E> {
     pub fn is_stopped(&self) -> bool {
         self.stopped
     }
-    /// Original actual Engine allocation, including PID A→B→A separation on a
-    /// healthy unchanged PILS MQ. A scheduler must match this exact scope on
-    /// admission, receipt and every use of an installed interval.
+    /// Active identity scope, unique even when an earlier peer reappears on
+    /// the same PILS connection. A scheduler matches the scope at admission,
+    /// receipt and each use of an installed interval.
     pub fn dv_scope(&self) -> Option<crate::sender::DvScope<'id>> {
         self.dv_identity()?;
         self.dv_scope.clone()
@@ -511,23 +503,18 @@ impl<'id, E: Entropy> Owner<'id, E> {
     }
     fn take_original_reservation(
         &mut self,
-        stamp: Option<crate::epoch::RetiredStamp<'id>>,
-    ) -> Result<Option<crate::epoch::RetiredReservation<'id>>, Fault> {
+        stamp: Option<retirement::RetiredStamp<'id>>,
+    ) -> Result<Option<retirement::RetiredReservation<'id>>, Fault> {
+        use retirement::RetiredReservation::{Range, Stamp};
         let flow = self.sender.retire();
         let dv = self.dv_range.take();
-        let count =
-            usize::from(stamp.is_some()) + usize::from(flow.is_some()) + usize::from(dv.is_some());
-        if count > 1 {
-            return Err(Fault::Stale);
+        match (stamp, flow, dv) {
+            (Some(stamp), None, None) => Ok(Some(Stamp(stamp))),
+            (None, Some(flow), None) => Ok(Some(Range(flow))),
+            (None, None, Some(dv)) => Ok(Some(Range(retirement::RetiredRange::dv(dv)))),
+            (None, None, None) => Ok(None),
+            _ => Err(Fault::Stale),
         }
-        Ok(stamp
-            .map(crate::epoch::RetiredReservation::Stamp)
-            .or_else(|| flow.map(crate::epoch::RetiredReservation::Range))
-            .or_else(|| {
-                dv.map(|old| {
-                    crate::epoch::RetiredReservation::Range(crate::epoch::RetiredRange::dv(old))
-                })
-            }))
     }
     /// Current actual resource/protocol facts, never a completion assertion.
     pub fn snapshot(&self) -> Option<gnunet_transport::Snapshot> {
@@ -548,7 +535,7 @@ impl<'id, E: Entropy> Owner<'id, E> {
             return Err(Fault::Closed);
         }
         let server = self.server.as_mut().ok_or(Fault::NotReady)?;
-        if self.rotating || server.persistence_pending() {
+        if self.rotation.is_some() || server.persistence_pending() {
             return Err(Fault::WouldBlock);
         }
         server.admit(c)
@@ -558,8 +545,11 @@ impl<'id, E: Entropy> Owner<'id, E> {
         self.server.as_ref().is_none_or(Server::draining_complete)
     }
     fn identity(&mut self, identity: Identity<'id>) -> Result<bool, Failure> {
-        if self.rotating {
-            self.next_identity = Some(identity);
+        if let Some(rotation) = &mut self.rotation {
+            if rotation.next.epoch() != identity.epoch() {
+                return Err(Fault::Stale.into());
+            }
+            rotation.next = identity;
             return Ok(false);
         }
         if let Some(old) = self.identity {
@@ -567,46 +557,39 @@ impl<'id, E: Entropy> Owner<'id, E> {
                 return Err("TRANSPORT original PILS source changed without retirement".into());
             }
             if old.peer() != identity.peer() {
+                let deadline = Instant::now()
+                    .checked_add(self.operation.max(self.native_limits.output))
+                    .ok_or(Fault::Overflow)?;
                 let server = self.server.as_mut().ok_or(Fault::NotReady)?;
-                let recovery = crate::epoch::Recovery::capture(
-                    server,
-                    self.publication_limits.hello.maximum_address_bytes,
-                    self.recovery_window,
-                    self.recovery_quiet,
-                )?;
-                // All actual old IPC owners close before old pure capabilities
-                // can be discarded or a replacement Engine can be allocated.
-                if let Err(error) = server.shutdown() {
-                    self.restart_native = true;
-                    return Err(Box::new(error));
-                }
-                self.burst.after_physical_retirement();
                 if let Some(request) = server.burst_request().cloned()
                     && request.selected.is_none()
                 {
                     server.cancel_burst(&request.id, gnunet_transport::burst::End::SourceLost)?;
                 }
-                if let Some(outcome) = server.take_burst_outcome() {
-                    self.retired_burst = Some(outcome);
+                if let Some(demand) = server.monotime_demand() {
+                    server.retire_monotime(&demand.id().clone())?;
                 }
-                self.rotating = true;
-                // Public dv_scope() is already unavailable while rotating.
-                // Keep the private old allocation for exact cleanup access.
-                self.next_identity = Some(identity);
-                self.recovery = Some(recovery);
+                // Fence new admissions but keep the private old DV scope for
+                // cleanup on the original Server and its communicator MQs.
+                self.rotation = Some(Rotation {
+                    next: identity,
+                    outputs_drained: false,
+                    deadline: Box::pin(tokio::time::sleep_until(deadline)),
+                });
                 let stamp = self
                     .publications
                     .as_mut()
                     .ok_or(Fault::NotReady)?
-                    .begin_epoch_retirement(&mut self.pils)?;
+                    .begin_rotation(&mut self.pils)?;
                 let original = self.take_original_reservation(stamp)?;
-                self.reservation_drain =
-                    Some(crate::epoch::Drain::after_physical_retirement(original));
-                self.pils.cancel_all()?;
+                self.reservation_drain = Some(retirement::Drain::new(original));
                 self.discovery.retire_all();
                 for row in &mut self.validations {
                     row.retiring = true;
                     row.signature = None;
+                    if let Some(operation) = row.operation {
+                        self.pils.cancel(operation)?;
+                    }
                 }
                 self.alarm = None;
                 self.maintenance_retry = None;
@@ -639,13 +622,13 @@ impl<'id, E: Entropy> Owner<'id, E> {
         self.publications = Some(Publications::new(identity, self.publication_limits)?);
         self.identity = Some(identity);
         self.next_tick = Instant::now();
-        self.engine_generation = self
-            .engine_generation
+        self.identity_generation = self
+            .identity_generation
             .checked_add(1)
             .ok_or(Fault::Overflow)?;
         self.dv_scope = Some(crate::sender::DvScope::allocated(
             identity,
-            self.engine_generation,
+            self.identity_generation,
         ));
         Ok(true)
     }
@@ -654,9 +637,9 @@ impl<'id, E: Entropy> Owner<'id, E> {
         utc: u64,
         observe: &mut impl FnMut(Event<'id>),
     ) -> Result<bool, Failure> {
-        if !self.rotating {
+        let Some(rotation) = &self.rotation else {
             return Ok(false);
-        }
+        };
         let mut i = 0;
         while i < self.validations.len() {
             if self.validations[i].operation.is_none() {
@@ -669,14 +652,15 @@ impl<'id, E: Entropy> Owner<'id, E> {
                 i += 1;
             }
         }
-        if self.pils.pending_jobs() != 0
+        if !rotation.outputs_drained
+            || self.pils.pending_jobs() != 0
             || self.server.as_ref().is_some_and(Server::dv_source_active)
             || !self.validations.is_empty()
             || !self.validated.idle()
             || self
                 .publications
                 .as_ref()
-                .is_none_or(|p| !p.epoch_quiescent())
+                .is_none_or(|p| !p.rotation_quiescent())
             || self
                 .reservation_drain
                 .as_ref()
@@ -689,32 +673,36 @@ impl<'id, E: Entropy> Owner<'id, E> {
             return Err(Fault::Unavailable.into());
         }
         let identity = self.pils.identity().ok_or(Fault::NotReady)?;
-        let observed = self.next_identity.ok_or(Fault::NotReady)?;
-        if identity != observed {
+        if identity != rotation.next {
             return Err(Fault::Stale.into());
         }
         if identity.expiration().as_micros() <= utc {
             return Err(Fault::Deadline.into());
         }
-        // The old actor released its barrier. Revoke cleanup access BEFORE
-        // any fallible construction can install a different Server allocation.
-        self.dv_scope = None;
-        self.server = None;
-        self.publications = None;
-        self.identity = None;
+        let generation = self
+            .identity_generation
+            .checked_add(1)
+            .ok_or(Fault::Overflow)?;
+        let server = self.server.as_mut().ok_or(Fault::NotReady)?;
+        let publications = self.publications.as_mut().ok_or(Fault::NotReady)?;
+        // The same Server keeps the communicator streams, ADD ownership and
+        // durable monotime book.
+        publications.finish_rotation(identity)?;
+        server.replace_local_peer(PeerId(*identity.peer().as_bytes()))?;
+        let announcement = self.pils.announcement().ok_or(Fault::NotReady)?;
+        publications.announcement(server, announcement, utc)?;
+        self.identity = Some(identity);
         self.reservation_drain = None;
-        self.rotating = false;
-        self.next_identity = None;
+        self.rotation = None;
         self.deferred = false;
         self.retry_turn = false;
         self.maintenance_retry = None;
-        self.identity(identity)?;
-        if let Some(recovery) = &mut self.recovery {
-            recovery.start()?;
-        }
-        observe(Event::EpochStarted {
+        self.next_tick = Instant::now();
+        self.identity_generation = generation;
+        self.dv_scope = Some(crate::sender::DvScope::allocated(identity, generation));
+        observe(Event::IdentityActivated {
             identity,
-            generation: self.engine_generation,
+            generation,
         });
         Ok(true)
     }
@@ -726,7 +714,7 @@ impl<'id, E: Entropy> Owner<'id, E> {
     }
     /// After physical full retirement, transfer any actual pending stamp to the
     /// caller's mandatory drain before these branded instances may be dropped.
-    pub fn take_reservation_drain(&mut self) -> Result<Option<crate::epoch::Drain<'id>>, Fault> {
+    pub fn take_reservation_drain(&mut self) -> Result<Option<retirement::Drain<'id>>, Fault> {
         if !self.stopped {
             return Err(Fault::NotReady);
         }
@@ -742,18 +730,15 @@ impl<'id, E: Entropy> Owner<'id, E> {
         match event {
             pils::Event::Identity { identity, .. } => {
                 let previous = self.identity;
-                let was_rotating = self.rotating;
+                let was_rotating = self.rotation.is_some();
                 let first = self.identity(identity)?;
-                if let Some(outcome) = self.retired_burst.take() {
-                    observe(Event::Burst(outcome));
-                }
-                if !was_rotating && self.rotating {
-                    observe(Event::EpochRetiring {
+                if !was_rotating && self.rotation.is_some() {
+                    observe(Event::IdentityRetiring {
                         previous: previous.ok_or(Fault::Stale)?,
                         observed: identity,
                     });
                 }
-                if !self.rotating
+                if self.rotation.is_none()
                     && let (Some(server), Some(publications), Some(bytes)) = (
                         &self.server,
                         &mut self.publications,
@@ -995,9 +980,7 @@ impl<'id, E: Entropy> Owner<'id, E> {
             self.restart_native = true;
             return Poll::Ready(Err(Fault::Unavailable.into()));
         }
-        if let Err(e) = self.validated.native_guard(cx)
-            && (!self.rotating || self.validated.idle())
-        {
+        if let Err(e) = self.validated.native_guard(cx) {
             self.restart_native = !self.validated.reusable();
             return Poll::Ready(Err(self
                 .validated
@@ -1005,10 +988,6 @@ impl<'id, E: Entropy> Owner<'id, E> {
                 .unwrap_or_else(|| Box::new(e))));
         }
         let mut changed = self.sender.native_guard(cx);
-        if let Some(outcome) = self.retired_burst.take() {
-            observe(Event::Burst(outcome));
-            changed = true;
-        }
         if let Some(server) = &mut self.server {
             changed |= self.burst.native_guard(server, &self.clock, cx)?;
         }
@@ -1065,44 +1044,22 @@ impl<'id, E: Entropy> Owner<'id, E> {
             Poll::Ready(Err(e)) => return Poll::Ready(Err(Box::new(e))),
             Poll::Pending => {}
         }
-        if self.rotating {
-            match self.validated.poll_retired(cx) {
-                Poll::Ready(Ok(Some(done))) => {
-                    let failure = done
-                        .failure
-                        .as_ref()
-                        .map(crate::epoch::SharedFailure::boxed);
-                    observe(Event::ValidatedRetired(done));
-                    changed = true;
-                    if let Some(error) = failure {
-                        self.restart_native = !self.validated.reusable();
-                        return Poll::Ready(Err(error));
-                    }
-                }
-                Poll::Ready(Ok(None)) | Poll::Pending => {}
-                Poll::Ready(Err(e)) => {
-                    return Poll::Ready(Err(self
-                        .validated
-                        .take_error()
-                        .unwrap_or_else(|| Box::new(e))));
-                }
+        // A live Server still owns its exact persistence barrier during
+        // rotation. Keep the STORE row here until that barrier consumes it.
+        match self.validated.poll(cx) {
+            Poll::Ready(Ok(())) => changed = true,
+            Poll::Ready(Err(e)) => {
+                self.restart_native = !self.validated.reusable();
+                return Poll::Ready(Err(self
+                    .validated
+                    .take_error()
+                    .unwrap_or_else(|| Box::new(e))));
             }
-        } else {
-            match self.validated.poll(cx) {
-                Poll::Ready(Ok(())) => changed = true,
-                Poll::Ready(Err(e)) => {
-                    self.restart_native = !self.validated.reusable();
-                    return Poll::Ready(Err(self
-                        .validated
-                        .take_error()
-                        .unwrap_or_else(|| Box::new(e))));
-                }
-                Poll::Pending => {}
-            }
+            Poll::Pending => {}
         }
         match self.hello.poll(cx) {
             Poll::Ready(Ok(done)) => {
-                if self.rotating {
+                if self.rotation.is_some() {
                     self.publications
                         .as_mut()
                         .ok_or(Fault::NotReady)?
@@ -1164,7 +1121,7 @@ impl<'id, E: Entropy> Owner<'id, E> {
             Poll::Ready(Ok(event)) => {
                 self.restart_native |= !self.writer.reusable();
                 if let Some(publications) = &mut self.publications {
-                    if self.rotating {
+                    if self.rotation.is_some() {
                         publications.retire_store(&event)?;
                         observe(Event::PublicationRetired(event));
                     } else {
@@ -1180,7 +1137,34 @@ impl<'id, E: Entropy> Owner<'id, E> {
             self.restart_native = true;
             return Poll::Ready(Err(Fault::Unavailable.into()));
         }
-        if self.rotating {
+        if let Some(rotation) = &mut self.rotation {
+            if rotation.deadline.as_mut().poll(cx).is_ready() {
+                return Poll::Ready(Err(Fault::Deadline.into()));
+            }
+            let server = self.server.as_mut().ok_or(Fault::NotReady)?;
+            let outputs = server.poll_identity_outputs(cx, &mut self.validated);
+            if let Some(original) = server.take_native_retirement() {
+                observe(Event::NativeRetired(original));
+                changed = true;
+            }
+            while let Some(original) = server.take_monitor_retirement() {
+                observe(Event::Transport(NativeStep::MonitorRetired(original)));
+                changed = true;
+            }
+            if let Some(outcome) = server.take_burst_outcome() {
+                observe(Event::Burst(outcome));
+                changed = true;
+            }
+            if let Poll::Ready(Err(error)) = outputs {
+                self.restart_native = !self.validated.reusable();
+                return Poll::Ready(Err(Self::transport_error(
+                    &mut self.validated,
+                    Box::new(error),
+                )));
+            }
+            let drained = outputs.is_ready();
+            changed |= drained && !rotation.outputs_drained;
+            rotation.outputs_drained = drained;
             if let Some(drain) = &mut self.reservation_drain
                 && !drain.finished()
             {
@@ -1188,16 +1172,27 @@ impl<'id, E: Entropy> Owner<'id, E> {
                     Poll::Pending => {}
                     Poll::Ready(Err(e)) => return Poll::Ready(Err(Box::new(e))),
                     Poll::Ready(Ok(outcome)) => {
+                        let burned = if let retirement::ReservationOutcome::RangeBurned {
+                            original,
+                            actual,
+                        } = &outcome
+                            && let retirement::RangeOrigin::Flow(demand) = original.origin()
+                        {
+                            server.burn_monotime(demand.id(), actual.span())
+                        } else {
+                            Ok(())
+                        };
                         let failure = match &outcome {
-                            crate::epoch::ReservationOutcome::Failed { error, .. } => {
+                            retirement::ReservationOutcome::Failed { error, .. } => {
                                 Some(error.boxed())
                             }
-                            crate::epoch::ReservationOutcome::Mismatched { .. } => {
+                            retirement::ReservationOutcome::Mismatched { .. } => {
                                 Some(Box::new(Fault::Stale) as Failure)
                             }
                             _ => None,
                         };
                         observe(Event::ReservationRetired(outcome));
+                        burned?;
                         changed = true;
                         if let Some(error) = failure {
                             return Poll::Ready(Err(error));
@@ -1206,7 +1201,7 @@ impl<'id, E: Entropy> Owner<'id, E> {
                 }
             }
             changed |= self.finish_rotation(utc, observe)?;
-            if self.rotating {
+            if self.rotation.is_some() {
                 return if changed {
                     Poll::Ready(Ok(()))
                 } else {
@@ -1253,8 +1248,8 @@ impl<'id, E: Entropy> Owner<'id, E> {
                                     observe(Event::DvRange { original, actual });
                                 } else {
                                     observe(Event::ReservationRetired(
-                                        crate::epoch::ReservationOutcome::RangeBurned {
-                                            original: crate::epoch::RetiredRange::dv(original),
+                                        retirement::ReservationOutcome::RangeBurned {
+                                            original: retirement::RetiredRange::dv(original),
                                             actual,
                                         },
                                     ));
@@ -1371,17 +1366,7 @@ impl<'id, E: Entropy> Owner<'id, E> {
             if let Some(outcome) = outcome {
                 observe(Event::FlowRange(outcome));
             }
-            let publication_ready = match &mut self.recovery {
-                Some(recovery) => recovery.ready(server)?,
-                None => true,
-            };
-            if publication_ready && self.recovery.is_some() {
-                // Only real new ADD/DEL dirties the new book. Completing this
-                // comparison barrier must not create an empty startup FEED.
-                self.recovery = None;
-            }
             if !server.persistence_pending()
-                && publication_ready
                 && let Some(publications) = &mut self.publications
             {
                 changed |= publications.advance(
@@ -1401,9 +1386,7 @@ impl<'id, E: Entropy> Owner<'id, E> {
         {
             changed |= self.validation_step(times)?;
         }
-        if !self.rotating
-            && let Some(server) = &mut self.server
-        {
+        if let Some(server) = &mut self.server {
             let (progress, outcome) =
                 self.burst
                     .advance(server, &mut self.discovery, &mut self.clock, times, cx)?;
@@ -1468,10 +1451,7 @@ impl<'id, E: Entropy> Owner<'id, E> {
         {
             let stamp = publications.take_retired_stamp();
             match stamp.and_then(|stamp| self.take_original_reservation(stamp)) {
-                Ok(original) => {
-                    self.reservation_drain =
-                        Some(crate::epoch::Drain::after_physical_retirement(original))
-                }
+                Ok(original) => self.reservation_drain = Some(retirement::Drain::new(original)),
                 Err(e) => errors.push(Box::new(e) as Failure),
             }
         }
@@ -1487,9 +1467,6 @@ impl<'id, E: Entropy> Owner<'id, E> {
             if let Some(outcome) = server.take_burst_outcome() {
                 observe(Event::Burst(outcome));
             }
-        }
-        if let Some(outcome) = self.retired_burst.take() {
-            observe(Event::Burst(outcome));
         }
         self.pils.close();
         self.writer.close();

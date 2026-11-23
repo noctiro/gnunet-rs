@@ -30,6 +30,18 @@ impl Span {
             .ok_or(Fault::Overflow)?;
         Ok(Self { logical, hard })
     }
+    /// Cap the original logical/native pair by an earlier protocol deadline.
+    /// The backward projection keeps the initial native anchor.
+    pub fn capped_at(self, logical: u64) -> Result<Self, Fault> {
+        if logical >= self.logical {
+            return Ok(self);
+        }
+        let hard = self
+            .hard
+            .checked_sub(Duration::from_micros(self.logical - logical))
+            .ok_or(Fault::Overflow)?;
+        Ok(Self { logical, hard })
+    }
     pub fn expired(self, now: Option<u64>) -> bool {
         Instant::now() >= self.hard || now.is_some_and(|n| n >= self.logical)
     }
@@ -152,5 +164,29 @@ impl DriverClock {
         self.logical_at = None;
         self.native = None;
         self.native_at = None;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "Fallible span setup with deterministic deadline differences"
+    )]
+    fn protocol_deadline_caps_both_original_targets() -> Result<(), Fault> {
+        let original = Span::new(1_000_000, Duration::from_secs(1))?;
+        let capped = original.capped_at(1_500_000)?;
+        assert_eq!(capped.logical, 1_500_000);
+        assert_eq!(
+            original.hard.duration_since(capped.hard),
+            Duration::from_millis(500)
+        );
+        let unchanged = capped.capped_at(original.logical)?;
+        assert_eq!(unchanged.logical, capped.logical);
+        assert_eq!(unchanged.hard, capped.hard);
+        Ok(())
     }
 }

@@ -1,5 +1,5 @@
 //! Registration leases, STUN transactions and reversal monitoring.
-use super::{Failure, NatOptions, Signals, diagnostic, interval, output};
+use super::{Failure, NatOptions, Signals, StunMode, diagnostic, interval, output};
 use gnunet_client_host::{EndpointSource, LiveConfiguration, resolution::SharedResolution};
 use gnunet_config::Configuration;
 use gnunet_nat_client_host::{
@@ -9,7 +9,7 @@ use gnunet_nat_client_host::{
 use gnunet_nat_host::{
     deadline::{Bounds, BoundsError, Gate},
     interfaces::portable,
-    stun::{Event as StunEvent, Request as StunRequest, parse_server},
+    stun::{DEFAULT_FREQUENCY_MICROS, Event as StunEvent, Request as StunRequest, Servers},
 };
 use gnunet_program_host::reporting::Reporter;
 use gnunet_service_runtime::clock::RuntimeClock;
@@ -53,15 +53,19 @@ enum Step<'id> {
     Stun,
     Stop,
 }
+struct Probe {
+    servers: Servers,
+    frequency: Duration,
+    timeout: Duration,
+}
 struct SessionPorts<'a> {
     signals: &'a mut Signals,
     socket: Option<&'a Arc<UdpSocket>>,
     remote: Option<(SocketAddr, SocketAddr, Bounds)>,
     remote_admitted: &'a mut bool,
     resolution: &'a SharedResolution,
-    servers: &'a [(Vec<u8>, u16)],
-    frequency: Duration,
-    request_timeout: Duration,
+    probe: Option<&'a Probe>,
+    send_timeout: Duration,
 }
 impl<'id> Session<'id> {
     fn expire_writes(&mut self, now: Option<u64>) -> Result<Option<Step<'id>>, Failure> {
@@ -113,9 +117,8 @@ impl<'id> Session<'id> {
             remote,
             remote_admitted,
             resolution,
-            servers,
-            frequency,
-            request_timeout,
+            probe,
+            send_timeout,
         } = ports;
         self.reports.register(cx);
         if self.reports.failed() {
@@ -143,7 +146,7 @@ impl<'id> Session<'id> {
             .iter()
             .map(|r| r.request.bounds().hard())
             .chain(self.writes.iter().map(|(_, b)| b.hard()))
-            .chain((self.next_stun > native).then_some(self.next_stun))
+            .chain((probe.is_some() && self.next_stun > native).then_some(self.next_stun))
             .min();
         if let Some(due) = due {
             self.timer
@@ -163,12 +166,14 @@ impl<'id> Session<'id> {
         if self.reports.failed() {
             return Poll::Ready(Err("NAT CLI selected Logger failed".into()));
         }
-        if let Some(epoch) = self.registration.epoch()
-            && matches!(
-                self.registration.registered_submission(),
-                client::Submission::Written { .. }
-            )
-        {
+        let registered = self.registration.epoch().filter(|&epoch| {
+            self.registration.is_current(epoch)
+                && matches!(
+                    self.registration.registered_submission(),
+                    client::Submission::Written { .. }
+                )
+        });
+        if let Some(epoch) = registered {
             if !*remote_admitted
                 && self.writes.len() < 32
                 && let Some((local, remote, bounds)) = remote
@@ -201,13 +206,14 @@ impl<'id> Session<'id> {
                 return Poll::Ready(Ok(Step::Stun));
             }
             if let Some(socket) = socket
+                && let Some(probe) = probe
                 && native >= self.next_stun
                 && self.stun.len() < 32
             {
                 self.next_stun = native
-                    .checked_add(frequency)
+                    .checked_add(probe.frequency)
                     .ok_or(gnunet_types::Error::Overflow)?;
-                for (server, port) in servers {
+                for (server, port) in probe.servers.iter() {
                     if self.reports.failed() {
                         return Poll::Ready(Err("NAT CLI selected Logger failed".into()));
                     }
@@ -215,14 +221,14 @@ impl<'id> Session<'id> {
                         break;
                     }
                     let remaining = self.gate.bounds();
-                    let b = Bounds::after(&**self.gate.clock(), request_timeout)?;
+                    let b = Bounds::after(&**self.gate.clock(), probe.timeout)?;
                     let bounds = b.capped_by(remaining);
                     match StunRequest::start(
                         resolution.clone(),
                         self.gate.clock().clone(),
                         socket.clone(),
                         server,
-                        *port,
+                        port,
                         bounds,
                         Default::default(),
                     ) {
@@ -273,48 +279,71 @@ impl<'id> Session<'id> {
                 }
             }
         }
-        if let Some(socket) = socket {
-            if self.writes.len() >= 32 || self.registration.pending_writes() >= 32 {
-                return Poll::Pending;
-            }
+        if let Some(socket) = socket
+            && registered.is_some()
+            && self.writes.len() < 32
+            && self.registration.pending_writes() < 32
+        {
             let mut read = ReadBuf::new(&mut self.buffer);
             match socket.poll_recv_from(cx, &mut read) {
                 Poll::Pending => {}
                 Poll::Ready(Err(e)) => return Poll::Ready(Err(e.into())),
                 Poll::Ready(Ok(sender)) => {
                     let packet = read.filled();
-                    for row in &mut self.stun {
-                        if self.reports.failed() {
-                            return Poll::Ready(Err("NAT CLI selected Logger failed".into()));
-                        }
-                        if !self.registration.is_current(row.epoch) {
-                            continue;
-                        }
-                        let matched = match row.request.on_datagram(socket, sender, packet) {
-                            Ok(Some(_)) => true,
-                            Ok(None) => false,
-                            Err(gnunet_nat_host::Error::Clock(e)) => {
-                                return Poll::Ready(Err(gnunet_nat_host::Error::Clock(e).into()));
+                    let mut raw = [0; 28];
+                    let n = portable(sender).wire().encode(self.profile, &mut raw)?;
+                    let sender_address = RawAddress::decode(&raw[..n], self.profile)?;
+                    let forward_by = if probe.is_some() {
+                        let mut matched = None;
+                        for row in &mut self.stun {
+                            if self.reports.failed() {
+                                return Poll::Ready(Err("NAT CLI selected Logger failed".into()));
                             }
-                            Err(e) => {
-                                diagnostic(
+                            if !self.registration.is_current(row.epoch) {
+                                continue;
+                            }
+                            match row.request.on_datagram(socket, sender, packet) {
+                                Ok(Some(_)) => {
+                                    matched = Some(row.request.bounds());
+                                    break;
+                                }
+                                Ok(None) => {}
+                                Err(gnunet_nat_host::Error::Clock(e)) => {
+                                    return Poll::Ready(Err(
+                                        gnunet_nat_host::Error::Clock(e).into()
+                                    ));
+                                }
+                                Err(e) => diagnostic(
                                     &self.reports,
                                     format_args!("original STUN packet refused: {e}"),
-                                );
-                                false
+                                ),
                             }
-                        };
-                        if matched {
-                            let mut raw = [0; 28];
-                            let n = portable(sender).wire().encode(self.profile, &mut raw)?;
-                            let write = self.registration.stun(
-                                RawAddress::decode(&raw[..n], self.profile)?,
-                                packet,
-                                row.request.bounds().expires(),
-                            )?;
-                            self.writes.push((write, row.request.bounds()));
-                            self.registration_first = true;
-                            return Poll::Ready(Ok(Step::Stun));
+                        }
+                        matched
+                    } else if gnunet_nat::stun::Message::decode(packet).is_ok()
+                        && (nat::Request::Stun {
+                            sender: sender_address,
+                            payload: packet,
+                        })
+                        .encoded_len(self.profile)
+                        .is_ok()
+                    {
+                        Some(
+                            Bounds::after(&**self.gate.clock(), send_timeout)?
+                                .capped_by(self.gate.bounds()),
+                        )
+                    } else {
+                        None
+                    };
+                    if let Some(bounds) = forward_by {
+                        match self
+                            .registration
+                            .stun(sender_address, packet, bounds.expires())
+                        {
+                            Ok(write) => self.writes.push((write, bounds)),
+                            // UDP observations cannot overrun the bounded IPC queue.
+                            Err(client::Error::Protocol(gnunet_types::Error::Capacity)) => (),
+                            Err(error) => return Poll::Ready(Err(error.into())),
                         }
                     }
                     self.registration_first = true;
@@ -350,7 +379,7 @@ pub(super) async fn nat_monitor(
 ) -> Result<(), Failure> {
     if !matches!(options.protocol, 6 | 17)
         || options.section.contains(&0)
-        || options.stun && options.protocol != 17
+        || options.stun != StunMode::Disabled && options.protocol != 17
     {
         return Err("NAT requires one TCP/UDP selector; STUN requires UDP".into());
     }
@@ -360,8 +389,29 @@ pub(super) async fn nat_monitor(
     {
         return Err("reversal requires an actual nonzero-port localIPv4 and remoteIPv4".into());
     }
-    let socket = if options.stun {
-        let setup = Bounds::after(&*clock, Duration::from_secs(30))?;
+    let lifetime = interval(config, b"SESSION_LIFETIME", 3_600_000_000)?;
+    let send_timeout = interval(config, b"SEND_TIMEOUT", 30_000_000)?;
+    let probe = if options.stun == StunMode::Probe {
+        let servers = Servers::read(config)?.ok_or("--probe-stun requires [nat] STUN_SERVERS")?;
+        let micros = config
+            .get(b"nat", b"STUN_FREQUENCY")
+            .map(|_| config.get_time(b"nat", b"STUN_FREQUENCY"))
+            .transpose()?
+            .unwrap_or(DEFAULT_FREQUENCY_MICROS);
+        let frequency = Duration::from_micros(micros);
+        if micros == 0 || micros == u64::MAX || Instant::now().checked_add(frequency).is_none() {
+            return Err("STUN frequency must be finite and nonzero".into());
+        }
+        Some(Probe {
+            servers,
+            frequency,
+            timeout: interval(config, b"STUN_REQUEST_TIMEOUT", 30_000_000)?,
+        })
+    } else {
+        None
+    };
+    let socket = if options.stun != StunMode::Disabled {
+        let setup = Bounds::after(&*clock, send_timeout)?;
         let mut gate = Gate::new(clock.clone(), setup)?;
         let socket = Arc::new(
             gate.run(async { crate::sockets::udp(options.local) })
@@ -372,40 +422,12 @@ pub(super) async fn nat_monitor(
     } else {
         None
     };
-    let lifetime = interval(config, b"SESSION_LIFETIME", 3_600_000_000)?;
-    let send_timeout = interval(config, b"SEND_TIMEOUT", 30_000_000)?;
-    let request_timeout = interval(config, b"STUN_REQUEST_TIMEOUT", 30_000_000)?;
-    let frequency = Duration::from_micros(
-        config
-            .get(b"nat", b"STUN_FREQUENCY")
-            .map(|_| config.get_time(b"nat", b"STUN_FREQUENCY"))
-            .transpose()?
-            .unwrap_or(300_000_000),
-    );
-    if frequency.is_zero() {
-        return Err("STUN frequency must be nonzero".into());
-    }
-    let mut servers = Vec::new();
-    if options.stun {
-        let raw = core::str::from_utf8(
-            config
-                .get(b"nat", b"STUN_SERVERS")
-                .unwrap_or(b"stun.gnunet.org"),
-        )?;
-        for token in raw.split_ascii_whitespace() {
-            if servers.len() >= 32 {
-                return Err("too many STUN servers".into());
-            }
-            let (host, port) = parse_server(token)?;
-            servers.push((host.as_bytes().to_vec(), port));
-        }
-    }
     let live = LiveConfiguration::new(config.duplicate()?);
     let instance = Instance::new();
     let profile = client::native_profile()?;
     let remote_bound = options
         .remote
-        .map(|_| Bounds::after(&*clock, request_timeout))
+        .map(|_| Bounds::after(&*clock, send_timeout))
         .transpose()?;
     let mut remote_admitted = false;
     loop {
@@ -433,8 +455,10 @@ pub(super) async fn nat_monitor(
             Default::default(),
         )?;
         let mut buffer = Vec::new();
-        buffer.try_reserve_exact(65536)?;
-        buffer.resize(65536, 0);
+        if socket.is_some() {
+            buffer.try_reserve_exact(65536)?;
+            buffer.resize(65536, 0);
+        }
         let mut session = Session {
             reports: reports.clone(),
             registration,
@@ -447,7 +471,9 @@ pub(super) async fn nat_monitor(
             writes: Vec::new(),
             registration_first: false,
         };
-        session.stun.try_reserve_exact(32)?;
+        if probe.is_some() {
+            session.stun.try_reserve_exact(32)?;
+        }
         session.writes.try_reserve_exact(32)?;
         let restart = loop {
             match poll_fn(|cx| {
@@ -462,9 +488,8 @@ pub(super) async fn nat_monitor(
                             .map(|(r, b)| (options.local, r, b)),
                         remote_admitted: &mut remote_admitted,
                         resolution: &resolution,
-                        servers: &servers,
-                        frequency,
-                        request_timeout,
+                        probe: probe.as_ref(),
+                        send_timeout,
                     },
                 )
             })

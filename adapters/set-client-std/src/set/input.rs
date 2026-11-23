@@ -9,6 +9,23 @@ impl Set {
         tag: Option<Tag>,
         bytes: usize,
         complete: bool,
+        failure: Option<Error>,
+    ) -> Result<SetProgress, Error> {
+        let progress = self.write_progress(epoch, tag, bytes, complete)?;
+        if let Some(error) = failure {
+            // Preserve the actual write event once, but close this original MQ
+            // before the caller can issue more work. Its loss remains available
+            // to the next poll, native guard or explicit retirement.
+            self.pending_loss = Some(self.failed(error, None));
+        }
+        Ok(progress)
+    }
+    fn write_progress(
+        &mut self,
+        epoch: Epoch,
+        tag: Option<Tag>,
+        bytes: usize,
+        complete: bool,
     ) -> Result<SetProgress, Error> {
         let Some(tag) = tag else {
             if complete {

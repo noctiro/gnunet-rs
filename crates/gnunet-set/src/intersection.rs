@@ -146,7 +146,7 @@ impl Intersection {
         if !matches!(mode, ResultMode::Full | ResultMode::Removed) {
             return Err(Error::Unsupported);
         }
-        let _count = u32::try_from(snapshot.len()).map_err(|_| Error::Capacity)?;
+        let count = u32::try_from(snapshot.len()).map_err(|_| Error::Capacity)?;
         let membership_bytes = snapshot.metadata_bytes()?;
         let body_charge = snapshot.ledger.charged_bytes()?;
         let active = reserved(snapshot.len(), snapshot.len())?;
@@ -166,7 +166,7 @@ impl Intersection {
             phase: Phase::Initialize,
             activated: false,
             active,
-            count: 0,
+            count,
             xor: [0; 64],
             remote_count,
             remote_known: role == Role::Acceptor,
@@ -218,7 +218,6 @@ impl Intersection {
         for index in self.cursor..end {
             let hash = *self.snapshot()?.hash(index).ok_or(Error::Stale)?;
             self.active.push(1); // capacity was reserved before original admission
-            self.count = self.count.checked_add(1).ok_or(Error::Overflow)?;
             xor_into(&mut self.xor, &hash);
         }
         self.cursor = end;
@@ -836,6 +835,9 @@ mod tests {
                 engine.out.results.len(),
                 if mode == ResultMode::Removed { 2 } else { 0 }
             );
+            if mode == ResultMode::Removed {
+                assert!(engine.out.results.iter().map(|row| row.size).eq([1, 0]));
+            }
             assert!(!engine.out.results.iter().any(|r| r.status.terminal()));
             engine.receive(
                 PeerMessage::IntersectionDone {
@@ -850,6 +852,32 @@ mod tests {
             engine.peer_retired(Error::Closed);
             assert_eq!(engine.outcome(), Some(Ok(())));
         }
+        Ok(())
+    }
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "unit source assertions compare independent protocol results; fallible API calls propagate their original errors"
+    )]
+    fn early_failure_reports_snapshot_count_during_filter_initialization() -> Result<(), Error> {
+        let values: Vec<_> = (0..=u8::MAX).collect();
+        let size = values.len() as u64;
+        let mut engine = Intersection::new(
+            membership(&values)?,
+            Role::Initiator,
+            0,
+            ResultMode::Full,
+            Options::default(),
+            Limits::default(),
+        )?;
+        assert_eq!(engine.size(), size);
+        engine.activate();
+        assert!(engine.progress(&mut Deterministic)?);
+        assert_eq!(engine.phase, Phase::Initialize);
+        assert_eq!(engine.cursor, MEMBERS_PER_STEP);
+        engine.peer_retired(Error::Closed);
+        assert_eq!(engine.outcome(), Some(Err(Error::Closed)));
+        assert_eq!(engine.size(), size);
         Ok(())
     }
     #[test]

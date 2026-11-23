@@ -62,7 +62,7 @@ fn shared_peer_retains_reverse_route_until_last_endpoint_and_never_retargets_ori
             // These selectors are never polled. No native PILS/CORE identity
             // or source fact is synthesized from their unused path.
             let source = || EndpointSource::unix_with_clock(std::env::temp_dir().join("gnunet-dht-unused-model-source"), clock.clone());
-            let ports = Ports { core: source(), pils: source(), nse: source(), peerstore: source(), transport: source(),
+            let ports = Ports { core: source(), pils: source(), nse: Some(source()), peerstore: source(), transport: source(),
                 clock, options: Default::default(), unix: Default::default() };
             let limits = Limits { underlays: Underlays { gnunet: false, ip: Some(crate::ip::Config {
                 bind: Some(IpAddr::V4(Ipv4Addr::LOCALHOST)), port: 0, targets: 3, sends: 1,
@@ -204,7 +204,7 @@ fn model_server<'id>(
     let ports = Ports {
         core: core.unwrap_or_else(unused),
         pils: unused(),
-        nse: unused(),
+        nse: Some(unused()),
         peerstore: unused(),
         transport: unused(),
         clock,

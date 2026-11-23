@@ -1,0 +1,16 @@
+group("gnunet_node_image") {
+  deps = [
+    ":gnunet_node_bin",
+    ":gnunet_node_init",
+  ]
+}
+
+copy("gnunet_node_bin") {
+  sources = [ "gnunet-node" ]
+  outputs = [ "$root_out_dir/bin/gnunet-node" ]
+}
+
+copy("gnunet_node_init") {
+  sources = [ "gnunet-node.cfg" ]
+  outputs = [ "$root_out_dir/system/etc/init/gnunet-node.cfg" ]
+}

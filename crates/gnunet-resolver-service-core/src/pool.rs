@@ -238,4 +238,12 @@ impl<'a> BytePool<'a> {
         self.live_bytes = 0;
         self.tail = 0;
     }
+
+    pub(crate) fn reset_epoch(&mut self, epoch: u64) {
+        self.scope.epoch = epoch;
+        self.slots.fill(BlobSlot::EMPTY);
+        self.bytes.fill(0);
+        self.live_bytes = 0;
+        self.tail = 0;
+    }
 }

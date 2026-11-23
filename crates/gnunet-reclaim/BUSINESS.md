@@ -38,7 +38,9 @@ noalloc builds keep the existing codec-only modules.
   that multi-label revocation is atomic or immediately invalidates cached GNS
   records. Partial/cancelled/unknown outcomes retain completed steps.
 - Attributes, credentials and ticket iterators use a bounded NAMESTORE
-  scan, then a frozen snapshot and one initial result credit. Each NEXT
+  scan, then a frozen snapshot and one initial result credit. Object results
+  require a normalized singleton row of the matching type. Ticket results use
+  the private ticket bound to that row and issuer, plus its same-row TXT. Each NEXT
   grants one more item. App output written does not grant credit. Only the real
   provider END permits natural iterator END, and that end finishes only after
   its exact original app frame is wholly written. A failed scan emits **no fake
@@ -125,11 +127,13 @@ repeat the native-endian mistake.
 
 ## Credential provider contract
 
-A host can fulfill the original `Presentation` effect using the
-[credential provider](../gnunet-reclaim-credentials/README.md):
+A `Presentation` effect carries one stored credential and a borrowed view of
+the ticket attributes that reference its identifier. The view preserves request
+order. A host can fulfill the effect using the
+[credential provider](../gnunet-reclaim-credentials/README.md).
 
 ```rust,ignore
-let p = gnunet_reclaim_credentials::presentation(credential, selected)?;
+let p = gnunet_reclaim_credentials::presentation(request)?;
 // Complete only the same admitted Effect/Source; the core verifies id/kind
 // binding and copies its exact serialization into the original bounded quota.
 ```

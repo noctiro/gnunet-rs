@@ -1,6 +1,4 @@
 {
-  "source_receipt": "/private/tmp/gnunet-dns-foundation-audit-20261026/parser-result.json",
-  "source_sha256": "23a49c38ded2d6f24b18a3c7788c0e97abb5e3b1d77dd27ecef865002b9474c6",
   "rows": [
     {
       "id": "actual-idna-and-wire-profile",

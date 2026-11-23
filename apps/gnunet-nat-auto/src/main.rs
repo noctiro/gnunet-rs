@@ -29,7 +29,7 @@ fn run(startup: gnunet_service_startup::ClientStartup) -> Result<ExitCode, Failu
         getopt::Options,
         helpers::{self, Target},
         logging::Logger,
-        program::{self, Defaults, Invocation, NlsDisabled, Preparation},
+        program::{self, Defaults, Invocation, Preparation},
         shared_clock::SharedClock,
     };
     use std::sync::Arc;
@@ -66,7 +66,7 @@ fn run(startup: gnunet_service_startup::ClientStartup) -> Result<ExitCode, Failu
         write.clone(),
     ));
     let mut logger = Logger::new(b"gnunet-nat-auto", std::process::id(), false)?;
-    let prepared=program::prepare(config,Invocation{binary_name:b"gnunet-nat-auto",help:Some(b"Actual official NAT client/query/test. Address hints and local sends do not prove connectivity; a received original public challenge is an unauthenticated path observation. TCP/UDP tests require configured section PORT and an actual gnunet-nat-server."),select_default_filename:true,defaults:Defaults::Native},options,std::env::args_os(),&program::Environment::capture(),&mut NlsDisabled,&mut logger,&clock,&mut io::stdout().lock(),&mut io::stderr().lock())?;
+    let prepared=program::prepare_installed(config,Invocation{binary_name:b"gnunet-nat-auto",help:Some(b"Actual official NAT client/query/test. Address hints and local sends do not prove connectivity; a received original public challenge is an unauthenticated path observation. TCP/UDP tests require configured section PORT and an actual gnunet-nat-server."),select_default_filename:true,defaults:Defaults::Native},options,std::env::args_os(),&program::Environment::capture(),&mut logger,&clock,&mut io::stdout().lock(),&mut io::stderr().lock())?;
     let prepared = match prepared {
         Preparation::Ready(p) => *p,
         Preparation::Stopped(stopped) => {

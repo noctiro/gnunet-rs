@@ -7,6 +7,7 @@ use gnunet_fs::{
 };
 use std::{
     collections::BTreeSet,
+    ffi::OsString,
     io,
     path::{Path, PathBuf},
     sync::Arc,
@@ -19,9 +20,11 @@ pub(crate) struct Job {
     pub(crate) target: [u8; 32],
     pub(crate) inline: Option<Vec<u8>>,
 }
+#[derive(Default)]
 pub(crate) struct Paths {
     pub(crate) jobs: Vec<Job>,
     pub(crate) names: BTreeSet<Arc<PathBuf>>,
+    pub(crate) reserved_temporaries: BTreeSet<OsString>,
     pub(crate) path_bytes: usize,
     pub(crate) inline_bytes: usize,
 }
@@ -81,9 +84,13 @@ impl Paths {
             _ => None,
         };
         let hint = content.and_then(|content| {
+            let available = options
+                .max_total_inline_bytes
+                .saturating_sub(self.inline_bytes)
+                .min(options.max_inline_bytes);
             dir::hints(entry.metadata.items()).find(|hint| {
                 hint.item.data.len() as u128 == u128::from(content.size)
-                    && hint.item.data.len() <= options.max_inline_bytes
+                    && hint.item.data.len() <= available
             })
         });
         let mut inline = None;
@@ -92,9 +99,6 @@ impl Paths {
             inline_charge = inline_charge
                 .checked_add(hint.item.data.len())
                 .ok_or(Error::Limit)?;
-            if inline_charge > options.max_total_inline_bytes {
-                return Err(Error::Limit);
-            }
             let mut copy = Vec::new();
             copy.try_reserve_exact(hint.item.data.len())
                 .map_err(|_| Error::Limit)?;
@@ -111,6 +115,12 @@ impl Paths {
             return Err(Error::Corrupt);
         }
         let path = Arc::new(path);
+        if let Some(name) = path
+            .file_name()
+            .filter(|name| crate::output::temporary_name_valid(name))
+        {
+            self.reserved_temporaries.insert(name.to_owned());
+        }
         self.names.insert(path.clone());
         let parent_id = self
             .jobs

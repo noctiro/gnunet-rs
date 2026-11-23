@@ -86,16 +86,23 @@ impl<'a> RecordData<'a> {
     /// Write one unpadded record; refusal leaves all output unchanged.
     pub fn encode(&self, output: &mut [u8]) -> Result<usize, Error> {
         let len = self.encoded_len()?;
-        if output.len() < len {
-            return Err(Error::Capacity);
-        }
+        let output = output.get_mut(..len).ok_or(Error::Capacity)?;
+        self.encode_header(output)?;
+        output[RECORD_HEADER_LEN..].copy_from_slice(self.data);
+        Ok(len)
+    }
+
+    /// Write only the record header for the length of this record's data.
+    /// Useful when the payload already occupies its final output region.
+    /// Refusal leaves all output unchanged.
+    pub fn encode_header(&self, output: &mut [u8]) -> Result<(), Error> {
         let size = u16::try_from(self.data.len()).map_err(|_| Error::TooLarge)?;
+        let output = output.get_mut(..RECORD_HEADER_LEN).ok_or(Error::Capacity)?;
         output[..8].copy_from_slice(&self.expiration_time.to_be_bytes());
         output[8..10].copy_from_slice(&size.to_be_bytes());
         output[10..12].copy_from_slice(&self.flags.bits().to_be_bytes());
         output[12..16].copy_from_slice(&self.record_type.value().to_be_bytes());
-        output[RECORD_HEADER_LEN..len].copy_from_slice(self.data);
-        Ok(len)
+        Ok(())
     }
 }
 

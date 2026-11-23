@@ -1,6 +1,13 @@
 //! CreateProcessW with exact application paths and per-launch handle allowlists.
-use super::environment;
-use crate::{paths::absolute_wide_path, stdio::Stdio};
+use super::{AccountProfile, PrimaryToken, ProfileCleanup, environment};
+use crate::{
+    identity::{PrivateSecurityDescriptor, Sid},
+    paths::absolute_wide_path,
+    socket_activation::{
+        ACCOUNT_HANDLE_PREFIX, AccountExportSection, Admission, Delivery, ExportSection,
+    },
+    stdio::Stdio,
+};
 use std::{
     ffi::{OsStr, OsString},
     fmt,
@@ -20,8 +27,8 @@ use windows_sys::Win32::System::Console::{
     GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
 };
 use windows_sys::Win32::System::Threading::{
-    CREATE_NEW_PROCESS_GROUP, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateProcessW,
-    DETACHED_PROCESS, DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT,
+    CREATE_NEW_PROCESS_GROUP, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateProcessAsUserW,
+    CreateProcessW, DETACHED_PROCESS, DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT,
     GetCurrentProcess, GetCurrentProcessId, GetExitCodeProcess, InitializeProcThreadAttributeList,
     LPPROC_THREAD_ATTRIBUTE_LIST, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROCESS_INFORMATION,
     STARTF_USESTDHANDLES, STARTUPINFOEXW, STARTUPINFOW, TerminateProcess,
@@ -117,6 +124,10 @@ impl fmt::Debug for ProcessIdentity {
     }
 }
 impl ProcessIdentity {
+    pub(crate) fn matches(&self, process: &Process) -> bool {
+        Arc::ptr_eq(&self.0, &process.0)
+    }
+
     /// Pin this current process with a real independently owned handle. The
     /// current-process pseudo-handle is never adopted as an owned/borrowed handle.
     #[expect(
@@ -349,9 +360,21 @@ impl Drop for Attributes<'_> {
         }
     }
 }
-enum Start {
+#[derive(Clone, Copy)]
+enum Start<'a> {
     Running,
     Suspended,
+    SocketPublication(ActivationHint<'a>),
+}
+#[derive(Clone, Copy)]
+enum ActivationHint<'a> {
+    Inherited {
+        publisher: Option<&'a Sid>,
+    },
+    Bootstrap {
+        key: &'a OsStr,
+        declaration: &'a OsStr,
+    },
 }
 pub(super) struct Created {
     pub(super) process: Process,
@@ -370,22 +393,132 @@ impl Spawn<'_> {
     /// always uses an explicit allowlist. No process-global environment or stdio
     /// slot is changed. Detached creation does not wait for or synthesize READY.
     pub fn launch(self, limits: LaunchLimits) -> io::Result<Process> {
-        self.create(limits, Start::Running)
+        self.create(limits, Start::Running, None)
             .map(|created| created.process)
+    }
+    /// Launch detached under the verified account without exporting supervisor handles.
+    /// The native cleanup owns the loaded profile until this exact process exits.
+    pub fn launch_as(
+        self,
+        profile: AccountProfile,
+        limits: LaunchLimits,
+    ) -> io::Result<(Process, ProfileCleanup)> {
+        self.validate_account_launch()?;
+        let cleanup = profile.cleanup()?;
+        let process = self
+            .create(limits, Start::Running, Some(profile.token()?))?
+            .process;
+        profile.attach(&process);
+        Ok((process, cleanup))
+    }
+
+    /// Create the original cross-account process suspended for socket publication.
+    /// The original session and target account determine how the child receives
+    /// its read-only section. Different sessions use an authenticated grant.
+    pub fn suspend_as(
+        self,
+        profile: AccountProfile,
+        section: &mut AccountExportSection<'_>,
+        environment_key: &OsStr,
+        limits: LaunchLimits,
+    ) -> io::Result<(super::SuspendedProcess, ProfileCleanup)> {
+        self.validate_account_launch()?;
+        let token = profile.token()?;
+        let cleanup = profile.cleanup()?;
+        let child = self.suspend_with_admission(
+            section.admission(token)?,
+            environment_key,
+            limits,
+            Some(token),
+        )?;
+        profile.attach(child.process());
+        Ok((child, cleanup))
+    }
+
+    /// Create the one same-account child authorized to import this section.
+    /// The original primary thread stays suspended until publication succeeds.
+    pub fn suspend_for_activation(
+        self,
+        section: &mut ExportSection<'_>,
+        environment_key: &OsStr,
+        limits: LaunchLimits,
+    ) -> io::Result<super::SuspendedProcess> {
+        if !self.exported_handles.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "socket activation reserves the launch handle export",
+            ));
+        }
+        self.suspend_with_admission(section.admission()?, environment_key, limits, None)
+    }
+
+    fn suspend_with_admission(
+        self,
+        admission: Admission<'_>,
+        environment_key: &OsStr,
+        limits: LaunchLimits,
+        token: Option<&PrimaryToken>,
+    ) -> io::Result<super::SuspendedProcess> {
+        let created = match admission.delivery() {
+            Delivery::Inherited { handle, publisher } => {
+                let export = [ExportedHandle {
+                    handle,
+                    environment_key,
+                }];
+                Spawn {
+                    exported_handles: &export,
+                    ..self
+                }
+                .create(
+                    limits,
+                    Start::SocketPublication(ActivationHint::Inherited { publisher }),
+                    token,
+                )?
+            }
+            Delivery::Bootstrap(declaration) => self.create(
+                limits,
+                Start::SocketPublication(ActivationHint::Bootstrap {
+                    key: environment_key,
+                    declaration,
+                }),
+                token,
+            )?,
+        };
+        let child = super::SuspendedProcess::for_activation(created);
+        admission.bind(&child);
+        Ok(child)
+    }
+
+    fn validate_account_launch(&self) -> io::Result<()> {
+        if !self.exported_handles.is_empty()
+            || !self.stdio.iter().all(|slot| matches!(slot, Stdio::Closed))
+            || !matches!(self.console, Console::Detached)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "account launch requires a detached process without inherited handles",
+            ));
+        }
+        Ok(())
     }
     /// Create one original process with its primary thread suspended. No user
     /// image initialization or readiness is implied. The caller must explicitly
     /// resume or terminate/drain it; dropping owners never resumes or kills it.
     /// Source/stdio/allowlist and capacity rules are identical to `launch`.
     pub fn suspend(self, limits: LaunchLimits) -> io::Result<super::suspended::SuspendedProcess> {
-        self.create(limits, Start::Suspended)
+        self.create(limits, Start::Suspended, None)
             .map(super::suspended::SuspendedProcess::from_created)
     }
     #[expect(
         unsafe_code,
-        reason = "CreateProcessW borrows validated UTF-16 inputs and an explicit private allowlist; successful native handles fill a privately preallocated Arc before ownership publication"
+        reason = "Windows creation APIs borrow validated UTF-16 inputs, an optional live token and an explicit private allowlist; successful handles fill reserved ownership"
     )]
-    fn create(self, limits: LaunchLimits, start: Start) -> io::Result<Created> {
+    fn create(
+        self,
+        limits: LaunchLimits,
+        start: Start<'_>,
+        token: Option<&PrimaryToken>,
+    ) -> io::Result<Created> {
         if !self.executable.is_absolute()
             || !self.directory.is_absolute()
             || limits.command_units == 0
@@ -406,6 +539,19 @@ impl Spawn<'_> {
         }
         let executable = absolute_wide_path(self.executable)?;
         let directory = absolute_wide_path(self.directory)?;
+        let process_security = match token {
+            Some(token) if matches!(start, Start::SocketPublication(_)) => {
+                // WSADuplicateSocket targets a PID; a provider may open it for handle
+                // duplication. The CreateProcessAsUser default may admit only the child account.
+                Some(PrivateSecurityDescriptor::process_with_socket_publisher(
+                    token.user(),
+                )?)
+            }
+            _ => None,
+        };
+        let mut process_attributes = process_security
+            .as_ref()
+            .map(PrivateSecurityDescriptor::attributes);
         let mut arguments = Vec::new();
         arguments
             .try_reserve_exact(self.arguments.len())
@@ -434,16 +580,28 @@ impl Spawn<'_> {
             }
         }
         let mut exports = Vec::new();
+        let (bootstrap, publisher) = match start {
+            Start::SocketPublication(ActivationHint::Bootstrap { key, declaration }) => {
+                (Some((key, declaration)), None)
+            }
+            Start::SocketPublication(ActivationHint::Inherited { publisher }) => (None, publisher),
+            _ => (None, None),
+        };
         exports
-            .try_reserve_exact(self.exported_handles.len())
+            .try_reserve_exact(self.exported_handles.len() + usize::from(bootstrap.is_some()))
             .map_err(|_| io::ErrorKind::OutOfMemory)?;
         for export in self.exported_handles {
             let handle = duplicate(export.handle)?;
-            exports.push((
-                export.environment_key.to_os_string(),
-                OsString::from(format!("{:x}", handle.as_raw_handle() as usize)),
-            ));
+            let raw = handle.as_raw_handle() as usize;
+            let value = match publisher {
+                Some(publisher) => format!("{ACCOUNT_HANDLE_PREFIX}{raw:x}:{publisher}"),
+                None => format!("{raw:x}"),
+            };
+            exports.push((export.environment_key.to_os_string(), value.into()));
             owned.push(handle);
+        }
+        if let Some((key, declaration)) = bootstrap {
+            exports.push((key.to_os_string(), declaration.to_os_string()));
         }
         let environment = environment::encode(
             self.environment,
@@ -456,9 +614,11 @@ impl Spawn<'_> {
             .try_reserve_exact(owned.len())
             .map_err(|_| io::ErrorKind::OutOfMemory)?;
         handles.extend(owned.iter().map(AsRawHandle::as_raw_handle));
-        let exclusive = INHERITANCE
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let exclusive = (!handles.is_empty()).then(|| {
+            INHERITANCE
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+        });
         let result = (|| {
             for handle in &handles {
                 // SAFETY: only private live duplicates are marked inheritable.
@@ -480,7 +640,9 @@ impl Spawn<'_> {
             } else {
                 size_of::<STARTUPINFOW>()
             } as u32;
-            startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+            if token.is_none() {
+                startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+            }
             [
                 startup.StartupInfo.hStdInput,
                 startup.StartupInfo.hStdOutput,
@@ -492,7 +654,7 @@ impl Spawn<'_> {
             let flags = CREATE_UNICODE_ENVIRONMENT
                 | match start {
                     Start::Running => 0,
-                    Start::Suspended => CREATE_SUSPENDED,
+                    Start::Suspended | Start::SocketPublication(_) => CREATE_SUSPENDED,
                 }
                 | if attributes.is_some() {
                     EXTENDED_STARTUPINFO_PRESENT
@@ -507,21 +669,41 @@ impl Spawn<'_> {
             let mut output = PROCESS_INFORMATION::default();
             // SAFETY: all strings are terminated; the command buffer is mutable;
             // metadata, handle array and private resources stay live for this call.
-            if unsafe {
-                CreateProcessW(
-                    executable.as_ptr(),
-                    command.as_mut_ptr(),
-                    ptr::null(),
-                    ptr::null(),
-                    i32::from(!handles.is_empty()),
-                    flags,
-                    environment.as_ptr().cast(),
-                    directory.as_ptr(),
-                    &startup.StartupInfo,
-                    &mut output,
-                )
-            } == 0
-            {
+            let status = unsafe {
+                if let Some(token) = token {
+                    CreateProcessAsUserW(
+                        token.raw(),
+                        executable.as_ptr(),
+                        command.as_mut_ptr(),
+                        process_attributes
+                            .as_mut()
+                            .map_or(ptr::null(), |attributes| {
+                                attributes.as_mut_ptr().cast_const().cast()
+                            }),
+                        ptr::null(),
+                        i32::from(!handles.is_empty()),
+                        flags,
+                        environment.as_ptr().cast(),
+                        directory.as_ptr(),
+                        &startup.StartupInfo,
+                        &mut output,
+                    )
+                } else {
+                    CreateProcessW(
+                        executable.as_ptr(),
+                        command.as_mut_ptr(),
+                        ptr::null(),
+                        ptr::null(),
+                        i32::from(!handles.is_empty()),
+                        flags,
+                        environment.as_ptr().cast(),
+                        directory.as_ptr(),
+                        &startup.StartupInfo,
+                        &mut output,
+                    )
+                }
+            };
+            if status == 0 {
                 return Err(io::Error::last_os_error());
             }
             // SAFETY: successful CreateProcessW transfers two independent handles.

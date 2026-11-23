@@ -1,6 +1,7 @@
 //! Explicit source, bounded resource and actual local observation types.
 use gnunet_client_host::EndpointSource;
 use gnunet_types::Error as Protocol;
+use gnunet_wire::official::communicator::DEFAULT_PEER_IDLE_TIMEOUT;
 use std::{cell::Cell, fmt, net::SocketAddr, time::Duration};
 /// Stable caller-owned allocation domains. No task, global state or native IO.
 #[derive(Default)]
@@ -111,7 +112,7 @@ impl Default for Limits {
             io_slice: 65535,
             startup: Duration::from_secs(30),
             operation: Duration::from_secs(30),
-            idle: Duration::from_secs(300),
+            idle: DEFAULT_PEER_IDLE_TIMEOUT,
             lifetime: Duration::from_secs(86400),
             close_grace: Duration::from_secs(3),
             identity_profile: gnunet_pils::Profile::Reference029,
@@ -361,8 +362,8 @@ pub enum Event<'id> {
         /// Actual old physical IPC source retirement, without replay.
         facts: TransportLoss,
     },
-    /// One original connection driver retired at its original bound.
-    IdentityDriverRetired {
+    /// One original connection driver completed or was canceled at its fixed bound.
+    DriverRetired {
         /// Original process endpoint epoch.
         epoch: Epoch<'id>,
         /// Original row/queue whose driver was canceled or completed.

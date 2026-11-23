@@ -86,6 +86,7 @@ impl<'id> Client<'id> {
         }
         self.written = true;
         self.first_written = true;
+        self.restoration_send_until = None;
         self.alarm = None;
         self.alarm_at = None;
         if self.grace.is_some() {

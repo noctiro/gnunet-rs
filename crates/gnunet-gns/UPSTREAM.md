@@ -1,7 +1,5 @@
 # GNS reference sources
 
-Primary documents consulted for this implementation:
-
 ## Reference behavior
 
 - [RFC9498](https://www.rfc-editor.org/rfc/rfc9498.html), especially §§5,7,8.
@@ -24,10 +22,7 @@ Deliberate choices relative to that C source:
 | NICK | Apply supplemental query-type gating on the final set; publication remains outside the resolver. |
 | Shadow expiry | Existing Rust crypto applies same-type suppression and checks singleton shadow expiry correctly; the C loop misses the singleton expired shadow case. Expiry equal to remains valid in the existing crypto profile. |
 | Work/lifecycle | Checked counters, branded effects, authority budget and total work are Rust ownership policy. No C scheduler, callback order, wrapping counters or heap layout is copied. |
-| Cache strategy | Cache-first and optional store are implemented. Proactive near-expiry refresh is omitted as an internal performance strategy; optional cache insertion cannot consume an already valid final lookup. |
+| Cache strategy | Authenticated near-expiry cache hits can trigger an independent, bounded DHT refresh. The original lookup returns from cache. See the [host refresh contract](../../adapters/gns-service-std/API.md#background-cache-refresh). |
 
-Concrete DNS recursion, cache storage, revocation storage, default-system
-resolution and remote-storage transport are dependency adapters. This implementation
-does not certify their implementations or borrow unrelated C-process evidence.
-Its own new tests run no sockets and no C processes. Source/test hashes and
-44-item status mapping are recorded in the enclosing candidate report.
+DNS recursion, cache and revocation storage, system resolution and DHT transport
+are supplied by the [host adapters](../../adapters/gns-service-std/API.md).

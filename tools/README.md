@@ -14,6 +14,15 @@ delegates toolchain selection to `rustup`. Python tools own C reference builds,
 cross-language orchestration, corpora and evidence processing; they use the real
 Rust workspace rather than duplicate its Cargo configuration.
 
+## Dependency updates
+
+Run `cargo update` from the repository root. Also run it with `--manifest-path`
+for the independent workspaces under `tests/embedded/noalloc`,
+`tests/features/fs-extraction` and `tools/wdk-bindgen`.
+[Cargo configuration](../.cargo/config.toml) sets a three-day minimum publish
+age for newly resolved registry versions. Existing lockfile entries remain
+eligible, and CI uses `--locked` to build the reviewed versions.
+
 ## Official reference software
 
 [Reference programs](reference/README.md) document isolated official C builds and

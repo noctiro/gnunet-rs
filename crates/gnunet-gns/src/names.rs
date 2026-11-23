@@ -24,6 +24,15 @@ pub fn validate_name(name: &str) -> Result<(), Error> {
     }
     Ok(())
 }
+
+pub(crate) fn split_authority(name: &str) -> (&str, &str) {
+    match name.rsplit_once('.') {
+        Some((_, last)) if last.starts_with('_') => (name, "@"),
+        Some((rest, last)) => (rest, last),
+        None if name.starts_with('_') => (name, "@"),
+        None => ("", if name.is_empty() { "@" } else { name }),
+    }
+}
 /// RFC9498§7.1 zTLD-first, then longest exact label-boundary local suffix.
 /// Inputs are canonical NFC names; allocation-backed Resolver::lookup_name
 /// performs normalization when accepting unnormalized application strings.

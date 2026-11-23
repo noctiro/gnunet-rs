@@ -250,13 +250,10 @@ impl<'id> Server<'id> {
         }
         let allowed = match address {
             PeerAddress::Tcp(p) => self.ports.options.access.allows(p.ip()),
-            PeerAddress::Unix => match self.ports.unix.allows(&connection) {
-                Ok(allowed) => allowed,
-                Err(e) => {
-                    drop(connection);
-                    return Err(e.into());
-                }
-            },
+            PeerAddress::Unix => self
+                .ports
+                .unix
+                .admits(&connection, |event| observe(Event::Socket(event))),
         };
         if !allowed || self.stopping.is_some() {
             drop(connection);

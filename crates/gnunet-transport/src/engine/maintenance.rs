@@ -1,26 +1,6 @@
 //! Bounded physical communicator progress while domain output remains blocked.
 use super::*;
 
-// Reliable forbids another reliable/fragment envelope inside it. Inspect its
-// one legal wrapper without copying a body or changing codec error ownership.
-fn requires_dv_source(bytes: &[u8]) -> bool {
-    let Ok(frame) = Frame::decode(bytes) else {
-        return false;
-    };
-    match frame.header().message_type().value() {
-        crate::dv::LEARN_TYPE | crate::dv::BOX_TYPE => true,
-        1216 => p2p::Reliable::decode(bytes).is_ok_and(|boxed| {
-            Frame::decode(boxed.message).is_ok_and(|inner| {
-                matches!(
-                    inner.header().message_type().value(),
-                    crate::dv::LEARN_TYPE | crate::dv::BOX_TYPE
-                )
-            })
-        }),
-        _ => false,
-    }
-}
-
 impl Engine {
     /// Process only an already registered physical communicator's maintenance
     /// input, without pumping transmission Jobs. `None` leaves the complete
@@ -50,7 +30,7 @@ impl Engine {
         let request = communicator::Request::decode(bytes)?;
         if let communicator::Request::Incoming { message, .. } = request
             && self.dv_source_active()
-            && requires_dv_source(message)
+            && p2p::DvFrame::classify(message).is_some()
         {
             // Raw DV requires the original explicit source and both captured
             // targets. Never downgrade it to the legacy scheduling-only path.
@@ -70,7 +50,7 @@ impl Engine {
         .map(Some)
     }
 
-    /// Same maintenance path for one actual raw DV envelope. Its original
+    /// Same maintenance path for an actual envelope that can reach DV. Its original
     /// Source, mono/canonical targets and physical FC debt survive all staging.
     pub fn receive_dv_maintenance_at(
         &mut self,

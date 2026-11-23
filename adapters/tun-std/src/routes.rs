@@ -61,6 +61,8 @@ pub(crate) fn table(_info: &Info) -> io::Result<Option<u32>> {
 }
 pub(crate) mod query;
 pub use query::RouteQuery;
+#[cfg(target_os = "freebsd")]
+pub(crate) use query::query_vacant;
 // Routing sockets broadcast same-process replies; use a non-recycling process
 // sequence even across multiple TUN owners. This is an OS protocol field only.
 static NEXT_SEQUENCE: AtomicU32 = AtomicU32::new(0);
@@ -441,7 +443,7 @@ fn put32(b: &mut [u8], at: usize, n: u32) {
 fn put16(b: &mut [u8], at: usize, n: u16) {
     b[at..at + 2].copy_from_slice(&n.to_ne_bytes())
 }
-fn network(address: std::net::IpAddr, prefix: u8) -> io::Result<(Vec<u8>, Vec<u8>)> {
+pub(crate) fn network(address: std::net::IpAddr, prefix: u8) -> io::Result<(Vec<u8>, Vec<u8>)> {
     let raw = match address {
         std::net::IpAddr::V4(a) => a.octets().to_vec(),
         std::net::IpAddr::V6(a) => a.octets().to_vec(),

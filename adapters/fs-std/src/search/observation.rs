@@ -158,7 +158,9 @@ where
     }
     /// Rebuild historical results and update queries before any live driving.
     /// Every record is rebound to the actual fresh query and authenticated through
-    /// the same decoder/aggregator. Child construction opens no network socket.
+    /// the same decoder/aggregator. An admitted observation warms only its
+    /// original query's bounded whole-block seen list. Child construction
+    /// opens no network socket.
     /// Historical expiration is checked at the original observation, not now;
     /// equality is valid exactly as in the native `< observed` expiry filter.
     pub fn replay(&mut self, observation: Observation<'_>) -> Result<Step, Error> {
@@ -219,6 +221,16 @@ where
             // semantics for a valid artifact with an unusable continuation.
             Err(cause) => Step::Rejected { query: id, cause },
         };
+        if matches!(
+            &accepted,
+            Step::Pending { .. } | Step::Result { .. } | Step::Update { .. } | Step::Ignored
+        ) {
+            // Replay runs before the first native drive. Aggregation can append
+            // child queries but leaves this original client unconnected.
+            self.queries[id.0]
+                .client
+                .remember_search_history(observation.wire)?;
+        }
         self.last_replayed = Some(observation.observed_at);
         // Replay does not replace the live scope's source-clock observation or
         // native target; its historical sample remains a separate lower bound.

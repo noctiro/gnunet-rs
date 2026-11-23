@@ -1,0 +1,10 @@
+{
+  "name": "gnunet_node",
+  "version": "@GNUNET_SDK_VERSION@",
+  "description": "GNUnet node for OpenHarmony Stage applications",
+  "main": "Index.ets",
+  "license": "MPL-2.0",
+  "dependencies": {
+    "libgnunet_node.so": "file:./src/main/cpp/types/libgnunet_node"
+  }
+}

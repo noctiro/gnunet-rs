@@ -111,10 +111,8 @@ fn durable_reservations_survive_rollback_burn_unknown_and_refuse_foreign_peer()
     assert_eq!(store.high_water()?, None);
     assert!(Store::open(path.clone(), local).is_err());
     let mut reserved = store.reserve(100, 4)?;
-    #[cfg(unix)]
-    assert_eq!(reserved.directory_sync(), DirectorySync::Synchronized);
-    #[cfg(windows)]
-    assert_eq!(reserved.directory_sync(), DirectorySync::Unavailable);
+    let barrier = gnunet_native::filesystem::Directory::open(&dir.0)?.sync()?;
+    assert_eq!(reserved.directory_sync(), barrier);
     assert_eq!(reserved.local(), local);
     assert_eq!(reserved.remaining(), 4);
     assert_eq!(reserved.take_next()?, 100);

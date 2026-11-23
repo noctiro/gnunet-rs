@@ -93,11 +93,18 @@ struct Reply {
     evidence: RouteQueryEvidence,
     errno: Option<i32>,
 }
+#[derive(Clone, Copy)]
+enum Scope {
+    Live,
+    #[cfg(target_os = "freebsd")]
+    Vacant,
+}
 /// Exactly one original private read-only route socket/query. No background
 /// worker, mutation, ownership adoption, automatic retry or rollback exists.
 #[must_use]
 pub struct RouteQuery {
     target: RouteQueryTarget,
+    scope: Scope,
     io: Option<AsyncFd<OwnedFd>>,
     frame: Vec<u8>,
     sequence: u32,
@@ -155,13 +162,7 @@ impl RouteQuery {
         mut errno: Option<i32>,
     ) -> RouteQueryProgress {
         let observed_at = Instant::now();
-        let boundary = if !self.target.epoch.current() {
-            Some(RouteQueryProblem::SourceRetired)
-        } else if observed_at >= self.target.deadline {
-            Some(RouteQueryProblem::Deadline)
-        } else {
-            None
-        };
+        let boundary = self.time_boundary(observed_at);
         if let Some(problem) = boundary {
             outcome = RouteQueryOutcome::Unknown(problem);
             evidence = None;
@@ -188,11 +189,16 @@ impl RouteQuery {
         self.finish(RouteQueryOutcome::Unknown(problem), None, None)
     }
     fn boundary(&self) -> Option<RouteQueryProblem> {
-        if !self.target.epoch.current() {
-            return Some(RouteQueryProblem::SourceRetired);
+        if let Some(problem) = self.time_boundary(Instant::now()) {
+            return Some(problem);
         }
-        if Instant::now() >= self.target.deadline {
-            return Some(RouteQueryProblem::Deadline);
+        #[cfg(target_os = "freebsd")]
+        if matches!(self.scope, Scope::Vacant) {
+            return match crate::platform::recovery::index_unoccupied(self.target.interface.index) {
+                Ok(true) => None,
+                Ok(false) => Some(RouteQueryProblem::SourceRetired),
+                Err(error) => Some(RouteQueryProblem::Kernel(error)),
+            };
         }
         match crate::platform::index(&self.target.interface.name) {
             Ok(index) if index == self.target.interface.index => None,
@@ -206,6 +212,16 @@ impl RouteQuery {
                 Some(RouteQueryProblem::SourceRetired)
             }
             Err(e) => Some(RouteQueryProblem::Kernel(e)),
+        }
+    }
+    fn time_boundary(&self, now: Instant) -> Option<RouteQueryProblem> {
+        let expected_live = matches!(self.scope, Scope::Live);
+        if self.target.epoch.current() != expected_live {
+            Some(RouteQueryProblem::SourceRetired)
+        } else if now >= self.target.deadline {
+            Some(RouteQueryProblem::Deadline)
+        } else {
+            None
         }
     }
     /// Cancel only this original read-only query and physically close its socket.
@@ -295,10 +311,7 @@ impl RouteQuery {
     pub async fn drive(&mut self, until: Instant) -> RouteQueryProgress {
         let mut wait = Box::pin(tokio::time::sleep_until(until));
         poll_fn(|cx| {
-            if !self.target.epoch.current()
-                || Instant::now() >= self.target.deadline
-                || self.io.is_none()
-            {
+            if self.time_boundary(Instant::now()).is_some() || self.io.is_none() {
                 return self.poll(cx);
             }
             if wait.as_mut().poll(cx).is_ready() {
@@ -326,7 +339,6 @@ pub(crate) fn query(
     if gateway.is_some_and(|g| g.is_ipv4() != destination.is_ipv4()) {
         return Err(crate::platform::invalid("query gateway family").into());
     }
-    tokio::runtime::Handle::try_current().map_err(|e| io::Error::other(e.to_string()))?;
     let target = RouteQueryTarget {
         table: epoch.route_table(),
         epoch,
@@ -336,6 +348,44 @@ pub(crate) fn query(
         gateway,
         deadline: until,
     };
+    start(target, Scope::Live).map_err(Into::into)
+}
+
+/// Query one old FreeBSD FIB key while the original interface index is vacant.
+#[cfg(target_os = "freebsd")]
+pub(crate) fn query_vacant(
+    epoch: Epoch,
+    info: Info,
+    destination: IpAddr,
+    prefix: u8,
+    until: Instant,
+) -> io::Result<RouteQuery> {
+    network(destination, prefix)?;
+    if Instant::now() >= until {
+        return Err(io::ErrorKind::TimedOut.into());
+    }
+    if epoch.current() || !crate::platform::recovery::index_unoccupied(info.index)? {
+        return Err(io::Error::other(
+            "old FreeBSD route scope is still occupied",
+        ));
+    }
+    start(
+        RouteQueryTarget {
+            table: epoch.route_table(),
+            epoch,
+            interface: info,
+            destination,
+            prefix,
+            gateway: None,
+            deadline: until,
+        },
+        Scope::Vacant,
+    )
+}
+
+fn start(target: RouteQueryTarget, scope: Scope) -> io::Result<RouteQuery> {
+    tokio::runtime::Handle::try_current().map_err(io::Error::other)?;
+    let until = target.deadline;
     let sequence = sequence()?;
     let session = native::prepare(&target, sequence)?;
     #[expect(
@@ -347,6 +397,7 @@ pub(crate) fn query(
     let io = unsafe { AsyncFd::register(session.fd) }.map_err(io::Error::from)?;
     Ok(RouteQuery {
         target,
+        scope,
         io: Some(io),
         frame: session.frame,
         sequence,

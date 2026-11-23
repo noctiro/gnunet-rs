@@ -4,7 +4,11 @@ Allocation-free `no_std` Resolver cache and lookup state machines. Hosts supply
 storage, time, DNS effects and connection lifetimes. The machine-readable
 `api-status.json` records the service criteria.
 
-The modules contain exact byte machine-file parsers; original/search/PTR name handling; hosts and dynamic cache; and a transactional lookup owner using the existing official request4/response5 codec, DNS packet model and DNSSTUB request identities. Results preserve queried-name bucket insertion, exact lookup case versus case-insensitive insertion, reverse section/prepend order, strict UTC expiry,1025-bucket overshoot, Any A→AAAA sequencing, original shared deadline, CNAME fresh lookup/deadline, malformed/wrong-ID ignore, no-upstream30s wait, EOF and immediate/optional soft shutdown. No NSS/DNS replacement or TUN/interception helper is introduced.
+The transactional lookup owner uses the official request4/response5 codec.
+Datagram mode handles machine files, hosts and dynamic cache, search names,
+DNS packet effects, and DNSSTUB identities. Native system mode emits typed
+questions and accepts address or reverse results without a separate cache.
+Both modes retain their original deadline and scoped cancel identities.
 
 ## Caller storage
 
@@ -14,9 +18,9 @@ Create the owner with a nonzero caller epoch. Never reuse an epoch when resettin
 
 `owner.make_scratch(second_buffers)` creates distinct `Scratch<'a>` with the exact same geometry. Scratch has no request/client/effect ports. A business transition validates scope, profile and capacities before copying. It copies logical buffers to scratch, mutates scratch, and swaps only logical storage on success. On error the original owner is unchanged and scratch may be dirty. Caller clocks, entropy draws and conversion scratch are external effects and are not rolled back. There are no socket resources inside these snapshots.
 
-Two equal-capacity copies are required. A third matching Scratch is optional for test/checkpoint comparison, not required by the host. `examples/storage.rs` actually allocates and constructs a profile with clients64, lookups128, hosts1024, dynamic buckets1025, records4096, ordinary effects512 and two8MiB aggregate pools. On this target the owner control is696 bytes; vector reserved bytes are9,879,888 per store /19,759,776 per pair. These figures exclude allocator overhead/RSS and separate native-text/DNS parsing/TX scratch. The example checks connect→shutdown→Stop release. It does not claim that every record can simultaneously occupy65535 bytes; aggregate exhaustion is explicit `Capacity`.
-
-Snapshots currently copy the entire initialized pool and metadata on each transaction. Pool compaction uses safe offset relocation with a bounded O(S²) metadata scan. These are correctness-first costs, not a throughput claim. The full profile does not prepay a381MB per-owner inline record-width product; that superseded implementation is absent from this implementation.
+Transactions use two equal-capacity stores. Each copy includes the initialized
+pool and metadata. Pool compaction uses safe offset relocation with a bounded
+O(S²) metadata scan. Aggregate exhaustion returns `Capacity`.
 
 ## Host execution contract
 
@@ -26,7 +30,17 @@ Snapshots currently copy the entire initialized pool and metadata on each transa
 
 For StartQuery, call the DNSSTUB resolve operation, which copies the packet. Then report the actual `Admission` through `query_admitted` (including its explicit `evicted` token), or an failure through `query_unavailable`; only then release its ticket. If admission cannot be adopted by the core, the caller still owns and must cancel that token. Normal send syscall errors must retain the DNSSTUB request's retry behavior. Deliver results only with the original lookup+stub generations. `stub_evicted` detaches the old association without an early END; the old lookup deadline cannot cancel the replacement slot owner.
 
-Cleanup has lookup-sized reserved cancellation slots, separate from ordinary output capacity. Closing client slots retain a reserved close reason until physical close is acknowledged by local effect release. One `tick` processes one earliest due lookup; after draining effects, call it again at the same time while `next_wakeup` is due. Thus equal deadlines and EOF with multiple tokens make bounded progress even with E2. Cancellation effects precede later query admission. Final Stop supersedes individual cancels because the host must stop/drop the whole DNSSTUB and its sockets.
+For `StartSystemQuery`, adopt the original operation with `system_admitted`
+before releasing its start ticket. A failed start uses `system_unavailable`
+to retire the lookup and its ticket. Submit typed results with
+`system_result` after servicing due deadlines. The core queues address
+or name responses and the final END, preserving the original wire ID.
+
+The lookup-sized reserved cancellation lane has capacity independent of
+ordinary output. One `tick` processes one earliest lookup. Call it again
+after draining effects while the next deadline is due. Cancel effects
+precede later admissions. Final Stop transfers retirement of the entire
+backend to the host.
 
 Direct `cache::Cache` component mutations may be dirty on error. The public Resolver stages these operations. Standalone cache users must provide their own transactional staging. CNAME recursion is replaced by an explicit finite work limit with atomic refusal, and stale C raw RequestSocket aliasing is replaced by generational detachment; these source differences are recorded, never described as silent official success.
 
@@ -41,7 +55,7 @@ service calls belong to the client API.
 
 The workspace integration uses relative workspace dependencies and the default
 `gnunet::resolver_service` export. The verifier writes all targets and diagnostics
-under its fresh output, pins Rust1.99.1, verifies the six-package feature-free
+under its fresh output, pins Rust1.100.0, verifies the six-package feature-free
 production tree, and checks exact45 requirement/source anchors against the
 normalized `official-profile.json`. No removed application module is a current
 dependency.

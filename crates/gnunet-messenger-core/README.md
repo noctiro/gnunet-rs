@@ -5,15 +5,16 @@ the official message codec and Rust cryptography. The wire baseline is GNUnet
 v0.29.1 commit `346358e26d4dcc2dc4f51bef5d52dca29c7d8165`; the shared
 [compatibility policy](../../spec/gnunet/compatibility.md) defines reference scope.
 
-The default feature exports finite public types without allocation. `alloc`
-enables the bounded owner. No C ABI, FFI, hidden scheduler, file/socket I/O or
-implicit entropy exists here. Every admitted payload/draft is an exclusively
-owned zeroizing buffer; Debug redacts messages, work, events and binding hashes. The caller owns a nonzero-sized `Instance`, passed as an exclusive borrow to
-`Core::new(&mut instance, ...)`. The Core and every live handle, provider binding,
-event and work item retain that domain lifetime. Private `Brand` equality checks
-the original reference by pointer identity; equal-valued instances do not alias. Even after a Core drops, a retained live token prevents reusing, moving or dropping
-its original Instance. No global counter, atomics, leaked domain allocation or
-single-core/interrupt assumption is needed. The domain adds no heap allocation.
+With default features, `Core::with_service_buffers` hosts rooms without an
+allocator. `alloc` adds heap-backed service storage and client state, including
+private-message decryption and group keys. Neither mode performs file or socket
+I/O or acquires entropy. Retained payloads and drafts have exclusive, zeroizing
+storage.
+
+The caller lends an exclusive `Instance` to Core. Public handles and provider
+bindings carry that instance's identity and their slot generations. The core
+checks both when accepting a handle; queued events keep their original
+generations after slot reuse.
 
 Owned `HandleObservation`, `BindingObservation` and `EventObservation` snapshots
 preserve terminal diagnostics without retaining live authority. Their local
@@ -25,9 +26,18 @@ select an operation. Runtime owners continue to use the borrowed tokens.
 The selected outgoing predecessor and its epoch come from the same accepted
 vertex. Concurrent frontier branches remain available for MERGE; selecting a
 predecessor from one branch with another branch's key snapshot is invalid.
-An authenticated vertex can complete its causal links while waiting for an
-epoch or key needed to interpret it. Membership, MAC verification and plaintext
+An authenticated vertex updates the graph before semantic processing and can
+complete its causal links while waiting for an epoch or key. Client frontier
+updates require an actual RECENT notification; history and GET correlation do
+not supply that observation. Membership, MAC verification and plaintext
 acceptance retain their separate checks.
+
+Client SYNC retains its original operation until bounded graph work validates
+the returned predecessor, its epoch and the captured frontier obligations.
+The native reply alone is not an authenticated frontier. Generation-aware
+scratch records visited nodes; later unrelated heads retain their own paired
+cursor. Historical key controls use the official epoch-node anchor, and ordinary
+drafts wait for a proven coherent frontier rather than selecting an old branch.
 
 `lease.rs` owns client lease retirement and reopening. `retire_room_lease`
 requires the original whole-written CLOSE and its matching notification.
@@ -37,6 +47,66 @@ jobs without emitting a completion event for an unechoed LEAVE. Unrelated
 pending operations remain a refusal; other sources keep their ownership.
 
 ## State and ownership
+
+`ByteSlot` lends one exclusive working buffer from caller memory.
+`OriginalPool` retains multiple immutable originals under independent record
+and byte limits. Access requires a handle from that pool and generation.
+Removal and pool drop erase the bytes, and compaction preserves live handles.
+
+`Core::with_service_buffers` borrows service history, work and room state.
+The `ROOMS` parameter of `ServiceBuffers` must match `Limits::rooms`;
+the resulting Core owns its room slots and partition directory in place. Pass
+the history pool, frame workspace, `ServiceRoomStorage`, work pool,
+`ServiceTables` and the KEY ancestry workspace to `ServiceBuffers::new`.
+The ancestry workspace uses one `HistoryCell` per configured message slot in
+a single room and is reused across rooms. Initialize new cells with
+`HistoryCell::EMPTY`. The history and work pools start empty and
+use disjoint byte and slot slices. The work pool needs at least one slot and
+`Limits::frame_bytes` bytes; the history workspace needs at least that many
+bytes. A full history pool leaves the work pool's slots available.
+
+Build `ServiceRoomStorage::new` from these disjoint buffers, partitioned by room
+slot index:
+
+- `RoomHistoryStorage` holds the message table, hash index and ready queue.
+  Each slice has `Limits::rooms * Limits::messages_per_room` cells.
+- `RoomTableStorage` holds sources, sessions, epochs, subscriptions, operations
+  and missing-message rows. Each slice has `Limits::rooms` times its associated
+  per-room limit.
+- `RoomQueueStorage` holds the frontier and completion stack (message limit),
+  peer list (source limit), and completion FIFO (session limit). Each slice
+  has `Limits::rooms` times the indicated per-room limit.
+- Size the `EpochAliasCell` slice with `ServiceRoomStorage::epoch_alias_cells`.
+- Divide the `EpochMemberCell` slice evenly among rooms, with at least
+  `Limits::sessions_per_room` cells per room. Each partition holds immutable
+  snapshots. Completion uses one cell per contact retained in each snapshot
+  and refuses an update if it cannot fit in full.
+
+Initialize typed cells with `empty()`. A room's partition is charged to
+`Limits::total_bytes` while that room is admitted and becomes reusable on
+retirement. `receive_borrowed` admits the original into the history pool.
+Queries and archive preparation borrow that original; processing uses the frame
+workspace so other records can change during the same turn.
+
+Give `ServiceTables::new` contact, event and historical signer slices sized to
+`Limits::contacts`, `Limits::events` and `Limits::own_signers`, and an empty,
+independent name pool. Initialize contacts and events with `empty()`. The name
+pool needs one slot per contact and at least `Limits::name_bytes` bytes. A
+failed replacement preserves the previous name; retiring a contact returns its
+slot and bytes. Core charges the three metadata tables to `Limits::total_bytes`
+at construction and adds name bytes only as it retains them.
+
+With `alloc`, `Core::new` can adopt owned input without copying.
+`Core::with_frame_pool` borrows the signed frame pool and its workspace, while
+`Core::with_fixed_history` also borrows the per-room message table, index and
+ready queue. Both use bounded allocations for the remaining room state. See
+[archive recovery](ARCHIVE.md#retained-facts-and-recovery) for the matching
+constructors.
+
+Group keys, confirmations and authenticated nonce history belong to clients.
+Clients reserve group and nonce space at epoch admission so late key completion
+can process pending confirmations. Hosted rooms retain authenticated originals
+without interpreting their key controls.
 
 `Core` retains fixed-capacity, generational rooms, original sources, member
 sessions, contacts, message/tombstone slots, epochs, groups, subscriptions,
@@ -48,6 +118,11 @@ phase. Capacity refusal is explicit; no successful eviction or disk durability i
 invented. `forget_room` requires all room leases retired through their original
 physical stop or completed CLOSE and terminal work, erases owned sensitive state
 and recovers its exact charge. A logical room close need not stop a shared MQ.
+
+Client mode requires at least three operation slots per room. Ordinary work
+leaves separate capacity for one required dependency GET and one SYNC, so a
+held control or user operation cannot consume the work needed to resolve it.
+Optional history GETs remain ordinary work. Service-mode admission is unchanged.
 
 Source/member/message/epoch/provider results bind an immutable `Binding` to the
 original core, room, physical source generation, operation, member, original
@@ -90,11 +165,18 @@ lineage; history ownership propagates to successors, never to an unrelated
 session merely sharing a key. Closed sessions retain delayed history until the
 iterative ancestry completion. A fresh completed-session rejoin gets a
 new lineage. History uses verified admission sequence bounds instead of copying
-every message map into every session. Deleted messages preserve author/hash,
-parents and epoch while erasing ciphertext/plaintext; ancestor resolution and
+every message map into every session. History walks use one mark per configured
+message slot, supplied as caller memory or allocated once by the workspace.
+Deleted messages preserve author, hash, parents and epoch while erasing
+ciphertext and plaintext. Ancestor resolution and
 session completion still progress through those links. Missing original hashes
 are exposed and fetched through GET; Missing only completes its
 matching Written GET, and logical rows can be explicitly retired.
+
+Required protocol references are distinguished from optional history requests.
+Repeated causes share the original same-source GET and its first deadline;
+absence does not trigger an automatic retry. Stopped-source requirements retire
+without being reassigned to another source generation.
 
 DELETION checks session ownership and rejects epoch-message deletion and
 forever delay. Its bounded delay follows the helper's timestamp+relative
@@ -114,6 +196,13 @@ recipient failure blocks unrelated later public messages. TRANSCRIPT is accepted
 only for the matching own-sent original, same author lineage and intact
 hash linkage. The Messenger crypto module supplies the cryptographic operations.
 
+A causal dependency may continue from a whole-written GET and matching
+Missing to a member-signed REQUEST on the same source and deadline. The
+dependency credit allows this continuation while SYNC is waiting; the signed
+predecessor comes from the member's authenticated history. A proactive Missing
+from the native service enters through a separate signing port and cannot
+complete a GET. REQUEST does not advance the room frontier.
+
 ## Epoch/group state and work
 
 JOIN/LEAVE/MERGE construct immutable membership snapshots; missing epoch
@@ -123,6 +212,14 @@ MAC-checked key holders. Confirmation replacement does not inflate unique counts
 ratchet a future key; a departing member who knew the old key prevents that
 ratchet. Opaque key derivation uses exact sizeof-NUL EPOCH/GROUP
 salts and epoch64 then identifier32. It exposes no raw key getter/hash.
+
+Late parent keys propagate through a persistent, allocation-free cursor. Each
+work unit checks one table position or sweep boundary, and repeated bounded
+sweeps close multi-generation dependencies. Full-room announcements inherit
+only from their signed first predecessor and never through LEAVE. Subgroups
+rank the original parent candidates before applying key/cohort checks; a
+selected revoked parent cannot cause fallback to another key. Derived keys and
+their revocation ancestry commit together.
 
 key-provider jobs install only original results; ephemeral expiry and
 revision/generation checks reject late/replayed results. ACCESS validates its
@@ -143,14 +240,44 @@ identifier order; an already possessed different key does not create a permanent
 split. Actual SECRET messages needing a key get priority. Native/signature/key
 results and echoed messages must be fed back before further progress. This is
 wire-compatible scheduling using existing official consumers; no extra protocol
-fields or private messages are introduced. Incoming GROUP state is supported;
-APPEAL for group-bit identifiers is rejected as the consumer requires.
+fields or private messages are introduced. A first-level GROUP proposal
+references two distinct members' announcements; both may name the same
+room-wide key. Higher levels require completed, disjoint groups at the
+preceding level. The driver advances an admitted proposal through original
+initiator key generation and ACCESS, participant confirmation, and
+AUTHORIZATION to a previous group when its wrapping key is available. It uses
+the original proposal lifetime. APPEAL applies to room-wide announcements.
 
-The active AUTHORIZATION producer transmits192 bytes but the consumer requires a
-separate AEAD MAC16 which is absent from those bytes. Received AUTHORIZATION
-therefore fails `AuthorizationMacOmitted`; no zero MAC, invented field or Verified
-state is substituted. The direct full-epoch exchange does not claim to repair or
-successfully decode that defective official group-key transfer.
+With automatic group keys enabled, private rooms select parents from current
+authenticated announcements. A rotated ephemeral recipient key gets a new
+signed announcement for the same group key. Local refresh can proceed while
+remote announcements expire. An announcement's signing and send deadline stays
+within its signed recipient lifetime. The one-hour signed proposal has its own
+deadline.
+Native signing and sending also honor both parent announcements' deadlines.
+The original local echo caps the next automatic retry wait at one minute.
+Expired proposals release their group slots after pending key work settles if
+they have no retained announcement or shared key. A locally generated key can
+be discarded when every original use retires before writing bytes. Any
+positive native write, exported key record or authenticated proof of external
+possession retains the key. The room keeps the accepted identifier and its
+original graph binding through message deletion. A later GROUP cannot reuse
+that binding, and key transfer requires a live proposal.
+
+Elapsed GROUP proposals and revoked cohorts release active admission capacity.
+Retained keys and announcements keep their original slot and membership
+provenance. History grows on demand within the message allowance and the
+overall byte budget. A NAMESTORE lookup takes a group slot only after its
+record authenticates. A revoked record enters historical storage directly.
+
+AUTHORIZATION recovery authenticates the original192-byte body using its
+wrapping-group key and carried HMAC. The core first checks the original source,
+completed membership epoch, live referenced announcement/proposal, group
+identifier order and next-level relationship. A referenced announcement's HMAC
+must also match the recovered key. Only then can the target key be installed;
+a conflicting possessed key remains a conflict. `prepare_authorization` binds
+the same group/event relation to actual possessed keys before queuing signing.
+The selected C receiver's omitted-tag defect remains outside Rust's receive path.
 
 `seal_epoch_record` produces the encrypted official record from an admitted
 opaque key. `complete_epoch_record` checks the original room/epoch/identifier,
@@ -169,6 +296,18 @@ original result again. The native owner decodes an Encoding::Ipc work frame
 and submits its original Request; Encoding::PeerMessage is an official raw signed
 peer frame for the peer transport. Deadline expiry requires physical
 source stop. Queued SEND never counts as delivery or successful membership.
+
+With caller-owned service buffers, use `take_work_into(room, &slot)` for general
+work or `take_service_signing_work_into(room, &slot)` for signing drafts. A busy
+or short `ByteSlot` leaves the job prepared. Dropping the returned byte owner
+erases the slot and makes it reusable. Sign the original draft, then submit
+the result with `complete_signature_from(binding, frame.expose(), padding, now)`.
+If the work pool cannot accept the signed result, keep the same frame and retry
+while the binding is live; the job stays taken. For a local service signer,
+`service_commit_signature(binding, now)` moves the prepared frame into history.
+If history is full, the job stays prepared with the original frame and charge.
+Retry the commit with the same binding before its deadline. See the
+[fixed-buffer signing example](tests/fixed_work.rs).
 
 The official high-level close sequence is signed LEAVE whole-write, then a
 separate CLOSE; an outer owner composes `prepare_leave`, its Written fact,

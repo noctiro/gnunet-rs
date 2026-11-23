@@ -1,35 +1,152 @@
 //! Actual bounded semantic application, member lineage and timer progression.
-use crate::{engine::Core, graph::*, state::*, *};
+use crate::{
+    archive::{CommittedRoomHistory, DetachedDeleteTarget, DetachedDeletion},
+    engine::Core,
+    graph::*,
+    state::*,
+    *,
+};
+use core::num::NonZeroU64;
 use gnunet_crypto::hash512;
 use gnunet_types::Error as Fault;
-use wire::{
-    body::Body,
-    envelope::Kind,
-    message::{Message, Short},
-    padding,
-};
-impl<'id> Core<'id> {
+use wire::{body::Body, envelope::Kind, message::Message};
+#[cfg(feature = "alloc")]
+use {crate::recipient::MemberRecipient, wire::padding};
+
+mod routing;
+
+#[derive(Default)]
+struct AdvanceHistory<'turn, 'archive, 'index> {
+    view: Option<&'turn CommittedRoomHistory<'archive, 'index>>,
+    deletion: Option<&'turn mut Option<DetachedDeletion>>,
+}
+
+impl<'id, const ROOMS: usize> Core<'id, ROOMS> {
+    /// Whether admitted vertices are queued for another bounded room turn.
+    ///
+    /// # Errors
+    /// Rejects a stale or foreign room.
+    pub fn has_ready_room_work(&self, room: Room<'id>) -> Result<bool, Error> {
+        Ok(!self.rooms.get(self.check_room(room)?)?.ready.is_empty())
+    }
+
     /// Perform a finite number of admitted transitions. A missing parent/signer/
     /// key remains deferred and is woken only by relevant actual input. Native
     /// writes, entropy and signatures remain original caller-port work.
     pub fn advance(&mut self, room: Room<'id>, now: u64) -> Result<usize, Error> {
+        self.advance_room(room, now, AdvanceHistory::default())
+    }
+
+    /// Advance SERVICE using parent facts from the native owner's pinned room
+    /// history when an authenticated predecessor is absent from working state.
+    /// The owner must retain the selected root for the duration of this call.
+    ///
+    /// # Errors
+    /// Refuses client mode, a foreign room history or a history whose acceptance
+    /// cursor is newer than the working room. Other errors match [`Self::advance`].
+    pub fn advance_with_committed_history(
+        &mut self,
+        room: Room<'id>,
+        now: u64,
+        history: CommittedRoomHistory<'_, '_>,
+    ) -> Result<usize, Error> {
+        if self.mode != Mode::Service {
+            return Err(Error::Permission);
+        }
+        self.advance_room(
+            room,
+            now,
+            AdvanceHistory {
+                view: Some(&history),
+                deletion: None,
+            },
+        )
+    }
+
+    /// Advance SERVICE against an exact committed directory, handing the owner
+    /// at most one detached DELETE to prepare. The operation stops after that
+    /// DELETE; further work must use the directory selected by its publication.
+    ///
+    /// # Errors
+    /// Refuses client mode, a filled output slot and foreign or future history.
+    /// If an error is returned after the slot is filled, the entire update must
+    /// be discarded. A successful update commits the working checkpoint and
+    /// the page replacement under one root before exposing either transition.
+    pub fn advance_with_detached_deletion(
+        &mut self,
+        room: Room<'id>,
+        now: u64,
+        history: CommittedRoomHistory<'_, '_>,
+        deletion: &mut Option<DetachedDeletion>,
+    ) -> Result<usize, Error> {
+        if self.mode != Mode::Service {
+            return Err(Error::Permission);
+        }
+        if deletion.is_some() {
+            return Err(Fault::WouldBlock.into());
+        }
+        self.advance_room(
+            room,
+            now,
+            AdvanceHistory {
+                view: Some(&history),
+                deletion: Some(deletion),
+            },
+        )
+    }
+
+    fn advance_room(
+        &mut self,
+        room: Room<'id>,
+        now: u64,
+        mut archive: AdvanceHistory<'_, '_, '_>,
+    ) -> Result<usize, Error> {
         let r = self.check_room(room)?;
+        let history = archive.view;
+        if let Some(history) = history {
+            history.check_working_room(self.rooms.get(r)?, r, self.local_peer)?;
+        }
+        #[cfg(feature = "alloc")]
+        self.expire_epochs(r, now)?;
         self.refresh_epochs(r)?;
         let mut steps = 0;
         for _ in 0..self.limits.work_per_turn {
             self.reserve_events(6)?;
-            let next = self.rooms.get_mut(r)?.ready.pop_front();
+            #[cfg(feature = "alloc")]
+            let prove = {
+                let row = self.rooms.get_mut(r)?;
+                row.frontier_validation_turn = !row.frontier_validation_turn;
+                row.frontier_validation_turn || row.ready.is_empty() && !row.derivation.pending()
+            };
+            #[cfg(feature = "alloc")]
+            if prove && self.advance_frontier_sync(r, now)? {
+                steps += 1;
+                continue;
+            }
+            #[cfg(feature = "alloc")]
+            let derive = {
+                let row = self.rooms.get_mut(r)?;
+                row.derivation.scheduled(row.ready.is_empty())
+            };
+            #[cfg(feature = "alloc")]
+            if derive && self.derive_epoch_step(r)? {
+                steps += 1;
+                continue;
+            }
+            let next = self.rooms.get_mut(r)?.take_ready()?;
             let Some(slot) = next else {
                 break;
             };
-            self.rooms.get_mut(r)?.nodes.get_mut(slot)?.queued = false;
-            if matches!(
-                self.rooms.get(r)?.nodes.get(slot)?.origin,
-                MessageOrigin::Archived(_)
-            ) {
+            let node = self.rooms.get(r)?.nodes.get(slot)?;
+            if node.original_is_archived() {
+                // Only settled bodies can leave resident storage, and they
+                // cannot reenter the semantic work queue.
+                return Err(Fault::Conflict.into());
+            }
+            if node.origin.is_archived() {
                 // A restored graph can become complete after real parents arrive,
                 // but no old semantic handler may mint current membership/keys.
-                let complete = self.rooms.get(r)?.graph_complete(slot)?;
+                let complete = self.rooms.get(r)?.graph_complete(slot, history)?;
                 let node = self.rooms.get_mut(r)?.nodes.get_mut(slot)?;
                 let changed = node.complete != complete;
                 node.complete = complete;
@@ -43,7 +160,7 @@ impl<'id> Core<'id> {
                 continue;
             }
             if self.rooms.get(r)?.nodes.get(slot)?.phase == MessagePhase::Rejected {
-                let complete = self.rooms.get(r)?.graph_complete(slot)?;
+                let complete = self.rooms.get(r)?.graph_complete(slot, history)?;
                 let n = self.rooms.get_mut(r)?.nodes.get_mut(slot)?;
                 let changed = complete && !n.complete;
                 n.complete = complete;
@@ -53,18 +170,13 @@ impl<'id> Core<'id> {
                 }
                 continue;
             }
-            let (frame, plain, pad, plain_pad) = {
-                let node = self.rooms.get_mut(r)?.nodes.get_mut(slot)?;
-                (
-                    node.frame.take(),
-                    node.plaintext.take(),
-                    node.padding,
-                    node.plain_padding,
-                )
-            };
+            let node = self.rooms.get_mut(r)?.nodes.get_mut(slot)?;
+            let frame = node.frame.take();
+            #[cfg(feature = "alloc")]
+            let plain = node.plaintext.take();
             let Some(frame) = frame else {
                 if self.rooms.get(r)?.nodes.get(slot)?.auth.is_some() {
-                    let complete = self.rooms.get(r)?.graph_complete(slot)?;
+                    let complete = self.rooms.get(r)?.graph_complete(slot, history)?;
                     let n = self.rooms.get_mut(r)?.nodes.get_mut(slot)?;
                     let changed = complete && !n.complete;
                     n.complete = complete;
@@ -75,32 +187,53 @@ impl<'id> Core<'id> {
                 }
                 continue;
             };
+            let working = match self.frames.checkout(frame) {
+                Ok(working) => working,
+                Err((error, frame)) => {
+                    let row = self.rooms.get_mut(r)?;
+                    let node = row.nodes.get_mut(slot)?;
+                    node.frame = Some(frame);
+                    #[cfg(feature = "alloc")]
+                    {
+                        node.plaintext = plain;
+                    }
+                    row.queue_node(slot)?;
+                    return Err(error);
+                }
+            };
             let result = (|| {
-                let layout = self.rooms.get(r)?.nodes.get(slot)?.layout;
-                let message = Message::decode_with_profiles(
-                    frame.expose(),
-                    layout.body_profile(self.rooms.get(r)?.nodes.get(slot)?.kind)?,
-                    layout.padding,
-                    pad,
-                )?;
+                let node = self.rooms.get(r)?.nodes.get(slot)?;
+                let message = node.decode_original(working.bytes())?;
                 self.apply_one(
                     r,
                     slot,
                     message,
-                    plain.as_ref().map(OwnedBytes::expose),
-                    plain_pad,
+                    #[cfg(feature = "alloc")]
+                    plain.as_ref(),
                     now,
+                    &mut archive,
                 )
             })();
             // Restore the exact original owners before handling every result.
             // No internal callback can substitute another frame or key owner.
+            let frame = self.frames.checkin(working)?;
             let deleted = self.rooms.get(r)?.nodes.get(slot)?.phase == MessagePhase::Deleted;
             if deleted {
-                self.release(frame.capacity() + plain.as_ref().map_or(0, OwnedBytes::capacity))?;
+                let amount = frame.capacity();
+                #[cfg(feature = "alloc")]
+                let amount = amount + plain.as_ref().map_or(0, Plaintext::capacity);
+                self.frames.remove(frame)?;
+                self.release(amount)?;
             } else {
                 let n = self.rooms.get_mut(r)?.nodes.get_mut(slot)?;
                 n.frame = Some(frame);
-                n.plaintext = plain;
+                #[cfg(feature = "alloc")]
+                {
+                    n.plaintext = plain;
+                }
+            }
+            if archive.deletion.as_ref().is_some_and(|edit| edit.is_some()) {
+                return result.map(|()| steps + 1);
             }
             match result {
                 Ok(()) => {}
@@ -110,7 +243,8 @@ impl<'id> Core<'id> {
                     // Its successors must not wait for an earlier epoch-key
                     // control that can itself depend on those successors.
                     let authenticated = self.rooms.get(r)?.nodes.get(slot)?.auth.is_some();
-                    let complete = authenticated && self.rooms.get(r)?.graph_complete(slot)?;
+                    let complete =
+                        authenticated && self.rooms.get(r)?.graph_complete(slot, history)?;
                     let n = self.rooms.get_mut(r)?.nodes.get_mut(slot)?;
                     let changed = complete && !n.complete;
                     n.complete = complete;
@@ -132,6 +266,9 @@ impl<'id> Core<'id> {
                 }
                 Err(e @ Error::Protocol(Fault::Capacity | Fault::WouldBlock)) => {
                     self.rooms.get_mut(r)?.queue_node(slot)?;
+                    // An elapsed deletion can release exactly the confirmation
+                    // or payload that this original input is waiting for.
+                    self.run_timers(r, now)?;
                     return Err(e);
                 }
                 Err(error) => {
@@ -139,15 +276,14 @@ impl<'id> Core<'id> {
                     n.phase = MessagePhase::Rejected;
                     let hash = n.hash;
                     // A denied key/control transition cannot poison an actually
-                    // authenticated outer DAG vertex. AUTH's omitted MAC grants
-                    // no key, while later valid C messages can still link to it.
-                    let complete = self.rooms.get(r)?.graph_complete(slot)?;
+                    // authenticated outer DAG vertex. A failed body MAC grants
+                    // no key, while later valid messages can still link to it.
+                    let complete = self.rooms.get(r)?.graph_complete(slot, history)?;
                     let n = self.rooms.get_mut(r)?.nodes.get_mut(slot)?;
                     let changed = complete && !n.complete;
                     n.complete = complete;
                     if !n.frontier_applied {
-                        self.rooms.get_mut(r)?.update_frontier(slot)?;
-                        self.rooms.get_mut(r)?.nodes.get_mut(slot)?.frontier_applied = true;
+                        self.rooms.get_mut(r)?.update_frontier(slot, self.mode)?;
                     }
                     if changed {
                         self.rooms.get_mut(r)?.queue_dependants(&hash)?;
@@ -160,15 +296,13 @@ impl<'id> Core<'id> {
         // Completion is iterative, bounded and preserves the original session
         // generation while missing history is requested through its own source.
         for _ in steps..self.limits.work_per_turn {
-            let completed = self.rooms.get_mut(r)?.completion_step()?;
+            let completed = self.rooms.get_mut(r)?.completion_step(history)?;
             if let Some(s) = completed {
                 self.event(Event::MemberChanged(
                     self.member_id(r, s),
                     SessionPhase::Completed,
                 ))?;
-            } else if self.rooms.get(r)?.completion_session.is_none()
-                && self.rooms.get(r)?.completion_queue.is_empty()
-            {
+            } else if !self.rooms.get(r)?.has_completion_work() {
                 break;
             }
         }
@@ -180,16 +314,22 @@ impl<'id> Core<'id> {
         r: Slot,
         slot: Slot,
         message: Message<'_>,
-        plain: Option<&[u8]>,
-        plain_pad: padding::Decode,
+        #[cfg(feature = "alloc")] plain: Option<&Plaintext>,
         now: u64,
+        archive: &mut AdvanceHistory<'_, '_, '_>,
     ) -> Result<(), Error> {
-        let (source, meta, was_applied) = {
+        let history = archive.view;
+        let (source, meta, hash, was_applied) = {
             let n = self.rooms.get(r)?.nodes.get(slot)?;
-            (n.origin.require_live()?, n.meta, n.semantic_applied)
+            (
+                n.origin.require_live(self.instance)?,
+                n.meta,
+                n.hash,
+                n.semantic_applied,
+            )
         };
         if self.rooms.get(r)?.nodes.get(slot)?.auth.is_none() {
-            let Some(auth) = self.authenticate(source, message, meta)? else {
+            let Some(auth) = self.authenticate(source, message, &hash, meta)? else {
                 self.rooms.get_mut(r)?.nodes.get_mut(slot)?.phase = MessagePhase::AwaitingSender;
                 return Err(Fault::NotReady.into());
             };
@@ -207,49 +347,45 @@ impl<'id> Core<'id> {
             node.auth = Some(auth);
             node.resume_pending = historical;
         }
-        if self.rooms.get(r)?.nodes.get(slot)?.sequence == 0 {
+        if self.mode == Mode::Service {
+            self.register_service_ingress(r, slot, history)?;
+        } else if self.rooms.get(r)?.nodes.get(slot)?.sequence == 0 {
             let room = self.rooms.get_mut(r)?;
             room.sequence = room.sequence.checked_add(1).ok_or(Fault::Overflow)?;
             room.nodes.get_mut(slot)?.sequence = room.sequence;
         }
-        if self.mode == Mode::Service {
-            self.service_index_epoch(r, slot, message)?;
+        #[cfg(feature = "alloc")]
+        self.wake_frontier_sync(r)?;
+        // The authenticated outer DAG is independent of routing, epoch and
+        // decryption prerequisites for the body.
+        if !self.rooms.get(r)?.nodes.get(slot)?.frontier_applied {
+            self.rooms.get_mut(r)?.update_frontier(slot, self.mode)?;
         }
-        self.resolve_missing(r, &crypto::signature::message_hash(message))?;
+        self.resolve_missing(r, &hash)?;
         let (parents, origin) = {
             let n = self.rooms.get(r)?.nodes.get(slot)?;
-            (n.parents, n.origin.require_live()?)
+            (n.parents, n.origin.require_live(self.instance)?)
         };
         for p in parents {
-            self.note_missing(r, p, origin)?;
+            self.note_dependency_in(r, p, origin, history)?;
         }
-        if self.rooms.get(r)?.nodes.get(slot)?.resume_pending && !self.rebind_historical(r, slot)? {
+        if self.rooms.get(r)?.nodes.get(slot)?.resume_pending
+            && !self.rebind_historical(r, slot, history)?
+        {
             return Err(Fault::NotReady.into());
         }
         if !was_applied && !self.rooms.get(r)?.nodes.get(slot)?.semantic_applied {
-            let body = if let Some(bytes) = plain {
-                let layout = self
-                    .rooms
-                    .get(r)?
-                    .nodes
-                    .get(slot)?
-                    .plain_layout
-                    .ok_or(Fault::NotReady)?;
-                Short::decode_with_profiles(bytes, layout.body, layout.padding, plain_pad)?.body()
-            } else {
-                message.body()
-            };
+            let body = message.body();
+            #[cfg(feature = "alloc")]
+            let body = plain.map(Plaintext::body).transpose()?.unwrap_or(body);
+            #[cfg(feature = "alloc")]
             if matches!(message.header().kind, Kind::PRIVATE | Kind::SECRET)
                 && plain.is_none()
-                && self.mode == Mode::Client
+                && self.mode.is_client()
             {
                 // AEAD/inner semantics can wait for a recipient key without
                 // blocking this valid signed outer vertex in the room DAG.
-                if !self.rooms.get(r)?.nodes.get(slot)?.frontier_applied {
-                    self.rooms.get_mut(r)?.update_frontier(slot)?;
-                    self.rooms.get_mut(r)?.nodes.get_mut(slot)?.frontier_applied = true;
-                }
-                let complete = self.rooms.get(r)?.graph_complete(slot)?;
+                let complete = self.rooms.get(r)?.graph_complete(slot, history)?;
                 let n = self.rooms.get_mut(r)?.nodes.get_mut(slot)?;
                 let changed = complete && !n.complete;
                 let phase_changed = n.phase != MessagePhase::AwaitingEpoch;
@@ -284,7 +420,7 @@ impl<'id> Core<'id> {
                         | Kind::AUTHORIZATION
                 ))
             {
-                self.apply_body(r, slot, message, body, now)?;
+                self.apply_body(r, slot, message, body, now, archive)?;
             }
             if session_bound(body.kind())
                 && let Some(s) = self
@@ -304,12 +440,8 @@ impl<'id> Core<'id> {
                 n.semantic_applied = true;
                 n.semantic_kind = body.kind();
             }
-            if !self.rooms.get(r)?.nodes.get(slot)?.frontier_applied {
-                self.rooms.get_mut(r)?.update_frontier(slot)?;
-                self.rooms.get_mut(r)?.nodes.get_mut(slot)?.frontier_applied = true;
-            }
         }
-        let complete = self.rooms.get(r)?.graph_complete(slot)?;
+        let complete = self.rooms.get(r)?.graph_complete(slot, history)?;
         let own_epoch_ready = {
             let row = self.rooms.get(r)?;
             let n = row.nodes.get(slot)?;
@@ -334,7 +466,7 @@ impl<'id> Core<'id> {
             }
             (changed, n.hash)
         };
-        if changed {
+        if changed || !was_applied {
             self.rooms.get_mut(r)?.queue_dependants(&hash)?;
         }
         if !was_applied || changed {
@@ -350,29 +482,38 @@ impl<'id> Core<'id> {
         outer: Message<'_>,
         body: Body<'_>,
         now: u64,
+        archive: &mut AdvanceHistory<'_, '_, '_>,
     ) -> Result<(), Error> {
-        let auth = self
-            .rooms
-            .get(r)?
-            .nodes
-            .get(slot)?
-            .auth
-            .ok_or(Fault::Authentication)?;
-        let hash = self.rooms.get(r)?.nodes.get(slot)?.hash;
+        let history = archive.view;
+        let node = self.rooms.get(r)?.nodes.get(slot)?;
+        let auth = node.auth.ok_or(Fault::Authentication)?;
+        let hash = node.hash;
         match body {
             Body::Join {
                 public_key,
                 hpke_key,
-                ..
-            } => self.apply_join(r, slot, outer, *public_key.as_bytes(), *hpke_key.as_bytes())?,
+                epoch,
+            } => self.apply_join(
+                r,
+                slot,
+                *outer.header().sender_id,
+                *epoch,
+                *public_key.as_bytes(),
+                *hpke_key.as_bytes(),
+            )?,
             Body::Leave { epoch } => {
                 let session = auth.session.ok_or(Fault::Authentication)?;
                 let contact = auth.owner.ok_or(Fault::Authentication)?.contact;
                 let Some(previous) = self.rooms.get(r)?.find_epoch(epoch) else {
-                    self.note_missing(
+                    self.note_dependency(
                         r,
                         *epoch,
-                        self.rooms.get(r)?.nodes.get(slot)?.origin.require_live()?,
+                        self.rooms
+                            .get(r)?
+                            .nodes
+                            .get(slot)?
+                            .origin
+                            .require_live(self.instance)?,
                     )?;
                     return Err(Fault::NotReady.into());
                 };
@@ -380,7 +521,7 @@ impl<'id> Core<'id> {
                 if !previous.complete {
                     return Err(Fault::NotReady.into());
                 }
-                if !previous.members.contains(&contact) {
+                if !self.rooms.get(r)?.epoch_has_member(previous, contact) {
                     return Err(Error::Permission);
                 }
                 self.epoch_message(r, slot, body)?;
@@ -408,27 +549,11 @@ impl<'id> Core<'id> {
             Body::Id { id } => self.switch_session(r, slot, None, Some(*id))?,
             Body::Name { name } => {
                 let contact = auth.owner.ok_or(Fault::Authentication)?.contact;
-                let content = name.content().expose();
-                if content.len() > self.limits.name_bytes {
-                    return Err(Fault::TooLarge.into());
-                }
-                let name = OwnedBytes::copy_from(content)?;
-                let bytes = name.capacity();
-                let old = self
-                    .contacts
-                    .get(contact.slot)?
-                    .name
-                    .as_ref()
-                    .map_or(0, OwnedBytes::capacity);
-                if bytes > self.remaining_bytes().saturating_add(old) {
-                    return Err(Fault::Capacity.into());
-                }
-                self.contacts.get_mut(contact.slot)?.name = Some(name);
-                self.used = self.used - old + bytes;
+                self.replace_contact_name(contact, name.content().expose())?;
                 if let Some(s) = auth.session {
                     self.rooms.get_mut(r)?.sessions.get_mut(s)?.last_bound = hash;
                 }
-                self.event(Event::ContactChanged(contact))?;
+                self.event(Event::ContactChanged(self.contact_id(contact)))?;
             }
             Body::Info { version } => {
                 if version != wire::VERSION {
@@ -439,49 +564,44 @@ impl<'id> Core<'id> {
                 if auth.peer != Some(*peer) {
                     return Err(Error::Permission);
                 }
-                let row = self.rooms.get_mut(r)?;
-                if let Some(p) = row.peers.iter_mut().find(|p| p.peer == *peer) {
-                    p.announced = true;
-                    p.historical_candidate = false;
-                } else {
-                    if row.peers.len() == row.peers.capacity() {
-                        return Err(Fault::Capacity.into());
-                    }
-                    row.peers.push(PeerRow {
-                        peer: *peer,
-                        announced: true,
-                        historical_candidate: false,
-                        connection_amount: 0,
-                        connection_flags: 0,
-                    });
+                if self.mode != Mode::Service || !node.requested {
+                    let sequence = NonZeroU64::new(node.sequence).ok_or(Fault::Conflict)?;
+                    self.rooms
+                        .get_mut(r)?
+                        .queues
+                        .peers
+                        .announce(*peer, PeerAnnouncement { hash, sequence })?;
                 }
             }
             Body::Miss { peer } => {
-                if let Some(p) = self
-                    .rooms
-                    .get_mut(r)?
-                    .peers
-                    .iter_mut()
-                    .find(|p| p.peer == *peer)
-                {
-                    p.announced = false;
-                    p.historical_candidate = false;
+                if self.mode == Mode::Service && node.requested {
+                    return self.recover_peer_withdrawal(r, slot, peer, history);
+                }
+                let remote = self.mode == Mode::Service
+                    && node.origin.is_first_received()
+                    && matches!(node.origin.provenance().role, SourceRole::Peer(origin)
+                        if self.local_peer != Some(origin))
+                    && auth
+                        .peer
+                        .is_some_and(|signer| self.local_peer != Some(signer));
+                let peers = &mut self.rooms.get_mut(r)?.queues.peers;
+                let members_before =
+                    remote.then(|| peers.iter().filter(|p| p.is_announced()).count());
+                peers.remove(peer);
+                if let Some(members_before) = members_before {
+                    self.event(Event::ServicePeerMiss {
+                        room: self.event_room(r),
+                        members_before,
+                    })?;
                 }
             }
             Body::Merge { .. } => self.epoch_message(r, slot, body)?,
-            Body::Request { hash: requested } => {
-                // A real request is retained as such. Delivery is a service port
-                // action and must use history() with this actual sender session.
+            Body::Request { .. } => {
                 if auth.session.is_none() {
                     return Err(Error::Permission);
                 }
-                if self.rooms.get(r)?.find_node(requested).is_none() {
-                    self.note_missing(
-                        r,
-                        *requested,
-                        self.rooms.get(r)?.nodes.get(slot)?.origin.require_live()?,
-                    )?;
-                }
+                // The request authorizes its native owner's bounded history
+                // exchange. It creates neither a graph dependency nor a GET.
             }
             Body::Deletion {
                 hash: target,
@@ -491,40 +611,53 @@ impl<'id> Core<'id> {
                     return Err(Fault::InvalidInput.into());
                 }
                 let session = auth.session.ok_or(Fault::Authentication)?;
-                let Some(target_slot) = self.rooms.get(r)?.find_node(target) else {
-                    self.note_missing(
-                        r,
-                        *target,
-                        self.rooms.get(r)?.nodes.get(slot)?.origin.require_live()?,
-                    )?;
-                    return Err(Fault::NotReady.into());
-                };
                 let room = self.rooms.get(r)?;
-                let target_node = room.nodes.get(target_slot)?;
-                if epoch_kind(target_node.kind) || !owns(room.sessions.get(session)?, target_node) {
-                    return Err(Error::Permission);
-                }
-                let timestamp = self.rooms.get(r)?.nodes.get(slot)?.timestamp;
-                // The actual timeout helper caps remaining delay at60s. Keep
+                let origin = room.nodes.get(slot)?;
+                // The actual timeout helper caps remaining delay at 60s. Keep
                 // that observable policy, using checked absolute arithmetic.
-                let due = timestamp
+                let due = origin
+                    .timestamp
                     .saturating_add(delay.as_micros())
                     .min(now.saturating_add(60_000_000));
-                let n = self.rooms.get_mut(r)?.nodes.get_mut(target_slot)?;
-                n.delete_at = Some(n.delete_at.map_or(due, |old| old.min(due)));
-                n.deleted_by = Some(hash);
+                let session = room.sessions.get(session)?;
+                if let Some(target_slot) = room.find_node(target) {
+                    let target_node = room.nodes.get(target_slot)?;
+                    if epoch_kind(target_node.kind) || !owns(session, target_node) {
+                        return Err(Error::Permission);
+                    }
+                    let n = self.rooms.get_mut(r)?.nodes.get_mut(target_slot)?;
+                    n.delete_at = Some(n.delete_at.map_or(due, |old| old.min(due)));
+                    n.deleted_by = Some(hash);
+                } else {
+                    let target_row = match history {
+                        Some(history) => {
+                            history.plan_detached_deletion(target, session, due, hash, now)?
+                        }
+                        None => DetachedDeleteTarget::Missing,
+                    };
+                    match target_row {
+                        DetachedDeleteTarget::Missing => {
+                            let source = origin.origin.require_live(self.instance)?;
+                            self.note_dependency(r, *target, source)?;
+                            return Err(Fault::NotReady.into());
+                        }
+                        DetachedDeleteTarget::Deleted => (),
+                        DetachedDeleteTarget::Mutation(mutation) => {
+                            *archive.deletion.as_deref_mut().ok_or(Fault::WouldBlock)? =
+                                Some(mutation);
+                        }
+                    }
+                }
             }
             Body::Connection { amount, flags } => {
                 let peer = auth.peer.ok_or(Fault::Authentication)?;
-                let p = self
-                    .rooms
-                    .get_mut(r)?
-                    .peers
-                    .iter_mut()
-                    .find(|p| p.peer == peer)
-                    .ok_or(Fault::NotReady)?;
-                p.connection_amount = amount;
-                p.connection_flags = flags;
+                if self.mode != Mode::Service || !node.requested {
+                    self.rooms
+                        .get_mut(r)?
+                        .queues
+                        .peers
+                        .record_connection(&peer, ServiceConnection { amount, flags });
+                }
             }
             Body::Subscription {
                 discourse,
@@ -537,11 +670,15 @@ impl<'id> Core<'id> {
                     if timestamp < self.rooms.get(r)?.discourse_cutoff(discourse) {
                         // The original frame is currently borrowed by advance;
                         // mark deletion and let its owner erase it on restoration.
-                        let erased = self.rooms.get_mut(r)?.erase_message(slot, None)?;
+                        let erased =
+                            self.rooms
+                                .get_mut(r)?
+                                .erase_message(&mut self.frames, slot, None)?;
                         self.release(erased)?;
                     }
                 }
             }
+            #[cfg(feature = "alloc")]
             Body::Transcript {
                 hash: original,
                 recipient_key,
@@ -590,12 +727,14 @@ impl<'id> Core<'id> {
                 {
                     return Err(Error::AttributionConflict);
                 }
-                let plain = OwnedBytes::copy_from(data.expose())?;
+                let plain = Plaintext::new(
+                    OwnedBytes::copy_from(data.expose())?,
+                    inner_layout,
+                    padding::Decode::Absent,
+                );
                 self.charge(plain.capacity())?;
                 let target = self.rooms.get_mut(r)?.nodes.get_mut(target)?;
                 let old = target.plaintext.replace(plain);
-                target.plain_padding = padding::Decode::Absent;
-                target.plain_layout = Some(inner_layout);
                 target.transcript = Some(hash);
                 target.private_recipient = Some(*recipient_key.as_bytes());
                 if target.recipient.is_none() {
@@ -608,12 +747,21 @@ impl<'id> Core<'id> {
                 let target_slot = target_slot(self.rooms.get(r)?, original)?;
                 self.rooms.get_mut(r)?.queue_node(target_slot)?;
             }
+            #[cfg(feature = "alloc")]
             Body::Announcement { .. }
             | Body::Appeal { .. }
             | Body::Access { .. }
             | Body::Revolution { .. }
             | Body::Group { .. }
             | Body::Authorization { .. } => self.epoch_control(r, slot, outer, now)?,
+            #[cfg(not(feature = "alloc"))]
+            Body::Announcement { .. }
+            | Body::Appeal { .. }
+            | Body::Access { .. }
+            | Body::Revolution { .. }
+            | Body::Group { .. }
+            | Body::Authorization { .. }
+            | Body::Transcript { .. } => {}
             // Service stores authentic ciphertext without possessing client
             // recipient/epoch keys. Applications retain the exact typed bytes.
             Body::Private { .. }
@@ -626,12 +774,12 @@ impl<'id> Core<'id> {
         }
         Ok(())
     }
-    fn contact_for(
-        &mut self,
+    fn prepare_join_contact(
+        &self,
         r: Slot,
         id: ShortHash,
         public: PublicKey,
-    ) -> Result<Contact<'id>, Error> {
+    ) -> Result<(Slot, Option<ContactRow>), Error> {
         let context = if public == self.anonymous {
             let digest = hash512(&id);
             let key = self.rooms.get(r)?.key;
@@ -648,33 +796,31 @@ impl<'id> Core<'id> {
             .iter()
             .find(|(_, c)| c.canonical && c.key == public && c.anonymous_context == context)
         {
-            return Ok(self.contact_id(s));
+            return Ok((s, None));
         }
-        let local = Some(public) == self.rooms.get(r)?.local_public;
-        let s = self
-            .contacts
-            .insert(ContactRow {
+        let key = self.contacts.next_key()?;
+        Ok((
+            key,
+            Some(ContactRow {
                 key: public,
                 name: None,
                 anonymous_context: context,
-                local,
+                #[cfg(feature = "alloc")]
+                local: Some(public) == self.rooms.get(r)?.local_public,
                 canonical: true,
                 rooms: 0,
-            })
-            .map_err(|(e, _)| e)?;
-        let contact = self.contact_id(s);
-        self.event(Event::ContactChanged(contact))?;
-        Ok(contact)
+            }),
+        ))
     }
     fn apply_join(
         &mut self,
         r: Slot,
         node: Slot,
-        message: Message<'_>,
+        id: ShortHash,
+        parent: Hash,
         public: PublicKey,
         hpke: PublicKey,
     ) -> Result<(), Error> {
-        let id = *message.header().sender_id;
         let hash = self.rooms.get(r)?.nodes.get(node)?.hash;
         let prior = self.rooms.get(r)?.sessions.iter().find_map(|(s, m)| {
             (m.id == id
@@ -684,14 +830,28 @@ impl<'id> Core<'id> {
                 && m.successor.is_none())
             .then_some(s)
         });
-        let session = if let Some(s) = prior {
-            s
+        let (contact, new_contact, new_lineage) = if let Some(s) = prior {
+            (self.rooms.get(r)?.sessions.get(s)?.contact, None, None)
         } else {
-            self.rooms.get(r)?.sessions.next_key()?;
-            let contact = self.contact_for(r, id, public)?;
+            let row = self.rooms.get(r)?;
+            row.sessions.next_key()?;
+            let lineage = row.lineage.checked_add(1).ok_or(Fault::Overflow)?;
+            let (contact, new_contact) = self.prepare_join_contact(r, id, public)?;
+            (contact, new_contact, Some(lineage))
+        };
+        // The signed vertex can be observed and can request its parent before
+        // this point, but its contact and session do not exist until the epoch
+        // snapshot fits and its inherited membership is known.
+        self.reserve_events(4)?;
+        let epoch_changed = self.prepare_join_epoch(r, node, parent, contact)?;
+        if let Some(row) = new_contact {
+            let vacant = self.contacts.vacant()?;
+            vacant.insert(row);
+            self.event(Event::ContactChanged(self.contact_id(contact)))?;
+        }
+        let session = if let Some(lineage) = new_lineage {
             let room = self.rooms.get_mut(r)?;
-            let lineage = room.lineage.checked_add(1).ok_or(Fault::Overflow)?;
-            let s = room
+            let session = room
                 .sessions
                 .insert(SessionRow {
                     contact,
@@ -701,18 +861,20 @@ impl<'id> Core<'id> {
                     lineage,
                     generation: 1,
                     known_from: room.sequence,
-                    phase: SessionPhase::Joining,
+                    phase: SessionPhase::Active,
                     first_bound: hash,
                     last_bound: hash,
                     successor: None,
                     completed_at: None,
                     archived: false,
-                    historical_phase: SessionPhase::Joining,
+                    historical_phase: SessionPhase::Active,
                 })
-                .map_err(|(e, _)| e)?;
+                .map_err(|(error, _)| error)?;
             room.lineage = lineage;
-            self.contacts.get_mut(contact.slot)?.rooms += 1;
-            s
+            self.contacts.get_mut(contact)?.rooms += 1;
+            session
+        } else {
+            prior.ok_or(Fault::Conflict)?
         };
         {
             let room = self.rooms.get_mut(r)?;
@@ -735,7 +897,29 @@ impl<'id> Core<'id> {
                 .ok_or(Fault::Authentication)?;
             a.owner = Some(owner(s));
             a.session = Some(session);
-            if Some(public) == room.local_public && Some(id) == room.local_id {
+            let own = Some(public) == room.local_public && Some(id) == room.local_id;
+            if self.mode.is_client() {
+                // Source readiness is settled only by the original JOIN's
+                // independent full-write and authenticated-echo observations.
+                if own
+                    && room
+                        .nodes
+                        .get(node)?
+                        .origin
+                        .live(self.instance)
+                        .is_some_and(|origin| {
+                            room.sources.get(origin.slot).is_ok_and(|source| {
+                                source.role == SourceRole::Client
+                                    && source.create_written
+                                    && !source.join_required
+                                    && source.public == Some(public)
+                                    && source.member_id == Some(id)
+                            })
+                        })
+                {
+                    room.joined = true;
+                }
+            } else if own {
                 room.joined = true;
                 for (_, source) in room.sources.iter_mut() {
                     if source.member_id == Some(id) {
@@ -744,7 +928,9 @@ impl<'id> Core<'id> {
                 }
             }
         }
-        self.epoch_message(r, node, message.body())?;
+        if epoch_changed {
+            self.publish_epoch(r, hash)?;
+        }
         self.wake_senders(r)?;
         self.event(Event::MemberChanged(
             self.member_id(r, session),
@@ -756,12 +942,7 @@ impl<'id> Core<'id> {
     // identical across actual successor sessions. Historical hashes and every
     // other message keep their original authentication; arrival order alone is
     // not permission to advance a cached owner to a later generation.
-    fn key_successor(
-        &mut self,
-        r: Slot,
-        node: Slot,
-        auth: Authentication<'id>,
-    ) -> Result<Slot, Error> {
+    fn key_successor(&mut self, r: Slot, node: Slot, auth: Authentication) -> Result<Slot, Error> {
         let first = auth.session.ok_or(Fault::Authentication)?;
         let row = self.rooms.get(r)?;
         let original = row.sessions.get(first)?;
@@ -782,32 +963,14 @@ impl<'id> Core<'id> {
         let original_id = original.id;
         let original_contact = original.contact;
         let original_lineage = original.lineage;
-        let count = row.nodes.len();
-        let requested = count
-            .checked_mul(core::mem::size_of::<Slot>())
-            .ok_or(Fault::Overflow)?;
-        if requested > self.remaining_bytes() {
-            return Err(Fault::Capacity.into());
-        }
-        let mut ancestry = alloc::vec::Vec::new();
-        ancestry
-            .try_reserve_exact(count)
-            .map_err(|_| Fault::Capacity)?;
-        let bytes = ancestry
-            .capacity()
-            .checked_mul(core::mem::size_of::<Slot>())
-            .ok_or(Fault::Overflow)?;
-        self.charge(bytes)?;
-        let result = (|| {
-            let row = self.rooms.get(r)?;
-            ancestry.push(node);
-            let mut cursor = 0;
+        let prove = |workspace: &mut HistoryWorkspace<'_>, width| {
+            let mut ancestry = workspace.start(width, node.index)?;
             let mut missing = false;
-            // One entry per actual Slot, including diamonds and cycles. No
+            // The immutable room pins every generation for this walk. No
             // unauthenticated predecessor supplies a causal edge or authority.
-            while cursor < ancestry.len() {
-                let current = row.nodes.get(ancestry[cursor])?;
-                cursor += 1;
+            while let Some(index) = ancestry.pop() {
+                let slot = row.nodes.slot_at(index).ok_or(Fault::Conflict)?;
+                let current = row.nodes.get(slot)?;
                 if current.auth.is_none() {
                     missing = true;
                     continue;
@@ -820,12 +983,7 @@ impl<'id> Core<'id> {
                         missing = true;
                         continue;
                     };
-                    if !ancestry.contains(&parent) {
-                        if ancestry.len() == count {
-                            return Err(Fault::Conflict.into());
-                        }
-                        ancestry.push(parent);
-                    }
+                    ancestry.schedule(parent.index)?;
                 }
             }
             let mut current = first;
@@ -861,7 +1019,7 @@ impl<'id> Core<'id> {
                 if transitions.next().is_some() {
                     return Err(Fault::Conflict.into());
                 }
-                if !ancestry.contains(&transition) {
+                if !ancestry.contains(transition.index) {
                     return Err(if missing {
                         Fault::NotReady
                     } else {
@@ -872,10 +1030,27 @@ impl<'id> Core<'id> {
                 current = next;
             }
             Err(Fault::Conflict.into())
-        })();
-        drop(ancestry);
-        self.release(bytes)?;
-        result
+        };
+        if let Some(workspace) = self.ancestry.as_mut() {
+            return prove(workspace, row.nodes.limit());
+        }
+        #[cfg(not(feature = "alloc"))]
+        return Err(Fault::Conflict.into());
+        #[cfg(feature = "alloc")]
+        {
+            // The heap-backed owner only needs marks through the highest occupied
+            // index, even when the configured room capacity is much larger.
+            let width = row
+                .index
+                .iter()
+                .map(|slot| slot.index)
+                .max()
+                .ok_or(Fault::Conflict)?
+                .checked_add(1)
+                .ok_or(Fault::Overflow)?;
+            let mut workspace = HistoryWorkspace::budgeted(width, self.remaining_bytes())?;
+            prove(&mut workspace, width)
+        }
     }
     fn switch_session(
         &mut self,
@@ -933,10 +1108,10 @@ impl<'id> Core<'id> {
         };
         self.rooms.get(r)?.sessions.next_key()?;
         let canonical = !self.contacts.iter().any(|(s, c)| {
-            s != contact.slot && c.canonical && c.key == public && c.anonymous_context.is_none()
+            s != contact && c.canonical && c.key == public && c.anonymous_context.is_none()
         });
         if key.is_some() {
-            let c = self.contacts.get_mut(contact.slot)?;
+            let c = self.contacts.get_mut(contact)?;
             c.key = public;
             c.canonical = canonical;
         }
@@ -947,9 +1122,9 @@ impl<'id> Core<'id> {
             for i in 0..64 {
                 context[i] = digest[i] ^ key[i];
             }
-            self.contacts.get_mut(contact.slot)?.anonymous_context = Some(context);
+            self.contacts.get_mut(contact)?.anonymous_context = Some(context);
         } else {
-            self.contacts.get_mut(contact.slot)?.anonymous_context = None;
+            self.contacts.get_mut(contact)?.anonymous_context = None;
         }
         let room = self.rooms.get_mut(r)?;
         let next = room.sessions.insert(successor).map_err(|(e, _)| e)?;
@@ -978,7 +1153,7 @@ impl<'id> Core<'id> {
             self.member_id(r, next),
             SessionPhase::Active,
         ))?;
-        self.event(Event::ContactChanged(contact))?;
+        self.event(Event::ContactChanged(self.contact_id(contact)))?;
         Ok(())
     }
     pub(crate) fn wake_senders(&mut self, r: Slot) -> Result<(), Error> {
@@ -1043,18 +1218,37 @@ impl<'id> Core<'id> {
         }
         self.event(Event::SubscriptionChanged(
             self.event_room(r),
-            owner.contact,
+            self.contact_id(owner.contact),
             discourse,
         ))?;
         Ok(())
     }
-    pub(crate) fn note_missing(
+    pub(crate) fn note_dependency(
         &mut self,
         r: Slot,
         hash: Hash,
         source: Source<'id>,
     ) -> Result<(), Error> {
+        self.note_dependency_in(r, hash, source, None)
+    }
+    fn note_dependency_in(
+        &mut self,
+        r: Slot,
+        hash: Hash,
+        source: Source<'id>,
+        history: Option<&CommittedRoomHistory<'_, '_>>,
+    ) -> Result<(), Error> {
+        // A historical original may already have stopped. Keep its generation
+        // so the missing row can be retired without transferring it to a new source.
+        if source.core != self.instance || source.room != r {
+            return Err(Fault::StaleGeneration.into());
+        }
         if hash == [0; 64] || self.rooms.get(r)?.find_node(&hash).is_some() {
+            return Ok(());
+        }
+        if let Some(history) = history
+            && history.detached_parent(&hash)?.is_some()
+        {
             return Ok(());
         }
         if self
@@ -1062,8 +1256,9 @@ impl<'id> Core<'id> {
             .get(r)?
             .missing
             .iter()
-            .any(|(_, m)| m.hash == hash && m.source == source)
+            .any(|(_, m)| m.hash == hash && m.source == source.slot)
         {
+            // Its original admission deadline and actual absence are retained.
             return Ok(());
         }
         self.rooms
@@ -1071,7 +1266,8 @@ impl<'id> Core<'id> {
             .missing
             .insert(MissingRow {
                 hash,
-                source,
+                source: source.slot,
+                #[cfg(feature = "alloc")]
                 operation: None,
                 retry_at: 0,
                 absent: false,
@@ -1091,7 +1287,10 @@ impl<'id> Core<'id> {
             let Some(s) = next else {
                 break;
             };
-            self.rooms.get_mut(r)?.missing.remove(s)?;
+            let row = self.rooms.get_mut(r)?;
+            row.missing.remove(s)?;
+            #[cfg(feature = "alloc")]
+            row.derivation.arm();
         }
         Ok(())
     }
@@ -1104,12 +1303,15 @@ impl<'id> Core<'id> {
         source: Source<'id>,
     ) -> Result<(), Error> {
         let r = self.check_room(room)?;
+        if source.core != self.instance || source.room != r {
+            return Err(Fault::NotFound.into());
+        }
         let slot = self
             .rooms
             .get(r)?
             .missing
             .iter()
-            .find_map(|(s, m)| (m.hash == *hash && m.source == source).then_some(s))
+            .find_map(|(s, m)| (m.hash == *hash && m.source == source.slot).then_some(s))
             .ok_or(Fault::NotFound)?;
         let m = self.rooms.get(r)?.missing.get(slot)?;
         if !m.absent
@@ -1136,8 +1338,12 @@ impl<'id> Core<'id> {
                 let n = self.rooms.get(r)?.nodes.get(slot)?;
                 (n.hash, n.deleted_by)
             };
+            #[cfg(feature = "alloc")]
             self.revoke_confirmation(r, &hash)?;
-            let released = self.rooms.get_mut(r)?.erase_message(slot, by)?;
+            let released = self
+                .rooms
+                .get_mut(r)?
+                .erase_message(&mut self.frames, slot, by)?;
             self.release(released)?;
             self.event(Event::MessageChanged(
                 self.event_room(r),
@@ -1160,7 +1366,7 @@ impl<'id> Core<'id> {
             let sub = self.rooms.get_mut(r)?.subscriptions.remove(s)?;
             self.event(Event::SubscriptionChanged(
                 self.event_room(r),
-                sub.contact,
+                self.contact_id(sub.contact),
                 sub.discourse,
             ))?;
             remaining -= 1;
@@ -1172,7 +1378,7 @@ impl<'id> Core<'id> {
                 }
                 let s = self.rooms.get(r)?.index[i];
                 let n = self.rooms.get(r)?.nodes.get(s)?;
-                if !discourse_kind(n.kind) || n.phase == MessagePhase::Deleted {
+                if n.auth.is_none() || !discourse_kind(n.kind) || n.phase == MessagePhase::Deleted {
                     continue;
                 }
                 if let Some(d) = n.discourse
@@ -1180,7 +1386,10 @@ impl<'id> Core<'id> {
                 {
                     self.reserve_events(1)?;
                     let hash = self.rooms.get(r)?.nodes.get(s)?.hash;
-                    let b = self.rooms.get_mut(r)?.erase_message(s, None)?;
+                    let b = self
+                        .rooms
+                        .get_mut(r)?
+                        .erase_message(&mut self.frames, s, None)?;
                     self.release(b)?;
                     self.event(Event::MessageChanged(
                         self.event_room(r),
@@ -1191,19 +1400,19 @@ impl<'id> Core<'id> {
                 }
             }
         }
-        self.expire_epochs(r, now)?;
         Ok(())
     }
     /// Decrypt with actual retained authorized epoch/recipient capabilities and
     /// caller-owned bounded scratch. The service mode never decrypts client
     /// content. No plaintext is installed until AEAD and inner hash both pass.
+    #[cfg(feature = "alloc")]
     pub fn decrypt_message<const N: usize>(
         &mut self,
         room: Room<'id>,
         hash: &Hash,
         scratch: &mut SensitiveBuffer<N>,
     ) -> Result<(), Error> {
-        if self.mode != Mode::Client {
+        if !self.mode.is_client() {
             return Err(Error::Permission);
         }
         let r = self.check_room(room)?;
@@ -1213,7 +1422,7 @@ impl<'id> Core<'id> {
         if node.auth.is_none() || node.phase == MessagePhase::Deleted || node.plaintext.is_some() {
             return Err(Fault::NotReady.into());
         }
-        let message = node.message(self.profile)?;
+        let message = node.message(&self.frames)?;
         let cipher_layout = node.cipher_layout.ok_or(Fault::NotReady)?;
         let mut recipient = None;
         let opened = match message.body() {
@@ -1225,7 +1434,7 @@ impl<'id> Core<'id> {
                     || !node
                         .auth
                         .and_then(|a| a.owner)
-                        .is_some_and(|o| e.members.contains(&o.contact))
+                        .is_some_and(|o| row.epoch_has_member(e, o.contact))
                 {
                     return Err(Error::Permission);
                 }
@@ -1248,7 +1457,7 @@ impl<'id> Core<'id> {
             }
             Body::Private { .. } => {
                 let mut opened = false;
-                for key in &row.hpke_keys {
+                for key in &row.queues.hpke_keys {
                     match scratch.open_private_with_profiles(
                         message,
                         &key.secret,
@@ -1273,23 +1482,27 @@ impl<'id> Core<'id> {
             return Err(Fault::Authentication.into());
         }
         let plain_layout = cipher_layout;
-        let checked = crypto::signature::decode_short_with_profiles(
-            scratch.expose(),
-            plain_layout.body,
-            plain_layout.padding,
-            padding::Decode::Required,
-        )?;
-        if !crypto::message::permits_private(checked.short().body().kind()) {
-            scratch.clear();
-            return Err(Fault::Malformed.into());
-        }
-        let copied = OwnedBytes::copy_from(scratch.expose());
+        let copied = (|| -> Result<Plaintext, Error> {
+            let checked = crypto::signature::decode_short_with_profiles(
+                scratch.expose(),
+                plain_layout.body,
+                plain_layout.padding,
+                padding::Decode::Required,
+            )?;
+            if !crypto::message::permits_private(checked.short().body().kind()) {
+                return Err(Fault::Malformed.into());
+            }
+            Ok(Plaintext::new(
+                OwnedBytes::copy_from(scratch.expose())?,
+                plain_layout,
+                padding::Decode::Required,
+            ))
+        })();
         scratch.clear();
         let plain = copied?;
         self.charge(plain.capacity())?;
         let node = self.rooms.get_mut(r)?.nodes.get_mut(slot)?;
         node.plaintext = Some(plain);
-        node.plain_layout = Some(plain_layout);
         if node.recipient.is_none() {
             node.recipient = recipient;
         }
@@ -1301,6 +1514,7 @@ impl<'id> Core<'id> {
     /// NAMESTORE query/monitor, zone, source, room and finite deadline before this
     /// call. This is neither a native receipt nor persistence evidence. It grants
     /// no old membership, sender identity, future-send or epoch authorization.
+    #[cfg(feature = "alloc")]
     pub fn recover_encryption_record(
         &mut self,
         source: Source<'id>,
@@ -1314,7 +1528,7 @@ impl<'id> Core<'id> {
         let wire::records::Record::EncryptionKey { room_key, .. } = record else {
             return Err(Fault::InvalidInput.into());
         };
-        if self.mode != Mode::Client
+        if !self.mode.is_client()
             || src.role != SourceRole::Client
             || !src.create_written
             || src.public != Some(zone_public)
@@ -1328,29 +1542,35 @@ impl<'id> Core<'id> {
         let key = crypto::records::open_encryption_record(root, record)?;
         let public = key.public_key();
         if let Some(index) = row
+            .queues
             .hpke_keys
             .iter()
             .position(|old| old.secret.public_key() == public)
         {
-            self.rooms.get_mut(source.room)?.hpke_keys[index]
+            self.rooms
+                .get_mut(source.room)?
+                .queues
+                .hpke_keys
+                .get_mut(index)
+                .ok_or(Fault::Conflict)?
                 .merge_origin(RecipientKeyOrigin::Zone(zone_public));
             // Existing ciphertext capability is not another key installation.
             return Ok(false);
         }
-        if row.hpke_keys.len() == row.hpke_keys.capacity() {
-            return Err(Fault::Capacity.into());
-        }
+
         self.rooms
             .get_mut(source.room)?
+            .queues
             .hpke_keys
             .push(RecipientKey {
                 secret: key,
                 origin: RecipientKeyOrigin::Zone(zone_public),
-            });
+            })?;
         Ok(true)
     }
     /// Register an actual locally owned HPKE recipient key after checking its
     /// public component against a real current local member's advertised key.
+    #[cfg(feature = "alloc")]
     pub fn retain_recipient_key(
         &mut self,
         member: MemberSession<'id>,
@@ -1360,44 +1580,50 @@ impl<'id> Core<'id> {
         let row = self.rooms.get(member.room)?;
         let session = row.sessions.get(member.slot)?;
         if row.local_session() != Some(member.slot)
-            || !self.contacts.get(session.contact.slot)?.local
+            || !self.contacts.get(session.contact)?.local
             || session.phase != SessionPhase::Active
             || key.public_key().as_bytes() != &session.hpke[4..]
         {
             return Err(Error::Permission);
         }
-        let origin = RecipientKeyOrigin::Member {
-            owner: owner(session),
-            public: session.public,
-        };
+        let origin =
+            RecipientKeyOrigin::Member(MemberRecipient::new(owner(session), session.public));
         let public = key.public_key();
         if let Some(index) = row
+            .queues
             .hpke_keys
             .iter()
             .position(|old| old.secret.public_key() == public)
         {
-            self.rooms.get_mut(member.room)?.hpke_keys[index].merge_origin(origin);
+            self.rooms
+                .get_mut(member.room)?
+                .queues
+                .hpke_keys
+                .get_mut(index)
+                .ok_or(Fault::Conflict)?
+                .merge_origin(origin);
             return Ok(());
         }
         let row = self.rooms.get_mut(member.room)?;
-        if row.hpke_keys.len() == row.hpke_keys.capacity() {
-            return Err(Fault::Capacity.into());
-        }
-        row.hpke_keys.push(RecipientKey {
+
+        row.queues.hpke_keys.push(RecipientKey {
             secret: key,
             origin,
-        });
+        })?;
         Ok(())
     }
 }
-fn target_slot(room: &RoomRow<'_>, hash: &Hash) -> Result<Slot, Error> {
+#[cfg(feature = "alloc")]
+fn target_slot(room: &RoomRow, hash: &Hash) -> Result<Slot, Error> {
     room.find_node(hash).ok_or(Fault::NotFound.into())
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "alloc"))]
+mod join_tests;
+#[cfg(all(test, feature = "alloc"))]
 mod key_refresh_tests;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "alloc"))]
 mod subscription_tests {
     use super::*;
     use crate::model::{node, structural_core};
@@ -1420,11 +1646,7 @@ mod subscription_tests {
         let mut original = node(core.instance, 1, 0, 1, 1, 1)?;
         original.local_sent = true;
         original.timestamp = 5;
-        let first = core
-            .rooms
-            .get_mut(room.slot)?
-            .insert_node(original)
-            .map_err(|r| r.error)?;
+        let first = core.rooms.get_mut(room.slot)?.insert_node(original)?;
         core.apply_subscription(room.slot, first, [7; 32], u64::MAX, 2)?;
         let (_, interval) = core
             .rooms
@@ -1440,11 +1662,7 @@ mod subscription_tests {
         let mut finite = node(core.instance, 2, 1, 1, 1, 2)?;
         finite.local_sent = true;
         finite.timestamp = 10;
-        let second = core
-            .rooms
-            .get_mut(room.slot)?
-            .insert_node(finite)
-            .map_err(|r| r.error)?;
+        let second = core.rooms.get_mut(room.slot)?.insert_node(finite)?;
         core.apply_subscription(room.slot, second, [7; 32], u64::MAX - 1, 2)?;
         let (_, interval) = core
             .rooms

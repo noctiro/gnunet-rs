@@ -15,6 +15,7 @@ gnunet-gnsrecord.workspace = true
 gnunet-gnscrypto.workspace = true
 gnunet-dns.workspace = true
 gnunet-idna.workspace = true
+zeroize.workspace = true
 
 [dev-dependencies]
 gnunet-crypto.workspace = true

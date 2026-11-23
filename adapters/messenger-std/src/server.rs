@@ -1,7 +1,10 @@
 //! Actual accepted IPC, CADET room transports and original PILS purpose12 jobs.
 use crate::{EndpointSource, cadet, carrier, core};
-use core::wire::{self, Request, Response, body::Body, envelope::Kind, padding};
-use core::{Binding, Core, Hash, OwnedBytes, PublicKey, ReceiveMeta, Room, Source, SourceRole};
+use core::wire::{self, Response, body::Body, envelope::Kind, padding};
+use core::{
+    Binding, Core, EntryRoute, EntryStep, EntryTarget, Hash, OwnedBytes, PeerHandshake, PublicKey,
+    ReceiveMeta, Room, Source, SourceRole,
+};
 use gnunet_crypto::Entropy;
 use gnunet_pils::client as pc;
 use gnunet_pils_host::client as pils;
@@ -25,6 +28,7 @@ use std::{
 };
 use tokio::time::{Instant, Sleep};
 use zeroize::Zeroizing;
+mod admission;
 mod application;
 mod identity;
 mod lifecycle;
@@ -59,12 +63,74 @@ struct Notice<'c> {
     frame: OwnedFrame,
     action: WrittenAction<'c>,
 }
-#[derive(Clone, Copy, Eq, PartialEq)]
-enum LeasePhase {
-    Opening,
-    Entering,
+#[derive(Clone, Copy)]
+enum LeasePhase<'c> {
+    Admitting(InitialAdmission<'c>),
     Active,
     Closing,
+}
+impl LeasePhase<'_> {
+    const fn is_active(self) -> bool {
+        matches!(self, Self::Active)
+    }
+
+    const fn is_closing(self) -> bool {
+        matches!(self, Self::Closing)
+    }
+}
+#[derive(Clone, Copy)]
+struct InitialAdmission<'c> {
+    route: AdmissionRoute<'c>,
+    next: InitialNotice,
+    until: Instant,
+}
+#[derive(Clone, Copy)]
+enum InitialNotice {
+    MemberId,
+    Room,
+}
+#[derive(Clone, Copy)]
+enum AdmissionRoute<'c> {
+    Open(Option<cadet::Port<'c>>),
+    Entry(EntryRoute<cadet::Channel<'c>>),
+}
+enum AdmissionProgress<'c> {
+    Waiting,
+    Bound(AdmissionRoute<'c>),
+    Ready([u8; 32]),
+}
+#[derive(Clone, Copy)]
+enum AdmissionInput {
+    Open(OpenInput),
+    Entry {
+        key: Hash,
+        target: EntryTarget,
+        until: Instant,
+    },
+}
+#[derive(Clone, Copy)]
+enum ChannelAdmission {
+    Entry(Instant),
+    Automatic(Instant),
+}
+#[derive(Clone, Copy)]
+enum CadetAdmissionTarget<'c> {
+    Channel {
+        room: Room<'c>,
+        peer: [u8; 32],
+        channel: cadet::Channel<'c>,
+    },
+    Port {
+        room: Room<'c>,
+        port: cadet::Port<'c>,
+    },
+}
+#[derive(Clone, Copy)]
+struct CadetAdmission<'c> {
+    transmit: cadet::Transmit<'c>,
+    target: CadetAdmissionTarget<'c>,
+    hard: Instant,
+    automatic: Option<Instant>,
 }
 #[derive(Clone, Copy)]
 struct EntryInput {
@@ -72,19 +138,6 @@ struct EntryInput {
     door: [u8; 32],
     target: Option<EntryTarget>,
     until: Instant,
-}
-#[derive(Clone, Copy)]
-enum EntryTarget {
-    Local,
-    Remote([u8; 32]),
-}
-impl EntryTarget {
-    fn door(self, local: [u8; 32]) -> [u8; 32] {
-        match self {
-            Self::Local => local,
-            Self::Remote(peer) => peer,
-        }
-    }
 }
 #[derive(Clone, Copy)]
 struct OpenInput {
@@ -98,27 +151,29 @@ struct PendingOpen<'c> {
 }
 #[derive(Clone, Copy)]
 struct PendingEntry<'c> {
-    request: EntryInput,
-    target: EntryTarget,
-    // Core Source includes its original generation, unlike a reusable tunnel row.
-    source: Option<Source<'c>>,
+    key: Hash,
+    requested_door: [u8; 32],
+    until: Instant,
+    route: EntryRoute<cadet::Channel<'c>>,
+}
+#[derive(Clone, Copy)]
+enum RoomReply {
+    Open,
+    Entry,
+    Close,
+    Sync,
 }
 struct Lease<'c> {
     room: Room<'c>,
     source: Source<'c>,
-    phase: LeasePhase,
-    door: [u8; 32],
-    entry_local: bool,
-    entry: Option<Source<'c>>,
+    phase: LeasePhase<'c>,
     pending_entry: Option<PendingEntry<'c>>,
     pending_open: Option<PendingOpen<'c>>,
-    id_written: bool,
     counted: bool,
     bootstrap: usize,
     proposed_id: Option<core::ShortHash>,
     proposal_until: Option<Instant>,
     sync_until: Option<Instant>,
-    until: Instant,
 }
 struct App<'c> {
     client: Client,
@@ -151,7 +206,7 @@ struct Tunnel<'c> {
     source: Source<'c>,
     channel: cadet::Channel<'c>,
     peer: [u8; 32],
-    compatible: bool,
+    handshake: PeerHandshake,
     info_queued: bool,
     // Local room/error/timeout revocation, distinct from physical remote loss.
     closing: bool,
@@ -327,6 +382,7 @@ pub struct Server<'c, 'slots, 'p, E: Entropy, const O: usize = 16> {
     receive_cursor: usize,
     peer_output: Option<PeerOutput<'c>>,
     cadet_pending: Option<(cadet::Transmit<'c>, Instant)>,
+    cadet_admission: Option<CadetAdmission<'c>>,
     identity: identity::LocalIdentity<'p>,
     pils_recovery_cause: Option<pils::ConnectionLoss>,
     domain: Rc<()>,
@@ -466,6 +522,7 @@ impl<'c, 'slots, 'p, E: Entropy, const O: usize> Server<'c, 'slots, 'p, E, O> {
             receive_cursor: 0,
             peer_output: None,
             cadet_pending: None,
+            cadet_admission: None,
             identity: identity::LocalIdentity::Awaiting { observed: None },
             pils_recovery_cause: None,
             domain: Rc::new(()),

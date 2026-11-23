@@ -9,6 +9,8 @@ type Failure = Box<dyn Error>;
 #[cfg(any(unix, windows))]
 mod media;
 #[cfg(any(unix, windows))]
+mod media_paths;
+#[cfg(any(unix, windows))]
 mod options;
 #[cfg(any(unix, windows))]
 mod run;
@@ -63,7 +65,7 @@ fn run() -> Result<u8, Failure> {
     use gnunet_program_host::{
         logging::Logger,
         policy::Level,
-        program::{self, Defaults, Invocation, NlsDisabled, Preparation},
+        program::{self, Defaults, Invocation, Preparation},
         reporting::Reporter,
         shared_clock::SharedClock,
     };
@@ -74,7 +76,7 @@ fn run() -> Result<u8, Failure> {
     )?;
     let arguments = options::Arguments::new();
     let mut logger = Logger::new(b"gnunet-conversation", std::process::id(), false)?;
-    let prepared=program::prepare(config,Invocation{binary_name:b"gnunet-conversation",help:Some(b"Conversation phone with -e/--ego NAME and optional -p/--phone LINE (default [conversation].LINE). Interactive /address /call FULL_NAME /accept #N /suspend /resume [#N] /cancel [#N] /status /quit /help. Full names use the ordinary GNS API and PHONE records. Address comes from actual PILS current peer and gives publication instructions. One active media owner uses explicit same-installation Rust record/playback helpers and standard730 Ogg/Opus bytes after actual pickup/local acceptance. Child admission/local writes are not remote/media-ready receipts. Commands, queues, calls and original native/canonical lifetimes are bounded. Regular-file terminal IO and selected synchronous logging cannot be forcibly preempted. No private-key argument, hidden Resolver/media worker or official-C helper fallback."),select_default_filename:true,defaults:Defaults::Native},arguments.options(),std::env::args_os(),&program::Environment::capture(),&mut NlsDisabled,&mut logger,&clock,&mut io::stdout().lock(),&mut io::stderr().lock());
+    let prepared=program::prepare_installed(config,Invocation{binary_name:b"gnunet-conversation",help:Some(b"Conversation phone with -e/--ego NAME and optional -p/--phone LINE (default [conversation].LINE). Interactive /address /call FULL_NAME /accept #N /suspend /resume [#N] /cancel [#N] /status /quit /help. Full names use the ordinary GNS API and PHONE records. Address comes from actual PILS current peer and gives publication instructions. One active media owner uses explicit same-installation Rust record/playback helpers and standard730 Ogg/Opus bytes after actual pickup/local acceptance. Child admission/local writes are not remote/media-ready receipts. Commands, queues, calls and original native/canonical lifetimes are bounded. Regular-file terminal IO and selected synchronous logging cannot be forcibly preempted. No private-key argument, hidden Resolver/media worker or official-C helper fallback."),select_default_filename:true,defaults:Defaults::Native},arguments.options(),std::env::args_os(),&program::Environment::capture(),&mut logger,&clock,&mut io::stdout().lock(),&mut io::stderr().lock());
     let reporter = Reporter::new(logger, clock.clone());
     let mut code = 2;
     let result = (|| -> Result<u8, Failure> {

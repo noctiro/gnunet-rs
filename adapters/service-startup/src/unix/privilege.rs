@@ -88,11 +88,12 @@ pub struct PrivilegeReport {
 pub enum PrivilegeError {
     /// Caller bytes cannot be represented as a native CString account name.
     InvalidName,
-    /// Native reentrant lookup returned no account or a lookup failure. uzers
-    /// does not distinguish these reliably, so no fabricated errno is attached.
+    /// Native reentrant lookup returned no account or a lookup failure.
     AccountUnavailable {
         /// Original opaque Unix account bytes.
         name: OsString,
+        /// Native lookup error when one occurred.
+        cause: Option<io::Error>,
     },
     /// The native fallback failed. Startup must exit; rollback is not attempted.
     Apply {
@@ -123,7 +124,17 @@ impl fmt::Display for PrivilegeError {
         }
     }
 }
-impl std::error::Error for PrivilegeError {}
+impl std::error::Error for PrivilegeError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::InvalidName => None,
+            Self::AccountUnavailable { cause, .. } => {
+                cause.as_ref().map(|error| error as &dyn std::error::Error)
+            }
+            Self::Apply { error, .. } => Some(error),
+        }
+    }
+}
 /// Resolved native account identity, retaining the original raw name for initgroups.
 #[derive(Debug)]
 pub struct PrivilegePlan {
@@ -151,14 +162,20 @@ impl PrivilegePlan {
 /// account or invokes the resolver's DNS/NSS convenience APIs.
 pub fn resolve_user(name: &OsStr) -> Result<PrivilegePlan, PrivilegeError> {
     let cname = CString::new(name.as_bytes()).map_err(|_| PrivilegeError::InvalidName)?;
-    let user = uzers::get_user_by_name(name).ok_or_else(|| PrivilegeError::AccountUnavailable {
-        name: name.to_owned(),
-    })?;
+    let user = gnunet_native::accounts::user_by_name(&cname)
+        .map_err(|cause| PrivilegeError::AccountUnavailable {
+            name: name.to_owned(),
+            cause: Some(cause),
+        })?
+        .ok_or_else(|| PrivilegeError::AccountUnavailable {
+            name: name.to_owned(),
+            cause: None,
+        })?;
     Ok(PrivilegePlan {
         name: name.to_owned(),
         cname,
         uid: user.uid(),
-        gid: user.primary_group_id(),
+        gid: user.gid(),
     })
 }
 trait Operations {
@@ -187,18 +204,28 @@ impl Operations for Native {
     fn set_euid(&mut self, uid: u32) -> io::Result<()> {
         unistd::seteuid(Uid::from_raw(uid)).map_err(io::Error::from)
     }
+    #[expect(
+        unsafe_code,
+        reason = "The fallback passes only the original numeric GID"
+    )]
     fn both_gid(&mut self, gid: u32) -> io::Result<()> {
-        uzers::switch::set_both_gid(gid, gid)
+        // SAFETY: setregid takes values and borrows no pointers.
+        status(unsafe { libc::setregid(gid, gid) })
     }
+    #[expect(
+        unsafe_code,
+        reason = "The fallback passes only the original numeric UID"
+    )]
     fn both_uid(&mut self, uid: u32) -> io::Result<()> {
-        uzers::switch::set_both_uid(uid, uid)
+        // SAFETY: setreuid takes values and borrows no pointers.
+        status(unsafe { libc::setreuid(uid, uid) })
     }
 }
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(target_vendor = "apple"))]
 fn init_groups(name: &CStr, gid: u32) -> io::Result<()> {
     unistd::initgroups(name, Gid::from_raw(gid)).map_err(io::Error::from)
 }
-#[cfg(target_os = "macos")]
+#[cfg(target_vendor = "apple")]
 #[expect(
     unsafe_code,
     reason = "nix omits Darwin initgroups; the platform libc ABI consumes a live terminated CStr and an integer gid with no retained pointers"
@@ -207,7 +234,9 @@ fn init_groups(name: &CStr, gid: u32) -> io::Result<()> {
     // SAFETY: name remains a live NUL-terminated CString for the complete call.
     // Darwin's public initgroups ABI takes c_int basegroup, exactly as the C
     // source's implicit pw_gid conversion; no Rust memory is written or retained.
-    let result = unsafe { libc::initgroups(name.as_ptr(), gid as libc::c_int) };
+    status(unsafe { libc::initgroups(name.as_ptr(), gid as libc::c_int) })
+}
+fn status(result: libc::c_int) -> io::Result<()> {
     if result == 0 {
         Ok(())
     } else {

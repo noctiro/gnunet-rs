@@ -43,3 +43,11 @@ fn normal_join_insert_context_and_marker_preserve_exact_types_and_signed_fields(
     check(ClientResponse::decode(&[0, 4, 2, 13])? == ClientResponse::Done)?;
     check(ClientRequest::decode(&[0, 5, 2, 12, 0]).is_err())
 }
+
+#[test]
+fn contested_marker_uses_exact_width_and_ignores_payload_type() -> Result<(), Error> {
+    Block::decode(&[0x12, 0x34, 1])?.contested_marker()?;
+    check(Block::decode(&[0, 0, 1, 0])?.contested_marker() == Err(Error::Malformed))?;
+    let application = Block::decode(&[0x12, 0x34, 0])?;
+    check(application.data.is_empty() && application.contested_marker() == Err(Error::Malformed))
+}

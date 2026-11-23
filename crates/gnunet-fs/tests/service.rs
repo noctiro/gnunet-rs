@@ -243,6 +243,68 @@ fn ublock_authentication_precedes_seen_and_live_route_rescan_preserves_dedup() -
     Ok(())
 }
 #[test]
+fn interrupted_keyword_sweep_accepts_new_low_uids_without_repeating_seen_results() -> TestResult {
+    use gnunet_fs::{Content, ublock};
+
+    let first = include_bytes!("ublock_vectors/c-keyword.bin");
+    let publisher = ublock::Publisher::keyword(b"keyword", ublock::Limits::default())?;
+    let key = *publisher.context().query();
+    let mut wire = [0; 1024];
+    let second = publisher.seal(
+        b"",
+        Content {
+            key: [7; 64],
+            query: [8; 64],
+            size: 1,
+        }
+        .uri(),
+        None,
+        &mut wire,
+    )?;
+    let mut instance = Instance::new();
+    let mut clients = [ClientSlot::default(); 1];
+    let mut hashes = [[0; 64]; 2];
+    let mut slots = [QuerySlot::new(&mut hashes)];
+    let mut core = Service::new(&mut instance, &mut clients, &mut slots, Limits::default())?;
+    let client = core.connect()?;
+    let query = core
+        .admit(client, search(key, BlockType::UBLOCK, SEARCH_LOOPBACK_ONLY))?
+        .query;
+    let now = AbsoluteTime::UNIX_EPOCH;
+    let mut output = [0; 2048];
+    let lookup = core.next_local()?.ok_or(Error::NotFound)?;
+    let first_reply =
+        reply(core.prepare_local(lookup, data(&key, 9, 20, first), &mut output, now)?)?;
+    assert!(!core.commit_reply(first_reply)?);
+    let lost = core.next_local()?.ok_or(Error::NotFound)?;
+    assert_eq!(lost.next_uid(), 21);
+    core.local_interrupted(lost)?;
+    assert!(!core.completed(query)?);
+    assert!(core.next_local()?.is_none());
+    assert!(core.next_route()?.is_none());
+    assert!(matches!(core.local_end(lost), Err(Error::Stale)));
+
+    core.rescan(query)?;
+    let lookup = core.next_local()?.ok_or(Error::NotFound)?;
+    assert_eq!(lookup.next_uid(), 0);
+    let duplicate = skip(core.prepare_local(lookup, data(&key, 9, 1, first), &mut output, now)?)?;
+    assert_eq!(duplicate.reason(), SkipReason::Duplicate);
+    core.skip(duplicate)?;
+    let lookup = core.next_local()?.ok_or(Error::NotFound)?;
+    let second_reply =
+        reply(core.prepare_local(lookup, data(&key, 9, 2, second.bytes()), &mut output, now)?)?;
+    assert!(!core.commit_reply(second_reply)?);
+    assert!(matches!(
+        Response::decode(&output[..second_reply.bytes()])?,
+        Response::Put(found) if found.block == second.bytes()
+    ));
+    let lookup = core.next_local()?.ok_or(Error::NotFound)?;
+    core.local_end(lookup)?;
+    assert!(core.completed(query)?);
+    core.release(query)?;
+    Ok(())
+}
+#[test]
 fn expiry_policy_ondemand_and_foreign_owner_do_not_fabricate_wire_completion() -> TestResult {
     let body = include_bytes!("ublock_vectors/c-keyword.bin");
     let key = hash512(&body[72..104]);

@@ -82,7 +82,11 @@ impl Session<'_> {
             let incoming = if task.key.peer2 as usize == self.local {
                 self.offers
                     .iter()
-                    .find(|o| !o.claimed && o.peer == task.peer && Self::key_eq(o.key, task.key))
+                    .find(|o| {
+                        o.available(self.now)
+                            && o.peer == task.peer
+                            && Self::key_eq(o.key, task.key)
+                    })
                     .map(|o| o.id)
             } else {
                 None
@@ -96,7 +100,6 @@ impl Session<'_> {
                 peer: self.peers[task.peer],
                 context: task.key,
                 incoming,
-                lower_bound: self.lower_bound,
             };
             self.publish(action)?;
             self.tasks[i].state = TaskState::Starting;
@@ -146,13 +149,6 @@ impl Session<'_> {
                 self.begin(Round::Inventory)?;
             }
             Round::Inventory => {
-                let mut sorted = Vec::new();
-                let mut free = self.available()?;
-                state::reserve(&mut sorted, self.sizes.len(), self.limits.peers, &mut free)?;
-                sorted.extend_from_slice(&self.sizes);
-                sorted.sort_unstable();
-                let at = (self.peers.len() / 3 + 1).min(sorted.len() - 1);
-                self.lower_bound = sorted[at].min(u64::from(u8::MAX)) as u8;
                 self.kind = Round::Lead;
                 self.rep = 0;
                 self.work_leader = 0;

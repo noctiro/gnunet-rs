@@ -458,7 +458,8 @@ impl Store {
         {
             return Err(gnunet_types::Error::Stale);
         }
-        Ok(())
+        self.fence()
+            .map_err(|_| gnunet_types::Error::OutcomeUnknown)
     }
     /// Reserve a nonreused signed-time range only after exact file/directory
     /// durability. No timestamp is returned on any failed/unknown commit.
@@ -511,13 +512,16 @@ impl Store {
                 io::Error::other("frontier exhausted"),
             )
         })?);
-        let end = start.checked_add(count - 1).ok_or_else(|| {
-            failure(
-                Stage::Reservation,
-                Outcome::NotCommitted,
-                io::Error::other("frontier exhausted"),
-            )
-        })?;
+        let end = start
+            .checked_add(count - 1)
+            .filter(|end| *end != u64::MAX)
+            .ok_or_else(|| {
+                failure(
+                    Stage::Reservation,
+                    Outcome::NotCommitted,
+                    io::Error::other("frontier exhausted"),
+                )
+            })?;
         self.update(
             State {
                 dirty: true,

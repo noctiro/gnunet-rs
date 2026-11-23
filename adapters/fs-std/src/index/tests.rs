@@ -62,16 +62,11 @@ fn actual_validation_duplicate_path_sorted_list_cancel_and_durable_unindex() -> 
             ..Limits::default()
         },
     )?;
-    #[cfg(unix)]
-    assert_eq!(
-        index.directory_sync(),
-        Some(gnunet_native::DirectorySync::Synchronized)
-    );
-    #[cfg(windows)]
-    assert_eq!(
-        index.directory_sync(),
-        Some(gnunet_native::DirectorySync::Unavailable)
-    );
+    let parent = gnunet_native::filesystem::Directory::open(&directory.0)?;
+    let root = parent.open_directory("index".as_ref())?;
+    let values = root.open_directory("values".as_ref())?;
+    let barrier = parent.sync()?.combine(root.sync()?).combine(values.sync()?);
+    assert_eq!(index.directory_sync(), Some(barrier));
     assert!(matches!(
         index.register([0; 64], &path, 0, 0),
         Err(Error::HashMismatch)

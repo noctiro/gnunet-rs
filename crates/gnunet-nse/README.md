@@ -23,6 +23,17 @@ reference verifier; local generation exposes its internal native-timestamp-byte
 profile without adding any wire field. Counter enumeration is only an internal
 search order. Work is caller-budgeted and never wraps a counter silently.
 
+Durable owners recover an absent state, a checkpoint with the first untested
+counter, a confirmed proof or exhausted search. A successful candidate can
+qualify local history only after its original typed write is acknowledged as
+durable. Until then the owner can still accept authenticated remote floods.
+The desktop host supplies the reference raw eight-byte proof-file format.
+
+An IPC writer can lease a notification for its own subscriber and acknowledge
+it after writing the complete frame. A repeated START requests a fresh
+snapshot for the same subscriber. Revisions coalesce behind an outstanding
+notification.
+
 Current/previous/next handling, carryover, equal cancellation, lower pushback,
 higher admission and ring wrap are semantic round transitions. Default delay
 policy follows the normal C preprocessing (no RNG). Optional bounded
@@ -32,8 +43,8 @@ until that exact local identity has its proof. This applies to current/previous
 selection and next-round carryover. Once work completes, the now-qualified local
 candidate competes with the current remote candidate; a better or equal remote
 candidate stays selected. Existing immutable signing/transmission leases keep
-their original bytes and epoch. This corrects candidate existence/eligibility,
-without changing the history-count or statistical-summary policy. West weights are newest-first n+1..2, correction0.332747 and log2 peer floor;
+their original bytes and epoch. Durable owners calculate estimates from
+qualified history. West weights are newest-first n+1..2, correction0.332747 and log2 peer floor;
 one sample has legal NaN deviation, zero samples have deviation0. Pure libm
 0.2.16/no-default handles standard floating functions. Checked linear statistics
 conversion refuses overflow rather than reproducing an undefined C cast.

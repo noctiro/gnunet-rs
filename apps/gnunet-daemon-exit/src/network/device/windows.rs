@@ -20,10 +20,7 @@ impl Settings {
                 Ok(None)
             };
         }
-        let dll = config.get_filename(LOCAL, b"WINTUN_DLL", &ProcessEnvironment)?;
-        if !dll.is_absolute() {
-            return Err("WINTUN_DLL must expand to an absolute path".into());
-        }
+        let dll = config.get_absolute_filename(LOCAL, b"WINTUN_DLL", &ProcessEnvironment)?;
         let bytes = config
             .get(LOCAL, b"WINTUN_RING_BYTES")
             .map(|_| config.get_size(LOCAL, b"WINTUN_RING_BYTES"))

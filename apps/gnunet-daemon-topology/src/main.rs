@@ -31,7 +31,7 @@ fn main() -> ExitCode {
 fn run(startup: gnunet_service_startup::ClientStartup) -> Result<ExitCode, Failure> {
     use gnunet_program_host::{
         logging::Logger,
-        program::{self, Defaults, Invocation, NlsDisabled, Preparation},
+        program::{self, Defaults, Invocation, Preparation},
         shared_clock::SharedClock,
     };
     use std::sync::Arc;
@@ -41,7 +41,7 @@ fn run(startup: gnunet_service_startup::ClientStartup) -> Result<ExitCode, Failu
         Default::default(),
     )?;
     let mut logger = Logger::new(b"gnunet-daemon-topology", std::process::id(), false)?;
-    let prepared = program::prepare(
+    let prepared = program::prepare_installed(
         config,
         Invocation {
             binary_name: b"gnunet-daemon-topology",
@@ -50,7 +50,7 @@ fn run(startup: gnunet_service_startup::ClientStartup) -> Result<ExitCode, Failu
             defaults: Defaults::Native,
         },
         Default::default(), std::env::args_os(), &program::Environment::capture(),
-        &mut NlsDisabled, &mut logger, &clock, &mut io::stdout().lock(),
+        &mut logger, &clock, &mut io::stdout().lock(),
         &mut io::stderr().lock(),
     );
     let reports = reporting::Reports::new(logger, clock.clone());

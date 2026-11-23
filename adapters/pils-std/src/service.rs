@@ -2,7 +2,7 @@
 //! Every connection subscribes immediately. Output ordering binds DH/KEM replies
 //! to the actual announcement on that original MQ; physical writes are not ACKs.
 use crate::identity::KeyLease;
-use gnunet_pils::{Action, Service};
+use gnunet_pils::{Action, ActiveIdentity, HeapService, Service};
 use gnunet_service_runtime::{
     accepted::{AcceptState, AcceptedConnection, SocketEvent},
     clock::RuntimeClock,
@@ -247,10 +247,42 @@ struct Client {
     peer: PeerAddress,
     framed: Framed<()>,
 }
+enum Engine<const H: usize> {
+    Inline(Box<Service<H>>),
+    Heap(Box<HeapService<H>>),
+}
+impl<const H: usize> Engine<H> {
+    fn announcement(&self) -> &[u8] {
+        match self {
+            Self::Inline(service) => service.announcement(),
+            Self::Heap(service) => service.announcement(),
+        }
+    }
+
+    fn identity(&self) -> &ActiveIdentity {
+        match self {
+            Self::Inline(service) => service.identity(),
+            Self::Heap(service) => service.identity(),
+        }
+    }
+
+    fn receive(
+        &mut self,
+        bytes: &[u8],
+        scratch: &mut [u8],
+        now: u64,
+        out: &mut [u8],
+    ) -> Result<Action, ProtocolError> {
+        match self {
+            Self::Inline(service) => service.receive(bytes, scratch, now, out),
+            Self::Heap(service) => service.receive(bytes, scratch, now, out),
+        }
+    }
+}
 struct Root<const H: usize> {
     // Declaration order erases the secret owner before releasing its fence on
     // successful shutdown and every fallible construction/drop path.
-    service: Box<Service<H>>,
+    service: Engine<H>,
     lease: KeyLease,
 }
 /// One bounded caller-driven service. No hidden loop, per-peer task or disk I/O.
@@ -294,7 +326,45 @@ impl<const H: usize> Host<H> {
         options: ServiceOptions,
         unix: UnixAccess,
     ) -> Result<Self, Error> {
-        let root = Root { service, lease };
+        Self::from_root(
+            Root {
+                service: Engine::Inline(service),
+                lease,
+            },
+            clock,
+            limits,
+            options,
+            unix,
+        )
+    }
+
+    pub(crate) fn new_heap(
+        service: HeapService<H>,
+        lease: KeyLease,
+        clock: Arc<dyn RuntimeClock>,
+        limits: Limits,
+        options: ServiceOptions,
+        unix: UnixAccess,
+    ) -> Result<Self, Error> {
+        Self::from_root(
+            Root {
+                service: Engine::Heap(Box::new(service)),
+                lease,
+            },
+            clock,
+            limits,
+            options,
+            unix,
+        )
+    }
+
+    fn from_root(
+        root: Root<H>,
+        clock: Arc<dyn RuntimeClock>,
+        limits: Limits,
+        options: ServiceOptions,
+        unix: UnixAccess,
+    ) -> Result<Self, Error> {
         limits.validate()?;
         if root.service.announcement().len() > limits.frame_bytes
             || root.service.announcement().len() > limits.output.bytes

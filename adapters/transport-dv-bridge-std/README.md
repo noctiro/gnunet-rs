@@ -80,12 +80,12 @@ only a locally Confirmed route and an measured `Some(RTT)`; a usable signed
 inverse path with unknown RTT cannot enable it.
 
 Path synchronization replaces an eligible same-peer path through the Engine's
-atomic install operation before replacing the bridge's private ledger entry. It does not withdraw first, create a transient CORE disconnect or discard the
-old peer's queued common Jobs. A genuinely unavailable path is withdrawn from
-both transmit selection and matching virtual reachability; output-slot pressure
-retains the old ledger for a later original retry. Canceled old Actor admissions
-retain their exact original lease, budget and callback/retirement owner; none is
-transferred to the new path or reported as a physical write by synchronization.
+atomic install operation. Common Jobs and CORE reachability survive the change.
+Unadmitted staging for the previous path retires. Admitted Actor output keeps its
+original route, neighbour, deadline and callback through actual completion or
+retirement. Actual withdrawal removes virtual reachability and retires the
+target's original outputs, including those admitted on superseded paths.
+Output-slot pressure retains the current path ledger for a later withdrawal.
 
 `Bridge::output_diagnostic` copies only the exact original Actor token's current
 bridge flags and `Engine::dv_transfer_diagnostic` metadata through the same

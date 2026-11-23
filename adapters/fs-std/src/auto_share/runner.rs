@@ -332,6 +332,7 @@ impl Owner {
         report: &mut RunReport,
         observe: &mut impl FnMut(Event<'_>),
     ) -> Result<(), Error> {
+        self.catalog.check_live()?;
         // A durable Preparing record precedes any native authorization. After restart
         // it is abandoned, never relabeled published or reused as a fresh path/version.
         let mut abandoned = Vec::new();
@@ -444,6 +445,7 @@ impl Owner {
                 objects: snapshot.objects,
                 bytes: snapshot.bytes,
             });
+            self.catalog.check_live()?;
             self.update(snapshot, observe)?;
             let now = Instant::now();
             let mut work = Vec::new();
@@ -717,6 +719,7 @@ impl Owner {
             if self.stop.requested() || expired || Instant::now() >= hard {
                 return Ok(());
             }
+            self.catalog.check_live()?;
             let status = task.task.status();
             if uncertain(status) {
                 self.catalog.phase(id, Phase::Blocked, Vec::new())?;
@@ -842,7 +845,7 @@ impl Owner {
         report: &mut RunReport,
         observe: &mut impl FnMut(Event<'_>),
     ) -> Result<Option<Group>, Error> {
-        self.catalog.check_root()?;
+        self.catalog.check_live()?;
         let version = self.catalog.version(id)?;
         let request = Load {
             path: self.catalog.path(id),

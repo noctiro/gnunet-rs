@@ -1,5 +1,7 @@
 //! Private local named-pipe locations and kernel peer observations.
+mod startup;
 mod stdio;
+pub use startup::StartupPipe;
 use std::{
     ffi::{OsStr, OsString},
     fmt, io,

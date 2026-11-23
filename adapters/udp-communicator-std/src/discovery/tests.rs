@@ -112,7 +112,8 @@ fn native_state_uses_the_platform_sockaddr_profile_without_socket_io() -> Result
     let identity = Identity::from_seed([7; 32]);
     let bytes = state.packet(0, &identity)?;
     let packet = Broadcast::decode(&bytes)?;
-    packet.verify(&address_hash(source, native_profile()?)?)?;
+    let profile = gnunet_service_runtime::network::native_sockaddr_profile()?;
+    packet.verify(&address_hash(source, profile)?)?;
     if state.packet(0, &identity)? != bytes {
         return Err(Error::Conflict);
     }

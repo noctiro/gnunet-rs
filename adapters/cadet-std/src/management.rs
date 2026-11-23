@@ -4,7 +4,7 @@
 use gnunet_cadet::service::Client;
 use gnunet_types::Error;
 use gnunet_wire::official::{
-    MessageHeader,
+    HEADER_LEN, MessageHeader,
     cadet::{PeerIdentities, Request, Response},
 };
 use std::{
@@ -101,6 +101,7 @@ struct Peer {
     encryption: u16,
     paths: u16,
     last_counted_path: u16,
+    best_path_length: u32,
 }
 #[derive(Clone, Copy)]
 struct Path {
@@ -174,6 +175,7 @@ impl Directory {
             encryption: 0,
             paths: 0,
             last_counted_path: u16::MAX,
+            best_path_length: 0,
         });
         let _previous = self.peer_index.insert(id, index);
         Ok(index)
@@ -188,6 +190,10 @@ impl Directory {
         if peers.is_empty() || peers.contains(&self.local) {
             return Err(Error::InvalidInput);
         }
+        let length = u32::try_from(peers.len())
+            .ok()
+            .and_then(|count| count.checked_add(1))
+            .ok_or(Error::Overflow)?;
         // Hashing selects only a collision chain. Equal original identity
         // sequences are still compared in full, so a collision never merges paths.
         let hash = self.path_hash.hash_one(peers);
@@ -220,7 +226,9 @@ impl Directory {
         // Existing path count is strictly below records <= u16::MAX, so the
         // sentinel can never identify an admitted path.
         let marker = u16::try_from(number).map_err(|_| Error::Overflow)?;
-        for id in peers {
+        // Wire lengths include the local identity. A peer within a longer
+        // retained path counts only the prefix through its own position.
+        for (length, id) in (2..=length).zip(peers) {
             let index = *self.peer_index.get(id).ok_or(Error::StaleGeneration)?;
             let peer = &mut self.peers[index];
             if peer.last_counted_path != marker {
@@ -228,6 +236,9 @@ impl Directory {
                 // if an explicit custom provider repeats that identity in it.
                 peer.paths += 1;
                 peer.last_counted_path = marker;
+                if peer.best_path_length == 0 || length < peer.best_path_length {
+                    peer.best_path_length = length;
+                }
             }
         }
         let start = self.identities.len();
@@ -280,8 +291,10 @@ impl Directory {
         }
         let mut snapshot = Snapshot {
             kind,
-            bytes: Vec::new(),
-            entries: 0,
+            wire: SnapshotWire::Rows {
+                bytes: Vec::new(),
+                records: 0,
+            },
         };
         match kind {
             Kind::Peers => {
@@ -290,7 +303,7 @@ impl Directory {
                         Response::PeerInfo {
                             paths: peer.paths,
                             tunnel: if peer.tunnel { 1 } else { 0 },
-                            best_path_length: 0,
+                            best_path_length: peer.best_path_length,
                             peer: peer.id,
                         },
                         self.limits,
@@ -336,36 +349,54 @@ impl Directory {
 /// empty-success default. It is created only by a completed provider capture.
 pub struct Snapshot {
     kind: Kind,
-    bytes: Vec<u8>,
-    entries: usize,
+    wire: SnapshotWire,
+}
+
+enum SnapshotWire {
+    Rows { bytes: Vec<u8>, records: usize },
+    NoRemotePeers([u8; HEADER_LEN]),
 }
 impl Snapshot {
+    /// Capture a composition whose peer domain has no remote owners by design.
+    /// This represents an empty known view for the selected query. A failed or
+    /// disconnected provider must preserve its original failure instead.
+    pub fn no_remote_peers(kind: Kind) -> Result<Self, Error> {
+        let mut end = [0; HEADER_LEN];
+        kind.end().encode(&mut end)?;
+        Ok(Self {
+            kind,
+            wire: SnapshotWire::NoRemotePeers(end),
+        })
+    }
+
     fn append(&mut self, response: Response<'_>, limits: Limits) -> Result<(), Error> {
-        if self.entries >= limits.records {
+        let SnapshotWire::Rows { bytes, records } = &mut self.wire else {
+            return Err(Error::Conflict);
+        };
+        if *records >= limits.records {
             return Err(Error::Capacity);
         }
         let len = response.encoded_len()?;
-        let old = self.bytes.len();
+        let old = bytes.len();
         let end = old.checked_add(len).ok_or(Error::Overflow)?;
         if end > limits.snapshot_bytes {
             return Err(Error::Capacity);
         }
-        if end > self.bytes.capacity() {
+        if end > bytes.capacity() {
             // Amortized growth stays inside the explicit frozen-byte budget;
             // large peer lists do not copy the whole prefix for every record.
-            let target = self
-                .bytes
+            let target = bytes
                 .capacity()
                 .saturating_mul(2)
                 .max(end)
                 .min(limits.snapshot_bytes);
-            self.bytes
+            bytes
                 .try_reserve_exact(target - old)
                 .map_err(|_| Error::Capacity)?;
         }
-        self.bytes.resize(end, 0);
-        response.encode(&mut self.bytes[old..end])?;
-        self.entries += 1;
+        bytes.resize(end, 0);
+        response.encode(&mut bytes[old..end])?;
+        *records += 1;
         Ok(())
     }
     /// Exact original query kind represented by these complete bytes.
@@ -376,17 +407,100 @@ impl Snapshot {
     /// Number of frozen official frames, including the one matching END.
     #[must_use]
     pub const fn records(&self) -> usize {
-        self.entries
+        match &self.wire {
+            SnapshotWire::Rows { records, .. } => *records,
+            SnapshotWire::NoRemotePeers(_) => 1,
+        }
     }
     /// Total explicitly bounded captured wire bytes.
     #[must_use]
     pub fn bytes(&self) -> usize {
-        self.bytes.len()
+        self.wire_bytes().len()
+    }
+    fn wire_bytes(&self) -> &[u8] {
+        match &self.wire {
+            SnapshotWire::Rows { bytes, .. } => bytes,
+            SnapshotWire::NoRemotePeers(end) => end,
+        }
     }
     fn frame(&self, cursor: usize) -> Result<&[u8], Error> {
-        let remaining = self.bytes.get(cursor..).ok_or(Error::StaleGeneration)?;
+        let remaining = self
+            .wire_bytes()
+            .get(cursor..)
+            .ok_or(Error::StaleGeneration)?;
         let len = MessageHeader::decode(remaining)?.size();
         remaining.get(..len).ok_or(Error::Truncated)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "Checks the actual official matching END for each empty view"
+    )]
+    fn local_peer_domain_encodes_only_its_matching_end() -> Result<(), Error> {
+        for (kind, expected) in [
+            (Kind::Peers, Response::PeersEnd),
+            (Kind::Tunnels, Response::TunnelsEnd),
+            (Kind::Paths([1; 32]), Response::PathsEnd),
+        ] {
+            let snapshot = Snapshot::no_remote_peers(kind)?;
+            assert_eq!(snapshot.kind(), kind);
+            assert_eq!(snapshot.records(), 1);
+            assert_eq!(snapshot.bytes(), HEADER_LEN);
+            assert_eq!(Response::decode(snapshot.frame(0)?)?, expected);
+            assert!(snapshot.frame(HEADER_LEN).is_err());
+        }
+        Ok(())
+    }
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "Assert exact official diagnostic frames from a bounded provider snapshot"
+    )]
+    fn peer_list_reports_the_shortest_retained_prefix_including_local_identity() -> Result<(), Error>
+    {
+        let first = [1; 32];
+        let second = [2; 32];
+        let third = [3; 32];
+        let unknown = [4; 32];
+        let mut directory = Directory::new([0; 32], Limits::default())?;
+        directory.path(&[first, second, third])?;
+        directory.path(&[second])?;
+        directory.path(&[first, third, second])?;
+        directory.path(&[first, third, second])?;
+        directory.known_peer(unknown)?;
+
+        let snapshot = directory.snapshot(Kind::Peers)?;
+        let mut cursor = 0;
+        for (peer, paths, best_path_length) in [
+            (first, 2, 2),
+            (second, 3, 2),
+            (third, 2, 3),
+            (unknown, 0, 0),
+        ] {
+            let frame = snapshot.frame(cursor)?;
+            assert_eq!(
+                Response::decode(frame)?,
+                Response::PeerInfo {
+                    paths,
+                    tunnel: 0,
+                    best_path_length,
+                    peer
+                },
+            );
+            cursor += frame.len();
+        }
+        assert_eq!(
+            Response::decode(snapshot.frame(cursor)?)?,
+            Response::PeersEnd
+        );
+        Ok(())
     }
 }
 /// One actual original accepted-MQ query. No public constructor and no wire RID.
@@ -568,7 +682,7 @@ impl<'id> Stream<'id> {
             query,
             cursor: self.cursor,
             length: frame.len(),
-            last: self.cursor + frame.len() == snapshot.bytes.len(),
+            last: self.cursor + frame.len() == snapshot.bytes(),
         };
         self.pending = Some(output);
         self.frame_written = 0;

@@ -71,7 +71,7 @@ fn insufficient_reply_capacity_is_refused_before_vpn_allocation_work() -> Result
         limits(packet.len(), 2 * packet.len() - 1),
         FAMILIES,
     )?;
-    let source = core.attached(Stage::Post)?;
+    let source = core.attached(Stage::Post, ReplyLimit::MAXIMUM)?;
     assert_eq!(
         core.admit(source, ID, &packet, UNTIL, NOW),
         Err(Error::Capacity),
@@ -79,6 +79,29 @@ fn insufficient_reply_capacity_is_refused_before_vpn_allocation_work() -> Result
     );
     assert_eq!(core.pending(), 0);
     assert!(core.next_work(NOW)?.is_none());
+    Ok(())
+}
+
+#[test]
+fn transformed_reply_must_fit_the_original_source_before_allocating() -> Result<(), Error> {
+    let packet = response();
+    let instance = Instance::new();
+    let mut core = Core::new(&instance, limits(packet.len(), 2 * packet.len()), FAMILIES)?;
+    let constrained = ReplyLimit::from_frame_bytes(packet.len() + 15)?;
+    let source = core.attached(Stage::Post, constrained)?;
+    if core.admit(source, ID, &packet, UNTIL, NOW) != Err(Error::TooLarge)
+        || core.next_work(NOW)?.is_some()
+    {
+        return Err(Error::Conflict);
+    }
+    core.source_stopped(source)?;
+    let sufficient = ReplyLimit::from_frame_bytes(packet.len() + 16)?;
+    let source = core.attached(Stage::Post, sufficient)?;
+    let request = core.admit(source, ID, &packet, UNTIL, NOW)?;
+    if !matches!(core.next_work(NOW)?, Some(Work::Allocate { request: actual, .. }) if request == actual)
+    {
+        return Err(Error::Conflict);
+    }
     Ok(())
 }
 
@@ -92,7 +115,7 @@ fn exact_reserved_capacity_completes_all_sections_and_releases_on_original_write
     let packet = response();
     let instance = Instance::new();
     let mut core = Core::new(&instance, limits(packet.len(), 2 * packet.len()), FAMILIES)?;
-    let source = core.attached(Stage::Post)?;
+    let source = core.attached(Stage::Post, ReplyLimit::MAXIMUM)?;
     let request = core.admit(source, ID, &packet, UNTIL, NOW)?;
     for destination in addresses() {
         let Some(Work::Allocate {
@@ -213,7 +236,7 @@ fn a_compression_alias_cannot_skip_final_output_validation() -> Result<(), Error
     packet.extend_from_slice(&[0xc0, 28, 0, 1, 0, 1, 0, 0, 0, 120, 0, 4, 192, 0, 2, 2]);
     let instance = Instance::new();
     let mut core = Core::new(&instance, limits(packet.len(), 2 * packet.len()), FAMILIES)?;
-    let source = core.attached(Stage::Post)?;
+    let source = core.attached(Stage::Post, ReplyLimit::MAXIMUM)?;
     let request = core.admit(source, ID, &packet, UNTIL, NOW)?;
     for suffix in [1, 2] {
         let Some(Work::Allocate { job, .. }) = core.next_work(NOW)? else {
@@ -247,14 +270,14 @@ fn source_replacement_reuses_storage_without_reusing_old_allocation_authority() 
     let packet = response();
     let instance = Instance::new();
     let mut core = Core::new(&instance, limits(packet.len(), 2 * packet.len()), FAMILIES)?;
-    let old = core.attached(Stage::Post)?;
+    let old = core.attached(Stage::Post, ReplyLimit::MAXIMUM)?;
     let old_request = core.admit(old, ID, &packet, UNTIL, NOW)?;
     let Some(Work::Allocate { job, .. }) = core.next_work(NOW)? else {
         return Err(Error::Conflict);
     };
     core.source_stopped(old)?;
     assert_eq!(core.pending(), 0);
-    let fresh = core.attached(Stage::Post)?;
+    let fresh = core.attached(Stage::Post, ReplyLimit::MAXIMUM)?;
     let request = core.admit(fresh, ID, &packet, UNTIL, NOW)?;
     assert_ne!(fresh, old);
     assert_ne!(request, old_request);

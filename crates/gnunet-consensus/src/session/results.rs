@@ -72,9 +72,6 @@ impl<'id> Session<'id> {
         if self.sets[base].members.contains(id) != (change == Change::Remove) {
             return Err(Error::Authentication);
         }
-        if self.blacklisted[peer] != 0 {
-            return Ok(());
-        }
         match kind {
             Round::Union | Round::Inventory => {
                 if change == Change::Add {
@@ -173,11 +170,6 @@ impl<'id> Session<'id> {
                 if kind == Round::Union {
                     self.first_size = self.first_size.max(current_size);
                 }
-                if kind == Round::Inventory
-                    && let Some(size) = self.tasks[t].inventory.take()
-                {
-                    self.sizes[p] = size;
-                }
                 if kind == Round::Echo {
                     self.leaders[key.leader as usize].echo_ballot.commit(p)?;
                 }
@@ -200,6 +192,9 @@ impl<'id> Session<'id> {
             }
             SetEvent::AddLocal { element_type, data }
             | SetEvent::AddRemote { element_type, data } => {
+                if self.blacklisted[self.tasks[t].peer] != 0 {
+                    return Ok(());
+                }
                 if element_type != 25 {
                     return Err(Error::Malformed);
                 }
@@ -207,6 +202,7 @@ impl<'id> Session<'id> {
                 if block.marker != 0 {
                     if block.marker == 1 && kind == Round::Confirm {
                         if matches!(event, SetEvent::AddLocal { .. }) {
+                            block.contested_marker()?;
                             self.tasks[t].remote_marker = true;
                         } else if self.tasks[t].own_contested && data == [0, 0, 1] {
                             self.tasks[t].own_marker_missing = true;
@@ -232,16 +228,35 @@ impl<'id> Session<'id> {
                     }
                     return Ok(());
                 }
-                let element = self.payload(data, now, validator)?;
-                self.record_result(
-                    t,
-                    if matches!(event, SetEvent::AddLocal { .. }) {
-                        Change::Add
-                    } else {
-                        Change::Remove
-                    },
-                    element,
-                )
+                if block.data.len() > self.limits.element_bytes {
+                    return Err(Error::TooLarge);
+                }
+                if block.payload_type > wire::USER_TYPE_MAX {
+                    return Err(Error::InvalidInput);
+                }
+                let _policy = validator.check(block.payload_type, block.data, self.now)?;
+                let removing = matches!(event, SetEvent::AddRemote { .. });
+                // A removal can only name bytes in the original local
+                // snapshot. A local leader's proposal is already fixed by
+                // that snapshot and never includes peer-only LEAD payloads.
+                let original_only = removing
+                    || (kind == Round::Lead && self.tasks[t].key.leader as usize == self.local);
+                let element = if original_only {
+                    match self.pool.find(data, self.abi)? {
+                        Some(element) => element,
+                        None if removing => return Err(Error::Authentication),
+                        None => return Ok(()),
+                    }
+                } else {
+                    let mut free = self.available()?;
+                    self.pool.intern(data, self.abi, self.limits, &mut free)?
+                };
+                let change = if removing {
+                    Change::Remove
+                } else {
+                    Change::Add
+                };
+                self.record_result(t, change, element)
             }
         }
     }

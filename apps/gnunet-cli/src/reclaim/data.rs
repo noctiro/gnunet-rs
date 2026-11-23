@@ -20,6 +20,9 @@ pub(super) fn reply<W: Write>(
     out: &mut Output<'_, W>,
     response: ipc::Response<'_>,
 ) -> Result<bool> {
+    if out.mode == OutputMode::Text {
+        return super::standalone::output::reply(out, response);
+    }
     let (row, success) = match response {
         ipc::Response::Success { rid, result } => (
             json!({"event":"reclaim_result","rid":rid,"result":result,"actual_service_reply":true}),
@@ -172,6 +175,9 @@ pub(super) fn object(response: ipc::Response<'_>) -> Result<Zeroizing<Vec<u8>>> 
     Ok(bytes)
 }
 pub(super) fn observe<W: Write>(out: &mut Output<'_, W>, progress: &Progress<'_>) -> Result<()> {
+    if out.mode == OutputMode::Text {
+        return Ok(());
+    }
     let row = match progress {
         Progress::Connected(epoch) => {
             json!({"event":"reclaim_connected","epoch":epoch.diagnostic()})
@@ -221,6 +227,9 @@ pub(super) fn loss<W: Write>(
     out: &mut Output<'_, W>,
     report: Option<native::Loss<'_>>,
 ) -> Result<()> {
+    if out.mode == OutputMode::Text {
+        return Ok(());
+    }
     if let Some(r) = report {
         out.emit(json!({"event":"reclaim_source_closed","epoch":r.epoch.map(|e|e.diagnostic()),
         "operations":r.operations,"exposed":r.exposed,"control":r.control.map(|c|json!({"control":c.control.diagnostic(),"kind":format!("{:?}",c.kind),"submission":format!("{:?}",c.submission)})),"remote_quiescence":false}))?;

@@ -58,7 +58,7 @@ fn run(startup: gnunet_service_startup::ClientStartup) -> Result<u8, Failure> {
     use gnunet_program_host::{
         logging::Logger,
         policy::Level,
-        program::{self, Defaults, Invocation, NlsDisabled, Preparation},
+        program::{self, Defaults, Invocation, Preparation},
         reporting::Reporter,
         shared_clock::SharedClock,
     };
@@ -69,7 +69,7 @@ fn run(startup: gnunet_service_startup::ClientStartup) -> Result<u8, Failure> {
     )?;
     let arguments = options::Arguments::new();
     let mut logger = Logger::new(b"gnunet-abd", std::process::id(), false)?;
-    let prepared=program::prepare(config,Invocation{binary_name:b"gnunet-abd",help:Some(b"Attribute delegation: select exactly one -U/--createIssuerSide, -C/--createSubjectSide, -S/--signSubjectSide, -g/--collect, -V/--verify. -e selects an existing IDENTITY ego; no private-key argument is accepted. -U uses -a label -s standard ATTR text -T TTL [-P]. -C uses -x signed DEL [-P], verifies the subject matches the ego, label @. -S uses -a ROLE -s 'PUBLIC_KEY [ROLE]' -T absolute-time/never and prints a real signed DEL. -g uses -i ISSUER -a ROLE -e EGO; -V uses -i ISSUER -a ROLE -s SUBJECT [-d 'DEL,...']. No leaves is a valid direct-GNS verification. -F/-B default to both. Subject-role leaves unrepresentable in the official plural IPC fail explicitly, never lose signed role bytes. -T store accepts standard relative/calendar/epoch-seconds/never; signed DEL uses absolute UTC. --timeout bounds the whole original identity/lookup/store/caller/output operation. PROGRAM -c/-L/-l and GNUNET_ARGS use standard configuration. Output is bounded synchronous stdout: the native deadline cannot preempt a blocked OS write. No service is spawned, no unknown mutation replayed."),select_default_filename:true,defaults:Defaults::Native},arguments.options(),std::env::args_os(),&program::Environment::capture(),&mut NlsDisabled,&mut logger,&clock,&mut io::stdout().lock(),&mut io::stderr().lock());
+    let prepared=program::prepare_installed(config,Invocation{binary_name:b"gnunet-abd",help:Some(b"Attribute delegation: select exactly one -U/--createIssuerSide, -C/--createSubjectSide, -S/--signSubjectSide, -g/--collect, -V/--verify. -e selects an existing IDENTITY ego; no private-key argument is accepted. -U uses -a label -s standard ATTR text -T TTL [-P]. -C uses -x signed DEL [-P], verifies the subject matches the ego, label @. -S uses -a ROLE -s 'PUBLIC_KEY [ROLE]' -T absolute-time/never and prints a real signed DEL. -g uses -i ISSUER -a ROLE -e EGO; -V uses -i ISSUER -a ROLE -s SUBJECT [-d 'DEL,...']. No leaves is a valid direct-GNS verification. -F/-B default to both. Subject-role leaves unrepresentable in the official plural IPC fail explicitly, never lose signed role bytes. -T store accepts standard relative/calendar/epoch-seconds/never; signed DEL uses absolute UTC. --timeout bounds the whole original identity/lookup/store/caller/output operation. PROGRAM -c/-L/-l and GNUNET_ARGS use standard configuration. Output is bounded synchronous stdout: the native deadline cannot preempt a blocked OS write. No service is spawned, no unknown mutation replayed."),select_default_filename:true,defaults:Defaults::Native},arguments.options(),std::env::args_os(),&program::Environment::capture(),&mut logger,&clock,&mut io::stdout().lock(),&mut io::stderr().lock());
     let reporter = Reporter::new(logger, clock.clone());
     #[cfg(unix)]
     if let Some(notice) = startup.notice {

@@ -26,6 +26,12 @@ are available only after all32 hashes; TTL remains informational, and
 the existing clock/FOREVER behavior is preserved. The synchronous BLOCK plugin
 uses this same stepper and completes it in its existing call.
 
+`Check` borrows a certificate and `OwnedCheck` retains its original bytes
+across scheduled steps. Both return a `CheckedCertificate` only after all
+hashes pass under a qualified UTC sample. The receipt retains the original
+score, policy, acceptance time and exclusive expiry. A storage owner can
+recheck the exact receipt at its commit boundary with `current_at`.
+
 Miner retains a fixed public certificate and32 best distinct candidate nonces,
 with an explicit starting counter, finite target and no wrap. It keeps the best
 scores rather than reproducing C's lossy first-replacement array strategy;
@@ -55,5 +61,5 @@ not yet rehashed. Afterwards it retains the current best pool; empty
 positions repeat one candidate instead of fabricating additional distinct work. Only `certificate()` after the target is reached exposes completed sorted
 mining work, still without asserting current lifetime or service acceptance.
 
-Native clients, service hosting, durable inventory and CORE/SETU integration
-belong to the [host adapter](../../adapters/revocation-std/README.md).
+See the [host adapter](../../adapters/revocation-std/README.md) for native IPC,
+storage and network integration.

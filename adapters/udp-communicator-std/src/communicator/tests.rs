@@ -101,7 +101,7 @@ pub(super) fn setup(value: &[u8]) -> Result<u32, Box<dyn std::error::Error>> {
 pub(super) async fn owner<'id>(
     local: &Identity,
 ) -> Result<(Communicator<'id>, TcpStream), Box<dyn std::error::Error>> {
-    let socket = DatagramSocket::bind("127.0.0.1:0".parse()?)?;
+    let socket = DatagramSocket::bind("127.0.0.1:0".parse()?, Default::default())?;
     owner_on(local, socket).await
 }
 async fn owner_on<'id>(
@@ -433,7 +433,7 @@ async fn identity_cut_cancels_original_packet_and_reuses_socket_backing_with_fre
             service.read_to_end(&mut tail).await?; // original physical MQ really closed
             let mut packet = [0; 2048];
             check(destination.try_recv(&mut packet).is_err_and(|e| e.kind() == io::ErrorKind::WouldBlock))?;
-            check(DatagramSocket::bind(address).is_err())?; // original default descriptor still held
+            check(DatagramSocket::bind(address, Default::default()).is_err())?; // original default descriptor still held
             check(owner.scratch.as_ptr() == backing && owner.sockets[0].local_address() == address)?;
             check(journal.quiescent()?)?;
             drop(journal);

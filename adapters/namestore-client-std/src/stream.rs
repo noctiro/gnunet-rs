@@ -1,7 +1,7 @@
 //! Independent official iterator/monitor MQ owners sharing the bounded driver.
 use crate::{
     Client, Control, EndpointSource, Epoch, Error, Instance, Limits, Loss, Operation, Progress,
-    SecretKey, clock::RuntimeClock,
+    SecretKey, client::StreamStart, clock::RuntimeClock,
 };
 use gnunet_types::Error as Fault;
 use std::{
@@ -90,8 +90,15 @@ impl<'id> ZoneIterator<'id> {
         until: u64,
         limits: Limits,
     ) -> Result<Self, Error> {
-        let (client, operation) =
-            Client::stream_new(instance, source, zone, filter, None, until, limits)?;
+        let (client, operation) = Client::stream_new(
+            instance,
+            source,
+            zone,
+            filter,
+            StreamStart::Iterate,
+            until,
+            limits,
+        )?;
         Ok(Self {
             inner: Subscription {
                 client,
@@ -128,8 +135,44 @@ impl<'id> Monitor<'id> {
             source,
             zone,
             filter,
-            Some(iterate_first),
+            StreamStart::Monitor {
+                iterate_first,
+                follow: false,
+            },
             until,
+            limits,
+        )?;
+        Ok(Self {
+            inner: Subscription {
+                client,
+                operation,
+                finished: false,
+                close_report: None,
+            },
+        })
+    }
+    /// Start a monitor with a finite initial synchronization deadline. A real
+    /// SYNC releases that deadline for this subscription. Future NEXT controls
+    /// still require individual deadlines, and loss retires the original source.
+    pub fn follow(
+        instance: &'id Instance,
+        source: EndpointSource,
+        zone: Option<&SecretKey>,
+        iterate_first: bool,
+        filter: u16,
+        initial_until: u64,
+        limits: Limits,
+    ) -> Result<Self, Error> {
+        let (client, operation) = Client::stream_new(
+            instance,
+            source,
+            zone,
+            filter,
+            StreamStart::Monitor {
+                iterate_first,
+                follow: true,
+            },
+            initial_until,
             limits,
         )?;
         Ok(Self {
@@ -177,7 +220,7 @@ macro_rules! common {
             }
             /// Prepare one finite actual NEXT after START whole write. Added credit is
             /// bounded and becomes effective only on this immutable control's full write.
-            /// Its deadline is capped by the original stream's deadline, never renewed.
+            /// An active stream deadline also caps this control's own deadline.
             pub fn next(&mut self, limit: u64, until: u64) -> Result<Control<'id>, Error> {
                 if self.inner.finished {
                     return Err(Fault::Closed.into());

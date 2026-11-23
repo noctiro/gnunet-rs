@@ -27,8 +27,7 @@ use gnunet_wire::official::cadet_peer::{ChannelMessage, PathPeers, PeerMessage};
 use std::{
     error::Error as StdError,
     fmt,
-    fs::File,
-    io::{self, Read, Write},
+    io::{self, Write},
     path::PathBuf,
     sync::Arc,
     time::Duration,
@@ -42,15 +41,10 @@ const CAPACITY: usize = 512;
 
 // The only seed this example creates is its own independent Rust counterpart.
 // Every LocalKeys scalar and AEAD nonce also comes from fresh OS randomness.
-struct OsEntropy(File);
-impl OsEntropy {
-    fn new() -> Result<Self, Failure> {
-        Ok(Self(File::open("/dev/urandom")?))
-    }
-}
+struct OsEntropy;
 impl Entropy for OsEntropy {
     fn fill(&mut self, out: &mut [u8]) -> Result<(), Error> {
-        self.0.read_exact(out).map_err(|_| Error::Entropy)
+        gnunet_native::entropy::fill(out).map_err(|_| Error::Entropy)
     }
 }
 
@@ -591,7 +585,7 @@ async fn run(path: PathBuf) -> Result<(), Failure> {
     let clock: Arc<dyn RuntimeClock> = Arc::new(SystemClock);
     let timebase = Timebase::new(clock.clone())?;
     let local = observe(path.clone(), clock.clone(), deadline).await?;
-    let mut entropy = OsEntropy::new()?;
+    let mut entropy = OsEntropy;
     let alice_remote = counterpart(local, Role::Alice, &mut entropy, deadline)?;
     let betty_remote = counterpart(local, Role::Betty, &mut entropy, deadline)?;
     // Two fixed registry rows are reused between roles while the one provider

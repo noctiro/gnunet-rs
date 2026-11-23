@@ -46,7 +46,9 @@ copy reference bugs where view cancellation becomes infinite, a view update
 crosses subgroups, or main-group stream observations enter a restricted
 subgroup's sampler. Peer PULL_REPLY lists respect the smaller CADET
 application-frame bound, independently of the IPC view limit; an oversized
-view supplies a uniformly selected bounded subset.
+view supplies a uniformly selected bounded subset. On receive, the frame is
+validated against the wire bound and candidates are admitted against the local
+peer budget.
 
 ## Limits
 

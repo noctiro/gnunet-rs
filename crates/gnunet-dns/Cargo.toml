@@ -10,7 +10,24 @@ workspace = true
 
 [features]
 default = []
+dnssec-crypto = [
+    "dep:crypto-bigint",
+    "dep:ed448-goldilocks",
+    "dep:gnunet-crypto",
+    "dep:p256",
+    "dep:p384",
+    "dep:sha1",
+    "dep:sha2",
+]
+tlsa-hash = ["dep:sha2"]
 
 [dependencies]
 gnunet-types.workspace = true
 gnunet-wire.workspace = true
+crypto-bigint = { workspace = true, optional = true }
+ed448-goldilocks = { workspace = true, optional = true }
+gnunet-crypto = { workspace = true, optional = true }
+p256 = { workspace = true, optional = true }
+p384 = { workspace = true, optional = true }
+sha1 = { workspace = true, optional = true }
+sha2 = { workspace = true, optional = true }

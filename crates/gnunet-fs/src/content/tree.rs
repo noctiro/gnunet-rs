@@ -51,6 +51,12 @@ impl<'a> FileEncoder<'a> {
     pub fn content(&self) -> Option<Content> {
         self.frontier.content()
     }
+    /// Authenticate an existing plaintext file by comparing the verified complete
+    /// encoding with its expected CHK. The returned proof covers no storage fact.
+    #[must_use]
+    pub fn verified(&self, expected: Content) -> Option<super::VerifiedFile> {
+        super::VerifiedFile::from_encoder(self, expected)
+    }
     /// Seal exactly the next data leaf. A pending index returns WouldBlock.
     pub fn push_data<'b>(
         &mut self,

@@ -5,6 +5,34 @@ use gnunet_json::{JsonString, Value, ValueKind};
 use gnunet_types::Error;
 use gnunet_wire::official::identity::KeyType;
 
+/// The official HTTP status and default English hint for an error code used by
+/// IDENTITY or NAMESTORE REST handlers. Unknown future codes remain errors.
+pub const fn service_error(code: u32) -> (u16, &'static str) {
+    match code {
+        1 => (500, "Unknown and unspecified error."),
+        101 => (500, "Communication with service failed."),
+        200 => (404, "Ego not found."),
+        201 => (409, "Identifier already in use for another ego."),
+        202 => (500, "The given ego is invalid or malformed."),
+        5000 => (500, "Unknown namestore error."),
+        5001 | 5004 => (500, "Zone iteration failed."),
+        5002 => (404, "Zone not found."),
+        5003 => (404, "Record not found."),
+        5005 => (404, "Zone does not contain any records."),
+        5006 => (500, "Failed to lookup record."),
+        5007 => (400, "No records given."),
+        5008 => (400, "Record data invalid."),
+        5009 => (400, "No label given."),
+        5010 => (404, "No results given."),
+        5011 => (409, "Record already exists."),
+        5012 => (500, "Record size exceeds maximum limit."),
+        5013 => (500, "There was an error in the database backend."),
+        5014 => (500, "Failed to store the given records."),
+        5015 => (400, "Label invalid or malformed."),
+        _ => (500, "Service error"),
+    }
+}
+
 /// POST /identity JSON, with the actual default ECDSA type.
 #[derive(Clone, Copy, Debug)]
 pub struct IdentityCreate<'a> {

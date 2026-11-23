@@ -342,6 +342,16 @@ impl ConnectBack {
         bounds: Bounds,
         now: u64,
     ) -> Result<Self, Failure> {
+        Self::begin_with_socket_policy(remote, local, bounds, now, &Default::default())
+    }
+    /// Preserve the original listener owner's policy before the reversal connect.
+    pub fn begin_with_socket_policy(
+        remote: SocketAddr,
+        local: EddsaPublicKey,
+        bounds: Bounds,
+        now: u64,
+        socket_policy: &gnunet_service_runtime::network::SocketPolicy,
+    ) -> Result<Self, Failure> {
         let cause = if bounds.expired(now) {
             Some(Cause::Deadline)
         } else if !remote.is_ipv4() || remote.port() == 0 {
@@ -372,12 +382,15 @@ impl ConnectBack {
                 bounds,
             });
         }
-        let connecting = NativeConnect::begin(remote).map_err(|error| Failure {
-            cause: Cause::Native(error),
-            read: 0,
-            written: 0,
-            bounds,
-        })?;
+        let connecting =
+            NativeConnect::begin_with_socket_policy(remote, socket_policy).map_err(|error| {
+                Failure {
+                    cause: Cause::Native(error),
+                    read: 0,
+                    written: 0,
+                    bounds,
+                }
+            })?;
         if bounds.expired(now) {
             drop(connecting);
             return Err(Failure {

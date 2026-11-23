@@ -43,6 +43,11 @@ impl<'id, 'pils, 'pool, 'slots, 'buf> Runtime<'id, 'pils, 'pool, 'slots, 'buf> {
                 });
                 send.orphaned = true;
             }
+            // No native operation exists for an admitted-but-queued body.
+            // Its failed MQ generation cannot authorize a later submission.
+            if row.send.as_ref().is_some_and(Sending::queued) {
+                row.send = None;
+            }
             if let Some(incoming) = row.incoming.take() {
                 // This is local retirement of failed callback authority, not a
                 // successful Received and not a message replay on the new MQ.
@@ -66,7 +71,7 @@ impl<'id, 'pils, 'pool, 'slots, 'buf> Runtime<'id, 'pils, 'pool, 'slots, 'buf> {
             }
             row.advertised = false;
             row.queue_written = false;
-            row.capacity_needed = false;
+            row.admission = AdmissionCredit::Available;
             if row.closing {
                 // Its old DOWN/SENT debt is retired with that physical MQ.
                 // The original native driver must still actually finish.
@@ -87,7 +92,10 @@ impl<'id, 'pils, 'pool, 'slots, 'buf> Runtime<'id, 'pils, 'pool, 'slots, 'buf> {
     pub(super) fn addresses_restored(&self) -> Result<bool, Fault> {
         if let Some(nat) = &self.nat {
             Ok(nat.notification()?.is_none()
-                && self.advertisements.iter().all(|a| a.wire != 0 && a.written)
+                && self
+                    .advertisements
+                    .iter()
+                    .all(|a| a.socket.is_none() || a.wire != 0 && a.written)
                 // Every change is applied to this bounded cache before its
                 // original NAT notification is released. With no pending
                 // notification, matching counts plus the per-claim whole-write
@@ -110,11 +118,9 @@ impl<'id, 'pils, 'pool, 'slots, 'buf> Runtime<'id, 'pils, 'pool, 'slots, 'buf> {
             for offset in 0..self.advertisements.len() {
                 let i = (self.advert_cursor + offset) % self.advertisements.len();
                 let advert = &self.advertisements[i];
-                if advert.wire != 0 {
+                let Some(socket) = advert.socket.filter(|_| advert.wire == 0) else {
                     continue;
-                }
-                let address = nat.address(advert.id)?.address()?;
-                let socket = socket_address(address.address()).ok_or(Protocol::Unsupported)?;
+                };
                 let canonical = Address::new(self.profile, socket)?.canonical()?;
                 if !self.ipc.room(1, 21 + canonical.as_bytes().len()) {
                     return Ok(false);

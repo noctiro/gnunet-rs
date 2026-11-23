@@ -1,6 +1,18 @@
 //! Shared official GNUnet peer-identity text conversion at the CLI boundary.
+#[cfg(any(
+    feature = "cadet",
+    feature = "peerstore",
+    all(feature = "transport", any(unix, windows)),
+    feature = "vpn"
+))]
 use std::{error::Error, ffi::OsStr};
 
+#[cfg(any(
+    feature = "cadet",
+    feature = "peerstore",
+    all(feature = "transport", any(unix, windows)),
+    feature = "vpn"
+))]
 pub(super) fn parse(value: &OsStr) -> Result<[u8; 32], Box<dyn Error>> {
     let text = value
         .to_str()
@@ -48,6 +60,15 @@ pub(super) fn parse(value: &OsStr) -> Result<[u8; 32], Box<dyn Error>> {
     Ok(peer)
 }
 
+#[cfg(any(
+    feature = "cadet",
+    feature = "did",
+    feature = "identity",
+    feature = "namestore",
+    feature = "peerstore",
+    feature = "reclaim",
+    feature = "regex"
+))]
 pub(super) fn hexadecimal(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut output = String::with_capacity(bytes.len() * 2);

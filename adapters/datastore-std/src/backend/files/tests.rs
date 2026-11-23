@@ -55,10 +55,11 @@ fn applied_snapshot_can_be_settled_while_the_old_image_is_still_pinned()
             )?,
             candidate.identity
         );
-        #[cfg(unix)]
-        assert_eq!(files.directory_sync(), Some(DirectorySync::Synchronized));
-        #[cfg(windows)]
-        assert_eq!(files.directory_sync(), Some(DirectorySync::Unavailable));
+        let barrier = parent
+            .sync()?
+            .combine(root.sync()?)
+            .combine(files.values.sync()?);
+        assert_eq!(files.directory_sync(), Some(barrier));
         Ok(())
     })();
     drop(root);

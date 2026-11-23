@@ -85,12 +85,19 @@ impl Arguments {
             Arc::new(gnunet_config::ProjectData::default()),
             Default::default(),
         )?;
-        if let Some(path) = self.config {
+        if let Some(path) = self.config.as_deref() {
             // These commands have no global PROGRAM. Only the named main
             // file and its official include
             // semantics are requested; do not add ambient user/default files.
-            c.load_explicit(None, Some(&path))?;
+            c.load_explicit(None, Some(path))?;
         }
+        self.select_configured(&c)
+    }
+
+    pub(super) fn select_configured(
+        self,
+        c: &Configuration,
+    ) -> Result<MetadataSettings, Box<dyn Error>> {
         let configured = self
             .extractors
             .as_deref()

@@ -160,9 +160,24 @@ Win32/UCRT owners, restores temporary standard-table changes and returns typed
 partial-installation failures through the original `io::Error` chain. See the
 [native ownership contract](../native-std/API.md#process-standard-streams).
 
-## Windows localization
+## Installed message catalogs
 
-Enabled NLS requires a trusted GNU libintl DLL at a fully qualified path. The
+The ordinary PROGRAM and SERVICE entrypoints read GNU `.mo` catalogs from the
+project locale directory. The staged GNUnet prefix uses
+`share/locale/<locale>/LC_MESSAGES/gnunet.mo`. Selection follows `LC_ALL`,
+`LC_MESSAGES` and `LANG`, with the GNU `LANGUAGE` preference list for
+non-`C` locales. Catalogs support UTF-8, plural rules and GNU MO revisions 0
+and 1. A missing message uses the source text.
+
+This entrypoint owns the catalogs as data and leaves the process C locale
+unchanged. Embedders using `program::prepare` can instead select the explicit
+`NlsDisabled` or native `ProcessLocale` profile.
+[Staged catalogs](../../tools/xtask/node/README.md#message-catalogs)
+
+## Windows native gettext adapter
+
+The native `ProcessLocale` adapter requires a trusted GNU libintl DLL at a
+fully qualified path. The
 native loader owns its reference and preserves load/export errors. The selected
 ABI includes `libintl_setlocale`, GNU LC_MESSAGES1729 and
 `libintl_wbindtextdomain`: catalog directories are bound as absolute UTF-16 paths
@@ -171,7 +186,7 @@ category and is refused before loading. An unavailable export or failed binding
 is an enabled-NLS error. The explicit disabled-NLS profile remains separate.
 
 Translation/context clones retain their documented library and locale authority.
-The native loader test exercises Windows system exports; it does not establish
-GNU gettext catalog selection. Qualification remains in the
-[central status](../../IMPLEMENTATION_STATUS.md#pending-qualification).
+The native loader test exercises Windows system exports. GNU gettext catalog
+selection remains a native acceptance case. See the
+[test matrix](../../tests/README.md#continuous-integration).
 See [GNU directory binding](https://www.gnu.org/software/gettext/manual/gettext.html).

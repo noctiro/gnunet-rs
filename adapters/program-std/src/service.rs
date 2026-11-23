@@ -109,6 +109,7 @@ pub fn prepare(
     stderr: &mut impl Write,
 ) -> Result<Preparation, Failure> {
     logger.bind_clock(clock.clone());
+    logger.bind_installed_translations(project)?;
     let config = Target::new(Filename {
         path: None,
         error: None,

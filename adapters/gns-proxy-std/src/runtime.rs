@@ -207,7 +207,13 @@ impl Runtime {
                     socket.set_only_v6(true)?;
                     guard()?;
                 }
+                #[cfg(unix)]
                 socket.set_reuse_address(true)?;
+                #[cfg(windows)]
+                {
+                    use std::os::windows::io::AsSocket;
+                    gnunet_native::network::set_exclusive_address_use(socket.as_socket())?;
+                }
                 guard()?;
                 socket.set_nonblocking(true)?;
                 guard()?;

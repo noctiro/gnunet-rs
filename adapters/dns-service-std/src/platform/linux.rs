@@ -1,9 +1,8 @@
 //! Linux interception controls and exclusive TUN provisioning.
-use super::{Options, pump, validate};
+use super::{Options, pump, routing::Routing, validate};
 use gnunet_tun_host::{Action, AsyncTun, OwnedTun, Timing};
 use nix::unistd::{Uid, getegid, geteuid, getuid, seteuid};
 use std::{io, time::Duration};
-#[path = "control.rs"]
 mod control;
 /// Real helper execution; caller supplies current-thread Tokio runtime. Normal
 /// zero exit is available only after original controls and source close succeed.
@@ -23,6 +22,7 @@ pub async fn run(options: Options) -> io::Result<()> {
     crate::transport::check_group(parent)?;
     let real_uid = getuid();
     let gid = getegid().as_raw();
+    let routing = (!options.skip_routing).then(Routing::system).transpose()?;
     let pump = pump::Pump::new()?;
     let mut tun = OwnedTun::open_linux_exclusive(
         Some(&options.interface),
@@ -31,10 +31,8 @@ pub async fn run(options: Options) -> io::Result<()> {
             packet_bytes: 65527,
         },
     )?;
-    let mut controls = if options.skip_routing {
-        None
-    } else {
-        match control::Controls::acquire(&tun.info().name, gid).await {
+    let mut controls = if let Some(routing) = routing {
+        match control::Controls::acquire(tun.info().index, gid, routing).await {
             Ok(c) => Some(c),
             Err(e) => {
                 let close = tun.close();
@@ -46,6 +44,8 @@ pub async fn run(options: Options) -> io::Result<()> {
                 };
             }
         }
+    } else {
+        None
     };
     let startup = (|| -> io::Result<()> {
         for action in [

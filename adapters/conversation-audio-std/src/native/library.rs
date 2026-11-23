@@ -51,11 +51,30 @@ mod unix {
     }
     impl Library {
         pub(crate) fn open(names: &[&CStr], operation: &'static str) -> Result<Rc<Self>, Error> {
+            Self::open_with(names, operation, 0)
+        }
+
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
+        pub(crate) fn open_resident(
+            names: &[&CStr],
+            operation: &'static str,
+        ) -> Result<Rc<Self>, Error> {
+            // GStreamer registers GLib types and other process-lifetime state.
+            Self::open_with(names, operation, libc::RTLD_NODELETE)
+        }
+
+        fn open_with(
+            names: &[&CStr],
+            operation: &'static str,
+            flags: libc::c_int,
+        ) -> Result<Rc<Self>, Error> {
             let mut failure = None;
             for name in names {
                 // SAFETY: Each fixed library name is NUL-terminated. NOW/LOCAL are
                 // standard loader flags; no symbol is called until its ABI is bound.
-                let raw = unsafe { libc::dlopen(name.as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL) };
+                let raw = unsafe {
+                    libc::dlopen(name.as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL | flags)
+                };
                 if let Some(handle) = NonNull::new(raw) {
                     return Ok(Rc::new(Self { handle }));
                 }

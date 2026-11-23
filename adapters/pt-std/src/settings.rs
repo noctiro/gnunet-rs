@@ -75,6 +75,7 @@ impl Settings {
         native.dns.requests = pure.requests;
         native.vpn.operations = pure.requests;
         native.dns.input_timeout = native.control_timeout;
+        native.vpn.input_timeout = native.control_timeout;
         native.dns.source_bytes = number(c, b"DNS_OUTPUT_BYTES", native.dns.source_bytes)?;
         let out = Self {
             families: Families {

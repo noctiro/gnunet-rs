@@ -29,4 +29,4 @@ workspace = true
 gnunet-native.workspace = true
 gnunet-pils-host = { workspace = true, features = ["service"] }
 socket2.workspace = true
-tokio = { workspace = true, features = ["macros"] }
+tokio = { workspace = true, features = ["macros", "test-util"] }

@@ -11,13 +11,27 @@
 //! Message955 is registered upstream but its malicious handler is disabled in
 //! the normal build and is deliberately absent from these normal operations.
 
-use super::{Frame, MessageHeader, MessageType, RelativeTime, message_type as mt};
+use super::{
+    Frame, HEADER_LEN, MAX_MESSAGE_SIZE, MessageHeader, MessageType, RelativeTime,
+    cadet::MAX_APPLICATION_MESSAGE_SIZE, message_type as mt,
+};
 use gnunet_types::Error;
 
 /// Exact public peer identity extent.
 pub const PEER_BYTES: usize = 32;
 /// Exact subgroup/CADET port hash extent.
 pub const GROUP_BYTES: usize = 64;
+
+const U32_LIST_PREFIX: usize = HEADER_LEN + size_of::<u32>();
+const VIEW_COUNT_OFFSET: usize = HEADER_LEN + size_of::<u32>();
+const VIEW_REPLY_PREFIX: usize = VIEW_COUNT_OFFSET + size_of::<u64>();
+const STREAM_REPLY_PREFIX: usize = HEADER_LEN + size_of::<u64>();
+
+/// Largest RPS pull reply peer list that fits in one CADET application message.
+pub const MAX_PULL_REPLY_PEERS: usize =
+    (MAX_APPLICATION_MESSAGE_SIZE - U32_LIST_PREFIX) / PEER_BYTES;
+/// Largest view reply peer list that fits in the native IPC frame.
+pub const MAX_VIEW_REPLY_PEERS: usize = (MAX_MESSAGE_SIZE - VIEW_REPLY_PREFIX) / PEER_BYTES;
 
 fn prefix(input: &[u8], size: usize) -> Result<&[u8], Error> {
     input.get(..size).ok_or(Error::Truncated)
@@ -125,19 +139,19 @@ impl<'a> PeerMessage<'a> {
         let frame = Frame::decode(input)?;
         match frame.header().message_type() {
             mt::RPS_PP_CHECK_LIVE => {
-                fixed(input, 4)?;
+                fixed(input, HEADER_LEN)?;
                 Ok(Self::CheckLive)
             }
             mt::RPS_PP_PUSH => {
-                fixed(input, 4)?;
+                fixed(input, HEADER_LEN)?;
                 Ok(Self::Push)
             }
             mt::RPS_PP_PULL_REQUEST => {
-                fixed(input, 4)?;
+                fixed(input, HEADER_LEN)?;
                 Ok(Self::PullRequest)
             }
             mt::RPS_PP_PULL_REPLY => Ok(Self::PullReply {
-                peers: peers(input, 8, u32_at(input, 4)?)?,
+                peers: peers(input, U32_LIST_PREFIX, u32_at(input, HEADER_LEN)?)?,
             }),
             _ => Err(Error::Unsupported),
         }
@@ -155,8 +169,8 @@ impl<'a> PeerMessage<'a> {
     /// Complete bounded frame size; this does not admit a native message.
     pub fn encoded_len(self) -> Result<usize, Error> {
         match self {
-            Self::PullReply { peers } => size(self.message_type(), 8, peers.len()),
-            _ => Ok(4),
+            Self::PullReply { peers } => size(self.message_type(), U32_LIST_PREFIX, peers.len()),
+            _ => Ok(HEADER_LEN),
         }
     }
     /// Encode directly into caller storage; preflight failure changes no bytes.
@@ -164,8 +178,9 @@ impl<'a> PeerMessage<'a> {
         let size = self.encoded_len()?;
         begin(output, self.message_type(), size)?;
         if let Self::PullReply { peers } = self {
-            output[4..8].copy_from_slice(&(peers.len() as u32).to_be_bytes());
-            write_peers(&mut output[8..size], peers);
+            output[HEADER_LEN..U32_LIST_PREFIX]
+                .copy_from_slice(&(peers.len() as u32).to_be_bytes());
+            write_peers(&mut output[U32_LIST_PREFIX..size], peers);
         }
         Ok(size)
     }
@@ -211,7 +226,7 @@ impl<'a> ClientRequest<'a> {
         let frame = Frame::decode(input)?;
         match frame.header().message_type() {
             mt::RPS_CS_SEED => Ok(Self::Seed {
-                peers: peers(input, 8, u32_at(input, 4)?)?,
+                peers: peers(input, U32_LIST_PREFIX, u32_at(input, HEADER_LEN)?)?,
             }),
             mt::RPS_CS_SUB_START => {
                 fixed(input, 80)?;
@@ -264,7 +279,7 @@ impl<'a> ClientRequest<'a> {
     /// Complete bounded frame size, with no per-message allocation.
     pub fn encoded_len(self) -> Result<usize, Error> {
         match self {
-            Self::Seed { peers } => size(self.message_type(), 8, peers.len()),
+            Self::Seed { peers } => size(self.message_type(), U32_LIST_PREFIX, peers.len()),
             Self::SubStart { .. } => Ok(80),
             Self::SubStop { .. } => Ok(68),
             Self::ViewRequest { .. } => Ok(8),
@@ -277,8 +292,9 @@ impl<'a> ClientRequest<'a> {
         begin(output, self.message_type(), size)?;
         match self {
             Self::Seed { peers } => {
-                output[4..8].copy_from_slice(&(peers.len() as u32).to_be_bytes());
-                write_peers(&mut output[8..size], peers);
+                output[HEADER_LEN..U32_LIST_PREFIX]
+                    .copy_from_slice(&(peers.len() as u32).to_be_bytes());
+                write_peers(&mut output[U32_LIST_PREFIX..size], peers);
             }
             Self::SubStart {
                 reserved,
@@ -323,16 +339,22 @@ impl<'a> ClientResponse<'a> {
         let frame = Frame::decode(input)?;
         match frame.header().message_type() {
             mt::RPS_CS_DEBUG_VIEW_REPLY => {
-                let p = prefix(input, 16)?;
+                let p = prefix(input, VIEW_REPLY_PREFIX)?;
                 Ok(Self::View {
-                    id: p[4..8].try_into().map_err(|_| Error::Truncated)?,
-                    peers: peers(input, 16, profile.read(&p[8..16])?)?,
+                    id: p[HEADER_LEN..VIEW_COUNT_OFFSET]
+                        .try_into()
+                        .map_err(|_| Error::Truncated)?,
+                    peers: peers(
+                        input,
+                        VIEW_REPLY_PREFIX,
+                        profile.read(&p[VIEW_COUNT_OFFSET..])?,
+                    )?,
                 })
             }
             mt::RPS_CS_DEBUG_STREAM_REPLY => {
-                let p = prefix(input, 12)?;
+                let p = prefix(input, STREAM_REPLY_PREFIX)?;
                 Ok(Self::Stream {
-                    peers: peers(input, 12, profile.read(&p[4..12])?)?,
+                    peers: peers(input, STREAM_REPLY_PREFIX, profile.read(&p[HEADER_LEN..])?)?,
                 })
             }
             _ => Err(Error::Unsupported),
@@ -358,9 +380,9 @@ impl<'a> ClientResponse<'a> {
         size(
             self.message_type(),
             if matches!(self, Self::View { .. }) {
-                16
+                VIEW_REPLY_PREFIX
             } else {
-                12
+                STREAM_REPLY_PREFIX
             },
             self.peers().len(),
         )
@@ -374,13 +396,15 @@ impl<'a> ClientResponse<'a> {
         let peers = self.peers();
         let start = match self {
             Self::View { id, .. } => {
-                output[4..8].copy_from_slice(&id);
-                output[8..16].copy_from_slice(&profile.write(peers.len() as u32));
-                16
+                output[HEADER_LEN..VIEW_COUNT_OFFSET].copy_from_slice(&id);
+                output[VIEW_COUNT_OFFSET..VIEW_REPLY_PREFIX]
+                    .copy_from_slice(&profile.write(peers.len() as u32));
+                VIEW_REPLY_PREFIX
             }
             Self::Stream { .. } => {
-                output[4..12].copy_from_slice(&profile.write(peers.len() as u32));
-                12
+                output[HEADER_LEN..STREAM_REPLY_PREFIX]
+                    .copy_from_slice(&profile.write(peers.len() as u32));
+                STREAM_REPLY_PREFIX
             }
         };
         write_peers(&mut output[start..size], peers);

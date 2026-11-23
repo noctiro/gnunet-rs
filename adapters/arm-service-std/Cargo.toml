@@ -25,6 +25,9 @@ socket2.workspace = true
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+tokio = { workspace = true, features = ["sync"] }
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros"] }
 

@@ -19,6 +19,21 @@ pub struct ExtractedObject {
     /// Actual optional native provider observations for this descriptor.
     pub provider: Option<gnunet_extractor_host::Observation>,
 }
+
+/// Synchronous metadata inspection phases over the descriptor walk.
+pub enum InspectionEvent<'a> {
+    /// The current descriptor was accepted for metadata inspection.
+    Scanning {
+        /// Path relative to the originally selected source.
+        relative: &'a Path,
+        /// The actual descriptor is a directory.
+        directory: bool,
+    },
+    /// The regular file's metadata and keywords were selected.
+    Extracted(&'a Path),
+    /// The descriptor walk and metadata provider have finished cleanly.
+    Complete,
+}
 impl ExtractedObject {
     /// Actual retained Rust storage for this result, excluding allocator/RSS
     /// overhead and the independent provider workspace.
@@ -95,6 +110,11 @@ impl Frame {
         )
     }
 }
+struct Sink<V, E> {
+    visit: V,
+    observe: E,
+}
+
 fn emit<C: FnMut(Progress) -> Control>(
     extractor: &mut Extractor<'_, C>,
     file: &File,
@@ -102,10 +122,17 @@ fn emit<C: FnMut(Progress) -> Control>(
     directory: bool,
     limits: Limits,
     report: &mut InspectionReport,
-    visit: &mut impl FnMut(ExtractedObject) -> Result<(), Error>,
+    sink: &mut Sink<
+        impl FnMut(ExtractedObject) -> Result<(), Error>,
+        impl FnMut(InspectionEvent<'_>) -> Result<(), Error>,
+    >,
 ) -> Result<(), Error> {
     extractor.context.check()?;
     let original = source::stamp(file).map_err(source_error)?;
+    (sink.observe)(InspectionEvent::Scanning {
+        relative,
+        directory,
+    })?;
     let maximum = extractor
         .policy
         .max_metadata_bytes
@@ -151,6 +178,9 @@ fn emit<C: FnMut(Progress) -> Control>(
         keywords,
         provider: object.provider,
     };
+    if !directory {
+        (sink.observe)(InspectionEvent::Extracted(relative))?;
+    }
     let owned = object.retained_bytes()?;
     {
         let mut budget = extractor.context.budget.borrow_mut();
@@ -183,7 +213,7 @@ fn emit<C: FnMut(Progress) -> Control>(
             .ok_or(Error::Policy)?,
     };
     *report = next;
-    visit(object)?;
+    (sink.visit)(object)?;
     extractor.context.check()?;
     if source::stamp(file).map_err(source_error)? != original {
         return Err(Error::SourceChanged);
@@ -191,8 +221,9 @@ fn emit<C: FnMut(Progress) -> Control>(
     Ok(())
 }
 
-/// Inspect selected metadata and automatic terms without hashing/encrypting or
-/// copying file payloads into a repository. The caller supplies one synchronous
+/// Inspect selected metadata and automatic terms without preparing publication
+/// payloads. Restored PDF bindings verify the original document digest when used.
+/// The caller supplies one synchronous
 /// worker and a bounded streaming sink; this function creates no thread, socket
 /// or artifact. Existing descriptor-root scanning refuses links/special files.
 /// Native plugin and filesystem calls cannot be forcibly preempted; control is
@@ -202,11 +233,26 @@ fn emit<C: FnMut(Progress) -> Control>(
 pub fn inspect_with_metadata(
     input: &Path,
     limits: Limits,
+    policy: Policy,
+    metadata: MetadataSettings,
+    control: impl FnMut(Progress) -> Control,
+    visit: impl FnMut(ExtractedObject) -> Result<(), Error>,
+) -> Result<InspectionReport, Box<InspectionFailure>> {
+    inspect_observed(input, limits, policy, metadata, control, visit, |_| Ok(()))
+}
+
+/// Inspect through the same bounded worker and additionally observe actual
+/// discovery, extraction and completion phases in descriptor-walk order.
+pub fn inspect_observed(
+    input: &Path,
+    limits: Limits,
     mut policy: Policy,
     metadata: MetadataSettings,
     control: impl FnMut(Progress) -> Control,
-    mut visit: impl FnMut(ExtractedObject) -> Result<(), Error>,
+    visit: impl FnMut(ExtractedObject) -> Result<(), Error>,
+    observe: impl FnMut(InspectionEvent<'_>) -> Result<(), Error>,
 ) -> Result<InspectionReport, Box<InspectionFailure>> {
+    let mut sink = Sink { visit, observe };
     let mut report = InspectionReport::default();
     let outcome = (|| -> Result<(), Error> {
         policy.extract &= metadata.automatic_keywords_enabled();
@@ -224,19 +270,13 @@ pub fn inspect_with_metadata(
             }),
         };
         context.check()?;
+        let mut extractor = Extractor::new(input, policy, limits, &context, &metadata)?;
         let selected_file = if input.file_name().is_none() {
             InputDir::open(input)?.descriptor().try_clone()?
         } else {
             source::open_source(input)?
         };
         let selected = source::stamp(&selected_file).map_err(source_error)?;
-        let mut extractor = Extractor::new(
-            input,
-            policy,
-            limits,
-            &context,
-            metadata.format_extraction_enabled(),
-        )?;
         extractor.manual = metadata.manual();
         extractor.provider = metadata.open(&context, policy, limits.max_file_bytes)?;
         let result = (|| -> Result<(), Error> {
@@ -252,7 +292,7 @@ pub fn inspect_with_metadata(
                     false,
                     limits,
                     &mut report,
-                    &mut visit,
+                    &mut sink,
                 );
             }
             let cap = limits.tree;
@@ -323,7 +363,7 @@ pub fn inspect_with_metadata(
                         true,
                         limits,
                         &mut report,
-                        &mut visit,
+                        &mut sink,
                     )?;
                 }
                 let depth = stack.len();
@@ -364,7 +404,7 @@ pub fn inspect_with_metadata(
                     directory,
                     limits,
                     &mut report,
-                    &mut visit,
+                    &mut sink,
                 )?;
                 parent.source.open(index).map_err(source_error)?;
                 if directory {
@@ -390,7 +430,8 @@ pub fn inspect_with_metadata(
             }
             Ok(())
         })();
-        metadata::finish(extractor.provider.take(), result)
+        metadata::finish(extractor.provider.take(), result)?;
+        (sink.observe)(InspectionEvent::Complete)
     })();
     outcome
         .map(|()| report)

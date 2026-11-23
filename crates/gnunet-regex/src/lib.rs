@@ -1,6 +1,6 @@
 //! Pure GNUnet REGEX grammar, matching, compressed states and DHT artifacts.
-//! Default builds allocate nothing. The explicit `alloc` feature enables the
-//! complete bounded compiler; no native, service or network port is present.
+//! The bounded compiler accepts caller-owned memory. The `alloc` feature adds
+//! an owned heap-backed automaton using the same parser and compiler.
 #![no_std]
 #![forbid(unsafe_code)]
 #[cfg(feature = "alloc")]
@@ -27,7 +27,11 @@ pub fn first_key(input: &[u8]) -> (usize, Hash) {
 pub mod accept;
 mod block;
 pub use block::{BlockEdge, EdgeSource, encode_state, state_block_len};
-#[cfg(feature = "alloc")]
 mod compile;
 #[cfg(feature = "alloc")]
-pub use compile::{Automaton, BuildError, Edge, Limit, Limits, Record, State};
+pub use compile::Automaton;
+pub use compile::{
+    ArtifactMemory, ArtifactWorkspace, AutomatonView, BuildError, Compiler, Edge, EdgeIter, Edges,
+    GraphMemory, GraphWorkspace, Limit, Limits, ProofMemory, ProofWorkspace, Record, RecordMemory,
+    State, StateIter, States,
+};

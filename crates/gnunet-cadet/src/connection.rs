@@ -3,12 +3,12 @@
 //! CID is a route label, never endpoint authentication. A current actual CORE
 //! neighbor generation must authorize every input direction before CID lookup
 //! can grant endpoint/forwarding authority. Tunnel KX/AEAD remains a separate port.
-use core::{fmt, ptr};
+use core::{fmt, num::NonZeroU64, ptr};
 use gnunet_crypto::{EddsaPublicKey, EddsaSignature, Entropy};
 use gnunet_types::{Error, MonoInstant};
 use gnunet_wire::official::cadet_peer::{
-    CONNECTION_CREATE_PREFIX, CONNECTION_INITIATOR_PURPOSE, ConnectionInitiatorPurpose, PathPeers,
-    PeerMessage,
+    CONNECTION_CONTROL_LEN, CONNECTION_CREATE_PREFIX, CONNECTION_INITIATOR_PURPOSE,
+    ConnectionInitiatorPurpose, PathPeers, PeerMessage,
 };
 
 /// Distinct exclusively borrowed identity for one original routing book.
@@ -161,7 +161,37 @@ impl ResetAuthority<'_> {
 pub struct ResetProof<'a> {
     authority: ResetAuthority<'a>,
     origin: [u8; 32],
-    monotime: u64,
+    monotime: NonZeroU64,
+}
+
+/// Authenticated monotime eligible for publication at the original recipient.
+/// This view does not authorize a tunnel reset. The book produces that proof
+/// only after the reset store accepts the observation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ResetObservation {
+    local: [u8; 32],
+    origin: [u8; 32],
+    monotime: NonZeroU64,
+}
+
+impl ResetObservation {
+    /// Original destination whose book verified the signed CREATE.
+    #[must_use]
+    pub const fn local(self) -> [u8; 32] {
+        self.local
+    }
+
+    /// Original verified signing identity.
+    #[must_use]
+    pub const fn origin(self) -> [u8; 32] {
+        self.origin
+    }
+
+    /// Nonzero signed value above the book's recovered high-water mark.
+    #[must_use]
+    pub const fn monotime(self) -> NonZeroU64 {
+        self.monotime
+    }
 }
 impl<'a> ResetProof<'a> {
     /// Original exact local connection-book source domain.
@@ -177,7 +207,7 @@ impl<'a> ResetProof<'a> {
     /// Strictly newer verified monotime in the origin's domain.
     #[must_use]
     pub const fn monotime(self) -> u64 {
-        self.monotime
+        self.monotime.get()
     }
 }
 /// Actual initiator observation; this authorizes only a fresh reset request,
@@ -191,6 +221,47 @@ pub enum Reset<'a> {
     /// Verified but old/equal monotime cannot trigger another reset.
     Replayed,
 }
+
+/// Read-only disposition of the reset material in an incoming CREATE.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum IncomingReset {
+    /// No signed reset was requested.
+    Absent,
+    /// A verified nonzero value is newer than the book's current observation.
+    Fresh(NonZeroU64),
+    /// Verified signed material cannot advance the current observation.
+    Replayed,
+}
+
+/// First local CREATE suitable for endpoint selection at the time of inspection.
+/// Route allocation, ACK and reset authority require normal receipt afterward.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct IncomingCreate {
+    origin: [u8; 32],
+    connection: [u8; 32],
+    reset: IncomingReset,
+}
+
+impl IncomingCreate {
+    /// Claimed origin at the front of the validated route.
+    #[must_use]
+    pub const fn origin(self) -> [u8; 32] {
+        self.origin
+    }
+
+    /// Opaque CID of the inspected original CREATE.
+    #[must_use]
+    pub const fn connection(self) -> [u8; 32] {
+        self.connection
+    }
+
+    /// Reset material verified against this book's current observations.
+    #[must_use]
+    pub const fn reset(self) -> IncomingReset {
+        self.reset
+    }
+}
+
 /// Native C integer representation used for the two opaque CREATE fields.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NativeOrder {
@@ -306,6 +377,41 @@ struct Material {
     monotime: u64,
     signature: [u8; 64],
 }
+
+struct Create<'message> {
+    message: PeerMessage<'message>,
+    path: PathPeers<'message>,
+    connection: [u8; 32],
+    material: Material,
+}
+
+impl<'message> Create<'message> {
+    fn from_message(message: PeerMessage<'message>) -> Option<Self> {
+        let PeerMessage::ConnectionCreate {
+            options_bytes,
+            has_monotime_bytes,
+            monotime,
+            monotime_signature,
+            connection,
+            path,
+        } = message
+        else {
+            return None;
+        };
+        Some(Self {
+            message,
+            path,
+            connection,
+            material: Material {
+                options: options_bytes,
+                has_monotime: has_monotime_bytes,
+                monotime,
+                signature: monotime_signature,
+            },
+        })
+    }
+}
+
 #[derive(Clone, Copy)]
 struct RouteRecord<const P: usize> {
     serial: u64,
@@ -321,6 +427,7 @@ struct RouteRecord<const P: usize> {
     last_use: MonoInstant,
     retry_at: MonoInstant,
     retry_delay: u64,
+    opening_deadline: Option<MonoInstant>,
     create_exposed: bool,
     notify_prev: bool,
     notify_next: bool,
@@ -403,7 +510,7 @@ pub struct FrameSlot<'bytes> {
 impl<'bytes> FrameSlot<'bytes> {
     /// Wrap empty fixed original-frame storage.
     #[must_use]
-    pub fn new(bytes: &'bytes mut [u8]) -> Self {
+    pub const fn new(bytes: &'bytes mut [u8]) -> Self {
         Self {
             bytes,
             record: None,
@@ -595,6 +702,7 @@ pub struct Book<'id, 'slots, 'bytes, const P: usize = 16> {
     neighbors: &'slots mut [NeighborSlot],
     routes: &'slots mut [RouteSlot<P>],
     origins: &'slots mut [OriginSlot],
+    reset_fenced: bool,
     frames: &'slots mut [FrameSlot<'bytes>],
     limits: Limits,
     next_neighbor: u64,
@@ -659,6 +767,7 @@ impl<'id, 'slots, 'bytes, const P: usize> Book<'id, 'slots, 'bytes, P> {
             neighbors,
             routes,
             origins,
+            reset_fenced: false,
             frames,
             limits,
             next_neighbor: 0,
@@ -833,6 +942,15 @@ impl<'id, 'slots, 'bytes, const P: usize> Book<'id, 'slots, 'bytes, P> {
             .enumerate()
             .filter_map(|(slot, s)| s.record.map(|r| self.route(Self::route_ref(slot, r))))
     }
+    /// Unallocated route slots. Retired originals continue to occupy their slot
+    /// until their actual frames are settled and the route is released.
+    #[must_use]
+    pub fn available_routes(&self) -> usize {
+        self.routes
+            .iter()
+            .filter(|slot| slot.record.is_none())
+            .count()
+    }
     /// Exact original whole path backing a retained route. Snapshot code may
     /// copy it before this immutable borrow ends; it cannot mutate route state.
     pub fn route_peers(&self, route: Route<'id>) -> Result<&[[u8; 32]], Error> {
@@ -845,15 +963,38 @@ impl<'id, 'slots, 'bytes, const P: usize> Book<'id, 'slots, 'bytes, P> {
         Ok(RouteInfo {
             role: record.role,
             phase: record.phase,
-            expected_peer: match record.role {
-                Role::Origin => Some(record.path[record.length - 1]),
-                Role::Destination => Some(record.path[0]),
-                Role::Relay => None,
-            },
+            expected_peer: Self::endpoint_peer(record),
             path_length: record.length,
             position: record.position,
             last_use: record.last_use,
         })
+    }
+    /// Whether an original endpoint path is established or being opened.
+    /// Temporary send-credit loss does not remove a live path.
+    #[must_use]
+    pub fn has_endpoint_path(&self, peer: [u8; 32]) -> bool {
+        self.endpoint_paths(peer)
+            .any(|record| record.phase != Phase::Retired)
+    }
+    /// Whether an actual endpoint path has been confirmed, independent of
+    /// temporary native send credit.
+    #[must_use]
+    pub fn has_ready_endpoint_path(&self, peer: [u8; 32]) -> bool {
+        self.endpoint_paths(peer)
+            .any(|record| record.phase == Phase::Ready)
+    }
+    fn endpoint_paths(&self, peer: [u8; 32]) -> impl Iterator<Item = &RouteRecord<P>> {
+        self.routes
+            .iter()
+            .filter_map(|slot| slot.record.as_ref())
+            .filter(move |record| Self::endpoint_peer(record) == Some(peer))
+    }
+    fn endpoint_peer(record: &RouteRecord<P>) -> Option<[u8; 32]> {
+        match record.role {
+            Role::Origin => Some(record.path[record.length - 1]),
+            Role::Destination => Some(record.path[0]),
+            Role::Relay => None,
+        }
     }
     /// Actual persisted/recent high-water value for one original origin.
     #[must_use]
@@ -885,6 +1026,25 @@ impl<'id, 'slots, 'bytes, const P: usize> Book<'id, 'slots, 'bytes, P> {
         }
         Ok((peers, length, position.ok_or(Error::Authentication)?))
     }
+
+    fn incoming_path(
+        &self,
+        source: NeighborRef,
+        path: PathPeers<'_>,
+    ) -> Result<([[u8; 32]; P], usize, usize), Error> {
+        let (peers, length, position) = self.path(path)?;
+        if position == 0 || peers[position - 1] != source.peer {
+            return Err(Error::Authentication);
+        }
+        Ok((peers, length, position))
+    }
+
+    fn free_frame(&self, length: usize) -> Option<usize> {
+        self.frames
+            .iter()
+            .position(|slot| slot.record.is_none() && slot.bytes.len() >= length)
+    }
+
     fn enqueue(
         &mut self,
         target: NeighborRef,
@@ -897,11 +1057,7 @@ impl<'id, 'slots, 'bytes, const P: usize> Book<'id, 'slots, 'bytes, P> {
         if length > self.frame_capacity() {
             return Err(Error::TooLarge);
         }
-        let Some(slot) = self
-            .frames
-            .iter()
-            .position(|slot| slot.record.is_none() && slot.bytes.len() >= length)
-        else {
+        let Some(slot) = self.free_frame(length) else {
             self.frame_capacity_refused = true;
             return Err(Error::Capacity);
         };
@@ -960,6 +1116,14 @@ impl<'id, 'slots, 'bytes, const P: usize> Book<'id, 'slots, 'bytes, P> {
             .route
             .map(|route| self.route(route)))
     }
+    /// Fixed elapsed deadline of an original local CREATE, including retries.
+    pub fn create_deadline(&self, frame: Frame<'id>) -> Result<Option<MonoInstant>, Error> {
+        let record = self.frame_record(frame)?;
+        match record.route.filter(|_| record.kind == FrameType::Create) {
+            Some(route) => Ok(self.route_record(self.route(route))?.opening_deadline),
+            None => Ok(None),
+        }
+    }
     /// Original terminal fact read from this actual Book, not caller labels.
     pub fn frame_completion(&self, frame: Frame<'id>) -> Result<Completion<'id>, Error> {
         self.completion_for(frame)
@@ -971,7 +1135,7 @@ impl<'id, 'slots, 'bytes, const P: usize> Book<'id, 'slots, 'bytes, P> {
         if record.phase != Phase::Ready || record.role == Role::Relay {
             return Err(Error::NotReady);
         }
-        if bytes > self.limits.frame_bytes {
+        if bytes > self.frame_capacity() {
             return Err(Error::TooLarge);
         }
         if self.frames.iter().any(|s| {
@@ -982,10 +1146,7 @@ impl<'id, 'slots, 'bytes, const P: usize> Book<'id, 'slots, 'bytes, P> {
         }) {
             return Ok(false);
         }
-        Ok(self
-            .frames
-            .iter()
-            .any(|s| s.record.is_none() && s.bytes.len() >= bytes))
+        Ok(self.free_frame(bytes).is_some())
     }
     /// Whether original retained route/frame work still needs explicit drain.
     #[must_use]
@@ -1022,7 +1183,22 @@ impl<'id, 'slots, 'bytes, const P: usize> Book<'id, 'slots, 'bytes, P> {
         authentication: Authentication,
         now: MonoInstant,
     ) -> Result<Opened<'id>, Error> {
+        self.open_with_deadline(path, connection, authentication, now, None)
+    }
+    /// Begin a whole-path request with an optional caller-owned elapsed
+    /// deadline. Signing, retries and reverse confirmation share that bound.
+    pub fn open_with_deadline(
+        &mut self,
+        path: PathPeers<'_>,
+        connection: [u8; 32],
+        authentication: Authentication,
+        now: MonoInstant,
+        deadline: Option<MonoInstant>,
+    ) -> Result<Opened<'id>, Error> {
         self.time(now)?;
+        if deadline.is_some_and(|deadline| now >= deadline) {
+            return Err(Error::Deadline);
+        }
         if self.find_route(connection).is_some() {
             return Err(Error::Conflict);
         }
@@ -1069,6 +1245,7 @@ impl<'id, 'slots, 'bytes, const P: usize> Book<'id, 'slots, 'bytes, P> {
             last_use: now,
             retry_at: now,
             retry_delay: self.limits.retry_micros,
+            opening_deadline: deadline,
             create_exposed: false,
             notify_prev: false,
             notify_next: false,
@@ -1120,6 +1297,10 @@ impl<'id, 'slots, 'bytes, const P: usize> Book<'id, 'slots, 'bytes, P> {
         if record.phase != Phase::Signing || record.material.monotime != request.monotime {
             return Err(Error::StaleGeneration);
         }
+        if Self::opening_expired(&record, now) {
+            self.close_route(request.route)?;
+            return Err(Error::Deadline);
+        }
         if identity != self.local {
             return Err(Error::Authentication);
         }
@@ -1152,6 +1333,9 @@ impl<'id, 'slots, 'bytes, const P: usize> Book<'id, 'slots, 'bytes, P> {
             return Ok((Reset::Absent, None));
         }
         let mut purpose = [0; 16];
+        if self.reset_fenced {
+            return Err(Error::OutcomeUnknown);
+        }
         ConnectionInitiatorPurpose {
             monotime: material.monotime,
         }
@@ -1161,9 +1345,9 @@ impl<'id, 'slots, 'bytes, const P: usize> Book<'id, 'slots, 'bytes, P> {
             &purpose,
             &EddsaSignature::from_bytes(material.signature),
         )?;
-        if material.monotime == 0 {
+        let Some(monotime) = NonZeroU64::new(material.monotime) else {
             return Ok((Reset::Replayed, None));
-        }
+        };
         let existing = self
             .origins
             .iter()
@@ -1182,18 +1366,38 @@ impl<'id, 'slots, 'bytes, const P: usize> Book<'id, 'slots, 'bytes, P> {
             Reset::Fresh(ResetProof {
                 authority: self.reset_authority(),
                 origin,
-                monotime: material.monotime,
+                monotime,
             }),
             Some(slot),
         ))
     }
-    fn observe_reset(&mut self, reset: Reset<'id>, slot: Option<usize>) {
+    fn observe_reset(
+        &mut self,
+        reset: Reset<'id>,
+        slot: Option<usize>,
+        ack: Frame<'id>,
+        commit: &mut dyn FnMut(ResetObservation) -> Result<(), Error>,
+    ) -> Result<(), Error> {
         if let (Reset::Fresh(proof), Some(slot)) = (reset, slot) {
-            self.origins[slot].record = Some(Observation {
+            if let Err(error) = commit(ResetObservation {
+                local: self.local,
                 origin: proof.origin,
                 monotime: proof.monotime,
+            }) {
+                self.reset_fenced = error == Error::OutcomeUnknown;
+                // This ACK and any new route have not been observable by a
+                // caller. Release the exact reserved slot before returning.
+                self.cancel_frame(ack)
+                    .and_then(|()| self.release_frame(ack))
+                    .map_err(|_| Error::OutcomeUnknown)?;
+                return Err(error);
+            }
+            self.origins[slot].record = Some(Observation {
+                origin: proof.origin,
+                monotime: proof.monotime.get(),
             });
         }
+        Ok(())
     }
     fn broken(
         &mut self,
@@ -1213,6 +1417,52 @@ impl<'id, 'slots, 'bytes, const P: usize> Book<'id, 'slots, 'bytes, P> {
             },
         )
     }
+
+    /// Inspect a first CREATE addressed to this book through the current
+    /// confirmed previous hop. Both unsigned and signed CREATE are legal.
+    /// A signed replay only loses reset authority. No route, frame or reset
+    /// observation is created. Apply the same input through
+    /// [`Self::receive_with_resets`] for authoritative admission.
+    ///
+    /// # Errors
+    /// Refuses non-CREATE input, any existing CID, invalid path or signature,
+    /// unavailable capacity, a stale neighbor or uncertain reset storage.
+    pub fn validate_incoming_create(
+        &self,
+        source: Neighbor<'id>,
+        message: PeerMessage<'_>,
+    ) -> Result<IncomingCreate, Error> {
+        let create = Create::from_message(message).ok_or(Error::InvalidInput)?;
+        self.neighbor_record(source)?;
+        let (peers, length, position) = self.incoming_path(source.reference, create.path)?;
+        if position != length - 1 {
+            return Err(Error::Authentication);
+        }
+        if self.find_route(create.connection).is_some() {
+            return Err(Error::Conflict);
+        }
+        if CONNECTION_CONTROL_LEN > self.frame_capacity() {
+            return Err(Error::TooLarge);
+        }
+        if self.routes.iter().all(|slot| slot.record.is_some())
+            || self.free_frame(CONNECTION_CONTROL_LEN).is_none()
+        {
+            return Err(Error::Capacity);
+        }
+        self.next_route.checked_add(1).ok_or(Error::Overflow)?;
+        let origin = peers[0];
+        let reset = match self.reset(origin, create.material)?.0 {
+            Reset::Absent => IncomingReset::Absent,
+            Reset::Fresh(proof) => IncomingReset::Fresh(proof.monotime),
+            Reset::Replayed => IncomingReset::Replayed,
+        };
+        Ok(IncomingCreate {
+            origin,
+            connection: create.connection,
+            reset,
+        })
+    }
+
     /// Feed an actual structurally decoded outer frame from exactly this current
     /// CORE neighbor. Endpoint events still need their original tunnel crypto.
     pub fn receive<'message>(
@@ -1221,9 +1471,23 @@ impl<'id, 'slots, 'bytes, const P: usize> Book<'id, 'slots, 'bytes, P> {
         message: PeerMessage<'message>,
         now: MonoInstant,
     ) -> Result<Event<'id, 'message>, Error> {
+        self.receive_with_resets(source, message, now, |_| Ok(()))
+    }
+
+    /// Feed one original frame and publish any fresh verified signed reset.
+    /// The store runs only after the book has retained room for its exact ACK.
+    /// Failure withdraws that reservation and publishes no reset proof or new
+    /// route. Attach recovered origin slots before using this entry point.
+    pub fn receive_with_resets<'message>(
+        &mut self,
+        source: Neighbor<'id>,
+        message: PeerMessage<'message>,
+        now: MonoInstant,
+        mut commit_reset: impl FnMut(ResetObservation) -> Result<(), Error>,
+    ) -> Result<Event<'id, 'message>, Error> {
         self.frame_capacity_refused = false;
         self.refused_input = None;
-        let result = self.receive_inner(source, message, now);
+        let result = self.receive_inner(source, message, now, &mut commit_reset);
         if self.frame_capacity_refused && matches!(&result, Err(Error::Capacity)) {
             self.refused_input = Some((
                 source.reference,
@@ -1239,31 +1503,12 @@ impl<'id, 'slots, 'bytes, const P: usize> Book<'id, 'slots, 'bytes, P> {
         source: Neighbor<'id>,
         message: PeerMessage<'message>,
         now: MonoInstant,
+        commit_reset: &mut dyn FnMut(ResetObservation) -> Result<(), Error>,
     ) -> Result<Event<'id, 'message>, Error> {
         self.neighbor_record(source)?;
         self.time(now)?;
-        if let PeerMessage::ConnectionCreate {
-            options_bytes,
-            has_monotime_bytes,
-            monotime,
-            monotime_signature,
-            connection,
-            path,
-        } = message
-        {
-            return self.create(
-                source,
-                message,
-                path,
-                connection,
-                Material {
-                    options: options_bytes,
-                    has_monotime: has_monotime_bytes,
-                    monotime,
-                    signature: monotime_signature,
-                },
-                now,
-            );
+        if let Some(create) = Create::from_message(message) {
+            return self.create(source, create, now, commit_reset);
         }
         let connection = connection_id(message);
         let Some(route) = self.find_route(connection) else {
@@ -1284,6 +1529,10 @@ impl<'id, 'slots, 'bytes, const P: usize> Book<'id, 'slots, 'bytes, P> {
         }
         if record.phase == Phase::Retired {
             return Ok(Event::Ignored);
+        }
+        if Self::opening_expired(&record, now) {
+            self.close_route(route)?;
+            return Ok(Event::Retired(route));
         }
         if matches!(message, PeerMessage::ConnectionCreateAck { .. })
             && ((record.role == Role::Relay && !from_next) || record.role == Role::Destination)
@@ -1376,16 +1625,17 @@ impl<'id, 'slots, 'bytes, const P: usize> Book<'id, 'slots, 'bytes, P> {
     fn create<'message>(
         &mut self,
         source: Neighbor<'id>,
-        message: PeerMessage<'message>,
-        path: PathPeers<'message>,
-        connection: [u8; 32],
-        material: Material,
+        create: Create<'message>,
         now: MonoInstant,
+        commit_reset: &mut dyn FnMut(ResetObservation) -> Result<(), Error>,
     ) -> Result<Event<'id, 'message>, Error> {
-        let (peers, length, position) = self.path(path)?;
-        if position == 0 || peers[position - 1] != source.reference.peer {
-            return Err(Error::Authentication);
-        }
+        let Create {
+            message,
+            path,
+            connection,
+            material,
+        } = create;
+        let (peers, length, position) = self.incoming_path(source.reference, path)?;
         let destination = position == length - 1;
         let (reset, observation) = if destination {
             match self.reset(peers[0], material) {
@@ -1412,7 +1662,7 @@ impl<'id, 'slots, 'bytes, const P: usize> Book<'id, 'slots, 'bytes, P> {
                 return Err(Error::Conflict);
             }
             if destination {
-                self.enqueue(
+                let ack = self.enqueue(
                     source.reference,
                     Some(route.reference),
                     FrameType::Ack,
@@ -1421,6 +1671,7 @@ impl<'id, 'slots, 'bytes, const P: usize> Book<'id, 'slots, 'bytes, P> {
                         connection,
                     },
                 )?;
+                self.observe_reset(reset, observation, ack, commit_reset)?;
             } else {
                 self.enqueue(
                     record.next.ok_or(Error::NotReady)?,
@@ -1429,7 +1680,6 @@ impl<'id, 'slots, 'bytes, const P: usize> Book<'id, 'slots, 'bytes, P> {
                     message,
                 )?;
             }
-            self.observe_reset(reset, observation);
             self.routes[route.reference.slot]
                 .record
                 .as_mut()
@@ -1483,6 +1733,7 @@ impl<'id, 'slots, 'bytes, const P: usize> Book<'id, 'slots, 'bytes, P> {
             last_use: now,
             retry_at: now,
             retry_delay: self.limits.retry_micros,
+            opening_deadline: None,
             create_exposed: false,
             notify_prev: false,
             notify_next: false,
@@ -1492,7 +1743,7 @@ impl<'id, 'slots, 'bytes, const P: usize> Book<'id, 'slots, 'bytes, P> {
             samples: 0,
         };
         if destination {
-            self.enqueue(
+            let ack = self.enqueue(
                 source.reference,
                 Some(reference),
                 FrameType::Ack,
@@ -1501,6 +1752,7 @@ impl<'id, 'slots, 'bytes, const P: usize> Book<'id, 'slots, 'bytes, P> {
                     connection,
                 },
             )?;
+            self.observe_reset(reset, observation, ack, commit_reset)?;
         } else {
             self.enqueue(
                 next.ok_or(Error::NotReady)?,
@@ -1511,7 +1763,6 @@ impl<'id, 'slots, 'bytes, const P: usize> Book<'id, 'slots, 'bytes, P> {
         }
         self.routes[slot].record = Some(record);
         self.next_route = serial;
-        self.observe_reset(reset, observation);
         Ok(Event::Created {
             route: self.route(reference),
             reset,
@@ -1686,7 +1937,6 @@ impl<'id, 'slots, 'bytes, const P: usize> Book<'id, 'slots, 'bytes, P> {
         if fully_written && !exposed {
             return Err(Error::NotReady);
         }
-        self.time(now)?;
         let outcome = if fully_written {
             Outcome::Written
         } else if exposed {
@@ -1694,6 +1944,7 @@ impl<'id, 'slots, 'bytes, const P: usize> Book<'id, 'slots, 'bytes, P> {
         } else {
             Outcome::Unsent
         };
+        self.time(now)?;
         self.frames[attempt.frame.slot]
             .record
             .as_mut()
@@ -1940,20 +2191,42 @@ impl<'id, 'slots, 'bytes, const P: usize> Book<'id, 'slots, 'bytes, P> {
     /// drained, so stale local callbacks cannot mutate a reused route slot.
     pub fn release_route(&mut self, route: Route<'id>) -> Result<(), Error> {
         let record = *self.route_record(route)?;
-        if record.phase != Phase::Retired
-            || record.notify_prev
-            || record.notify_next
-            || self.frames.iter().any(|slot| {
-                slot.record
-                    .is_some_and(|frame| frame.route == Some(route.reference))
-            })
-        {
+        if !self.route_drained(route.reference, &record) {
             return Err(Error::WouldBlock);
         }
         self.routes[route.reference.slot].record = None;
         Ok(())
     }
-    /// Advance bounded CREATE retry, failure notifications and relay liveness.
+
+    fn route_drained(&self, route: RouteRef, record: &RouteRecord<P>) -> bool {
+        record.phase == Phase::Retired
+            && !record.notify_prev
+            && !record.notify_next
+            && !self
+                .frames
+                .iter()
+                .any(|slot| slot.record.is_some_and(|frame| frame.route == Some(route)))
+    }
+
+    fn opening_expired(record: &RouteRecord<P>, now: MonoInstant) -> bool {
+        matches!(record.phase, Phase::Signing | Phase::Opening)
+            && record
+                .opening_deadline
+                .is_some_and(|deadline| now >= deadline)
+    }
+
+    fn create_retry(&self, slot: usize, record: &RouteRecord<P>) -> bool {
+        record.role == Role::Origin
+            && record.phase == Phase::Opening
+            && !self.frames.iter().any(|slot_buffer| {
+                slot_buffer.record.is_some_and(|frame| {
+                    frame.route == Some(Self::route_ref(slot, *record))
+                        && frame.kind == FrameType::Create
+                        && matches!(frame.state, FrameState::Queued | FrameState::Active { .. })
+                })
+            })
+    }
+    /// Advance bounded CREATE retry, failure notifications and route liveness.
     /// Capacity refusal retains all original intents; no fake callback is emitted.
     pub fn tick(&mut self, now: MonoInstant) -> Result<usize, Error> {
         self.time(now)?;
@@ -1963,7 +2236,11 @@ impl<'id, 'slots, 'bytes, const P: usize> Book<'id, 'slots, 'bytes, P> {
                 continue;
             };
             let route = Self::route_ref(slot, record);
-            if record.role == Role::Relay
+            if Self::opening_expired(&record, now) {
+                self.close_route(self.route(route))?;
+                record = self.routes[slot].record.ok_or(Error::StaleGeneration)?;
+                expired += 1;
+            } else if record.role == Role::Relay
                 && record.phase != Phase::Retired
                 && now.0.saturating_sub(record.last_use.0)
                     >= self.limits.keepalive_micros.saturating_mul(3)
@@ -2015,17 +2292,7 @@ impl<'id, 'slots, 'bytes, const P: usize> Book<'id, 'slots, 'bytes, P> {
                             .notify_next = false;
                     }
                 }
-            } else if record.role == Role::Origin
-                && record.phase == Phase::Opening
-                && now >= record.retry_at
-                && !self.frames.iter().any(|slot| {
-                    slot.record.is_some_and(|frame| {
-                        frame.route == Some(route)
-                            && frame.kind == FrameType::Create
-                            && matches!(frame.state, FrameState::Queued | FrameState::Active { .. })
-                    })
-                })
-            {
+            } else if now >= record.retry_at && self.create_retry(slot, &record) {
                 self.enqueue(
                     record.next.ok_or(Error::NotReady)?,
                     Some(route),
@@ -2040,31 +2307,56 @@ impl<'id, 'slots, 'bytes, const P: usize> Book<'id, 'slots, 'bytes, P> {
     /// KEEPALIVE from its separate tunnel session. No plaintext keepalive is sent.
     #[must_use]
     pub fn keepalive_due(&self, now: MonoInstant) -> Option<Route<'id>> {
+        self.first_due_keepalive(None, now)
+    }
+    /// An eligible keepalive for one original end-to-end peer.
+    #[must_use]
+    pub fn keepalive_due_for(&self, peer: [u8; 32], now: MonoInstant) -> Option<Route<'id>> {
+        self.first_due_keepalive(Some(peer), now)
+    }
+
+    /// Check eligibility on the same original route without selecting another.
+    #[must_use]
+    pub fn keepalive_ready(&self, route: Route<'id>, now: MonoInstant) -> bool {
+        self.route_record(route)
+            .is_ok_and(|record| self.keepalive_allowed(route.reference, record, now))
+    }
+    fn first_due_keepalive(&self, peer: Option<[u8; 32]>, now: MonoInstant) -> Option<Route<'id>> {
         self.routes.iter().enumerate().find_map(|(slot, route)| {
-            let record = route.record?;
-            if record.role == Role::Relay
-                || record.phase != Phase::Ready
-                || now.0.saturating_sub(record.last_use.0) < self.limits.keepalive_micros
-            {
+            let record = route.record.as_ref()?;
+            if peer.is_some_and(|peer| Self::endpoint_peer(record) != Some(peer)) {
                 return None;
             }
-            let reference = Self::route_ref(slot, record);
-            let target = record.next.or(record.prev)?;
-            if !self
-                .neighbor_ref(target)
-                .is_ok_and(|neighbor| neighbor.ready)
-                || self.active_neighbor(target)
-                || self.frames.iter().any(|slot| {
-                    slot.record.is_some_and(|frame| {
-                        frame.route == Some(reference)
-                            && matches!(frame.state, FrameState::Queued | FrameState::Active { .. })
-                    })
-                })
-            {
-                return None;
-            }
-            Some(self.route(reference))
+            let reference = Self::route_ref(slot, *record);
+            self.keepalive_allowed(reference, record, now)
+                .then(|| self.route(reference))
         })
+    }
+    fn keepalive_allowed(
+        &self,
+        route: RouteRef,
+        record: &RouteRecord<P>,
+        now: MonoInstant,
+    ) -> bool {
+        now.0.saturating_sub(record.last_use.0) >= self.limits.keepalive_micros
+            && self.endpoint_output_ready(route, record)
+    }
+    fn endpoint_output_ready(&self, route: RouteRef, record: &RouteRecord<P>) -> bool {
+        if record.phase != Phase::Ready || record.role == Role::Relay {
+            return false;
+        }
+        let Some(target) = record.next.or(record.prev) else {
+            return false;
+        };
+        self.neighbor_ref(target)
+            .is_ok_and(|neighbor| neighbor.ready)
+            && !self.active_neighbor(target)
+            && !self.frames.iter().any(|slot| {
+                slot.record.is_some_and(|frame| {
+                    frame.route == Some(route)
+                        && matches!(frame.state, FrameState::Queued | FrameState::Active { .. })
+                })
+            })
     }
     /// One actual retired route whose original notifications/outcomes still need
     /// draining. Repeated observation is harmless; release_route removes it.
@@ -2087,34 +2379,10 @@ impl<'id, 'slots, 'bytes, const P: usize> Book<'id, 'slots, 'bytes, P> {
             .enumerate()
             .filter_map(|(slot, route)| {
                 let record = route.record?;
-                if record.phase != Phase::Ready || record.role == Role::Relay {
-                    return None;
-                }
-                let remote = if record.role == Role::Origin {
-                    record.path[record.length - 1]
-                } else {
-                    record.path[0]
-                };
-                let target = record.next.or(record.prev)?;
                 let reference = Self::route_ref(slot, record);
-                if remote != expected_peer
-                    || !self
-                        .neighbor_ref(target)
-                        .is_ok_and(|neighbor| neighbor.ready)
-                    || self.active_neighbor(target)
-                    || self.frames.iter().any(|slot| {
-                        slot.record.is_some_and(|frame| {
-                            frame.route == Some(reference)
-                                && matches!(
-                                    frame.state,
-                                    FrameState::Queued | FrameState::Active { .. }
-                                )
-                        })
-                    })
-                {
-                    return None;
-                }
-                Some((reference, record))
+                (Self::endpoint_peer(&record) == Some(expected_peer)
+                    && self.endpoint_output_ready(reference, &record))
+                .then_some((reference, record))
             })
             .min_by_key(|(_, record)| {
                 (

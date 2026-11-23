@@ -18,7 +18,8 @@ and `communicator-http3`. Their gauge keys follow those source intentions. They
 are local diagnostic names, not a new peer protocol or an authentication claim. The values count owned Runtime row objects, including rows whose original
 connection/FC/native-driver retirement is pending. A connection attempt/claimed
 peer is not declared authenticated, reachable, accepted remotely or delivered. Neither C map insertion/destruction timing nor its off-by-one update placement is
-reproduced. The existing socket byte Statistics API remains separate and unchanged.
+reproduced. Socket `Statistics` separately reports byte counts and isolated
+receive notifications, retaining the latest native error code.
 
 ## Publisher ownership
 

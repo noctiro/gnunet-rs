@@ -40,32 +40,41 @@ impl View {
 pub(super) struct History {
     current: View,
     previous: Option<View>,
+    observed: i64,
+    maximum_age: i64,
 }
 impl History {
-    pub fn new(since: i64, entries: Vec<Identity>) -> io::Result<Self> {
+    pub fn new(since: i64, entries: Vec<Identity>, maximum_age: i64) -> io::Result<Self> {
+        if maximum_age <= 0 {
+            return Err(io::ErrorKind::InvalidInput.into());
+        }
         Ok(Self {
             current: View::new(since, entries)?,
             previous: None,
+            observed: since,
+            maximum_age,
         })
     }
     pub fn publish(&mut self, candidate: View) -> io::Result<Option<View>> {
         let since = candidate.since;
-        if since < self.current.since {
+        if since < self.observed {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "capture observation clock moved backwards",
             ));
         }
         if candidate.entries != self.current.entries {
-            if since == self.current.since {
+            if since == self.observed {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     "changed capture interfaces share an ambiguous observation tick",
                 ));
             }
             let previous = std::mem::replace(&mut self.current, candidate);
+            self.observed = since;
             return Ok(self.previous.replace(previous));
         }
+        self.observed = since;
         Ok(Some(candidate))
     }
     #[cfg(test)]
@@ -73,7 +82,19 @@ impl History {
         self.publish(View::new(since, entries)?)?;
         Ok(())
     }
-    pub fn get(&self, captured: i64, index: u32) -> io::Result<&Identity> {
+    pub fn get(&self, captured: i64, now: i64, index: u32) -> io::Result<&Identity> {
+        if captured > now || now < self.observed {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "capture or observation exceeds native clock",
+            ));
+        }
+        if now - self.observed >= self.maximum_age {
+            return Err(io::Error::new(
+                io::ErrorKind::NotConnected,
+                "capture interface observation expired",
+            ));
+        }
         if captured > self.current.since {
             self.current.get(index)
         } else if captured == self.current.since {

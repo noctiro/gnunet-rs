@@ -1,7 +1,10 @@
 use crate::{BlockSink, BlockSource, Error, Insert, Result};
 use gnunet_fs::{
     Content,
-    content::{BLOCK_BYTES, BlockKey, FileEncoder, FileReader, Layout, TAG_BYTES, VerifiedFile},
+    content::{
+        BLOCK_BYTES, BlockKey, EncodedNode, FileEncoder, FileReader, Layout, TAG_BYTES,
+        VerifiedFile,
+    },
 };
 use std::io::{Read, Write};
 
@@ -117,8 +120,41 @@ impl Buffers {
         size: u64,
         sink: &mut impl BlockSink,
         limits: Limits,
-        mut control: impl FnMut(Progress) -> Control,
+        control: impl FnMut(Progress) -> Control,
     ) -> Result<Published> {
+        let mut created_blocks = 0;
+        let (content, progress) = self.encode(input, size, limits, control, |encoded| {
+            if matches!(sink.insert_block(encoded)?, Insert::Created(_)) {
+                created_blocks += 1;
+            }
+            Ok(())
+        })?;
+        Ok(Published {
+            content,
+            progress,
+            created_blocks,
+        })
+    }
+
+    #[cfg(feature = "network")]
+    pub(crate) fn measure(
+        &mut self,
+        input: &mut impl Read,
+        size: u64,
+        limits: Limits,
+        control: impl FnMut(Progress) -> Control,
+    ) -> Result<(Content, Progress)> {
+        self.encode(input, size, limits, control, |_| Ok(()))
+    }
+
+    fn encode(
+        &mut self,
+        input: &mut impl Read,
+        size: u64,
+        limits: Limits,
+        mut control: impl FnMut(Progress) -> Control,
+        mut emit: impl FnMut(EncodedNode<'_>) -> Result<()>,
+    ) -> Result<(Content, Progress)> {
         self.prepare(
             Content {
                 key: [0; 64],
@@ -129,7 +165,6 @@ impl Buffers {
         )?;
         let mut encoder = FileEncoder::new(size, &mut self.keys)?;
         let mut progress = Progress::default();
-        let mut created_blocks = 0;
         while let Some(node) = encoder.next() {
             if control(progress) == Control::Cancel {
                 return Err(Error::Cancelled);
@@ -142,9 +177,7 @@ impl Buffers {
                 encoder.emit_index(&mut self.index, &mut self.encoded)?
             };
             let length = encoded.block().bytes().len();
-            if matches!(sink.insert_block(encoded)?, Insert::Created(_)) {
-                created_blocks += 1;
-            }
+            emit(encoded)?;
             progress.blocks += 1;
             progress.encoded_bytes += length as u128;
             if node.level() == 0 {
@@ -163,11 +196,7 @@ impl Buffers {
                 Err(e) => return Err(e.into()),
             }
         }
-        Ok(Published {
-            content: encoder.content().ok_or(Error::Corrupt)?,
-            progress,
-            created_blocks,
-        })
+        Ok((encoder.content().ok_or(Error::Corrupt)?, progress))
     }
     /// Retrieve/authenticate each real block and write only authenticated file
     /// bytes. On failure/cancellation the writer owns its partial prefix; use an

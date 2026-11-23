@@ -11,34 +11,10 @@ pub fn check_config(config: &Configuration) -> bool {
             .get(b"resolver", b"HOSTNAME")
             .is_some_and(|name| fast(name, Family::Any))
 }
-/// Actual native address-family profile for official resolver frames.
+/// Build the official resolver frame profile from the target SDK's socket ABI.
 pub fn native_profile() -> Result<FamilyProfile, Error> {
-    #[cfg(any(target_os = "linux", target_os = "android"))]
-    {
-        Ok(FamilyProfile::LINUX)
-    }
-    #[cfg(target_vendor = "apple")]
-    {
-        Ok(FamilyProfile::DARWIN)
-    }
-    #[cfg(target_os = "freebsd")]
-    {
-        Ok(FamilyProfile::FREEBSD)
-    }
-    #[cfg(windows)]
-    {
-        Ok(FamilyProfile::WINDOWS)
-    }
-    #[cfg(not(any(
-        target_os = "linux",
-        target_os = "android",
-        target_vendor = "apple",
-        target_os = "freebsd",
-        windows
-    )))]
-    {
-        Err(Error::Unsupported)
-    }
+    let (inet, inet6) = gnunet_native::addresses::internet_address_families();
+    FamilyProfile::new(inet, inet6)
 }
 
 fn fast(name: &[u8], family: Family) -> bool {

@@ -18,17 +18,17 @@ pub(super) async fn open(
     #[cfg(windows)]
     let _ = cleanup;
     let limits = tun::Limits {
-        packet_bytes: settings.core.packet_bytes,
+        packet_bytes: settings.service.core.packet_bytes,
     };
-    let device = match settings.mode {
+    let device = match &settings.mode {
         #[cfg(unix)]
-        TunMode::Preopened => {
+        TunMode::Preopened { .. } => {
             let fd = inherited.ok_or(
                 "preopened mode requires GNUNET_VPN_TUN_FD exclusively transferred by the parent",
             )?;
             Device::borrow_existing(tun::AsyncTun::new(tun::OwnedTun::from_fd(fd, limits)?)?)
         }
-        TunMode::Fresh => {
+        TunMode::Fresh(fresh) => {
             #[cfg(unix)]
             if inherited.is_some() {
                 return Err(
@@ -38,6 +38,7 @@ pub(super) async fn open(
             #[cfg(target_os = "linux")]
             {
                 let ipv4 = settings
+                    .service
                     .core
                     .ipv4
                     .map(|prefix| match prefix.interface {
@@ -53,6 +54,7 @@ pub(super) async fn open(
                     })
                     .transpose()?;
                 let ipv6 = settings
+                    .service
                     .core
                     .ipv6
                     .map(|prefix| match prefix.interface {
@@ -62,62 +64,61 @@ pub(super) async fn open(
                     .transpose()?;
                 Device::start_helper(
                     tun::helper::Options {
-                        executable: settings
-                            .helper
-                            .clone()
-                            .ok_or("fresh Linux helper path missing")?,
-                        interface: settings.ifname.clone(),
+                        executable: fresh.helper.clone(),
+                        interface: fresh.name.clone(),
                         ipv4,
                         ipv6,
-                        mtu: settings.helper_mtu,
+                        mtu: fresh
+                            .override_mtu
+                            .then_some(settings.service.coordinator.mtu),
                         until: tokio::time::Instant::now()
-                            .checked_add(settings.coordinator.control_timeout)
+                            .checked_add(settings.service.coordinator.control_timeout)
                             .ok_or("VPN native configure deadline overflow")?,
-                        partial_lifetime: settings.helper_partial,
+                        partial_lifetime: fresh.helper_partial,
                     },
                     limits,
                 )?
             }
             #[cfg(target_os = "macos")]
             {
-                let unit = settings
-                    .ifname
-                    .strip_prefix("utun")
-                    .ok_or("macOS IFNAME must be utunN")?
-                    .parse()?;
-                Device::open_utun_unit(Some(unit), limits)?
+                Device::open_utun_unit(fresh.utun_unit(), limits)?
             }
             #[cfg(target_os = "freebsd")]
             {
-                let checkpoint = settings
-                    .checkpoint
-                    .as_deref()
-                    .ok_or("missing native FreeBSD VPN recovery checkpoint")?;
-                gnunet_service_runtime::private_parents(checkpoint)?;
-                Device::open_freebsd_recoverable(Some(&settings.ifname), checkpoint, limits)?
+                gnunet_service_runtime::private_parents(&fresh.checkpoint)?;
+                Device::open_freebsd_recoverable(Some(&fresh.name), &fresh.checkpoint, limits)?
             }
             #[cfg(windows)]
             {
-                windows::open(settings, limits)?
+                windows::open(
+                    &settings.wintun,
+                    windows::Selection::Create(&fresh.name),
+                    limits,
+                )?
             }
         }
         #[cfg(windows)]
-        TunMode::Existing => windows::open(settings, limits)?,
+        TunMode::Existing { name } => {
+            windows::open(&settings.wintun, windows::Selection::Open(name), limits)?
+        }
     };
-    #[cfg(unix)]
-    let selected = device.info().name == settings.ifname;
-    #[cfg(windows)]
-    let selected = settings.mode == TunMode::Existing || device.info().name == settings.ifname;
-    if !selected {
-        let observed = device.info().name.clone();
+    let info = device
+        .info()
+        .ok_or("VPN system service requires a native device")?;
+    if let Some(expected) = settings.mode.expected_name()
+        && expected != info.name
+    {
+        let observed = info.name.clone();
         let mut io = device.into_io();
-        let loss = io.close();
+        let loss = io
+            .close_native()
+            .ok_or("VPN system service lost its native device")?;
         #[cfg(unix)]
         if let Some(report) = io.reap_helper().await {
             cleanup.helper(report);
         }
         return Err(Box::new(lifecycle::Qualification {
-            expected: settings.ifname.clone(),
+            expected: expected.to_owned(),
             observed,
             loss,
         }));

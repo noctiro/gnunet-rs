@@ -1,5 +1,4 @@
-//! Unexecuted owner source cases. The port controls validation outcomes;
-//! these are not signature, crypto, native-PILS or C interoperability evidence.
+//! DHT announcement and GET routing with a controlled BLOCK provider.
 #![cfg(feature = "alloc")]
 #![expect(
     clippy::panic_in_result_fn,
@@ -140,6 +139,13 @@ fn hello(peer: [u8; 32], expiration: u64) -> [u8; 104] {
     bytes
 }
 fn owner(instance: &mut Instance) -> Result<NetworkOwner<'_>, Error> {
+    owner_with_limits(instance, gnunet_dht::network::Limits::default())
+}
+
+fn owner_with_limits(
+    instance: &mut Instance,
+    network: gnunet_dht::network::Limits,
+) -> Result<NetworkOwner<'_>, Error> {
     NetworkOwner::new(
         LocalOwner::new(
             instance,
@@ -152,11 +158,60 @@ fn owner(instance: &mut Instance) -> Result<NetworkOwner<'_>, Error> {
             },
         )?,
         [1; 32],
-        gnunet_dht::network::Limits::default(),
+        network,
         Policy {
             estimate: Estimate::new(1.0)?,
         },
     )
+}
+
+#[test]
+fn a_nonterminal_cache_reply_cannot_hide_the_only_forwarding_slot() -> Result<(), Error> {
+    let mut instance = Instance::new();
+    let mut owner = owner_with_limits(
+        &mut instance,
+        gnunet_dht::network::Limits {
+            output_frames: 1,
+            ..gnunet_dht::network::Limits::default()
+        },
+    )?;
+    let source = owner.connect_peer([2; 32])?;
+    let neighbor = owner.connect_peer([3; 32])?;
+    let mut blocks = Registry {
+        valid: true,
+        known: None,
+    };
+    owner.observe_local_hello(&hello([1; 32], 1_000), 10, &mut blocks)?;
+    let target = peer_key(&[1; 32]);
+    owner.ingest_peer(
+        source,
+        &get(13, &target, &[])?,
+        10,
+        &mut blocks,
+        &mut FixedEntropy,
+    )?;
+
+    let mut work = owner.work();
+    let Some(Work::Send {
+        kind: JobKind::Get,
+        peer,
+        frame,
+        ..
+    }) = work.next()
+    else {
+        return Err(Error::NotReady);
+    };
+    let forwarded = GetMessage::decode(frame)?;
+    assert_eq!(peer, neighbor);
+    assert_eq!(forwarded.key, &target);
+    assert!(
+        forwarded
+            .result_filter
+            .get(4..)
+            .is_some_and(|bits| bits.iter().all(|&byte| byte == 0))
+    );
+    assert!(work.next().is_none());
+    Ok(())
 }
 fn get(kind: u32, key: &[u8; 64], filter: &[u8]) -> Result<Vec<u8>, Error> {
     let message = GetMessage {
@@ -240,10 +295,7 @@ fn full_cache_and_nearest_key_cannot_hide_newest_own_hello() -> Result<(), Error
         Err(Error::Authentication)
     );
     // A later remote replay cannot overwrite it, even with longer expiration.
-    assert_eq!(
-        owner.observe_hello(&latest, 20, &mut blocks),
-        Err(Error::Capacity)
-    );
+    owner.observe_hello(&latest, 20, &mut blocks)?;
     let client = owner.connect_client()?;
     let key = peer_key(&[1; 32]);
     let message = ipc::Get {

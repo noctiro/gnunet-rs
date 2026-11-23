@@ -137,9 +137,12 @@ pub(super) fn run() -> Result<ExitCode, Failure> {
             };
             private_parents(&settings.directory)?;
             let mut wal = Wal::open(&settings.directory, settings.backend)?;
-            if let Some(path) = &settings.hellos {
-                hellos::import_hellos(&mut wal, path, settings.hello_files, &reports)?;
-            }
+            hellos::import_hellos(
+                &mut wal,
+                settings.hellos.as_ref(),
+                gnunet_service_runtime::clock::RuntimeClock::sample(&clock)?.now,
+                &reports,
+            )?;
             reports.startup_check()?;
             runtime.block_on(super::foreground::before_start(&mut control, &reports))?;
             let mut worker = Worker::start(wal, settings.worker)?;

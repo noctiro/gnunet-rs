@@ -1,11 +1,11 @@
 //! Actual conditional OIDC artifacts from oidc_helper.c; no session/network owner.
 //! Signature/PKCE verification does not itself authorize an RP or consume a ticket.
+use crate::base64;
 use gnunet_gnsrecord::{ZoneKey, ZoneKeyType};
 use gnunet_reclaim::{AttributeList, ListLimits, PresentationList, Ticket, Uri};
 use gnunet_types::Error;
 use gnunet_wire::official::identity::{KeyType, SecretKeyView};
 use zeroize::{Zeroize, Zeroizing};
-pub mod base64;
 
 struct Scratch<'a>(&'a mut [u8]);
 impl Drop for Scratch<'_> {
@@ -270,25 +270,33 @@ impl<'a> Verified<'a> {
         self.issuer
     }
 }
-fn validate_strings(code: Code<'_>, limits: Limits) -> Result<(), Error> {
-    if code.nonce.len() > limits.nonce
-        || code.nonce.contains(&0)
-        || core::str::from_utf8(code.nonce).is_err()
-    {
+/// Validate the nonce and optional S256 challenge before requesting a ticket.
+/// An empty challenge represents a grant without PKCE. A present challenge is
+/// the canonical, unpadded base64url encoding of a 32-byte hash.
+pub fn validate_code_inputs(
+    nonce: &[u8],
+    challenge: &[u8],
+    nonce_limit: usize,
+) -> Result<(), Error> {
+    if nonce.len() > nonce_limit || nonce.contains(&0) || core::str::from_utf8(nonce).is_err() {
         return Err(Error::InvalidInput);
     }
-    if !code.challenge.is_empty()
-        && (code.challenge.len() != 43
-            || code
-                .challenge
+    if !challenge.is_empty()
+        && (challenge.len() != 43
+            || challenge
                 .iter()
                 .any(|b| !b.is_ascii_alphanumeric() && !matches!(b, b'-' | b'_')))
     {
         return Err(Error::InvalidInput);
     }
-    if !code.challenge.is_empty() && base64::decoded_len(code.challenge, true)? != 32 {
+    if !challenge.is_empty() && base64::decoded_len(challenge, true)? != 32 {
         return Err(Error::InvalidInput);
     }
+    Ok(())
+}
+
+fn validate_strings(code: Code<'_>, limits: Limits) -> Result<(), Error> {
+    validate_code_inputs(code.nonce, code.challenge, limits.nonce)?;
     if code.attributes.encoded_len() > limits.lists.bytes
         || code.presentations.encoded_len() > limits.lists.bytes
         || code.attributes.len() > limits.lists.items

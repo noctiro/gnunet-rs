@@ -7,7 +7,7 @@ use crate::FileIdentity;
 use gnunet_crypto::{gns::EdkeySecret, hash512};
 use gnunet_native::{
     DirectorySync,
-    filesystem::{Directory, FileInfo, FileReader, private_data_file_info},
+    filesystem::{self, Directory, FileInfo, FileReader, private_data_file_info, publication},
 };
 use std::{
     ffi::{OsStr, OsString},
@@ -134,6 +134,56 @@ impl Attempt {
 fn stamp(file: &File) -> Result<FileInfo, Cause> {
     private_data_file_info(file).map_err(Cause::Private)
 }
+
+#[derive(Debug)]
+struct SealCloseFailure {
+    sealing: publication::Failure,
+    close: Option<io::Error>,
+}
+impl fmt::Display for SealCloseFailure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.sealing.fmt(f)?;
+        if let Some(close) = &self.close {
+            write!(f, "; retained original close: {close}")?;
+        }
+        Ok(())
+    }
+}
+impl std::error::Error for SealCloseFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.sealing)
+    }
+}
+
+fn seal_created(
+    parent: &Directory,
+    name: &OsStr,
+    mut file: File,
+    attempt: &mut Attempt,
+) -> Result<(File, FileInfo), Cause> {
+    let sealed = publication::seal_retained(parent, name, &mut file, 32);
+    if !matches!(&sealed, Err(error) if error.stage == "file-sync") {
+        attempt.file_synced = true;
+        attempt.stage = Stage::FileSynced;
+    }
+    match sealed {
+        Ok(stamp) => Ok((file, stamp)),
+        Err(sealing) => {
+            // This canonical name is never removed. The shared boundary has
+            // already consumed the writer if a same-object reader was opened.
+            let close = filesystem::close(file).err();
+            let private = sealing.stage == "prepared-fence"
+                && sealing.cause.kind() == io::ErrorKind::PermissionDenied;
+            let cause = io::Error::new(sealing.cause.kind(), SealCloseFailure { sealing, close });
+            Err(if private {
+                Cause::Private(cause)
+            } else {
+                Cause::Io(cause)
+            })
+        }
+    }
+}
+
 /// An original raw32 seed and its selected native authority. It deliberately
 /// implements neither Debug nor Clone. Secret owners and temporary seed/fingerprint
 /// storage erase their memory on drop; no secret enters an ordinary task WAL.
@@ -151,7 +201,9 @@ pub struct KeyFile {
 }
 impl KeyFile {
     /// Generate a new random raw32 seed using exclusive private creation. Success
-    /// includes file synchronization, the actual parent barrier and final authority checks.
+    /// includes file synchronization, the original writer's close, the actual
+    /// parent barrier and final authority checks. Only a same-object read lease
+    /// remains held for signing authority and subsequent seed revalidation.
     /// A failed operation leaves any possibly created key intact for inspection.
     pub fn create(path: impl AsRef<Path>) -> Result<Self, Error> {
         let mut attempt = Attempt::new();
@@ -168,13 +220,7 @@ impl KeyFile {
             let _private = stamp(&file)?;
             file.write_all(&bytes[..])?;
             attempt.stage = Stage::SeedWritten;
-            file.sync_all()?;
-            attempt.file_synced = true;
-            attempt.stage = Stage::FileSynced;
-            let stamp = stamp(&file)?;
-            if stamp.bytes != 32 {
-                return Err(Cause::Length);
-            }
+            let (file, stamp) = seal_created(&parent, &name, file, &mut attempt)?;
             let mut owner = Self {
                 parent,
                 parent_path,

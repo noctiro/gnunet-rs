@@ -1,15 +1,29 @@
 //! Numeric FreeBSD14 pfctl state records. Selection precedes every mutation;
 //! unknown/truncated target records refuse the whole snapshot.
-use std::{fmt, io, net::IpAddr};
+use crate::packet::address;
+use std::{
+    io,
+    net::IpAddr,
+    num::{NonZeroU32, NonZeroU64},
+};
 const MAX_TARGETS: usize = 4096;
 const MAX_LINE_BYTES: usize = 2048;
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub(super) struct Id {
-    state: u64,
-    creator: u32,
+    state: NonZeroU64,
+    creator: NonZeroU32,
 }
-impl fmt::Display for Id {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+
+#[cfg(target_os = "freebsd")]
+impl Id {
+    pub fn retire(self, owner: &mut gnunet_native::pf_freebsd::StateKiller) -> io::Result<bool> {
+        owner.retire(self.state, self.creator)
+    }
+}
+
+#[cfg(test)]
+impl std::fmt::Display for Id {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{:016x}/{:08x}", self.state, self.creator)
     }
 }
@@ -72,10 +86,12 @@ fn selected(line: &str, local: &[IpAddr]) -> io::Result<bool> {
         return Err(invalid());
     }
     Ok(local.contains(&source.0)
-        && !matches!(source.0, IpAddr::V6(address) if address.is_unicast_link_local())
+        && [source.0, destination.0]
+            .into_iter()
+            .all(|ip| address::unicast(ip) && address::scope(ip) == address::Scope::Unscoped)
         && destination.1 == 53)
 }
-fn id(line: &str) -> io::Result<Id> {
+fn id(line: &str) -> io::Result<Option<Id>> {
     let mut tokens = line.split_ascii_whitespace();
     if tokens.next() != Some("id:") {
         return Err(invalid());
@@ -91,11 +107,11 @@ fn id(line: &str) -> io::Result<Id> {
     if creator.len() != 8 || !creator.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err(invalid());
     }
-    let id = Id {
-        state: u64::from_str_radix(state, 16).map_err(|_| invalid())?,
-        creator: u32::from_str_radix(creator, 16).map_err(|_| invalid())?,
-    };
-    Ok(id)
+    let state = u64::from_str_radix(state, 16).map_err(|_| invalid())?;
+    let creator = u32::from_str_radix(creator, 16).map_err(|_| invalid())?;
+    Ok(NonZeroU64::new(state)
+        .zip(NonZeroU32::new(creator))
+        .map(|(state, creator)| Id { state, creator }))
 }
 pub(super) enum Selection {
     Dns(Vec<IpAddr>),
@@ -208,17 +224,15 @@ fn parse_line(
                 return Err(invalid());
             }
             let id = id(line)?;
-            let keep = match selection {
+            let target = match selection {
                 Selection::Dns(_) => {
-                    // Creator0 is pfctl's wildcard and cannot authorize a kill.
-                    if id.state == 0 || id.creator == 0 {
-                        return Err(invalid());
-                    }
-                    true
+                    // The kernel treats creator0 as its default and state0
+                    // as a table predicate instead of an original state.
+                    Some(id.ok_or_else(invalid)?)
                 }
-                Selection::Original(original) => original.binary_search(&id).is_ok(),
+                Selection::Original(original) => id.filter(|id| original.binary_search(id).is_ok()),
             };
-            if keep {
+            if let Some(id) = target {
                 if targets.len() == MAX_TARGETS {
                     return Err(invalid());
                 }

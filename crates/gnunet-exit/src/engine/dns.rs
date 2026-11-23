@@ -144,6 +144,7 @@ impl Engine<'_> {
         response[..2].copy_from_slice(&d.original);
         self.queue_peer(
             &flow,
+            r.af.reply(),
             PeerMessage::Dns {
                 reply: true,
                 packet: &response,

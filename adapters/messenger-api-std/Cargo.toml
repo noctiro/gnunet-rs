@@ -24,5 +24,8 @@ getrandom.workspace = true
 zeroize = { workspace = true, features = ["alloc"] }
 tokio = { workspace = true, features = ["rt", "time"] }
 
+[dev-dependencies]
+tokio = { workspace = true, features = ["io-util", "net"] }
+
 [lints]
 workspace = true

@@ -16,5 +16,8 @@ gnunet-session-crypto.workspace = true
 zeroize.workspace = true
 subtle.workspace = true
 
+[dev-dependencies]
+getrandom.workspace = true
+
 [lints]
 workspace = true

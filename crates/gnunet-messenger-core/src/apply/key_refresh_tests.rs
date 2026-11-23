@@ -19,8 +19,8 @@ fn room_state<'id>(core: &mut Core<'id>) -> Result<(Slot, Slot, Slot), Error> {
     let room = core.room([1; 64], None)?;
     let r = room.slot;
     let brand = core.instance;
-    let mut member = session(brand, 1, 1);
-    member.contact.slot = contact;
+    let mut member = session(1, 1);
+    member.contact = contact;
     member.first_bound = [1; 64];
     member.last_bound = [1; 64];
     let row = core.rooms.get_mut(r)?;
@@ -30,15 +30,13 @@ fn room_state<'id>(core: &mut Core<'id>) -> Result<(Slot, Slot, Slot), Error> {
     join.semantic_kind = Kind::JOIN;
     join.auth.as_mut().ok_or(Fault::Conflict)?.session = Some(member);
     join.complete = true;
-    row.insert_node(join).map_err(|rejected| rejected.error)?;
+    row.insert_node(join)?;
     let mut refresh = node(brand, 2, 1, 1, 1, 2)?;
     refresh.kind = Kind::KEY;
     refresh.semantic_kind = Kind::KEY;
     refresh.semantic_applied = false;
     refresh.auth.as_mut().ok_or(Fault::Conflict)?.session = Some(member);
-    let refresh = row
-        .insert_node(refresh)
-        .map_err(|rejected| rejected.error)?;
+    let refresh = row.insert_node(refresh)?;
     Ok((r, member, refresh))
 }
 
@@ -49,7 +47,9 @@ fn room_state<'id>(core: &mut Core<'id>) -> Result<(Slot, Slot, Slot), Error> {
 )]
 fn same_signer_hpke_refresh_and_cached_auth_follow_the_actual_key_ancestry() -> Result<(), Error> {
     let mut instance = Instance::new();
+    let mut cells = [HistoryCell::EMPTY; 16];
     let mut core = structural_core(&mut instance)?;
+    core.ancestry = Some(HistoryWorkspace::from_cells(&mut cells)?);
     let (r, original, refresh) = room_state(&mut core)?;
     core.switch_session(r, refresh, Some(([3; 36], [5; 36])), None)?;
     let current = core
@@ -72,10 +72,7 @@ fn same_signer_hpke_refresh_and_cached_auth_follow_the_actual_key_ancestry() -> 
     let brand = core.instance;
     let mut bridge = node(brand, 3, 2, 1, 2, 3)?;
     bridge.auth.as_mut().ok_or(Fault::Conflict)?.session = Some(current);
-    core.rooms
-        .get_mut(r)?
-        .insert_node(bridge)
-        .map_err(|rejected| rejected.error)?;
+    core.rooms.get_mut(r)?.insert_node(bridge)?;
     let mut second = node(brand, 4, 2, 1, 1, 4)?;
     second.kind = Kind::KEY;
     second.semantic_kind = Kind::KEY;
@@ -83,11 +80,18 @@ fn same_signer_hpke_refresh_and_cached_auth_follow_the_actual_key_ancestry() -> 
     second.parents[1] = [3; 64]; // An actual diamond; visit each Slot only once.
     // Represents a verified response cached before the first KEY was applied.
     second.auth.as_mut().ok_or(Fault::Conflict)?.session = Some(original);
-    let second = core
+    let second = core.rooms.get_mut(r)?.insert_node(second)?;
+    let cached = core
         .rooms
-        .get_mut(r)?
-        .insert_node(second)
-        .map_err(|rejected| rejected.error)?;
+        .get(r)?
+        .nodes
+        .get(second)?
+        .auth
+        .ok_or(Fault::Conflict)?;
+    let ceiling = core.limits.total_bytes;
+    core.limits.total_bytes = core.charged_bytes();
+    assert!(core.key_successor(r, second, cached)? == current);
+    core.limits.total_bytes = ceiling;
     let baseline = core.charged_bytes();
     core.switch_session(r, second, Some(([3; 36], [6; 36])), None)?;
     assert_eq!(core.charged_bytes(), baseline);
@@ -147,11 +151,7 @@ fn exact_key_unauthenticated_and_unproven_old_branch_do_not_change_the_active_ke
     branch.semantic_kind = Kind::KEY;
     branch.semantic_applied = false;
     branch.auth.as_mut().ok_or(Fault::Conflict)?.session = Some(original);
-    let branch = core
-        .rooms
-        .get_mut(r)?
-        .insert_node(branch)
-        .map_err(|rejected| rejected.error)?;
+    let branch = core.rooms.get_mut(r)?.insert_node(branch)?;
     let baseline = core.charged_bytes();
     // A fresh hash, equal public identity, and later arrival cannot authorize
     // forwarding an old branch across a KEY absent from its signed ancestry.

@@ -54,13 +54,12 @@ native accept avoids IP-address conversion and TCP options. WouldBlock uses Mio'
 rearm path as well as clearing Tokio readiness. No per-connection worker or timer
 polling is used. Windows native runtime qualification remains open.
 
-The Windows transport constructor takes an already bound/listening socket;
-transport Drop closes only that socket. `BoundListeners::bind_configured` owns
-configured endpoint permissions and filesystem cleanup. A local transport grants
-no SID or POSIX UID/GID authority. Requested POSIX credential checks continue to
-fail explicitly on Windows. `Connection::unix_peer_process_id` observes the
-original AF_UNIX socket through the SDK's `SIO_AF_UNIX_GETPEERPID`; TCP returns
-None. This is PID metadata, not SID/UID admission, and never reopens a numeric PID.
+The Windows transport constructor takes an already bound listening socket.
+Transport Drop closes only that socket. `BoundListeners::bind_configured` owns
+configured endpoint permissions and filesystem cleanup.
+`Connection::unix_peer_process_id` queries the original AF_UNIX socket through
+the SDK's `SIO_AF_UNIX_GETPEERPID`. TCP returns `None`. Admission is independent
+of this observation.
 
 CLIENT attempts use this transport for Windows `UNIXPATH`, including shared
 official path shortening. Windows socket names must be Unicode encoded as UTF-8,
@@ -152,6 +151,8 @@ Canceled waits retain registration and ownership. `RegisteredIo` attempts at
 most one caller operation per poll. A cached hint followed by WouldBlock schedules
 one cooperative turn to register the current waker; it does not retry the syscall
 internally, replace the descriptor or relax the deadline.
+Typed native descriptors remain inside the readiness registration. Receive and
+send callbacks borrow that same owner, including its native I/O contract.
 
 ## Configured local listeners
 
@@ -167,16 +168,29 @@ socket before retiring its path on failure or Drop.
 and configured TCP endpoints on Unix and Windows without adopting activation.
 A missing/zero PORT permits local-only operation. Alternate endpoint failures
 remain available when at least one listener succeeds. `LocalListenerAccess`
-selects owner, group or everyone filesystem access; drivers separately enforce
-peer admission. The `From<UnixAccess>` mapping selects creation permissions only.
+selects owner, group or everyone filesystem access. On Unix the driver separately
+checks kernel peer credentials. On Windows the driver checks the configured
+policy against the accepted stream's original listener DACL. A local admission
+failure refuses that stream. Only accept or initialization descriptor exhaustion
+can suspend listeners.
 
 Windows creates missing parents with protected inheritable DACLs. Existing
 parents retain their security; the final parent must be an ordinary directory
 owned by the process user, SYSTEM or Administrators without mutation grants to
 other principals. Read/list/traverse grants are allowed. Unsupported ACE forms
-fail explicitly. Exclude namespace/ACL mutation and thread impersonation during
-startup. The new AF_UNIX node receives its protected DACL before listen; group
-access uses the process token's actual primary group SID.
+fail explicitly. Exclude concurrent namespace and ACL mutation during startup.
+Directory creation, reclamation and the final bind use the supervisor's primary
+identity. The new AF_UNIX node receives its protected DACL before listen.
+Winsock enforces write access to the node when a client connects.
+[Microsoft AF_UNIX security](https://devblogs.microsoft.com/commandline/af_unix-comes-to-windows/#security)
+
+An owner-only DACL satisfies either local restriction. Group access grants
+connect rights to the selected primary-token user and its primary group SID.
+With both flags set, owner access takes precedence. Activated listeners can
+receive their original Windows policy through the
+[native activation section](../native-std/SOCKET-ACTIVATION.md). A requested
+local check refuses TCP, outgoing connections and bare external listeners.
+TCP service admission uses its configured IP ACLs.
 
 `path.rs` selects native parent preparation behind `private_parents`. Unix keeps
 its mode/ownership contract in `path/unix.rs`; Windows reuses the native protected
@@ -184,21 +198,38 @@ directory implementation in `path/windows.rs`. Application hosts do not create
 parallel platform-specific directory policies.
 
 Windows stale-node probes hold an original file handle without automatic
-deletion. Only connection refusal permits reclamation. New node owners reopen
-their original object for DELETE and apply extended POSIX disposition; replacement
-paths are never looked up for removal. Volumes without that disposition and
-sharing violations return errors. `BoundListeners::close` closes sockets first
-and retains each failed path owner for retry. Drop cleanup is best effort.
+deletion. An ARM account worker probes under the selected account when preparing
+its listener. Reclamation requires a connection refusal and matching the exact
+path to the original Windows file ID. The original object is reopened for DELETE
+and removed with extended POSIX disposition. Volumes without that disposition
+and sharing violations return errors. `BoundListeners::close` closes sockets
+first and retains each failed path owner for retry. Drop cleanup is best effort.
 
 ## Windows activation
+
+External supervisors can prepare a local listener with `local_listener::prepare`
+or `local_listener::AccountBind::listen` for a verified service account.
+Pass `PreparedLocalListener::launch_source()` to the Windows startup launcher
+to publish the original listener and its pre-listen ACL evidence. Keep the
+prepared owner alive while the child serves the pathname, or through retirement
+if startup fails. The prepared owner retains the socket and pathname cleanup.
+[Windows service startup](../service-startup/README.md#windows-parent-bootstrap)
 
 `Activation::from_sockets` validates owned stream-listener roles and native
 families before conversion. `from_imported` consumes actual descriptors from
 [native one-shot import](../native-std/SOCKET-ACTIVATION.md). The private collection
 cannot be populated without validation. Both paths admit at most 4096 listeners.
-`BoundListeners::from_activation` registers the original nonblocking set without
-rebinding endpoints or acquiring inherited path-cleanup leases. Enter an
-I/O-enabled runtime and retain creator leases separately.
+`BoundListeners::from_activation_with_access` checks every AF_UNIX listener
+against the service's configured owner or group restriction before registering
+any socket. Restricted listeners need the publisher's original pre-listen ACL
+evidence. TCP keeps its independent IP admission policy.
+`BoundListeners::bind` parses `UNIX_MATCH_UID` and `UNIX_MATCH_GID` before
+activation or binding. A nonempty activation supplies the addresses directly.
+Malformed access options are rejected before registration.
+`BoundListeners::from_activation` is available to callers without a local
+restriction. Both register the original nonblocking endpoints, retain verified
+ACL evidence and leave path-cleanup leases with the creator. Enter an I/O-enabled
+runtime before registration.
 
 ## Unix activation and path ownership
 
@@ -216,9 +247,10 @@ permits Unix-only operation. `prepare_before_identity` binds inherited/TCP
 resources first; `ListenerPreparation::finish_with_access` creates local paths
 after the caller's identity transition. These methods do not change identity.
 
-New Unix binds run under a serialized temporary umask 077, restored synchronously
-on every exit. Exclude unrelated process-wide umask users and file creators during
-startup. Existing parent permissions remain unchanged. `LocalListenerAccess`
+Configured Unix listeners bind without changing process umask. Strict node
+permissions are committed before the first `listen`, so a bound stream socket
+cannot admit a connection during permission setup. Existing parent permissions
+remain unchanged. `LocalListenerAccess`
 selects new endpoint/parent modes: owner 0700/0700, group 0770/0750, everyone
 0777/0755. The accepting driver separately checks kernel peer credentials.
 
@@ -229,7 +261,10 @@ callers must control concurrent path replacement. Register only newly owned path
 never inherited or foreign endpoints.
 
 `PrivateListener` and private-bind variants expose explicit backlog and permission
-ordering for ARM. The shared [process contract](PROCESS.md) describes native
+ordering for ARM. These lower-level creation-private APIs use a serialized
+temporary umask 077 and require excluding unrelated umask users and file creators;
+the ordinary configured listener path does not use that guard.
+The shared [process contract](PROCESS.md) describes native
 command preparation, original child/control capabilities and consuming waits.
 Signal policy, persistence and application control files remain service-owned.
 

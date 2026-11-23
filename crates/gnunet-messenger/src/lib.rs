@@ -226,6 +226,9 @@ impl<const N: usize> SensitiveBuffer<N> {
     }
 }
 
+/// Official Messenger room ports and signed-message framing over CADET.
+pub mod carrier;
+
 /// Official hash/signature/MAC/HPKE/AEAD operations over sealed original wire
 /// views and explicit caller-owned keys, entropy and zeroizing storage.
 pub mod crypto;

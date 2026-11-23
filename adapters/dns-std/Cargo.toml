@@ -15,6 +15,7 @@ default = []
 gnunet-dnsstub = { workspace = true, features = ["alloc"] }
 gnunet-types.workspace = true
 gnunet-native.workspace = true
+gnunet-service-runtime.workspace = true
 tokio = { workspace = true, features = ["rt", "net", "time"] }
 socket2.workspace = true
 getrandom.workspace = true

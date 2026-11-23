@@ -155,7 +155,7 @@ pub async fn run(options: Options) -> io::Result<()> {
     if let Some(control) = &mut controls {
         let prepared = preparing(&mut pump, control.prepare()).await;
         match prepared {
-            Ok(Preparation::Ready) => {}
+            Ok(Preparation::Ready(())) => {}
             outcome => {
                 let original = outcome.err();
                 return Failure {
@@ -208,25 +208,37 @@ pub async fn run(options: Options) -> io::Result<()> {
         }
     };
     let setup = if let Some(controls) = &mut controls {
-        preparing(
-            &mut pump,
-            controls.install(&options, &interface, getegid().as_raw()),
-        )
+        preparing(&mut pump, async {
+            // Subscribe before the original state retirement selects its
+            // addresses. The first packet turn drains this exact socket.
+            let topology = pf::Topology::subscribe()?;
+            let scope = controls
+                .install(&options, &interface, getegid().as_raw())
+                .await?;
+            Ok(Some((scope, topology)))
+        })
         .await
     } else {
-        Ok(Preparation::Ready)
+        Ok(Preparation::Ready(None))
     };
     let (original, pump) = match setup {
         Err(error) => (Some(error), None),
         Ok(Preparation::Stopped) => (None, None),
-        Ok(Preparation::Ready) => match seteuid(real_uid) {
-            Ok(()) => {
-                let report = match controls.as_mut() {
-                    Some(controls) => pump.run_guarded(&mut tun, controls.watch(&interface)).await,
-                    None => pump.run(&mut tun).await,
-                };
-                (None, Some(report))
-            }
+        Ok(Preparation::Ready(policy)) => match seteuid(real_uid) {
+            Ok(()) => match (controls.as_mut(), policy) {
+                (Some(controls), Some((scope, mut topology))) => {
+                    let watch = controls.watch(&interface, &scope);
+                    let report = pump
+                        .run_guarded(&mut tun, watch, |cx| topology.poll(cx, &scope))
+                        .await;
+                    (None, Some(report))
+                }
+                (None, None) => (None, Some(pump.run(&mut tun).await)),
+                _ => (
+                    Some(io::Error::other("PF original observation owner missing")),
+                    None,
+                ),
+            },
             Err(error) => (Some(error.into()), None),
         },
     };
@@ -249,22 +261,20 @@ async fn cleanup(controls: Option<&mut pf::Controls>) -> pf::Cleanup {
     }
 }
 
-enum Preparation {
-    Ready,
+enum Preparation<T> {
+    Ready(T),
     Stopped,
 }
-async fn preparing(
+async fn preparing<T>(
     pump: &mut pump::Pump,
-    work: impl std::future::Future<Output = io::Result<()>>,
-) -> io::Result<Preparation> {
+    work: impl std::future::Future<Output = io::Result<T>>,
+) -> io::Result<Preparation<T>> {
     let mut work = std::pin::pin!(work);
     std::future::poll_fn(|cx| {
         if let std::task::Poll::Ready(stop) = pump.poll_stop(cx) {
             return std::task::Poll::Ready(stop.map(|()| Preparation::Stopped));
         }
-        work.as_mut()
-            .poll(cx)
-            .map(|result| result.map(|()| Preparation::Ready))
+        work.as_mut().poll(cx).map_ok(Preparation::Ready)
     })
     .await
 }

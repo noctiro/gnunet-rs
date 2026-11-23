@@ -1,15 +1,29 @@
 use super::*;
+mod application;
+#[cfg(target_os = "freebsd")]
+mod freebsd;
+#[cfg(target_os = "freebsd")]
+use freebsd::FreeBsdRestore;
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum Phase {
     New,
     Snapshot,
+    #[cfg(target_os = "freebsd")]
+    Restore(FreeBsdRestore),
     Configure(u8),
+    ProviderInstall,
+    ProviderRemove,
     Dad,
     Routes(usize),
     Ready,
     Remove(usize),
     Released,
     Failed,
+}
+#[derive(Clone, Copy)]
+enum ProviderWork {
+    Prepared(provider::RouteRequest),
+    Queued(provider::RouteRequest),
 }
 struct Route {
     job: tun::NativeRoute,
@@ -19,7 +33,16 @@ struct Route {
 struct Query {
     job: tun::RouteQuery,
     index: usize,
-    removing: bool,
+    purpose: QueryPurpose,
+}
+#[derive(Clone, Copy)]
+enum QueryPurpose {
+    Verify,
+    Remove,
+    #[cfg(target_os = "freebsd")]
+    BeforeRestore,
+    #[cfg(target_os = "freebsd")]
+    RestoreMissing,
 }
 pub(super) struct Control<'id> {
     phase: Phase,
@@ -30,12 +53,14 @@ pub(super) struct Control<'id> {
     query: Option<Query>,
     watch: Option<tun::Ipv6Watch>,
     sample_at: Option<Instant>,
+    provider_pending: Option<ProviderWork>,
+    provider_installed: Option<provider::RequestId>,
+    pub(super) provider_error: Option<Error>,
     pub(super) uncertain: bool,
     pub(super) prior_tun_close_error: Option<io::Error>,
     control_close_error: Option<io::Error>,
     pub(super) unconfirmed_control_closes: u64,
     pub(super) dead: bool,
-    verify_owned: bool,
 }
 impl Control<'_> {
     pub(super) fn new() -> Self {
@@ -48,12 +73,14 @@ impl Control<'_> {
             query: None,
             watch: None,
             sample_at: None,
+            provider_pending: None,
+            provider_installed: None,
+            provider_error: None,
             uncertain: false,
             prior_tun_close_error: None,
             control_close_error: None,
             unconfirmed_control_closes: 0,
             dead: false,
-            verify_owned: false,
         }
     }
 }
@@ -70,6 +97,16 @@ fn prefix(plan: core::RoutingRequest<'_>, i: usize) -> Option<core::Prefix> {
         _ => None,
     }
 }
+fn ipv4_matches(prefix: Option<core::Prefix>, snapshot: &tun::NativeSnapshot) -> bool {
+    prefix.is_none_or(|p| {
+        matches!(
+            (p.interface, snapshot.ipv4_address(), snapshot.ipv4_netmask()),
+            (core::Address::V4(address), tun::Ipv4Observation::Present(observed),
+                tun::Ipv4Observation::Present(mask))
+                if observed.octets() == address && mask.octets() == v4mask(p.bits)
+        )
+    })
+}
 impl<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy>
     Coordinator<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy>
 {
@@ -77,8 +114,13 @@ impl<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy>
     /// Transport close still runs and retains an explicit pending-cleanup error.
     pub fn defer_interface_cleanup(&mut self) {
         #[cfg(target_os = "freebsd")]
-        if let PacketIo::Native(io) = &mut self.device.io {
-            io.defer_interface_cleanup();
+        {
+            if let PacketIo::Native(io) = &mut self.device.io {
+                io.defer_interface_cleanup();
+            }
+            if let Some(recovery::PacketRecovery::Retained(owner)) = &mut self.recovery.packet {
+                owner.defer_interface_cleanup();
+            }
         }
     }
     fn control_failed(
@@ -86,7 +128,7 @@ impl<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy>
         reason: Fault,
         observe: &mut impl FnMut(Event<'id, 'cadet>),
     ) -> Result<(), Error> {
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "freebsd"))]
         if self.retire_missing_interface(observe)? {
             return Ok(());
         }
@@ -108,7 +150,7 @@ impl<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy>
         error: tun::ApplyFailure,
         observe: &mut impl FnMut(Event<'id, 'cadet>),
     ) -> Result<(), Error> {
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "freebsd"))]
         match self.retire_missing_interface(observe) {
             Ok(true) => {
                 observe(Event::RecoveryControlFailed(error));
@@ -146,7 +188,7 @@ impl<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy>
             observe(Event::Ipv6Ended(c));
         }
     }
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "freebsd"))]
     pub(super) fn retire_control_for_recovery(
         &mut self,
         observe: &mut impl FnMut(Event<'id, 'cadet>),
@@ -170,38 +212,56 @@ impl<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy>
         }
         Ok(())
     }
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "freebsd"))]
     pub(super) fn start_recovery_verification(
         &mut self,
         source: core::Tun<'id>,
         hard: Instant,
     ) -> Result<(), Error> {
-        self.start_recovery_control(source, hard, true)
+        self.start_recovery_control(source, hard, core::RouteAction::Verify)
     }
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "freebsd"))]
     pub(super) fn start_recovery_configuration(
         &mut self,
         source: core::Tun<'id>,
         hard: Instant,
     ) -> Result<(), Error> {
-        self.start_recovery_control(source, hard, false)
+        self.start_recovery_control(source, hard, core::RouteAction::Install)
     }
-    #[cfg(windows)]
+    #[cfg(target_os = "freebsd")]
+    pub(super) fn freebsd_owned_route_keys(&self) -> Result<Vec<tun::FreeBsdRouteKey>, Error> {
+        let plan = self.control.plan.ok_or(Fault::NotReady)?;
+        [plan.ipv4, plan.ipv6]
+            .into_iter()
+            .flatten()
+            .map(|p| tun::FreeBsdRouteKey::new(ip(p.network), p.bits).map_err(Into::into))
+            .collect()
+    }
+    #[cfg(target_os = "freebsd")]
+    pub(super) fn start_recovery_restoration(
+        &mut self,
+        source: core::Tun<'id>,
+        hard: Instant,
+    ) -> Result<(), Error> {
+        self.start_recovery_control(source, hard, core::RouteAction::Restore)
+    }
+    #[cfg(any(windows, target_os = "freebsd"))]
     fn start_recovery_control(
         &mut self,
         source: core::Tun<'id>,
         hard: Instant,
-        verify: bool,
+        action: core::RouteAction,
     ) -> Result<(), Error> {
         self.control.dead = false;
         let owned = self.device.provenance == Provenance::Created;
-        self.control.verify_owned = owned && verify;
-        let plan = if self.control.verify_owned {
-            self.server
-                .engine_mut()
-                .routing_verification_request(source)?
-        } else {
-            self.server.engine_mut().routing_request(source)?
+        let engine = self.server.engine_mut();
+        let plan = match (action, owned) {
+            (core::RouteAction::Verify, true) => engine.routing_verification_request(source)?,
+            (core::RouteAction::Restore, true) => engine.routing_restoration_request(source)?,
+            (core::RouteAction::Install | core::RouteAction::Verify, _) => {
+                engine.routing_request(source)?
+            }
+            _ => return Err(Fault::PermissionDenied.into()),
         };
         self.control.plan = Some(plan);
         self.control.work = Some(plan.routing);
@@ -214,9 +274,13 @@ impl<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy>
                 .routing_borrowed_queued(plan.routing)?;
         }
         self.control.phase = Phase::Snapshot;
+        #[cfg(target_os = "freebsd")]
+        if action == core::RouteAction::Restore {
+            self.control.phase = Phase::Restore(FreeBsdRestore::ProbeRoutes(0));
+        }
         Ok(())
     }
-    fn start_query(&mut self, index: usize, removing: bool) -> Result<(), Error> {
+    fn start_query(&mut self, index: usize, purpose: QueryPurpose) -> Result<(), Error> {
         if self.control.unconfirmed_control_closes != 0 {
             return Err(Fault::Io.into());
         }
@@ -230,7 +294,7 @@ impl<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy>
         self.control.query = Some(Query {
             job,
             index,
-            removing,
+            purpose,
         });
         Ok(())
     }
@@ -273,7 +337,7 @@ impl<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy>
         c: tun::RouteCompletion,
         observe: &mut impl FnMut(Event<'id, 'cadet>),
     ) -> Result<(), Error> {
-        if c.id.epoch() != &self.device.epoch() {
+        if self.device.epoch().as_ref() != Some(c.id.epoch()) {
             return Err(Fault::StaleGeneration.into());
         }
         let good = c.timing == tun::Timing::Timely && c.outcome.is_success();
@@ -286,13 +350,29 @@ impl<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy>
         observe(Event::Route(c));
         if good {
             self.report.route_acks = self.report.route_acks.saturating_add(1);
+            #[cfg(target_os = "freebsd")]
+            if !removing
+                && self
+                    .control
+                    .plan
+                    .is_some_and(|p| p.action == core::RouteAction::Restore)
+            {
+                return self.start_query(index, QueryPurpose::Verify);
+            }
             self.control.phase = if removing {
                 Phase::Remove(index + 1)
             } else {
                 Phase::Routes(index + 1)
             };
         } else if reconcile {
-            self.start_query(index, removing)?;
+            self.start_query(
+                index,
+                if removing {
+                    QueryPurpose::Remove
+                } else {
+                    QueryPurpose::Verify
+                },
+            )?;
         } else {
             self.control_failed(Fault::OutcomeUnknown, observe)?;
         }
@@ -301,11 +381,11 @@ impl<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy>
     fn query_complete(
         &mut self,
         index: usize,
-        removing: bool,
+        purpose: QueryPurpose,
         c: tun::RouteQueryCompletion,
         observe: &mut impl FnMut(Event<'id, 'cadet>),
     ) -> Result<(), Error> {
-        if c.target().epoch() != &self.device.epoch() {
+        if self.device.epoch().as_ref() != Some(c.target().epoch()) {
             return Err(Fault::StaleGeneration.into());
         }
         let timely = self
@@ -321,26 +401,80 @@ impl<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy>
             self.control_failed(if timely { Fault::Io } else { Fault::Deadline }, observe)?;
             return Ok(());
         }
-        if removing {
-            if absent {
-                self.control.phase = Phase::Remove(index + 1);
-            } else if exact {
-                self.start_route(index, true, observe)?;
-            } else {
-                self.control_failed(Fault::OutcomeUnknown, observe)?;
+        match purpose {
+            QueryPurpose::Remove if absent => self.control.phase = Phase::Remove(index + 1),
+            QueryPurpose::Remove if exact => self.start_route(index, true, observe)?,
+            QueryPurpose::Verify if exact => self.control.phase = Phase::Routes(index + 1),
+            QueryPurpose::Verify if absent => self.control_failed(Fault::NotFound, observe)?,
+            #[cfg(target_os = "freebsd")]
+            QueryPurpose::BeforeRestore if exact || absent => {
+                self.control.phase = Phase::Restore(FreeBsdRestore::ProbeRoutes(index + 1));
             }
-        } else if exact {
-            self.control.phase = Phase::Routes(index + 1);
-        } else {
-            self.control_failed(
-                if absent {
-                    Fault::NotFound
-                } else {
-                    Fault::OutcomeUnknown
-                },
-                observe,
-            )?;
+            #[cfg(target_os = "freebsd")]
+            QueryPurpose::RestoreMissing if exact => self.control.phase = Phase::Routes(index + 1),
+            #[cfg(target_os = "freebsd")]
+            QueryPurpose::RestoreMissing if absent => self.start_route(index, false, observe)?,
+            _ => self.control_failed(Fault::OutcomeUnknown, observe)?,
         }
+        Ok(())
+    }
+    fn apply_control_action(
+        &mut self,
+        action: tun::Action,
+        observe: &mut impl FnMut(Event<'id, 'cadet>),
+    ) -> Result<bool, Error> {
+        let effect = self
+            .device
+            .io
+            .plan(action, self.control.until.ok_or(Fault::NotReady)?)?;
+        match self.device.io.apply(effect) {
+            Ok(receipt) => {
+                let valid = receipt.timing() == tun::Timing::Timely
+                    && self.device.epoch().as_ref() == Some(receipt.id().epoch());
+                observe(Event::Applied(receipt));
+                self.report.native_applied = self.report.native_applied.saturating_add(1);
+                if !valid {
+                    self.control_failed(Fault::OutcomeUnknown, observe)?;
+                }
+                Ok(valid)
+            }
+            Err(error) => {
+                self.native_action_failed(error, observe)?;
+                Ok(false)
+            }
+        }
+    }
+    fn snapshot(&self, plan: core::RoutingRequest<'id>) -> Result<tun::NativeSnapshot, Error> {
+        let snapshot = self.device.io.snapshot(
+            self.control.until.ok_or(Fault::NotReady)?,
+            tun::SnapshotOptions {
+                ipv4: plan.ipv4.is_some(),
+                ipv6: plan.ipv6.is_some(),
+            },
+        )?;
+        if self.device.epoch().as_ref() != Some(snapshot.epoch()) {
+            return Err(Fault::StaleGeneration.into());
+        }
+        Ok(snapshot)
+    }
+    fn report_snapshot(
+        &mut self,
+        snapshot: tun::NativeSnapshot,
+        observe: &mut impl FnMut(Event<'id, 'cadet>),
+    ) {
+        self.retain_control_close(snapshot.close_error());
+        observe(Event::Snapshot(snapshot));
+    }
+    fn start_dad(&mut self, prefix: core::Prefix) -> Result<(), Error> {
+        let core::Address::V6(address) = prefix.interface else {
+            return Err(Fault::InvalidInput.into());
+        };
+        self.control.watch = Some(self.device.io.watch_ipv6(
+            address.into(),
+            prefix.bits,
+            self.control.until.ok_or(Fault::NotReady)?,
+            self.limits.ipv6_watch,
+        )?);
         Ok(())
     }
     fn poll_watch(
@@ -357,8 +491,13 @@ impl<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy>
         };
         match progress {
             tun::Ipv6Progress::Observed(o) => {
-                if o.target.epoch() != &self.device.epoch() {
+                if self.device.epoch().as_ref() != Some(o.target.epoch()) {
                     return Err(Fault::StaleGeneration.into());
+                }
+                #[cfg(target_os = "freebsd")]
+                if let Phase::Restore(FreeBsdRestore::ProbeIpv6(changes)) = self.control.phase {
+                    self.observe_restore_ipv6(changes, o, observe)?;
+                    return Ok(true);
                 }
                 let ready = o.state == tun::Ipv6State::Ready;
                 let wait = matches!(o.state, tun::Ipv6State::Tentative | tun::Ipv6State::Missing);
@@ -460,6 +599,9 @@ impl<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy>
         cx: &mut Context<'_>,
         observe: &mut impl FnMut(Event<'id, 'cadet>),
     ) -> Result<bool, Error> {
+        if self.device.provenance == Provenance::Provider {
+            return self.poll_provider_control(cx);
+        }
         if self.control.unconfirmed_control_closes != 0 {
             return Err(Fault::Io.into());
         }
@@ -498,7 +640,7 @@ impl<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy>
                     return Ok(false);
                 }
                 Poll::Ready(tun::RouteQueryProgress::Complete(c)) => {
-                    self.query_complete(query.index, query.removing, c, observe)?;
+                    self.query_complete(query.index, query.purpose, c, observe)?;
                     return Ok(true);
                 }
                 Poll::Ready(tun::RouteQueryProgress::Finished) => {
@@ -564,31 +706,13 @@ impl<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy>
             }
             Phase::Snapshot => {
                 let plan = self.control.plan.ok_or(Fault::NotReady)?;
-                let s = self.device.io.snapshot(
-                    self.control.until.ok_or(Fault::NotReady)?,
-                    tun::SnapshotOptions {
-                        ipv4: plan.ipv4.is_some(),
-                        ipv6: plan.ipv6.is_some(),
-                    },
-                )?;
-                if s.epoch() != &self.device.epoch() {
-                    return Err(Fault::StaleGeneration.into());
-                }
-                let v4ok = plan.ipv4.is_none_or(|p| {
-                    match (p.interface, s.ipv4_address(), s.ipv4_netmask()) {
-                        (
-                            core::Address::V4(a),
-                            tun::Ipv4Observation::Present(real),
-                            tun::Ipv4Observation::Present(mask),
-                        ) => real.octets() == a && mask.octets() == v4mask(p.bits),
-                        _ => false,
-                    }
-                });
-                let borrowed =
-                    self.device.provenance != Provenance::Created || self.control.verify_owned;
-                let matches = self.device.io.accepts_mtu(&s, self.limits.mtu) && s.up() && v4ok;
-                self.retain_control_close(s.close_error());
-                observe(Event::Snapshot(s));
+                let s = self.snapshot(plan)?;
+                let borrowed = self.device.provenance != Provenance::Created
+                    || plan.action == core::RouteAction::Verify;
+                let matches = self.device.io.accepts_mtu(&s, self.limits.mtu)
+                    && s.up()
+                    && ipv4_matches(plan.ipv4, &s);
+                self.report_snapshot(s, observe);
                 if borrowed {
                     if !matches {
                         self.control_failed(Fault::Conflict, observe)?;
@@ -600,50 +724,25 @@ impl<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy>
                 }
                 Ok(true)
             }
+            #[cfg(target_os = "freebsd")]
+            Phase::Restore(phase) => self.poll_freebsd_restore(phase, observe),
             Phase::Configure(i) => {
                 let plan = self.control.plan.ok_or(Fault::NotReady)?;
-                let action = native_action(plan, i, self.limits.mtu)?;
                 if i >= MTU_STEPS + 4 {
                     self.control.phase = Phase::Dad;
                     return Ok(true);
                 }
-                if let Some(action) = action {
-                    let effect = self
-                        .device
-                        .io
-                        .plan(action, self.control.until.ok_or(Fault::NotReady)?)?;
-                    match self.device.io.apply(effect) {
-                        Ok(receipt) => {
-                            let valid = receipt.timing() == tun::Timing::Timely
-                                && receipt.id().epoch() == &self.device.epoch();
-                            observe(Event::Applied(receipt));
-                            self.report.native_applied =
-                                self.report.native_applied.saturating_add(1);
-                            if !valid {
-                                self.control_failed(Fault::OutcomeUnknown, observe)?;
-                                return Ok(true);
-                            }
-                        }
-                        Err(e) => {
-                            self.native_action_failed(e, observe)?;
-                            return Ok(true);
-                        }
-                    }
+                if let Some(action) = native_action(plan, i, self.limits.mtu)?
+                    && !self.apply_control_action(action, observe)?
+                {
+                    return Ok(true);
                 }
                 self.control.phase = Phase::Configure(i + 1);
                 Ok(true)
             }
             Phase::Dad => {
                 if let Some(p) = self.control.plan.and_then(|p| p.ipv6) {
-                    let core::Address::V6(a) = p.interface else {
-                        return Err(Fault::InvalidInput.into());
-                    };
-                    self.control.watch = Some(self.device.io.watch_ipv6(
-                        a.into(),
-                        p.bits,
-                        self.control.until.ok_or(Fault::NotReady)?,
-                        self.limits.ipv6_watch,
-                    )?);
+                    self.start_dad(p)?;
                 } else {
                     self.control.phase = Phase::Routes(0);
                 }
@@ -652,13 +751,22 @@ impl<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy>
             Phase::Routes(i) => {
                 if i >= 2 {
                     let work = self.control.work.take().ok_or(Fault::NotReady)?;
-                    if self.control.verify_owned {
-                        self.server.engine_mut().route_reverified(work)?;
+                    let plan = self.control.plan.ok_or(Fault::NotReady)?;
+                    let engine = self.server.engine_mut();
+                    match (plan.action, self.device.provenance) {
+                        (core::RouteAction::Verify, _) => engine.route_reverified(work)?,
+                        (core::RouteAction::Restore, _) => engine.route_restored(work)?,
+                        (core::RouteAction::Install, Provenance::Created) => {
+                            engine.route_applied(work)?
+                        }
+                        (core::RouteAction::Install, _) => engine.route_borrowed_verified(work)?,
+                        (core::RouteAction::Remove, _) => return Err(Fault::Conflict.into()),
+                    }
+                    if matches!(
+                        plan.action,
+                        core::RouteAction::Verify | core::RouteAction::Restore
+                    ) {
                         self.control.uncertain = false;
-                    } else if self.device.provenance != Provenance::Created {
-                        self.server.engine_mut().route_borrowed_verified(work)?;
-                    } else {
-                        self.server.engine_mut().route_applied(work)?;
                     }
                     self.control.phase = Phase::Ready;
                     return Ok(true);
@@ -667,8 +775,16 @@ impl<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy>
                     self.control.phase = Phase::Routes(i + 1);
                     return Ok(true);
                 }
-                if self.device.provenance != Provenance::Created || self.control.verify_owned {
-                    self.start_query(i, false)?;
+                let action = self.control.plan.ok_or(Fault::NotReady)?.action;
+                #[cfg(target_os = "freebsd")]
+                if action == core::RouteAction::Restore {
+                    self.start_query(i, QueryPurpose::RestoreMissing)?;
+                    return Ok(true);
+                }
+                if self.device.provenance != Provenance::Created
+                    || action == core::RouteAction::Verify
+                {
+                    self.start_query(i, QueryPurpose::Verify)?;
                 } else {
                     self.start_route(i, false, observe)?;
                 }
@@ -717,10 +833,11 @@ impl<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy>
                     self.control.phase = Phase::Remove(i + 1);
                     return Ok(true);
                 }
-                self.start_query(i, true)?;
+                self.start_query(i, QueryPurpose::Remove)?;
                 Ok(true)
             }
             Phase::Released | Phase::Failed => Ok(false),
+            Phase::ProviderInstall | Phase::ProviderRemove => Err(Fault::Conflict.into()),
         }
     }
     pub(super) fn control_released(&self) -> bool {
@@ -750,11 +867,17 @@ impl<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy>
             return;
         }
         let ipc = self.server.shutdown(|e| observe(Event::Ipc(e)));
-        let mut failure = self
-            .control
-            .prior_tun_close_error
-            .as_ref()
-            .map(|_| Error::Protocol(Fault::Io));
+        if self.device.provenance == Provenance::Provider
+            && let Err(error) = self.cancel_provider_control()
+        {
+            self.control.provider_error.get_or_insert(error);
+        }
+        let mut failure = self.control.provider_error.take().or_else(|| {
+            self.control
+                .prior_tun_close_error
+                .as_ref()
+                .map(|_| Error::Protocol(Fault::Io))
+        });
         self.stop_watch(observe);
         if let Some(mut route) = self.control.route.take()
             && let tun::RouteProgress::Complete(c) = route.job.cancel()
@@ -795,24 +918,43 @@ impl<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy>
             }
         };
         let mut removal_proven = false;
-        let device = if !self.control.dead {
-            let epoch = self.device.epoch();
-            #[cfg(unix)]
-            let may_prove = self.device.provenance == Provenance::Created
-                && !self.control.uncertain
-                && epoch.current();
-            // Wintun's void EndSession/CloseAdapter ABI gives no independent
-            // kernel-removal completion. Only actual route cleanup can settle it.
-            #[cfg(windows)]
-            let may_prove = false;
-            let loss = self.device.io.close();
+        #[cfg(target_os = "freebsd")]
+        if let Some(owner) = self.recovery.packet.take()
+            && let Err(error) = owner.close()
+        {
+            self.control.prior_tun_close_error.get_or_insert(error);
+            failure.get_or_insert(Fault::Io.into());
+        }
+        let application = if self.device.provenance == Provenance::Provider && !self.control.dead {
+            self.close_application(observe, &mut failure)
+        } else {
+            None
+        };
+        let native = if !self.control.dead {
+            self.device.epoch().and_then(|epoch| {
+                #[cfg(unix)]
+                let may_prove = self.device.provenance == Provenance::Created
+                    && !self.control.uncertain
+                    && epoch.current();
+                // Closing the Wintun session does not acknowledge OS-route removal.
+                #[cfg(windows)]
+                let may_prove = false;
+                self.device
+                    .io
+                    .close_native()
+                    .map(|loss| (epoch, may_prove, loss))
+            })
+        } else {
+            None
+        };
+        let device = if let Some((epoch, may_prove, loss)) = native {
             if (matches!(&loss.cause, tun::LossCause::ShortWrite { bytes, .. } if *bytes > 0)
                 || loss
                     .pending
                     .as_ref()
                     .is_some_and(|id| id.helper_accepted_prefix() > 0))
                 && let Some(output) = &self.output
-                && loss.pending.as_ref() == Some(&output.write)
+                && loss.pending.as_ref() == output.write.native()
                 && let Err(error) = self.server.engine_mut().exposed(output.effect)
                 && failure.is_none()
             {
@@ -922,6 +1064,7 @@ impl<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy>
             ipc,
             cadet: backend,
             tun: device,
+            provider: application,
             prior_tun_close_error: self.control.prior_tun_close_error.take(),
             control_close_error: self.control.control_close_error.take(),
             unconfirmed_control_closes: self.control.unconfirmed_control_closes,

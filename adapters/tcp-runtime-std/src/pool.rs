@@ -42,9 +42,9 @@ impl std::fmt::Display for AdmissionError {
 impl std::error::Error for AdmissionError {}
 /// Caller-owned backing is borrowed once, then returned from every closed
 /// Session. Active capacity stays fixed; there is no total-generation budget.
-pub struct Setup<'a> {
+pub struct Setup<'a, Services = [Connection; 2]> {
     /// Actual connected PEERSTORE and TRANSPORT MQs, in that order.
-    pub services: [Connection; 2],
+    pub services: Services,
     /// Current verified local identity capability for this caller-owned epoch.
     pub identity: Identity<'a>,
     /// One original registry scope; old tokens prevent resetting this scope.
@@ -108,6 +108,7 @@ pub struct Pool<'a> {
     active: Vec<Active>,
     identity: Identity<'a>,
     policy: Policy,
+    socket_policy: gnunet_service_runtime::network::SocketPolicy,
     capacity: usize,
     yield_due: bool,
     epoch: Option<crate::epoch::Epoch>,
@@ -119,6 +120,45 @@ impl<'a> Pool<'a> {
     /// Consume genuinely connected service owners and one fixed caller backing
     /// set. Failed setup closes these newly transferred physical resources.
     pub fn new(setup: Setup<'a>) -> Result<Self, HostError> {
+        let manager = Communicator::new(setup.services, setup.ipc, setup.capacity)?;
+        Self::from_manager(Setup {
+            services: manager,
+            identity: setup.identity,
+            scope: setup.scope,
+            slots: setup.slots,
+            buffers: setup.buffers,
+            policy: setup.policy,
+            ipc: setup.ipc,
+            capacity: setup.capacity,
+            disable_v6: setup.disable_v6,
+        })
+    }
+    /// Resume the exact registered IPC owner with fresh session backing and keys.
+    /// No REGISTER or address ADD is copied or replayed by this constructor.
+    pub fn resume(
+        setup: Setup<'a, gnunet_tcp_communicator_host::Resources>,
+    ) -> Result<Self, HostError> {
+        if !setup.services.input_idle() || !setup.services.matches_policy(setup.ipc, setup.capacity)
+        {
+            return Err(Error::InvalidInput.into());
+        }
+        let manager = setup
+            .services
+            .resume()
+            .map_err(|rejected| HostError::Core(rejected.reason))?;
+        Self::from_manager(Setup {
+            services: manager,
+            identity: setup.identity,
+            scope: setup.scope,
+            slots: setup.slots,
+            buffers: setup.buffers,
+            policy: setup.policy,
+            ipc: setup.ipc,
+            capacity: setup.capacity,
+            disable_v6: setup.disable_v6,
+        })
+    }
+    fn from_manager(setup: Setup<'a, Communicator<'a>>) -> Result<Self, HostError> {
         let Setup {
             services,
             identity,
@@ -126,7 +166,7 @@ impl<'a> Pool<'a> {
             slots,
             buffers,
             policy,
-            ipc,
+            ipc: _,
             capacity,
             disable_v6,
         } = setup;
@@ -138,7 +178,7 @@ impl<'a> Pool<'a> {
         active
             .try_reserve_exact(capacity.sessions)
             .map_err(|_| Error::Capacity)?;
-        let manager = Communicator::new(services, ipc, capacity)?;
+        let manager = services;
         Ok(Self {
             manager,
             registry: Registry::new(scope, slots, disable_v6),
@@ -146,6 +186,7 @@ impl<'a> Pool<'a> {
             active,
             identity,
             policy,
+            socket_policy: Default::default(),
             capacity: capacity.sessions,
             yield_due: false,
             epoch: None,
@@ -153,6 +194,13 @@ impl<'a> Pool<'a> {
             retiring: false,
             next_session: 0,
         })
+    }
+    pub(crate) fn with_socket_policy(
+        mut self,
+        socket_policy: gnunet_service_runtime::network::SocketPolicy,
+    ) -> Self {
+        self.socket_policy = socket_policy;
+        self
     }
     /// Bind the unique original durable epoch before any native/backend work.
     /// Wrong identities or an already-used pool return the same original token.
@@ -202,6 +250,75 @@ impl<'a> Pool<'a> {
         };
         drop(original);
         Ok(crate::epoch::Quiescent { epoch })
+    }
+    /// Retire this peer epoch while retaining its original registered IPC owner.
+    /// The proof belongs only to the old durable epoch; retained resources carry
+    /// no old key, registry borrow, session or successful backend callback.
+    #[expect(
+        clippy::result_large_err,
+        reason = "Refusal retains this original pool and all native framing without another allocation"
+    )]
+    pub fn into_resources(
+        mut self,
+    ) -> Result<
+        (
+            gnunet_tcp_communicator_host::Resources,
+            crate::epoch::Quiescent,
+        ),
+        gnunet_types::Rejected<Self>,
+    > {
+        if !self.is_empty()
+            || self.registry.occupied() != 0
+            || !self.manager.identity_quiescent()
+            || self.manager.peerstore_recovery_required()
+        {
+            return Err(gnunet_types::Rejected {
+                reason: Error::WouldBlock,
+                value: self,
+            });
+        }
+        let Some(epoch) = self.epoch.take() else {
+            return Err(gnunet_types::Rejected {
+                reason: Error::NotReady,
+                value: self,
+            });
+        };
+        let Self {
+            manager,
+            registry,
+            free,
+            active,
+            identity,
+            policy,
+            socket_policy,
+            capacity,
+            yield_due,
+            epoch: _,
+            touched,
+            retiring,
+            next_session,
+        } = self;
+        match manager.into_resources() {
+            Ok(resources) => Ok((resources, crate::epoch::Quiescent { epoch })),
+            Err(rejected) => Err(gnunet_types::Rejected {
+                reason: rejected.reason,
+                value: Self {
+                    manager: rejected.value,
+                    registry,
+                    free,
+                    active,
+                    identity,
+                    policy,
+                    socket_policy,
+                    capacity,
+                    yield_due,
+                    epoch: Some(epoch),
+                    touched,
+                    retiring,
+                    next_session,
+                },
+            }),
+        }
     }
     /// Actual original manager counters/gauge, with retired counters preserved.
     #[must_use]
@@ -600,7 +717,8 @@ impl<'a> Pool<'a> {
             return Err(Error::Unavailable.into());
         }
         let numeric = gnunet_tcp_communicator_core::registry::Address::parse(address)?.socket();
-        let connecting = match NativeConnect::begin(numeric) {
+        let connecting = match NativeConnect::begin_with_socket_policy(numeric, &self.socket_policy)
+        {
             Ok(c) => c.into_future(),
             Err(error) => {
                 self.registry.failed(instance)?;
@@ -657,6 +775,16 @@ impl<'a> Pool<'a> {
         }
         self.manager.begin_shutdown(time)
     }
+    /// Retire peer work while listener/NAT addresses keep the same service owner.
+    pub fn retire_identity_epoch(&mut self) -> Result<(), HostError> {
+        self.retiring = true;
+        self.registry.cancel_reversals();
+        self.manager.begin_identity_retirement();
+        for original in &self.active {
+            self.manager.lost(&original.id)?;
+        }
+        Ok(())
+    }
     /// Begin authenticated graceful close using the original manager and clock.
     pub fn begin_shutdown(&mut self, time: Time) -> Result<(), HostError> {
         self.retiring = true;
@@ -667,6 +795,11 @@ impl<'a> Pool<'a> {
     #[must_use]
     pub fn is_quiescent(&self) -> bool {
         self.manager.is_quiescent()
+    }
+    /// Original service RX frames are also settled before an identity handoff.
+    #[must_use]
+    pub fn identity_quiescent(&self) -> bool {
+        self.manager.identity_quiescent()
     }
     /// Public backend ambiguity is not cleared by a replacement IPC connection.
     #[must_use]

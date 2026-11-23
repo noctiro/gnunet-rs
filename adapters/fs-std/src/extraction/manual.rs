@@ -3,6 +3,13 @@
 use super::{Error, Policy, Value, add_named, copy, decoded, encode_values, md};
 use std::mem::size_of;
 
+/// The canonical English name of a published GNU libextractor metadata type.
+/// Returns `None` for IDs outside the known table.
+#[must_use]
+pub fn metadata_type_name(kind: u32) -> Option<&'static str> {
+    TYPE_NAMES.get(usize::try_from(kind).ok()?).copied()
+}
+
 /// Explicit finite user-annotation policy; actual final metadata limits also apply.
 #[derive(Clone, Copy, Debug)]
 pub struct ManualLimits {
@@ -152,7 +159,29 @@ impl ManualMetadata {
         &self,
         order: &'a mut [usize],
         plain: &'a mut [u8],
+        policy: Policy,
+    ) -> Result<md::Plan<'a>, Error> {
+        self.plan_with_codec(
+            order,
+            plain,
+            &mut [],
+            &mut md::NoCodec,
+            policy,
+            md::Compression::Never,
+        )
+    }
+    /// Plan the same annotations with an explicit standard metadata encoding.
+    /// Caller workspaces and codec state are reused. Adaptive/Always require a
+    /// real codec; a capacity or codec refusal never becomes an uncompressed
+    /// success when Always was selected. Existing [`Self::plan`] stays raw.
+    pub fn plan_with_codec<'a>(
+        &self,
+        order: &'a mut [usize],
+        plain: &'a mut [u8],
+        coded: &'a mut [u8],
+        deflater: &mut impl md::Deflater,
         mut policy: Policy,
+        compression: md::Compression,
     ) -> Result<md::Plan<'a>, Error> {
         policy.max_metadata_bytes = policy.max_metadata_bytes.min(self.limits.bytes);
         policy.max_metadata_items = policy.max_metadata_items.min(256);
@@ -169,17 +198,19 @@ impl ManualMetadata {
                 mime: Some(b"text/plain\0"),
             });
         }
-        Ok(md::plan_uncompressed(
+        Ok(md::plan(
             &items,
             order,
             plain,
+            coded,
+            deflater,
             md::Limits {
                 max_coded_bytes: policy.max_metadata_bytes,
                 max_plain_bytes: policy.max_metadata_bytes,
                 max_entries: policy.max_metadata_items,
             },
             md::Options {
-                compression: md::Compression::Never,
+                compression,
                 max_output_bytes: policy.max_metadata_bytes,
                 ..Default::default()
             },

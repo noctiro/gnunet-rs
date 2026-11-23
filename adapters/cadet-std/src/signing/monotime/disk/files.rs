@@ -5,7 +5,7 @@ use gnunet_native::{
     DirectorySync,
     filesystem::{
         Directory, ExclusiveFile, FileIdentity, FileReader, private_data_file_info,
-        private_single_file_identity,
+        private_single_file_identity, publication, validate_readonly,
     },
 };
 use std::{
@@ -58,6 +58,7 @@ impl Prepared<'_, '_> {
 }
 impl Image {
     fn new(file: File) -> Result<Self, Error> {
+        validate_readonly(&file).map_err(|e| fail(Stage::Read, Outcome::NotCommitted, e))?;
         let info = private_data_file_info(&file)
             .map_err(|e| fail(Stage::Read, Outcome::NotCommitted, e))?;
         if info.bytes != BYTES as u64 {
@@ -151,7 +152,7 @@ impl Files {
         guard
             .sync_all()
             .map_err(|e| fail(Stage::Fence, Outcome::NotCommitted, e))?;
-        let selected = match directory.open_file_for_sync(&name) {
+        let selected = match directory.open_file(&name) {
             Ok(file) => Some(Image::new(file)?),
             Err(e) if e.kind() == io::ErrorKind::NotFound => None,
             Err(e) => return Err(fail(Stage::Read, Outcome::NotCommitted, e)),
@@ -259,18 +260,16 @@ impl Files {
     pub(super) fn settle(&mut self) -> Result<(), Error> {
         self.fence()?;
         self.names = None;
-        // Flush the still-held selected file after replacement, including its
-        // metadata on Windows. This is distinct from a directory barrier.
-        self.current()?
-            .ok_or_else(|| {
-                fail(
-                    Stage::Recovery,
-                    Outcome::Unknown,
-                    io::Error::other("missing monotime image"),
-                )
-            })?
-            .file
-            .sync_all()
+        // Keep the selected image read-only. Windows acquires and closes its
+        // temporary same-object sync handle before the following readback.
+        let image = self.current()?.ok_or_else(|| {
+            fail(
+                Stage::Recovery,
+                Outcome::Unknown,
+                io::Error::other("missing monotime image"),
+            )
+        })?;
+        publication::sync_original(&self.directory, &self.name, &image.file)
             .map_err(|e| fail(Stage::Recovery, Outcome::Unknown, e))?;
         self.names = Some(
             self.directory

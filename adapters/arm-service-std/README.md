@@ -54,6 +54,43 @@ and resolves its image against the explicit environment/cwd, so native path
 backslashes and spaces never pass through Unix escaping. Explicit textual recipes
 retain their documented parser contract.
 
+## Windows service accounts
+
+A Windows service with `USERNAME` set to the ARM account keeps the normal
+launch and listener routes. To select a different account, configure a
+native GNUnet service with an absolute `CONFIG` path. Set
+`WINDOWS_LOGON_CREDENTIAL` to the name of a Generic Credential in the Windows
+Credential Manager store accessible to ARM. Specify the target account in the
+credential and store its password as UTF-16LE. `IMMEDIATE_START = YES` with
+`NOARMBIND = YES` starts a self-binding service when ARM starts.
+
+For managed activation under a different account, configure `PORT`,
+`UNIXPATH`, or both. ARM installs the selected account's SID and optional
+primary group in the local listener DACL before listening. ARM retains
+original-node cleanup authority, and existing parent directories must allow
+the intended clients to traverse. ARM probes an existing local endpoint
+under the selected account and reclaims it only after a connection refusal
+and an exact match to the original file object. Other probe failures leave
+the entry in place.
+
+ARM transfers listeners before the child runs and waits for its qualified
+startup status. A different Windows session uses a protected global section.
+ARM needs an already enabled `SeCreateGlobalPrivilege` to create this section
+outside session 0.
+[Windows activation](../native-std/SOCKET-ACTIVATION.md)
+
+The target account needs `SeBatchLogonRight` and access to its executable,
+configuration and data. Windows requires ARM to hold `SeIncreaseQuotaPrivilege`
+and, depending on the token, `SeAssignPrimaryTokenPrivilege`. Loading the profile
+requires an administrator or LocalSystem with `SeBackupPrivilege` and
+`SeRestorePrivilege`.
+
+ARM loads the verified account's profile before building its environment and
+launching the service over a private control pipe. Native cleanup starts after
+the original child process exits. Process exit status and profile cleanup errors
+are reported independently.
+[Windows startup](../service-startup/README.md#windows-identity)
+
 ## Listener preparation and cancellation
 
 `bind_registry(...).await` and `bind_address(..., LocalListenerAccess).await`
@@ -66,9 +103,13 @@ preparation completes.
 Local paths and access are prepared through the shared
 [listener boundary](../service-runtime/README.md#configured-local-listeners).
 Unix uses private modes; Windows uses owner/primary-group/Everyone DACL policy.
+On Windows, malformed local access configuration fails the affected AF_UNIX
+endpoint before listener or account preparation. Independent endpoints remain
+eligible.
 TCP uses Unix address reuse or Windows exclusive address ownership. IPv6-only
 and backlog settings are applied before reactor registration. Inherited listeners
-acquire no new pathname cleanup authority.
+acquire no new pathname cleanup authority. Linux abstract listeners retain the
+exact name extent returned by the kernel, including trailing zero bytes.
 
 Readiness observes the original listening socket without accepting or reading.
 A canceled wait retains its registration and one-shot lease. A child later

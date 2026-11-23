@@ -1,8 +1,6 @@
 //! Native endpoint DACL construction, protected creation and installation.
-use super::EndpointAccess;
-use crate::identity::{
-    SecurityDescriptor, process_primary_group, process_user, security_descriptor,
-};
+use super::{EndpointPrincipals, ProtectedAccess};
+use crate::identity::{SecurityDescriptor, security_descriptor};
 use crate::paths::absolute_wide_path;
 use std::{fs::File, io, mem::size_of, os::windows::io::AsRawHandle, path::Path, ptr};
 use windows_sys::Win32::Security::{
@@ -10,26 +8,44 @@ use windows_sys::Win32::Security::{
     DACL_SECURITY_INFORMATION, GetSecurityDescriptorDacl, GetSecurityDescriptorOwner,
     OWNER_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION, SECURITY_ATTRIBUTES,
 };
-use windows_sys::Win32::Storage::FileSystem::CreateDirectoryW;
+use windows_sys::Win32::Storage::FileSystem::{
+    CreateDirectoryW, DELETE, FILE_READ_ATTRIBUTES, READ_CONTROL, WRITE_DAC, WRITE_OWNER,
+};
 
 pub(super) enum Object {
     Directory,
     Socket,
 }
-pub(super) fn descriptor(access: EndpointAccess, object: Object) -> io::Result<SecurityDescriptor> {
-    let user = process_user()?;
-    let (inherit, rights) = match object {
-        Object::Directory => ("OICI", "GRGX"),
-        Object::Socket => ("", "GRGWGX"),
+pub(super) fn descriptor(
+    principals: &EndpointPrincipals,
+    object: Object,
+) -> io::Result<SecurityDescriptor> {
+    let user = &principals.user;
+    let custodian = &principals.custodian;
+    let (inherit, rights, maintenance) = match object {
+        Object::Directory => ("OICI", "GRGX", "FA".to_owned()),
+        Object::Socket => {
+            let maintenance = if user == custodian {
+                "FA".to_owned()
+            } else {
+                // Retain original-object cleanup and ACL control without
+                // granting the supervisor's SID connect access.
+                let mask = DELETE | FILE_READ_ATTRIBUTES | READ_CONTROL | WRITE_DAC | WRITE_OWNER;
+                format!("{mask:#x}")
+            };
+            ("", "GRGWGX", maintenance)
+        }
     };
-    let mut sddl = format!("O:{user}D:P(A;{inherit};FA;;;{user})");
-    match access {
-        EndpointAccess::Owner => {}
-        EndpointAccess::PrimaryGroup => sddl.push_str(&format!(
-            "(A;{inherit};{rights};;;{})",
-            process_primary_group()?
-        )),
-        EndpointAccess::Everyone => sddl.push_str(&format!("(A;{inherit};{rights};;;WD)")),
+    let mut sddl = format!("O:{custodian}D:P(A;{inherit};{maintenance};;;{custodian})");
+    if user != custodian {
+        sddl.push_str(&format!("(A;{inherit};{rights};;;{user})"));
+    }
+    match &principals.access {
+        ProtectedAccess::Owner => {}
+        ProtectedAccess::PrimaryGroup(group) => {
+            sddl.push_str(&format!("(A;{inherit};{rights};;;{group})"))
+        }
+        ProtectedAccess::Everyone => sddl.push_str(&format!("(A;{inherit};{rights};;;WD)")),
     }
     security_descriptor(&sddl)
 }
@@ -60,8 +76,8 @@ pub(super) fn create_directory(path: &Path, descriptor: &SecurityDescriptor) -> 
     unsafe_code,
     reason = "The owned descriptor backs a valid native DACL, and SetSecurityInfo borrows the original file handle without resolving its path"
 )]
-pub(super) fn set_access(file: &File, access: EndpointAccess) -> io::Result<()> {
-    let descriptor = descriptor(access, Object::Socket)?;
+pub(super) fn set_access(file: &File, principals: &EndpointPrincipals) -> io::Result<()> {
+    let descriptor = descriptor(principals, Object::Socket)?;
     let mut present = 0;
     let mut defaulted = 0;
     let mut acl = ptr::null_mut();
@@ -75,7 +91,7 @@ pub(super) fn set_access(file: &File, access: EndpointAccess) -> io::Result<()> 
         return Err(io::ErrorKind::InvalidData.into());
     }
     let mut owner = ptr::null_mut();
-    // SAFETY: the generated descriptor owns the validated process-user SID;
+    // SAFETY: the generated descriptor owns the validated custodian SID;
     // the returned pointer borrows that allocation through SetSecurityInfo.
     if unsafe { GetSecurityDescriptorOwner(descriptor.0, &mut owner, &mut defaulted) } == 0 {
         return Err(io::Error::last_os_error());

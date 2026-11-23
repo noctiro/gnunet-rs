@@ -766,7 +766,14 @@ impl Engine {
                 self.buffered -= body.len();
                 self.dv_dispatch_retained(i, peer, body, times, signer)?
             } else {
-                match self.network_peer(None, peer, input, 0, times, signer)? {
+                match self.network_peer(
+                    None,
+                    peer,
+                    input,
+                    PacketTiming::unbound(0),
+                    times,
+                    signer,
+                )? {
                     NetworkStep::OwnedMessage(body, _) => {
                         self.dv_dispatch_retained(i, peer, body, times, signer)?
                     }
@@ -813,7 +820,7 @@ impl Engine {
             // fragment. Normal reliable preflight and assembly charge ensure fit.
             return Err(Error::TooLarge);
         }
-        let result = self.network_peer(None, peer, &body, 0, times, signer);
+        let result = self.network_peer(None, peer, &body, PacketTiming::unbound(0), times, signer);
         if matches!(
             result,
             Err(Error::WouldBlock | Error::NotReady | Error::Capacity)

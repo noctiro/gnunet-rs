@@ -69,8 +69,12 @@ impl Controls {
         Ok(scope)
     }
 
-    pub(in crate::platform) async fn watch(&mut self, interface: &str) -> io::Result<()> {
-        if self.state != State::Installed || self.scope.is_none() {
+    pub(in crate::platform) async fn watch(
+        &mut self,
+        interface: &str,
+        scope: &Scope,
+    ) -> io::Result<()> {
+        if self.state != State::Installed {
             return Err(io::Error::other("PF original installed scope is missing"));
         }
         loop {
@@ -82,10 +86,7 @@ impl Controls {
                 .ok_or_else(|| io::Error::other("PF observation deadline overflow"))?;
             tokio::time::sleep_until(next).await;
             let current = self.observe(interface, hard).await?;
-            self.scope
-                .as_ref()
-                .ok_or_else(|| io::Error::other("PF original installed scope disappeared"))?
-                .require_same(&current)?;
+            scope.require_same(&current)?;
         }
     }
 }

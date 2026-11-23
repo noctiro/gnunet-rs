@@ -601,7 +601,13 @@ impl<'nat, 'pool> Driver<'nat, 'pool> {
             Err(error) => return Some(Self::failure(error)),
         };
         let remote = SocketAddr::V4(callback.remote());
-        let connected = preamble::ConnectBack::begin(remote, local, bounds, now);
+        let connected = preamble::ConnectBack::begin_with_socket_policy(
+            remote,
+            local,
+            bounds,
+            now,
+            published.listeners().socket_policy(),
+        );
         // The original callback is released only after that exact attempt was
         // admitted or definitely refused; no future reconstructs it on retry.
         let released = published.release_reverse(&callback);

@@ -1,23 +1,18 @@
 # Embedded compilation checks
 
-The standalone `noalloc` library depends on the default official SDK. It uses
-official STATISTICS framing, GNS record cryptography, hashing, peer purpose
-signatures and signed HELLO formats without requesting `alloc`, `std`, IPC or a
-runtime. It also instantiates the resolver FIFO, encodes its official request,
-and cancels/releases that owner with caller storage. Native hostname and FQDN
-helpers remain outside this dependency graph.
+The standalone `noalloc` library exercises GNUnet protocols with caller-owned
+storage, including STATISTICS framing, GNS record cryptography, signed HELLOs,
+resolver requests, the CORE handshake's first flight, and MESSENGER room
+hosting with signed JOIN admission and checkpoint preparation and recovery.
 
-The default SDK also includes the pure CORE peer engine. The fixture constructs
-its handshake owner with caller-provided entropy and encodes a first flight;
-it performs no native I/O or synthetic peer establishment. This adds compile/feature
-coverage, not a physical device or interoperability claim.
+## Build checks
+
+The embedded verification task compiles the `gnunet` facade and the standalone
+fixture on Cortex-M0, Cortex-M4 and RV32IMAC. The dependency guard checks the
+fixture's target dependency graph for allocator and host-runtime features.
 
 ```sh
+rustup target add thumbv6m-none-eabi thumbv7em-none-eabi riscv32imac-unknown-none-elf
 cargo xtask check-noalloc
-cargo check --manifest-path tests/embedded/noalloc/Cargo.toml --target thumbv6m-none-eabi --locked
-cargo check --manifest-path tests/embedded/noalloc/Cargo.toml --target thumbv7em-none-eabi --locked
+cargo xtask verify embedded
 ```
-
-The guard inspects the target dependency closure. These library checks
-establish compilation and selected feature closure; they do not measure a
-linked firmware's memory, timing or device behavior.

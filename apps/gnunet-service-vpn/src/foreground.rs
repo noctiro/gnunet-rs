@@ -2,7 +2,7 @@
 use crate::{
     Failure, discovery,
     lifecycle::{self, Cleanup, Stage},
-    settings::{self, Settings},
+    settings::Settings,
 };
 use gnunet_cadet_host as cadet;
 use gnunet_client_host::{EndpointSource, LiveConfiguration};
@@ -70,6 +70,16 @@ impl Diagnostics {
                 self.reports.warning("vpn.tun.lost",format_args!("VPN actual original TUN loss={loss:?}"));
                 self.cleanup.retain(Stage::ObservedTun,Box::new(lifecycle::TunLoss(loss)));
             },
+            #[cfg(target_os = "freebsd")]
+            Event::TunRecovering(loss)=>self.reports.warning("vpn.tun.recovering",format_args!("VPN retired FreeBSD packet I/O; retaining the original interface: {loss:?}")),
+            #[cfg(target_os = "freebsd")]
+            Event::FreeBsdRecoveryRetry{stage,error}=>self.reports.debug("vpn.tun.retry",format_args!("FreeBSD TUN recovery at {stage:?}: {error}")),
+            #[cfg(target_os = "freebsd")]
+            Event::FreeBsdRecoveryExpired { deadline } => {
+                self.failed = true;
+                self.reports.warning("vpn.tun.recovery.expired", format_args!("FreeBSD TUN recovery reached its original deadline {deadline:?}"));
+                self.cleanup.retain(Stage::ObservedTun, Box::new(gnunet_types::Error::Deadline));
+            }
             Event::TunCoreLost(loss)=>self.reports.debug("vpn.tun.retired",format_args!("VPN original TUN scope retired={loss:?}")),
             #[cfg(windows)]
             Event::InterfaceRetired(scope)=>self.recovery.scope(scope, &self.reports),
@@ -77,6 +87,10 @@ impl Diagnostics {
             Event::RecoveryError(error)=>self.recovery.error(Box::new(error), &self.reports),
             #[cfg(windows)]
             Event::RecoveryControlFailed(error)=>self.recovery.error(Box::new(error), &self.reports),
+            #[cfg(target_os = "freebsd")]
+            Event::RecoveryError(error) => self.reports.warning("vpn.tun.recovery.observation", format_args!("Original control observation before FreeBSD recovery: {error}")),
+            #[cfg(target_os = "freebsd")]
+            Event::RecoveryControlFailed(error) => self.reports.warning("vpn.tun.recovery.control", format_args!("Original FreeBSD control operation: {error:?}")),
             Event::PeerLost(loss)=>self.reports.debug("vpn.peer.retired",format_args!("VPN original peer retired={loss:?}")),
             Event::ControlFailed(error)=>{
                 self.failed=true;
@@ -111,7 +125,7 @@ fn observe_regex(reports: &Reporter, event: discovery::Event<'_, '_>) {
         discovery::Event::Constructed{discovery,job}=>reports.debug("vpn.regex.constructed",format_args!("VPN REGEX original constructed discovery={discovery:?} job={job:?}")),
         discovery::Event::Queued{discovery,job,epoch}=>reports.debug("vpn.regex.queued",format_args!("VPN REGEX actual request queued discovery={discovery:?} job={job:?} epoch={epoch:?}")),
         discovery::Event::Written{discovery,job,epoch}=>reports.debug("vpn.regex.written",format_args!("VPN REGEX original whole local write discovery={discovery:?} job={job:?} epoch={epoch:?}; no service ACK")),
-        discovery::Event::Selected{discovery,job,epoch,peer}=>reports.debug("vpn.regex.selected",format_args!("VPN REGEX actual discovered peer discovery={discovery:?} job={job:?} epoch={epoch:?} peer={peer:02x?}; endpoint authentication unclaimed")),
+        discovery::Event::Selected{discovery,job,epoch,peer,af}=>reports.debug("vpn.regex.selected",format_args!("VPN REGEX discovered peer discovery={discovery:?} job={job:?} epoch={epoch:?} peer={peer:02x?} transmit AF={af:?}")),
         discovery::Event::Inconclusive{discovery,reason}=>reports.warning("vpn.regex.inconclusive",format_args!("VPN REGEX original inconclusive discovery={discovery:?} reason={reason}; no-exit proof absent")),
         discovery::Event::NativeEnded{discovery,end}=>reports.debug("vpn.regex.retired",format_args!("VPN REGEX actual original MQ retired discovery={discovery:?} native={end:?}; remote revocation unclaimed")),
         discovery::Event::NativeError{discovery,error}=>reports.warning("vpn.regex.native.failed",format_args!("VPN REGEX original native failure discovery={discovery:?} error={error}")),
@@ -400,58 +414,31 @@ pub(super) async fn run(
         reports: reports.clone(),
         closed: false,
     };
+    let mut pools = settings.service.allocate()?;
+    let mut slots = pools.slots()?;
+    let (storage, channels) = slots.split();
     let mut domain = core::Instance::new();
-    let mut clients = settings::filled(settings.clients, core::ClientSlot::new)?;
-    let mut requests = settings::filled(settings.requests, core::RequestSlot::new)?;
-    let mut leases = settings::filled(settings.leases, core::LeaseSlot::new)?;
-    let mut flows = settings::filled(settings.flows, core::FlowSlot::new)?;
-    let packet_count = settings
-        .small_count
-        .checked_add(settings.large_count)
-        .ok_or("packet count overflow")?;
-    let mut backing = Vec::new();
-    backing.try_reserve_exact(packet_count)?;
-    for _ in 0..settings.small_count {
-        backing.push(settings::bytes(settings.small_bytes)?);
-    }
-    for _ in 0..settings.large_count {
-        backing.push(settings::bytes(settings.large_bytes)?);
-    }
-    let mut packets = Vec::new();
-    packets.try_reserve_exact(packet_count)?;
-    for b in &mut backing {
-        packets.push(core::PacketSlot::new(b));
-    }
-    let engine = core::Engine::new(
-        &mut domain,
-        core::Storage {
-            clients: &mut clients,
-            requests: &mut requests,
-            leases: &mut leases,
-            flows: &mut flows,
-            packets: &mut packets,
-        },
-        settings.core,
-    )?;
+    let engine = core::Engine::new(&mut domain, storage, settings.service.core)?;
     let server = server::Server::new(
         engine,
         clock.clone(),
-        settings.native,
-        settings.options.clone(),
-        settings.unix,
+        settings.service.native,
+        settings.service.options.clone(),
+        settings.service.unix,
     )?;
     let mut cadet_domain = cadet::Instance::new();
     let mut ports = []; // VPN is an outbound-only application, never a fake listener.
-    let mut channels = settings::filled(settings.flows, cadet::ChannelSlot::new)?;
     let regex_source = settings
+        .service
         .regex
+        .as_ref()
         .map(|_| EndpointSource::live(live.clone(), b"regex", context.resolution_context()));
     let backend = cadet::Client::new(
         &mut cadet_domain,
         EndpointSource::live(live, b"cadet", context.resolution_context()),
         &mut ports,
-        &mut channels,
-        settings.cadet,
+        channels,
+        settings.service.cadet,
     )?;
     if reports.failed() {
         return Ok(());
@@ -480,8 +467,9 @@ pub(super) async fn run(
             cadet: backend,
             device,
         },
-        &settings.exits,
-        settings.coordinator,
+        &settings.service.exits,
+        &settings.service.peer_profiles,
+        settings.service.coordinator,
     ) {
         Ok(vpn) => vpn,
         Err(rejected) => {
@@ -496,8 +484,9 @@ pub(super) async fn run(
                 cleanup.retain(Stage::ConstructionCadet, Box::new(error));
             }
             let mut device = parts.device.into_io();
-            let loss = device.close();
-            if loss.close_error.is_some() {
+            if let Some(loss) = device.close_native()
+                && loss.close_error.is_some()
+            {
                 cleanup.retain(Stage::ConstructionTun, Box::new(lifecycle::TunLoss(loss)));
             }
             #[cfg(unix)]
@@ -513,6 +502,14 @@ pub(super) async fn run(
         vpn.enable_wintun_recovery()?;
         vpn
     };
+    #[cfg(target_os = "freebsd")]
+    let vpn = {
+        let mut vpn = vpn;
+        if matches!(settings.mode, crate::settings::TunMode::Fresh(_)) {
+            vpn.enable_freebsd_recovery()?;
+        }
+        vpn
+    };
     let mut owners = Owners {
         vpn,
         discovery: None,
@@ -521,7 +518,7 @@ pub(super) async fn run(
         done: false,
     };
     let result=async {
-    owners.discovery = match (settings.regex, regex_source) {
+    owners.discovery = match (settings.service.regex, regex_source) {
         (Some(limits), Some(source)) => Some(discovery::Provider::new(
             &regex_domain,
             source,
@@ -532,7 +529,7 @@ pub(super) async fn run(
         _ => return Err(gnunet_types::Error::InvalidInput.into()),
     };
     let listeners = bound.listeners();
-    let startup = target(settings.startup)?;
+    let startup = target(settings.service.startup)?;
 
         // Original fixed startup limit covers true provisioning/route/DAD and
         // actual CADET attachment; neither allocation nor CreateQueued is ready.
@@ -555,24 +552,24 @@ pub(super) async fn run(
         reports.message(Level::INFO,"vpn.ready",format_args!("VPN actual packet source and observed kernel interface plan with CADET source ready; remote reachability unclaimed"));
         if reports.failed(){return Err("VPN readiness diagnostic failed; original logger error retained".into())}
         {
-            let actual = owners.vpn.device_info();
+            let actual = owners.vpn.device_info().ok_or("VPN system service lost its native device")?;
             let actual_name = &actual.name;
             let actual_index = actual.index;
             let mut output=io::stdout().lock();
-            writeln!(output,"READY vpn wire=0.29.1 tun={} index={} mode={:?} native-plan=observed packet-source={} cadet=attached configured-exits={} automatic-regex={} shared-packet-bytes={} runtime=current-thread remote-reachability=unasserted",actual_name,actual_index,settings.mode,if owners.vpn.uses_helper(){"helper-pipes"}else if cfg!(windows){"wintun-rings"}else{"native-fd"},settings.exits.len(),if settings.regex.is_some(){"on-demand-client"}else{"disabled"},settings.backing_bytes)?;
+            writeln!(output,"READY vpn wire=0.29.1 tun={} index={} mode={} native-plan=observed packet-source={} cadet=attached configured-exits={} automatic-regex={} shared-packet-bytes={} runtime=current-thread remote-reachability=unasserted",actual_name,actual_index,settings.mode.label(),if owners.vpn.uses_helper(){"helper-pipes"}else if cfg!(windows){"wintun-rings"}else{"native-fd"},settings.service.exits.len(),if settings.service.regex.is_some(){"on-demand-client"}else{"disabled"},settings.service.backing_bytes())?;
             output.flush()?;
         }
         tokio::time::timeout_at(startup, gnunet_program_host::service::acknowledge_ready(
-            ready, &mut signals, &reports, settings.startup,
+            ready, &mut signals, &reports, settings.service.startup,
         )).await.map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "VPN original startup readiness deadline"))??;
         let mut stopping=None;
         loop {
             match turn(&mut owners,&mut resolver,&mut signals,&listeners,stopping,&mut diagnostics).await? {
-                Turn::Signal if !reports.failed()&&!diagnostics.failed&&stopping.is_none()&&settings.options.shutdown==ShutdownMode::Soft=>{
+                Turn::Signal if !reports.failed()&&!diagnostics.failed&&stopping.is_none()&&settings.service.options.shutdown==ShutdownMode::Soft=>{
                     owners.close_discovery();
                     if reports.failed(){break}
                     owners.vpn.request_shutdown();
-                    stopping=Some(target(settings.coordinator.shutdown_grace)?);
+                    stopping=Some(target(settings.service.coordinator.shutdown_grace)?);
                 },
                 Turn::Signal=>break,
                 Turn::Progress(Progress::Stopped) if stopping.is_none()=>return Err("actual VPN sources stopped without a process shutdown request".into()),

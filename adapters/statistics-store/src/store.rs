@@ -1,14 +1,15 @@
-use crate::{CommitBackend, DirectorySync, NativeCommit, Stage, StoreError};
+use crate::{
+    CommitBackend, DirectorySync, NativeCommit, Stage, StoreError, commit::Candidate, namespace,
+};
+use gnunet_native::filesystem::{Directory, EntryInfo, FileIdentity};
 use gnunet_statistics::Statistics;
 use gnunet_types::Error;
 use gnunet_wire::official::MessageHeader;
-#[cfg(not(windows))]
-use std::fs::OpenOptions;
 use std::{
-    fs::{self, File},
+    ffi::OsString,
+    fs,
     io::{self, Read, Write},
     path::{Path, PathBuf},
-    sync::atomic::{AtomicU64, Ordering},
 };
 
 /// Explicit file and work bounds for loading and saving a database.
@@ -72,6 +73,13 @@ pub struct SaveReport {
     pub directory_sync: Option<DirectorySync>,
 }
 
+const ALREADY_ABSENT: SaveReport = SaveReport {
+    outcome: SaveOutcome::Absent,
+    bytes: 0,
+    records: 0,
+    directory_sync: None,
+};
+
 /// An explicit official `[STATISTICS] DATABASE` path and finite work limits.
 ///
 /// The application resolves configuration/filename expansion and serializes its
@@ -83,13 +91,21 @@ pub struct SaveReport {
 pub struct Store {
     path: PathBuf,
     parent: PathBuf,
+    name: OsString,
     limits: Limits,
 }
 impl Store {
     /// Validate the explicit path and limits without performing filesystem I/O.
     pub fn new(path: impl Into<PathBuf>, limits: Limits) -> Result<Self, StoreError> {
         let path = path.into();
-        if path.file_name().is_none() || !(18..=65535).contains(&limits.max_frame_bytes) {
+        let invalid = || StoreError::protocol(Stage::Preflight, None, Error::InvalidInput);
+        let name = path.file_name().ok_or_else(invalid)?;
+        if !path
+            .as_os_str()
+            .as_encoded_bytes()
+            .ends_with(name.as_encoded_bytes())
+            || !(18..=65535).contains(&limits.max_frame_bytes)
+        {
             return Err(StoreError::protocol(
                 Stage::Preflight,
                 None,
@@ -99,10 +115,14 @@ impl Store {
         #[cfg(windows)]
         gnunet_native::paths::validate_file_path(&path)
             .map_err(|error| StoreError::io(Stage::Preflight, None, error))?;
+        Directory::validate_name(name)
+            .map_err(|error| StoreError::io(Stage::Preflight, None, error))?;
+        let name = name.to_os_string();
         let parent = parent_of(&path).to_path_buf();
         Ok(Self {
             path,
             parent,
+            name,
             limits,
         })
     }
@@ -202,7 +222,7 @@ impl Store {
         #[cfg(windows)]
         let opened = gnunet_native::paths::open_regular_file(&self.path);
         #[cfg(not(windows))]
-        let opened = File::open(&self.path);
+        let opened = fs::File::open(&self.path);
         let mut file = match opened {
             Ok(file) => file,
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -324,8 +344,8 @@ impl Store {
     /// Save after all clients and pending notification effects have been released.
     ///
     /// Accepted bytes are exactly the official concatenated SET dump format.
-    /// Nonempty saves write a private-mode same-directory temporary file,
-    /// synchronize it and replace the destination entry. The directory barrier
+    /// Nonempty saves stage private bytes and replace the destination relative
+    /// to the same original directory handle. The directory barrier
     /// result is reported independently in [`SaveReport::directory_sync`].
     /// Empty snapshots remove the old database like the reference service.
     /// Synchronization success means the OS accepted those requests, not an
@@ -413,27 +433,24 @@ impl Store {
         if records == 0 {
             return self.remove_empty(commit);
         }
-        let prepared = prepare_parent(&self.parent, commit)?;
-        let (mut candidate, mut file) = temporary(&self.path)?;
-        for update in snapshot.iter() {
-            let size = update
-                .encode(scratch)
-                .map_err(|error| StoreError::protocol(Stage::Write, None, error))?;
-            file.write_all(&scratch[..size])
-                .map_err(|error| StoreError::io(Stage::Write, None, error))?;
+        let (directory, prepared) = namespace::prepare(&self.parent, commit)?;
+        let mut candidate = Candidate::create(&directory, &self.name)?;
+        let written = (|| {
+            for update in snapshot.iter() {
+                let size = update
+                    .encode(scratch)
+                    .map_err(|error| StoreError::protocol(Stage::Write, None, error))?;
+                candidate
+                    .writer()
+                    .write_all(&scratch[..size])
+                    .map_err(|error| StoreError::io(Stage::Write, None, error))?;
+            }
+            Ok(())
+        })();
+        if let Err(error) = written {
+            return Err(candidate.failed(error));
         }
-        file.sync_all()
-            .map_err(|error| StoreError::io(Stage::SyncFile, None, error))?;
-        drop(file);
-        candidate.retain = true;
-        commit
-            .rename(&candidate.path, &self.path)
-            .map_err(|error| {
-                StoreError::io(Stage::Rename, None, error).unknown(Some(candidate.path.clone()))
-            })?;
-        let directory_sync = commit
-            .sync_directory(&self.parent)
-            .map_err(|error| StoreError::io(Stage::SyncDirectory, None, error).unknown(None))?;
+        let directory_sync = candidate.publish(bytes, &self.name, &self.parent, commit)?;
         Ok(SaveReport {
             outcome: SaveOutcome::Stored,
             bytes,
@@ -443,26 +460,58 @@ impl Store {
     }
 
     fn remove_empty(&self, commit: &mut impl CommitBackend) -> Result<SaveReport, StoreError> {
-        match fs::symlink_metadata(&self.path) {
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                return Ok(SaveReport {
-                    outcome: SaveOutcome::Absent,
-                    bytes: 0,
-                    records: 0,
-                    directory_sync: None,
-                });
-            }
+        let directory = match namespace::open(&self.parent) {
+            Ok(directory) => directory,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(ALREADY_ABSENT),
             Err(error) => return Err(StoreError::io(Stage::Inspect, None, error)),
-            Ok(_) => {}
+        };
+        let selected = match directory.entry_info(&self.name) {
+            Ok(EntryInfo::File(info)) => info.identity,
+            Ok(_) => {
+                return Err(StoreError::protocol(
+                    Stage::Inspect,
+                    None,
+                    Error::InvalidInput,
+                ));
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(ALREADY_ABSENT),
+            Err(error) => return Err(StoreError::io(Stage::Inspect, None, error)),
+        };
+        let original = match directory.open_file(&self.name) {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(ALREADY_ABSENT),
+            Err(error) => return Err(StoreError::io(Stage::Open, None, error)),
+        };
+        if FileIdentity::of(&original)
+            .map_err(|error| StoreError::io(Stage::Inspect, None, error))?
+            != selected
+        {
+            return Err(StoreError::io(
+                Stage::Inspect,
+                None,
+                io::Error::other("original STATISTICS database changed before removal"),
+            ));
         }
-        let outcome = match commit.remove(&self.path) {
+        let outcome = match commit.remove(&directory, &self.name, &original) {
             Ok(()) => SaveOutcome::Removed,
             Err(error) if error.kind() == io::ErrorKind::NotFound => SaveOutcome::Absent,
             Err(error) => return Err(StoreError::io(Stage::Remove, None, error).unknown(None)),
         };
         let directory_sync = commit
-            .sync_directory(&self.parent)
+            .sync_directory(&directory)
             .map_err(|error| StoreError::io(Stage::SyncDirectory, None, error).unknown(None))?;
+        match directory.entry_info(&self.name) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(StoreError::io(Stage::Inspect, None, error).unknown(None)),
+            Ok(_) => {
+                return Err(StoreError::io(
+                    Stage::Inspect,
+                    None,
+                    io::Error::other("STATISTICS database name remains after removal"),
+                )
+                .unknown(None));
+            }
+        }
         Ok(SaveReport {
             outcome,
             bytes: 0,
@@ -476,108 +525,4 @@ fn parent_of(path: &Path) -> &Path {
     path.parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or(Path::new("."))
-}
-
-fn prepare_parent(
-    parent: &Path,
-    commit: &mut impl CommitBackend,
-) -> Result<DirectorySync, StoreError> {
-    let mut missing = Vec::new();
-    let mut cursor = parent;
-    loop {
-        match fs::metadata(cursor) {
-            Ok(metadata) if metadata.is_dir() => break,
-            Ok(_) => {
-                return Err(StoreError::protocol(
-                    Stage::Prepare,
-                    None,
-                    Error::InvalidInput,
-                ));
-            }
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                missing.push(cursor.to_path_buf());
-                let next = parent_of(cursor);
-                if next == cursor {
-                    return Err(StoreError::protocol(
-                        Stage::Prepare,
-                        None,
-                        Error::InvalidInput,
-                    ));
-                }
-                cursor = next;
-            }
-            Err(error) => return Err(StoreError::io(Stage::Prepare, None, error)),
-        }
-    }
-    fs::create_dir_all(parent).map_err(|error| StoreError::io(Stage::Prepare, None, error))?;
-    let mut synchronized = DirectorySync::Synchronized;
-    for created in missing.iter().rev() {
-        let directory = commit
-            .sync_directory(created)
-            .map_err(|error| StoreError::io(Stage::Prepare, None, error))?;
-        let entry = commit
-            .sync_directory(parent_of(created))
-            .map_err(|error| StoreError::io(Stage::Prepare, None, error))?;
-        synchronized = synchronized.combine(directory).combine(entry);
-    }
-    Ok(synchronized)
-}
-
-struct Temporary {
-    path: PathBuf,
-    retain: bool,
-}
-impl Drop for Temporary {
-    fn drop(&mut self) {
-        if !self.retain {
-            // Cleanup is best effort and never turns a failed save into success.
-            match fs::remove_file(&self.path) {
-                Ok(()) | Err(_) => {}
-            }
-        }
-    }
-}
-fn temporary(destination: &Path) -> Result<(Temporary, File), StoreError> {
-    static NEXT: AtomicU64 = AtomicU64::new(0);
-    for _ in 0..64 {
-        let ordinal = NEXT
-            .try_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
-                value.checked_add(1)
-            })
-            .map_err(|_| StoreError::protocol(Stage::CreateTemporary, None, Error::Overflow))?;
-        // A NAME_MAX-byte destination must still admit a temporary sibling.
-        let temporary_name = format!(".gnunet-statistics-{}-{ordinal}.tmp", std::process::id());
-        let path = parent_of(destination).join(temporary_name);
-        #[cfg(windows)]
-        let opened = gnunet_native::paths::create_private_file(&path);
-        #[cfg(not(windows))]
-        let opened = {
-            let mut options = OpenOptions::new();
-            options.write(true).create_new(true);
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::OpenOptionsExt;
-                options.mode(0o600);
-            }
-            options.open(&path)
-        };
-        match opened {
-            Ok(file) => {
-                return Ok((
-                    Temporary {
-                        path,
-                        retain: false,
-                    },
-                    file,
-                ));
-            }
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
-            Err(error) => return Err(StoreError::io(Stage::CreateTemporary, None, error)),
-        }
-    }
-    Err(StoreError::protocol(
-        Stage::CreateTemporary,
-        None,
-        Error::Capacity,
-    ))
 }

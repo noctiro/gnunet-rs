@@ -15,11 +15,12 @@ use gnunet_session_crypto::{
     exchange::{self, EcdhePublic, EcdheSecret},
 };
 use gnunet_types::{Error, Rejected};
+use gnunet_wire::official::communicator::DEFAULT_PEER_IDLE_TIMEOUT;
 use zeroize::Zeroize;
 /// Source ciphertext buffer size: 2*64KiB plus TCPBox36.
 pub const CIPHERTEXT_CAPACITY: usize = 2 * 64 * 1024 + wire::BOX_PREFIX;
 /// Source active connection idle period, five minutes in microseconds.
-pub const IDLE_US: u64 = 300_000_000;
+pub const IDLE_US: u64 = DEFAULT_PEER_IDLE_TIMEOUT.as_micros() as u64;
 /// Source absolute FINISH flush budget, five seconds in microseconds.
 pub const FINISH_US: u64 = 5_000_000;
 /// Source prototype connection KX deadline, one minute.
@@ -49,9 +50,31 @@ impl Default for Scope {
 pub enum Role {
     /// Initiator already knows the expected remote identity.
     Outbound,
-    /// Acceptor authenticates an anonymous initial confirmation.
+    /// Acceptor authenticates the remote peer's initial confirmation.
     Inbound,
 }
+
+/// Initial TCP key exchange and the expected remote identity, when known.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Handshake {
+    /// Initiate a key exchange with this expected remote peer.
+    Initiate(EddsaPublicKey),
+    /// Receive the first key exchange from a remote peer.
+    Accept {
+        /// Check the signature-verified sender against this identity before replay processing.
+        expected: Option<EddsaPublicKey>,
+    },
+}
+
+impl Handshake {
+    const fn from_target(target: Option<EddsaPublicKey>) -> Self {
+        match target {
+            Some(peer) => Self::Initiate(peer),
+            None => Self::Accept { expected: None },
+        }
+    }
+}
+
 /// A replay value uses a distinct official PEERSTORE key.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum ReplayKind {
@@ -86,7 +109,7 @@ pub struct Policy {
     /// Caller-selected simultaneous original replay-operation credit, from3 to
     /// REPLAY_CAPACITY. This is a local resource profile, never a wire limit.
     pub max_replay_operations: usize,
-    /// Source max unread transport completion count (default8).
+    /// Positive maximum unread transport completion count (default 8).
     pub max_backpressure: usize,
     /// Source byte-rekey upper bound; positive, default400MiB.
     pub rekey_max_bytes: u64,
@@ -308,6 +331,8 @@ pub enum ResultKind {
     Failed,
     /// Receive was actually queued and owns its promised callback.
     Queued,
+    /// The local TRANSPORT owner finished delivery synchronously.
+    Consumed,
     /// Source receive returns SYSERR while TRANSPORT is not available.
     Unavailable,
     /// Source receive returns NO rather than creating callback credit.
@@ -442,6 +467,7 @@ pub struct Session<'a> {
     write_lease: Option<Ticket<'a>>,
     write_limit: usize,
     write_scheduled: bool,
+    native_write_remaining: Option<usize>,
     replay: [Replay; REPLAY_CAPACITY],
     latest_monotime: [u64; 3],
     replay_cursor: usize,
@@ -479,6 +505,26 @@ impl<'a> Session<'a> {
         time: Time,
         entropy: &mut impl Entropy,
     ) -> Result<Self, Error> {
+        Self::with_handshake(
+            scope,
+            identity,
+            Handshake::from_target(target),
+            buffers,
+            policy,
+            time,
+            entropy,
+        )
+    }
+
+    pub(crate) fn with_handshake(
+        scope: &'a mut Scope,
+        identity: Identity<'a>,
+        handshake: Handshake,
+        buffers: Buffers<'a>,
+        policy: Policy,
+        time: Time,
+        entropy: &mut impl Entropy,
+    ) -> Result<Self, Error> {
         Self::construct(
             crate::registry::Instance {
                 scope,
@@ -486,7 +532,7 @@ impl<'a> Session<'a> {
                 generation: 1,
             },
             identity,
-            target,
+            handshake,
             buffers,
             policy,
             time,
@@ -514,7 +560,7 @@ impl<'a> Session<'a> {
         Self::construct(
             admission.instance,
             identity,
-            admission.target,
+            Handshake::from_target(admission.target),
             buffers,
             policy,
             time,
@@ -528,7 +574,7 @@ impl<'a> Session<'a> {
     fn construct(
         instance: crate::registry::Instance<'a>,
         identity: Identity<'a>,
-        target: Option<EddsaPublicKey>,
+        handshake: Handshake,
         buffers: Buffers<'a>,
         policy: Policy,
         time: Time,
@@ -537,6 +583,7 @@ impl<'a> Session<'a> {
         if buffers.receive.len() < wire::MAX_RECORD
             || buffers.transmit.len() < CIPHERTEXT_CAPACITY
             || buffers.plaintext.len() < wire::MAX_RECORD
+            || policy.max_backpressure == 0
             || buffers.completions.len() < policy.max_backpressure
             || policy.rekey_max_bytes == 0
             || !(3..=REPLAY_CAPACITY).contains(&policy.max_replay_operations)
@@ -546,23 +593,19 @@ impl<'a> Session<'a> {
                 value: buffers,
             });
         }
-        let role = if target.is_some() {
-            Role::Outbound
-        } else {
-            Role::Inbound
-        };
-        let prepared = if let Some(target) = target {
-            match Self::prepare_initial(identity, target, policy, time, entropy) {
-                Ok(p) => Some(p),
-                Err(reason) => {
-                    return Err(Rejected {
-                        reason,
-                        value: buffers,
-                    });
+        let (role, target, prepared) = match handshake {
+            Handshake::Initiate(peer) => {
+                match Self::prepare_initial(identity, peer, policy, time, entropy) {
+                    Ok(prepared) => (Role::Outbound, Some(peer), Some(prepared)),
+                    Err(reason) => {
+                        return Err(Rejected {
+                            reason,
+                            value: buffers,
+                        });
+                    }
                 }
             }
-        } else {
-            None
+            Handshake::Accept { expected } => (Role::Inbound, expected, None),
         };
         for slot in buffers.completions.iter_mut() {
             *slot = CompletionSlot::default();
@@ -604,6 +647,7 @@ impl<'a> Session<'a> {
             write_lease: None,
             write_limit: 0,
             write_scheduled: false,
+            native_write_remaining: None,
             replay: [Replay::EMPTY; REPLAY_CAPACITY],
             latest_monotime: [0; 3],
             replay_cursor: 0,
@@ -674,12 +718,12 @@ impl<'a> Session<'a> {
     pub const fn role(&self) -> Role {
         self.role
     }
-    /// The authenticated remote identity, or outbound target before KX verification.
+    /// The expected remote identity before key exchange, or the verified sender after it.
     #[must_use]
     pub const fn target(&self) -> Option<EddsaPublicKey> {
         self.target
     }
-    /// Initial signature-verified peer, separate from an expected outbound target.
+    /// The initial signature-verified peer, separate from the expected remote identity.
     /// Replay processing, challenge completion and actual queue admission are separate.
     #[must_use]
     pub fn authenticated_target(&self) -> Option<EddsaPublicKey> {
@@ -940,16 +984,7 @@ impl<'a> Session<'a> {
             self.initial_filled += n;
             if self.initial_filled == wire::INITIAL_KX {
                 let opened = match self.identity.with(|signing, exchange| {
-                    initial::open(
-                        signing.public_key(),
-                        exchange,
-                        if self.role == Role::Outbound {
-                            self.target
-                        } else {
-                            None
-                        },
-                        &self.initial,
-                    )
+                    initial::open(signing.public_key(), exchange, self.target, &self.initial)
                 }) {
                     Ok(x) => x,
                     Err(e) => {
@@ -1149,6 +1184,36 @@ impl<'a> Session<'a> {
         self.mq_waiting = true;
         Ok(())
     }
+
+    /// Observe physical acceptance through the end of this original BOX.
+    /// The firmware owner retains its separate TRANSPORT receipt identity.
+    pub(crate) fn send_observed(&mut self, message: &[u8]) -> Result<(), Error> {
+        if self.native_write_remaining.is_some() {
+            return Err(Error::WouldBlock);
+        }
+        self.send(message)?;
+        // The two byte slice extents are each at most isize::MAX. The
+        // prepared BOX precedes rekey and every subsequently admitted BOX.
+        self.native_write_remaining = Some(self.tx_len + self.plain_len);
+        Ok(())
+    }
+
+    /// Take the exact native outcome once. An already-issued write can still
+    /// complete the original even after teardown has started.
+    pub(crate) fn take_native_write(&mut self) -> Option<Result<(), Error>> {
+        let outcome = match self.native_write_remaining? {
+            0 => Ok(()),
+            _ if self.write_lease.is_none()
+                && matches!(self.phase, Phase::Closing | Phase::Detached | Phase::Closed) =>
+            {
+                Err(Error::Closed)
+            }
+            _ => return None,
+        };
+        self.native_write_remaining = None;
+        Some(outcome)
+    }
+
     fn pump_write(&mut self, time: Time, entropy: &mut impl Entropy) -> Result<(), Error> {
         let result = self.pump_write_inner(time, entropy);
         self.write_scheduled =
@@ -1290,10 +1355,15 @@ impl<'a> Session<'a> {
                 if n == 0 || n > self.write_limit {
                     return Err(Error::InvalidInput);
                 }
+                // This prefix is already accepted even if encryption or
+                // rekeying for subsequent output fails below.
+                if let Some(remaining) = &mut self.native_write_remaining {
+                    *remaining = remaining.saturating_sub(n);
+                }
                 self.tx.copy_within(n..self.tx_len, 0);
                 self.tx[self.tx_len - n..self.tx_len].zeroize();
                 self.tx_len -= n;
-                self.timeout = after(time.now, IDLE_US)
+                self.timeout = after(time.now, IDLE_US);
             }
             WriteResult::Retry | WriteResult::Zero => {}
             WriteResult::Fatal => {
@@ -1381,6 +1451,16 @@ impl<'a> Session<'a> {
     /// Lease the next actual service/control operation. An existing lease is
     /// returned unchanged across drive cancellation until its real result arrives.
     pub fn next_effect(&mut self) -> Result<Option<Ticket<'a>>, Error> {
+        self.lease_effect(false)
+    }
+
+    /// Firmware's synchronous backend drains replay first before releasing
+    /// ordinary service effects or the next physical I/O turn.
+    pub(crate) fn next_effect_replay_first(&mut self) -> Result<Option<Ticket<'a>>, Error> {
+        self.lease_effect(true)
+    }
+
+    fn lease_effect(&mut self, replay_first: bool) -> Result<Option<Ticket<'a>>, Error> {
         if let Some(t) = self.leased {
             return Ok(Some(t));
         }
@@ -1415,7 +1495,8 @@ impl<'a> Session<'a> {
         if matches!(self.phase, Phase::Detached | Phase::Closed) {
             return Ok(None);
         }
-        if !self.replay_first
+        if !replay_first
+            && !self.replay_first
             && let Some(t) = self.next_ordinary_effect()?
         {
             return Ok(Some(t));
@@ -1448,6 +1529,9 @@ impl<'a> Session<'a> {
                 self.replay_first = false;
                 return Ok(Some(t));
             }
+        }
+        if replay_first && self.replay.iter().any(|op| op.state != ReplayState::Idle) {
+            return Ok(None);
         }
         self.next_ordinary_effect()
     }
@@ -1565,6 +1649,7 @@ impl<'a> Session<'a> {
             Kind::Receive => matches!(
                 result,
                 ResultKind::Queued
+                    | ResultKind::Consumed
                     | ResultKind::Unavailable
                     | ResultKind::Dropped
                     | ResultKind::Failed

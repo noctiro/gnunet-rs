@@ -10,6 +10,7 @@ configuration, dependencies and examples.
 | --- | --- |
 | General commands | [CLI](gnunet-cli/README.md), [command reference](gnunet-cli/commands.md) |
 | Start and supervise services | [ARM command](gnunet-arm/README.md), [ARM service](gnunet-service-arm/README.md) |
+| Run one embedded peer as a process | [Foreground node](gnunet-node/README.md) |
 | Query local services | [Resolver](gnunet-resolver/README.md), [CORE](gnunet-core/README.md), [DHT](gnunet-dht/README.md), [DATASTORE](gnunet-datastore/README.md) |
 | Identities and contacts | [PILS](gnunet-pils/README.md), [HELLO](gnunet-hello/README.md), [ECC](gnunet-ecc/README.md), [revocation proof](gnunet-scrypt/README.md) |
 | Naming | [GNS](gnunet-gns/README.md), [NAMECACHE](gnunet-namecache/README.md), [zone import](gnunet-zoneimport/README.md), [proxy](gnunet-gns-proxy/README.md) |

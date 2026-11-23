@@ -1,0 +1,39 @@
+[package]
+name = "gnunet-wfp-dns-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+operator-cli = [
+    "windows-sys/Wdk_System_SystemServices",
+    "windows-sys/Win32_Devices_DeviceAndDriverInstallation",
+    "windows-sys/Win32_Security_Cryptography_Catalog",
+    "windows-sys/Win32_Security_WinTrust",
+    "windows-sys/Win32_System_Diagnostics_Debug",
+    "windows-sys/Win32_System_Services",
+    "windows-sys/Win32_System_SystemInformation",
+]
+
+[[bin]]
+name = "gnunet-dns-wfp-control"
+path = "src/bin/gnunet-dns-wfp-control.rs"
+required-features = ["operator-cli"]
+
+[target.'cfg(windows)'.dependencies]
+gnunet-native.workspace = true
+gnunet-wfp-dns.workspace = true
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_NetworkManagement_WindowsFilteringPlatform",
+    "Win32_Networking_WinSock",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_Rpc",
+    "Win32_System_Threading",
+] }
+
+[lints]
+workspace = true

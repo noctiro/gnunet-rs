@@ -27,9 +27,8 @@ pub struct Range {
     directory_sync: DirectorySync,
 }
 impl Range {
-    /// Actual directory naming observation of this committed reservation.
-    /// Windows uses a post-replacement file metadata flush and reports
-    /// Unavailable for the distinct directory barrier.
+    /// Native naming-barrier result of this committed reservation, separate
+    /// from post-replacement file synchronization.
     #[must_use]
     pub const fn directory_sync(&self) -> DirectorySync {
         self.directory_sync

@@ -98,7 +98,7 @@ contains no await or caller callback. Inherited sockets are not rebound/chmodded
 
 ## Reference probes
 
-`examples/activation_probe.rs` is an isolated, single-threaded subprocess fixture;
+`examples/statistics_activation_probe.rs` is an isolated, single-threaded subprocess fixture;
 its native setup only creates the deliberately invalid original-CLOEXEC test or
 sets its own test umask. It validates original fd closure before any subsequent
 operation can allocate replacement descriptor numbers. The Python oracle starts
@@ -124,9 +124,9 @@ the original standard slots remain the same null character device; it does not
 claim that a stdio slot was closed after restoring it.
 
 ```sh
-cargo build -p gnunet-service-statistics --example activation_probe --locked --offline
+cargo build -p gnunet-service-statistics --example statistics_activation_probe --locked --offline
 python3 apps/gnunet-service-statistics/tests/activation_process.py \
-  --probe target/debug/examples/activation_probe \
+  --probe target/debug/examples/statistics_activation_probe \
   --reference /path/to/normal-C-build-result.json \
   --rust-service target/debug/gnunet-service-statistics \
   --output /path/to/new/proof-directory

@@ -940,11 +940,20 @@ impl Configuration {
         load: &mut Load<'_>,
     ) -> Result<(), Error> {
         let observer = load.observer;
-        if input.contains(&0) {
-            return Err(Error::InvalidInput);
-        }
         let mut section: Option<Vec<u8>> = None;
         for (nr, raw) in input.split(|b| *b == b'\n').enumerate() {
+            if raw.contains(&0) {
+                self.note_to(
+                    observer,
+                    "config.deserialize.nul",
+                    Level::WARNING,
+                    b"GNUNET_CONFIGURATION_deserialize",
+                    880,
+                    b"NUL byte in line %u\n",
+                    &[A::Unsigned((nr + 1) as u64)],
+                );
+                return Err(Error::InvalidInput);
+            }
             if raw.is_empty() {
                 continue;
             }
@@ -1077,10 +1086,7 @@ impl Configuration {
                 }
                 continue;
             }
-            // The pinned C indexes the original physical line length after
-            // advancing/removing whitespace. Indented section headers can read
-            // outside the allocation; safe Rust rejects that undefined case.
-            if value.starts_with(b"[") && value.ends_with(b"]") && line.as_slice() == value {
+            if value.starts_with(b"[") && value.ends_with(b"]") {
                 section = Some(value[1..value.len() - 1].to_vec());
                 continue;
             }
@@ -2779,30 +2785,9 @@ fn escape_filename(value: &[u8], output: &mut Vec<u8>) {
 }
 
 fn open_regular(path: &Path) -> Result<fs::File, Error> {
-    #[cfg(unix)]
-    let file = {
-        use nix::{
-            fcntl::{OFlag, open},
-            sys::stat::Mode,
-        };
-        let descriptor = open(
-            path,
-            OFlag::O_RDONLY | OFlag::O_NONBLOCK | OFlag::O_CLOEXEC,
-            Mode::empty(),
-        )
-        .map_err(|error| io_error(path, std::io::Error::from(error)))?;
-        fs::File::from(descriptor)
-    };
-    #[cfg(not(unix))]
-    let file = fs::File::open(path).map_err(|error| io_error(path, error))?;
-    if !file
-        .metadata()
+    gnunet_native::filesystem::open_regular(path)
         .map_err(|error| io_error(path, error))?
-        .is_file()
-    {
-        return Err(Error::InvalidInput);
-    }
-    Ok(file)
+        .ok_or(Error::InvalidInput)
 }
 
 impl Configuration {

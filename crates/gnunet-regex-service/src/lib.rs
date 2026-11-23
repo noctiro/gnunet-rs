@@ -2,7 +2,9 @@
 #![no_std]
 #![forbid(unsafe_code)]
 mod metrics;
-pub use metrics::{METRIC_NAMES, Metrics};
+pub use metrics::{METRIC_NAMES, METRIC_SUBSYSTEM, Metrics};
+mod search;
+pub use search::{DHT_REPLICATION, QueryKind, SearchQuery, StateStep};
 mod state;
 pub use state::{StateBlock, StateEdge};
 #[cfg(feature = "alloc")]
@@ -14,4 +16,4 @@ pub use types::*;
 #[cfg(feature = "alloc")]
 mod core;
 #[cfg(feature = "alloc")]
-pub use core::Core;
+pub use core::{Core, LocalAnnouncement};

@@ -15,7 +15,9 @@ pub(super) fn isolated(cause: &native::Cause, default_port: u16) -> bool {
             native::IoAction::Send | native::IoAction::Receive => {
                 *port != default_port || gnunet_native::network::isolated_datagram_send_error(error)
             }
-            native::IoAction::LocalAddress | native::IoAction::PeerAddress => false,
+            native::IoAction::LocalAddress
+            | native::IoAction::PeerAddress
+            | native::IoAction::Prepare => false,
         },
         native::Cause::Clock(_) | native::Cause::Partial { .. } | native::Cause::Overflow => false,
         native::Cause::Selected => false,

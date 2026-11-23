@@ -37,7 +37,7 @@ async fn run(args: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
         _ => return Err("family4/6".into()),
     }
     .parse()?;
-    let mut socket = DatagramSocket::bind(bind)?;
+    let mut socket = DatagramSocket::bind(bind, Default::default())?;
     let a = Identity::from_seed([3; 32]);
     let b = Identity::from_seed([5; 32]);
     std::fs::create_dir(&args[2])?;

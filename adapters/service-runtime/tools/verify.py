@@ -12,6 +12,11 @@ import time
 from process_verify import contracts, inputs as workspace_inputs, stage
 
 PACKAGE = Path(__file__).resolve().parents[1]
+TOOLS = PACKAGE.parents[1] / "tools"
+sys.dont_write_bytecode = True
+sys.path.insert(0, str(TOOLS))
+from cargo_artifacts import CargoArtifacts
+from rust_toolchain import rust_channel
 SOURCES = ["Cargo.toml", "README.md", "PROCESS.md", "tools/activation_process.py", "tools/verify.py", "tools/process_verify.py"] + sorted(str(path.relative_to(PACKAGE)) for directory in ["src", "tests", "examples"] for path in (PACKAGE/directory).rglob('*') if path.is_file())
 REQUIRED_RUST_TESTS = {
     "accepted::tests::injected_fatal_initialization_closes_only_actual_accepted_owner",
@@ -44,6 +49,7 @@ def main():
     parser.add_argument("--upstream", required=True, type=Path)
     parser.add_argument("--reference", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--toolchain")
     args = parser.parse_args()
     if sys.flags.optimize:
         parser.error("reference verification requires assertion-enabled Python")
@@ -70,14 +76,14 @@ def main():
     try:
         source_snapshot = workspace_inputs(repository)
         stage(repository, generated, source_snapshot)
-        cargo = ["cargo", "+1.99.1"]
+        cargo = ["cargo", "+" + rust_channel(repository, args.toolchain)]
         manifest = generated / PACKAGE.relative_to(repository) / "Cargo.toml"
         base = ["--manifest-path", manifest, "--offline", "--locked", "-p", "gnunet-service-runtime"]
         metadata = json.loads(run("metadata", cargo + ["metadata", "--manifest-path", manifest, "--offline", "--locked", "--format-version", "1"]).stdout)
         actual = json.loads(run("workspace-metadata", cargo + ["metadata", "--manifest-path", repository / "Cargo.toml", "--offline", "--locked", "--format-version", "1"]).stdout)
         if contracts(actual, repository) != contracts(metadata, generated):
             raise ValueError("staged workspace package/dependency/feature contracts differ")
-        inputs = [PACKAGE / relative for relative in SOURCES] + [repository / "Cargo.toml", repository / "Cargo.lock", args.reference.resolve()]
+        inputs = [PACKAGE / relative for relative in SOURCES] + [repository / "Cargo.toml", repository / "Cargo.lock", repository / "rust-toolchain.toml", TOOLS / "cargo_artifacts.py", TOOLS / "rust_toolchain.py", args.reference.resolve()]
         # The real helper is a thin binary in the ARM package. Bind its producer
         # and every reachable local source/settings input, independently from
         # the isolated runtime's dependency graph.
@@ -108,15 +114,16 @@ def main():
         # The sole production helper remains published by ARM's package and calls
         # the shared runtime entry. Build it freshly in this exact output target;
         # no second native implementation or test-only success path is introduced.
-        run("shared-process-helper", cargo + ["build", "--manifest-path", generated / "Cargo.toml",
-            "-p", "gnunet-arm-host", "--bin", "gnunet-arm-spawn-helper", "--locked", "--offline"])
-        helper = output / "target/debug/gnunet-arm-spawn-helper"
+        helper_build = run("shared-process-helper", cargo + ["build", "--manifest-path", generated / "Cargo.toml",
+            "-p", "gnunet-arm-host", "--bin", "gnunet-arm-spawn-helper", "--locked", "--offline", "--message-format=json"])
+        helper = CargoArtifacts(helper_build.stdout).binary("gnunet-arm-spawn-helper", generated / "adapters/arm-std/Cargo.toml")
         helper_before = digest(helper)
         tests = run("tests", cargo + ["test", *base, "--lib", "--test", "listeners", "--test", "readiness", "--test", "tcp", "--", "--test-threads=1"])
         rust_tests = require_rust_tests(tests.stdout)
         run("rustdoc", cargo + ["doc", *base, "--no-deps"])
-        run("probe-build", cargo + ["build", *base, "--example", "activation_probe"])
-        run("activation", [sys.executable, PACKAGE / "tools/activation_process.py", "--probe", output / "target/debug/examples/activation_probe", "--reference", args.reference.resolve(), "--output", output / "activation"], timeout=120)
+        probe_build = run("probe-build", cargo + ["build", *base, "--example", "runtime_activation_probe", "--message-format=json"])
+        probe = CargoArtifacts(probe_build.stdout).example("runtime_activation_probe", manifest)
+        run("activation", [sys.executable, PACKAGE / "tools/activation_process.py", "--probe", probe, "--reference", args.reference.resolve(), "--output", output / "activation"], timeout=120)
         activation = json.loads((output / "activation/result.json").read_text())
         assert activation["status"] == "passed" and activation["inputs_unchanged"] and activation["actual_shared_runtime_tested"]
         after = identity(inputs)
@@ -128,7 +135,7 @@ def main():
         if workspace_inputs(repository) != source_snapshot or workspace_inputs(generated) != source_snapshot:
             raise ValueError("original or staged workspace source/specification changed")
         assert generated_before == generated_after, "generated Rust inputs changed"
-        result = {"status": "passed", "scope": "Shared service startup and listener ownership candidate, not all generic service/util APIs", "toolchain": run("toolchain", ["cargo", "+1.99.1", "--version"]).stdout.strip(),
+        result = {"status": "passed", "scope": "Shared service startup and listener ownership candidate, not all generic service/util APIs", "toolchain": run("toolchain", cargo + ["--version"]).stdout.strip(),
                   "elapsed_seconds": time.monotonic() - started, "commands": commands, "source_inputs": before, "inputs_unchanged": before == after,
                   "generated_rust_inputs": generated_after, "generated_inputs_unchanged": generated_before == generated_after,
                   "package_inputs": package_inputs,

@@ -3,7 +3,7 @@ use super::{
     memory::{Lease, Quota},
 };
 use crate::{
-    AttributeList, Credential, Identifier, Presentation,
+    Identifier, Presentation, PresentationRequest,
     ipc::{Request, Response},
 };
 use alloc::rc::Rc;
@@ -229,14 +229,8 @@ pub enum Action<'a> {
         /// ANY is0; ticket auth requires TXT+refs+presentations.
         record_type: RecordType,
     },
-    /// Actual plugin presentation. JWT may simply preserve all original bytes;
-    /// selected attributes do not imply selective disclosure or verification.
-    Presentation {
-        /// Credential from the original real NAMESTORE scan.
-        credential: Credential<'a>,
-        /// Original issue selection.
-        selected: AttributeList<'a>,
-    },
+    /// Create a presentation for one stored credential and its selected attributes.
+    Presentation(PresentationRequest<'a>),
 }
 impl fmt::Debug for Action<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -254,9 +248,9 @@ impl fmt::Debug for Action<'_> {
                 .field("record_type", record_type)
                 .field("name", &"[REDACTED]")
                 .finish(),
-            Self::Presentation { credential, .. } => f
+            Self::Presentation(request) => f
                 .debug_struct("Presentation")
-                .field("kind", &credential.kind)
+                .field("kind", &request.credential().kind)
                 .field("contents", &"[REDACTED]")
                 .finish(),
         }

@@ -427,6 +427,44 @@ fn adopted_parent_listener_and_replaced_owned_path_are_never_unlinked() {
         drop(parent);
     });
 }
+
+#[test]
+#[cfg(target_os = "linux")]
+fn adoption_preserves_the_original_abstract_name_extent() {
+    use std::os::{linux::net::SocketAddrExt, unix::net::SocketAddr as UnixAddress};
+
+    let prefix = format!(
+        "gnrs-arm-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    );
+    runtime().block_on(async {
+        let mut host = ManagedListeners::new(2);
+        let mut short = prefix.into_bytes();
+        short.extend([0, 42, 0]);
+        let mut padded = short.clone();
+        padded.resize(107, 0);
+        let originals = [short, padded].map(|name| {
+            let native = UnixAddress::from_abstract_name(&name).expect("exact abstract address");
+            let parent = UnixListener::bind_addr(&native).expect("parent-owned abstract listener");
+            (parent, native, name)
+        });
+        for (index, (parent, _, name)) in originals.iter().enumerate() {
+            let duplicate = parent.try_clone().expect("explicit parent offer");
+            host.adopt(index, ActivatedSocket::Unix(duplicate))
+                .expect("adopt the original abstract listener");
+            let mut expected = vec![0];
+            expected.extend_from_slice(name);
+            assert_eq!(host.address(index), Some(&Address::Abstract(expected)));
+        }
+        drop(host);
+        for (parent, native, _) in originals {
+            let _peer = UnixStream::connect_addr(&native).expect("parent listener still owns name");
+            drop(parent);
+        }
+    });
+}
+
 #[test]
 fn stale_socket_only_precheck_regular_and_live_entries_are_preserved() {
     // This fixture needs the last reference to its stale socket to be closed.

@@ -412,8 +412,9 @@ impl Book {
 impl Engine {
     /// Actual host installs only the observed current eligible Actor path, using its
     /// original fixed native deadline translated after this Times sample.
-    /// Replacing the same peer is atomic: its connection/Jobs survive while
-    /// old path attempts retain their exact canceled original callback debt.
+    /// Replacing the same peer is atomic: its connection/Jobs survive. Only
+    /// unadmitted old staging is canceled; admitted Actor outputs keep their
+    /// exact original route, neighbour and deadline until their real receipt.
     pub fn dv_install_path(
         &mut self,
         source: &Source,
@@ -467,10 +468,11 @@ impl Engine {
         }
         self.dv_bridge.serial = serial;
         if let Some(previous) = previous {
-            // New reachability is already installed. Retire only old staging
-            // and original claims; never disconnect or erase same-peer Jobs.
+            // Actor admission has already copied the selected route and bound
+            // its original neighbour/deadline. A better path does not revoke
+            // that independent output or require closing its shared native MQ.
             for original in &mut self.dv_bridge.tx.virtuals {
-                if original.path == previous {
+                if original.path == previous && !original.admitted {
                     original.canceled = true;
                 }
             }
@@ -515,7 +517,10 @@ impl Engine {
             .virtuals
             .retain(|v| v.source != id.source || v.peer != peer);
         for v in &mut self.dv_bridge.tx.virtuals {
-            if v.path == *id {
+            // Actual target withdrawal also revokes admitted outputs retained
+            // across benign best-path replacements. Their old PathId must not
+            // hide them from the current source/peer's real retirement fence.
+            if v.id.source == id.source && v.peer == peer {
                 v.canceled = true;
             }
         }

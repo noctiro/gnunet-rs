@@ -14,7 +14,8 @@ use gnunet_session_crypto::{
     session::{self as crypto, Role},
     transcript::Hash512State,
 };
-use gnunet_types::Error;
+use gnunet_types::{AbsoluteTime, Error};
+use gnunet_wire::official::core::KxState;
 use subtle::ConstantTimeEq;
 use zeroize::{Zeroize, Zeroizing};
 
@@ -60,6 +61,45 @@ pub enum Phase {
     /// A fully confirmed association is available for application traffic.
     Established,
 }
+
+/// Official monitor codes for states held by this synchronous CAKE session.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub enum MonitorState {
+    /// The initiator has not started its next exchange.
+    Down = 0,
+    /// InitiatorHello is in progress.
+    InitiatorHelloSent = 1,
+    /// The responder is waiting for InitiatorHello.
+    AwaitInitiation = 2,
+    /// ResponderHello is in progress.
+    ResponderHelloSent = 4,
+    /// InitiatorDone is in progress and awaits confirmation.
+    InitiatorDoneSent = 6,
+    /// The original association is confirmed as initiator.
+    InitiatorConnected = 7,
+    /// The original association is confirmed as responder.
+    ResponderConnected = 8,
+}
+
+impl MonitorState {
+    /// Encode the observed state as the official CORE monitor integer.
+    pub const fn wire(self) -> KxState {
+        KxState(self as u32)
+    }
+}
+
+/// Current CAKE observation, independent of native send admission.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Monitor {
+    /// Real protocol phase and its established role where applicable.
+    pub state: MonitorState,
+    /// Actual UTC idle deadline. Zero means that idle timing is unarmed.
+    pub timeout: AbsoluteTime,
+    /// Confirmed peer class, even during an exchange with a live old association.
+    pub class: Option<u16>,
+}
+
 /// An actual core transition. Encoded bytes are not a transport acknowledgement.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Event {
@@ -179,6 +219,30 @@ impl<'a, const F: usize> Session<'a, F> {
     pub const fn phase(&self) -> Phase {
         self.phase
     }
+
+    /// Current observed handshake state and idle timeout for CORE monitoring.
+    #[must_use]
+    pub fn monitor(&self) -> Monitor {
+        let state = match self.phase {
+            Phase::Ready => MonitorState::Down,
+            Phase::AwaitInitiator => MonitorState::AwaitInitiation,
+            Phase::InitiatorHelloSent => MonitorState::InitiatorHelloSent,
+            Phase::ResponderHelloSent => MonitorState::ResponderHelloSent,
+            Phase::InitiatorDoneSent => MonitorState::InitiatorDoneSent,
+            Phase::Established if self.initiator => MonitorState::InitiatorConnected,
+            Phase::Established => MonitorState::ResponderConnected,
+        };
+        let timeout = if self.idle_at == u64::MAX {
+            AbsoluteTime::UNIX_EPOCH
+        } else {
+            AbsoluteTime::from_micros(self.idle_at)
+        };
+        Monitor {
+            state,
+            timeout,
+            class: self.peer_class(),
+        }
+    }
     /// Whether application delivery is currently authorized.
     #[must_use]
     pub fn established(&self) -> bool {
@@ -239,6 +303,36 @@ impl<'a, const F: usize> Session<'a, F> {
         self.retransmit_at = u64::MAX;
         self.handshake = Handshake::Idle;
     }
+
+    pub(crate) fn association_expiry(&self) -> Option<u64> {
+        self.association.as_ref()?;
+        let probe = if self.unanswered >= 3 {
+            self.probe_at
+        } else {
+            u64::MAX
+        };
+        let expiry = self.idle_at.min(probe);
+        (expiry != u64::MAX).then_some(expiry)
+    }
+
+    pub(crate) fn expire_association(&mut self, now: u64) -> Option<bool> {
+        if now < self.association_expiry()? {
+            return None;
+        }
+        let was_confirmed = self.established();
+        self.association = None;
+        self.forget_flight();
+        self.idle_at = u64::MAX;
+        self.probe_at = u64::MAX;
+        self.unanswered = 0;
+        self.phase = if self.initiator {
+            Phase::Ready
+        } else {
+            Phase::AwaitInitiator
+        };
+        Some(was_confirmed)
+    }
+
     /// Drive the original retained logical deadlines. Retransmission is byte
     /// identical; native scheduling and transport admission stay with the host.
     pub fn tick(
@@ -247,23 +341,8 @@ impl<'a, const F: usize> Session<'a, F> {
         entropy: &mut impl Entropy,
         output: &mut [u8],
     ) -> Result<Event, Error> {
-        if self.association.is_some()
-            && ((self.idle_at != u64::MAX && now >= self.idle_at)
-                || (self.probe_at != u64::MAX && now >= self.probe_at && self.unanswered >= 3))
-        {
-            let was_confirmed = self.established();
-            self.association = None;
-            self.forget_flight();
-            self.idle_at = u64::MAX;
-            self.probe_at = u64::MAX;
-            self.phase = if self.initiator {
-                Phase::Ready
-            } else {
-                Phase::AwaitInitiator
-            };
-            if was_confirmed {
-                return Ok(Event::Lost);
-            }
+        if self.expire_association(now) == Some(true) {
+            return Ok(Event::Lost);
         }
         if self.phase == Phase::Ready {
             return self.initiate(now, entropy, output);

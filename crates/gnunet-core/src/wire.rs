@@ -14,6 +14,9 @@ pub const RESPONDER_PAYLOAD: usize = 34;
 pub const DONE_PREFIX: usize = 84;
 /// Encrypted application record prefix, including the detached authentication tag.
 pub const RECORD_PREFIX: usize = 36;
+/// Largest encrypted CORE record carrying one remote application's aggregate.
+pub const MAX_RECORD_BYTES: usize =
+    gnunet_wire::official::core::REMOTE_REQUEST_LIMIT + RECORD_PREFIX;
 /// Official acknowledgement plaintext.
 pub const ACK: [u8; 4] = [0, 4, 0, 85];
 

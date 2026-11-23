@@ -6,12 +6,9 @@ use std::{
     process::ExitCode,
 };
 type Cause = Box<dyn Error>;
-mod control;
 #[cfg(unix)]
 mod early;
-mod foreground;
 mod lifecycle;
-mod settings;
 fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,

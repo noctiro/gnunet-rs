@@ -30,7 +30,7 @@ fn main() -> ExitCode {
 fn run(routed: &std::cell::Cell<bool>) -> Result<(), Failure> {
     use gnunet_program_host::{
         logging::Logger,
-        program::{self, Defaults, Invocation, NlsDisabled, Preparation, StoppedReason},
+        program::{self, Defaults, Invocation, Preparation, StoppedReason},
         reporting::Reporter,
         shared_clock::SharedClock,
     };
@@ -46,7 +46,7 @@ fn run(routed: &std::cell::Cell<bool>) -> Result<(), Failure> {
         Default::default(),
     )?;
     let mut logger = Logger::new(b"gnunet-daemon-exit", std::process::id(), false)?;
-    let prepared=program::prepare(config,Invocation{binary_name:b"gnunet-daemon-exit",help:Some(b"GNUnet EXIT PROGRAM; official CADET VPN protocol and bounded native packet sources."),select_default_filename:true,defaults:Defaults::Native},Default::default(),std::env::args_os(),&program::Environment::capture(),&mut NlsDisabled,&mut logger,&clock,&mut io::stdout().lock(),&mut io::stderr().lock())?;
+    let prepared=program::prepare_installed(config,Invocation{binary_name:b"gnunet-daemon-exit",help:Some(b"GNUnet EXIT PROGRAM; official CADET VPN protocol and bounded native packet sources."),select_default_filename:true,defaults:Defaults::Native},Default::default(),std::env::args_os(),&program::Environment::capture(),&mut logger,&clock,&mut io::stdout().lock(),&mut io::stderr().lock())?;
     let prepared = match prepared {
         Preparation::Ready(p) => *p,
         Preparation::Stopped(s) if s.code == 0 && matches!(s.reason, StoppedReason::Options) => {

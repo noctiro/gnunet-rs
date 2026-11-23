@@ -328,11 +328,15 @@ impl<'id> Session<'id> {
             credit_last: None,
         })
     }
-    fn frame(&self, message: Message<'_>, peer: bool) -> Result<Vec<u8>, Error> {
+    fn frame_extent(&self, message: &Message<'_>, peer: bool) -> Result<usize, Error> {
         let n = message.encoded_len()?;
         if n > self.limits.frame_bytes || (peer && n > 64348) {
             return Err(Error::TooLarge);
         }
+        Ok(n)
+    }
+    fn frame(&self, message: Message<'_>, peer: bool) -> Result<Vec<u8>, Error> {
+        let n = self.frame_extent(&message, peer)?;
         if n > self.limits.queued_bytes {
             return Err(Error::Capacity);
         }
@@ -534,11 +538,39 @@ impl<'id> Session<'id> {
                 if c.phase != Phase::Connected || c.suspended_local {
                     return Err(Error::Malformed);
                 }
-                let frame = self.peer_frame(id, Message::PeerAudio(data))?;
-                self.batch([Some(frame), None, None], now)?;
-                Ok(RequestOutcome::Admitted)
+                self.queue_audio(id, data, now)
             }
             _ => Err(Error::Malformed),
+        }
+    }
+    fn queue_audio(
+        &mut self,
+        call: CallId<'id>,
+        data: &[u8],
+        now: u64,
+    ) -> Result<RequestOutcome<'id>, Error> {
+        let message = Message::PeerAudio(data);
+        self.frame_extent(&message, true)?;
+        let previous = self
+            .call(call)?
+            .peer_last
+            .and_then(|id| self.effect_index(id).ok());
+        if let Some(at) = previous
+            && self.effects[at].unadmitted_audio()
+        {
+            // Only the peer FIFO tail can be replaced. It has no successor
+            // and no native owner. Preserve its own prerequisite for the
+            // new frame, including an admitted partial send or control.
+            let previous = self.remove_effect(at)?;
+            self.call_mut(call)?.peer_last = previous.predecessors[0];
+        }
+        let queued = self
+            .peer_frame(call, message)
+            .and_then(|frame| self.batch([Some(frame), None, None], now));
+        match queued {
+            Ok(()) => Ok(RequestOutcome::Admitted),
+            Err(Error::Capacity | Error::WouldBlock) => Ok(RequestOutcome::Ignored),
+            Err(error) => Err(error),
         }
     }
     fn client_control(
@@ -782,6 +814,22 @@ impl<'id> Session<'id> {
             .flatten()
             .all(|p| self.effect_index(*p).is_err())
     }
+    fn remove_effect(&mut self, at: usize) -> Result<Effect<'id>, Error> {
+        if let Some(call) = self
+            .effects
+            .get(at)
+            .ok_or(Error::StaleGeneration)?
+            .action
+            .call()
+        {
+            let call = self.call_mut(call)?;
+            call.debt = call.debt.checked_sub(1).ok_or(Error::Malformed)?;
+        }
+        let effect = self.effects.remove(at).ok_or(Error::StaleGeneration)?;
+        self.queued_bytes -= effect.action.bytes();
+        self.normal_effects -= usize::from(!effect.action.close());
+        Ok(effect)
+    }
     fn append_effect(
         &mut self,
         action: Action<'id>,
@@ -1019,9 +1067,6 @@ impl<'id> Session<'id> {
         }
         if let Some(call) = e.action.call() {
             let c = self.call(call)?;
-            if c.debt == 0 {
-                return Err(Error::Malformed);
-            }
             if completion == Completion::Written
                 && matches!(e.action, Action::OpenChannel { .. })
                 && c.source.is_none()
@@ -1035,22 +1080,18 @@ impl<'id> Session<'id> {
         {
             return Err(Error::NotReady);
         }
-        let e = self.effects.remove(at).ok_or(Error::StaleGeneration)?;
-        self.queued_bytes -= e.action.bytes();
-        if !e.action.close() {
-            self.normal_effects -= 1;
-        }
+        let e = self.remove_effect(at)?;
         if let Some(call) = e.action.call() {
             let fault = match completion {
                 Completion::Written | Completion::Processed => None,
                 Completion::Unsent(Error::Cancelled) if e.cancelled => None,
+                Completion::Unsent(Error::Deadline) if e.unadmitted_audio() => None,
                 Completion::Unsent(Error::Closed) if e.action.close() && self.call(call)?.gone => {
                     None
                 }
                 Completion::Unsent(error) | Completion::Lost { reason: error, .. } => Some(error),
             };
             let c = self.call_mut(call)?;
-            c.debt -= 1;
             if let Some(error) = fault {
                 c.failure.get_or_insert(error);
             }

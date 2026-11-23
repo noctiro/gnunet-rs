@@ -31,8 +31,7 @@ impl<'c, 'slots, 'p, E: Entropy, const O: usize> Server<'c, 'slots, 'p, E, O> {
             return Ok(None);
         }
         let index = self.room_index(room)?;
-        let (_, group, feed) = self.core.room_flags(room)?;
-        if feed && !group {
+        if !self.core.room_capabilities(room)?.allows_open() {
             return Err(Fault::Unsupported.into());
         }
         let r = self.rooms[index].as_ref().ok_or(Fault::Stale)?;
@@ -49,11 +48,21 @@ impl<'c, 'slots, 'p, E: Entropy, const O: usize> Server<'c, 'slots, 'p, E, O> {
             return Ok(None);
         }
         let port = carrier::port(&r.key, self.limits.profile);
+        let hard = self.until()?;
         if Instant::now() >= until {
             return Err(Fault::Deadline.into());
         }
         let original = self.cadet.listen(port)?;
         self.rooms[index].as_mut().ok_or(Fault::Stale)?.port = Some(original);
+        self.track_cadet_admission(
+            CadetAdmissionTarget::Port {
+                room,
+                port: original,
+            },
+            hard,
+            until,
+            None,
+        )?;
         Ok(Some(original))
     }
     pub(super) fn room_identity_changed(
@@ -365,7 +374,9 @@ impl<'c, 'slots, 'p, E: Entropy, const O: usize> Server<'c, 'slots, 'p, E, O> {
                 self.tunnels
                     .iter()
                     .flatten()
-                    .filter(|t| t.room == room && t.compatible && !t.closing && !t.remote_closed)
+                    .filter(|t| {
+                        t.room == room && t.handshake.is_ready() && !t.closing && !t.remote_closed
+                    })
                     .count(),
             )
             .map_err(|_| Fault::Overflow)?;
@@ -425,31 +436,11 @@ impl<'c, 'slots, 'p, E: Entropy, const O: usize> Server<'c, 'slots, 'p, E, O> {
                     .then_some(*peer)
                 });
                 if let Some(peer) = candidate
-                    && let Some(slot) = self.tunnels.iter().position(Option::is_none)
+                    && self.tunnels.iter().any(Option::is_none)
                 {
-                    let key = *self.core.room_key(room)?;
-                    let channel = self
-                        .cadet
-                        .open(peer, carrier::port(&key, self.layouts.relay(&peer)))?;
-                    let source = self.core.attach_source(
-                        room,
-                        SourceRole::Peer(peer),
-                        padding::Decode::Required,
-                        None,
-                    )?;
-                    self.tunnels[slot] = Some(Tunnel {
-                        room,
-                        source,
-                        channel,
-                        peer,
-                        compatible: false,
-                        info_queued: false,
-                        closing: false,
-                        remote_closed: false,
-                        bootstrap: 0,
-                        until: self.until()?,
-                    });
-                    return Ok(true);
+                    return Ok(self
+                        .start_room_channel(room, peer, ChannelAdmission::Automatic(self.until()?))?
+                        .is_some());
                 }
             }
         }
@@ -540,7 +531,7 @@ impl<'c, 'slots, 'p, E: Entropy, const O: usize> Server<'c, 'slots, 'p, E, O> {
                 if pending || self.core.service_merge(room)?.is_some() {
                     continue;
                 }
-                self.room_reply(a, l, 4)?;
+                self.room_reply(a, l, RoomReply::Sync)?;
                 self.apps[a].as_mut().ok_or(Fault::Stale)?.rooms[l].sync_until = None;
                 return Ok(true);
             }
@@ -552,7 +543,7 @@ impl<'c, 'slots, 'p, E: Entropy, const O: usize> Server<'c, 'slots, 'p, E, O> {
             let n = self.apps[a].as_ref().map_or(0, |a| a.rooms.len());
             for l in 0..n {
                 let lease = &self.apps[a].as_ref().ok_or(Fault::Stale)?.rooms[l];
-                if lease.phase != LeasePhase::Active
+                if !lease.phase.is_active()
                     || lease.bootstrap >= self.messages.len()
                     || self.core.service_member(lease.source)?.is_none()
                 {

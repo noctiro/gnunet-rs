@@ -47,33 +47,35 @@ On Linux, macOS, FreeBSD and Windows, a nonempty save:
 
 1. Admits all frames, total bytes and work against the explicit limits before
    touching the destination.
-2. Creates missing parent directories and requests the backend's directory barrier.
-3. Exclusively creates a bounded-name private temporary sibling, writes the
-   official stream and calls the file `sync_all`.
-4. Replaces the destination with the complete same-directory sibling, then
-   requests the parent-directory barrier.
+2. Holds the configured parent or its nearest existing ancestor, then creates
+   missing child directories relative to that handle and synchronizes their names.
+3. Exclusively creates a bounded-name private temporary file in the original
+   directory, writes the official stream, synchronizes and closes the writer,
+   and keeps a read lease on that same file.
+4. Replaces the destination under the held parent, requests that directory's
+   barrier and verifies that the destination still identifies the original file.
 
 Unix uses mode 0600 and actual directory `sync_all` calls. Windows uses native
 UTF-16 paths and a protected current-user-only file DACL, excluding alternate
-data streams. File data is synchronized before native same-volume replacement.
-Its backend reports `DirectorySync::Unavailable`: it does not issue a directory
-barrier or substitute a privileged volume flush. Replacement can fail because
-of native sharing or access rules; those failures remain errors.
+data streams. The [native directory barrier](../native-std/API.md#anchored-filesystem-operations)
+supports local NTFS when a writable directory lease is available. An unavailable
+barrier triggers a flush of the original published file and retains the
+`Unavailable` directory result.
 
-An empty persistent set removes an existing database and requests its parent
-barrier; if already absent it creates no file or parents. `SaveReport` separates
+An empty persistent set removes an existing ordinary database and requests its
+original parent barrier. An absent database creates no file or parents. This
+path refuses non-regular entries, including symbolic links. `SaveReport` separates
 stored/removed/absent counts from `directory_sync`. Mutations report the combined
 barrier result; an unavailable parent barrier cannot be overwritten by a later
-synchronized result. Already absent reports `None`. `Stored` describes actual
-file synchronization and namespace publication, not a power-loss guarantee.
-Even `Synchronized` means the OS accepted the calls, not independent proof about
-storage hardware or a remote filesystem.
+synchronized result. An already absent database reports `None`. `Stored`
+records file synchronization and name publication. `Synchronized` records the
+OS accepting the directory barrier.
 
-The application owns the database path and serializes writers. Atomic rename
-replaces the configured directory entry, including a final symlink if supplied;
-callers wanting a symlink target as their stable storage identity must resolve
-that identity explicitly. Concurrent arbitrary in-place writers are outside
-this ownership contract. A load opens one descriptor, so this adapter's own
+The application owns the database path and serializes writers. Configured parent
+aliases resolve when the directory is selected. Atomic replacement uses the
+original directory entry, including a final symlink if supplied. Callers can
+select its target explicitly for stable storage. The application excludes
+concurrent in-place writers. A load opens one descriptor, so this adapter's own
 atomic replacements expose a complete old or new file. Observed file-length
 changes are rejected. Nonregular inputs are rejected before a blocking open;
 Windows additionally checks the native AF_UNIX reparse tag, which standard
@@ -84,15 +86,14 @@ and `CommitOutcome`. Errors before publication say `DestinationUnchanged`
 (temporary files/directories might have been created). Once rename/removal was
 attempted, or if the following directory sync fails, the result is conservatively
 `Unknown`: the destination may already contain the new snapshot or be removed. It must be inspected/reloaded before a caller decides what to do next. An
-ambiguous failed rename retains any surviving candidate path for inspection;
-other temporary cleanup is best effort. Orphans after process termination are
-never mistaken for the configured database or loaded as a fallback.
+ambiguous failed rename retains any surviving candidate. Its reported path is
+the configured location at admission. Cleanup before publication targets the
+original candidate and reports its independent error. Startup loads only the
+configured database entry.
 
-`save_with` provides a narrow `CommitBackend` for platform namespace/sync
-operations and failure injection. File writing and file synchronization still
-use the filesystem. Backends must preserve native namespace errors and return
-an explicit directory-barrier observation. Native saving outside Unix and
-Windows reports `Unsupported` before mutation.
+`save_with` gives `CommitBackend` the retained native directory and file for
+each namespace operation. Backends preserve errors and return the actual
+directory-barrier observation. The store performs file writes and synchronization.
 
 ## Reference differences and tests
 

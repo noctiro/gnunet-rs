@@ -4,7 +4,7 @@ use super::{Candidate, Error, Event, Limits, Metrics, Origin};
 use crate::Inventory;
 use gnunet_client_host::EndpointSource;
 use gnunet_core_client_host as core;
-use gnunet_revocation::{Certificate, ipc};
+use gnunet_revocation::{Certificate, ipc, replication};
 use gnunet_setu_client_host as setu;
 use gnunet_types::Error as Fault;
 use std::{
@@ -16,7 +16,7 @@ use std::{
 };
 use tokio::time::Instant;
 const TYPES: &[u16] = &[638];
-const ELEMENT: u16 = 12;
+const ELEMENT: u16 = replication::ELEMENT_TYPE;
 #[derive(Clone, Copy)]
 struct Send<'id> {
     id: core::SendId<'id>,
@@ -183,7 +183,7 @@ impl<'id> Network<'id> {
             set_limits,
             limits,
             order,
-            app: gnunet_crypto::hash512(b"revocation-set-union-application-id"),
+            app: gnunet_crypto::hash512(replication::APPLICATION_LABEL),
             local: None,
             peers,
             set_epoch: None,
@@ -441,7 +441,7 @@ impl<'id> Network<'id> {
         if self.set_ready && self.add_pending.is_none() && self.add_cursor < inventory.len() {
             let fact = inventory.records.get(self.add_cursor).ok_or(Fault::Stale)?;
             let mut frame = [0u8; ipc::REVOKE_BYTES];
-            ipc::Request::Revoke(fact.certificate().proof()?).encode(&mut frame)?;
+            replication::encode(fact.certificate().proof()?, &mut frame)?;
             let set = self.set.as_mut().ok_or(Fault::Stale)?;
             match set.add(ELEMENT, &frame, until(now, self.limits.operation_lifetime)?) {
                 Ok(write) => {
@@ -704,10 +704,7 @@ impl<'id> Network<'id> {
                                 // independently of later proof verification/result.
                                 self.metrics.add(3);
                             }
-                            if element.kind == ELEMENT
-                                && let Ok(ipc::Request::Revoke(proof)) =
-                                    ipc::Request::decode(element.data)
-                            {
+                            if let Ok(proof) = replication::decode(element.kind, element.data) {
                                 self.input_serial =
                                     self.input_serial.checked_add(1).ok_or(Fault::Overflow)?;
                                 return Poll::Ready(Ok(Some(Candidate {

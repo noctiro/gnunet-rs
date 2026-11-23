@@ -8,7 +8,7 @@ use gnunet_fs::{
     Content, Uri, metadata,
     ublock::{Context, Limits, Publisher},
 };
-use gnunet_native::filesystem::Directory;
+use gnunet_native::filesystem::{Directory, validate_readonly};
 use std::{
     fs::{self, OpenOptions},
     io::{self, Seek, SeekFrom, Write},
@@ -50,24 +50,21 @@ fn generated_raw_seed_reopens_and_signs_the_official_namespace_ublock() -> TestR
     let temporary = Temporary::new()?;
     let path = temporary.0.join("namespace.seed");
     let key = KeyFile::create(&path)?;
+    validate_readonly(&key.file)?;
     assert_eq!(fs::metadata(&path)?.len(), 32);
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
         assert_eq!(fs::metadata(&path)?.mode() & 0o7777, 0o600);
-        assert_eq!(
-            key.directory_sync(),
-            Some(gnunet_native::DirectorySync::Synchronized)
-        );
     }
-    #[cfg(windows)]
     assert_eq!(
         key.directory_sync(),
-        Some(gnunet_native::DirectorySync::Unavailable)
+        Some(Directory::open(&temporary.0)?.sync()?)
     );
     key.revalidate()?;
     let public = key.public_key();
     let reopened = KeyFile::open(&path)?;
+    validate_readonly(&reopened.file)?;
     assert_eq!(reopened.public_key(), public);
     reopened.revalidate()?;
     assert_eq!(reopened.directory_sync(), None);

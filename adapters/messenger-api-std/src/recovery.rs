@@ -71,7 +71,14 @@ impl<'a, E: crypto::Entropy, const N: usize> Api<'a, E, N> {
         }
         if self.restoring
             && self.memberships.iter().all(|m| {
-                m.restored && m.operation.is_none() && self.core.joined(m.room).unwrap_or(false)
+                m.restored
+                    && m.operation.is_none()
+                    && self
+                        .rooms
+                        .iter()
+                        .find(|r| r.room == m.room)
+                        .and_then(|r| r.source)
+                        .is_some_and(|source| self.core.source_joined(source).unwrap_or(false))
             })
         {
             self.restoring = false;
@@ -181,8 +188,8 @@ impl<'a, E: crypto::Entropy, const N: usize> Api<'a, E, N> {
                 continue;
             }
             let row = self.room_index(membership.room)?;
-            if self.rooms[row].source.is_some()
-                && (self.rooms[row].join.is_some() || !self.core.joined(membership.room)?)
+            if let Some(source) = self.rooms[row].source
+                && (self.rooms[row].join.is_some() || !self.core.source_joined(source)?)
             {
                 continue;
             }

@@ -1,5 +1,6 @@
 //! Recovery, original-object fences and recognized pending-file retirement.
 use super::*;
+use gnunet_native::filesystem::publication;
 use std::{ffi::OsStr, io, path::Path};
 
 impl Store {
@@ -21,10 +22,11 @@ impl Store {
             .map_err(|error| os("directory-identity", error))?;
         let lock_id = private_single_file_identity(opened.writer.as_file())
             .map_err(|error| os("writer-policy", error))?;
-        let directory_sync = opened
+        let writer_directory_sync = opened
             .directory
             .sync()
             .map_err(|error| os("writer-directory-sync", error))?;
+        let mut directory_sync = opened.parent_sync.combine(writer_directory_sync);
         let mut store = Self {
             namespace,
             directory: opened.path,
@@ -73,26 +75,29 @@ impl Store {
                 .dir
                 .remove_file(&name, &pending.file)
                 .map_err(|error| os("retire-pending", error))?;
-            store
+            let retired_sync = store
                 .dir
                 .sync()
                 .map_err(|error| os("sync-retired-pending", error))?;
+            directory_sync = directory_sync.combine(retired_sync);
             recovered += 1;
         }
-        let body = match store.dir.open_file_for_sync(OsStr::new(namespace.image())) {
+        let image_name = OsStr::new(namespace.image());
+        let body = match store.dir.open_file(image_name) {
             Ok(file) => {
                 let mut held = HeldFile::qualify(file, "image-policy")?;
-                let (generation, body) = image::read(&mut held.file, namespace, limits)?;
-                held.file
-                    .sync_all()
+                let decoded = image::read(&mut held.file, namespace, limits)?;
+                publication::sync_original(&store.dir, image_name, &held.file)
                     .map_err(|error| os("recovery-image-sync", error))?;
-                store
+                let image_sync = store
                     .dir
                     .sync()
                     .map_err(|error| os("recovery-directory-sync", error))?;
-                store.generation = generation;
+                directory_sync = directory_sync.combine(image_sync);
+                image::verify(&mut held.file, &decoded.header, &decoded.body)?;
+                store.generation = decoded.generation;
                 store.image = Some(held);
-                body
+                decoded.body
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => Zeroizing::new(Vec::new()),
             Err(error) => return Err(os("open-image", error)),

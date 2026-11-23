@@ -434,7 +434,26 @@ impl<'id, 'slots> Server<'id, 'slots> {
             if channel.opening || self.sends.iter().take(i).any(|s| s.channel == send.channel) {
                 continue;
             }
-            let (id, original, hard) = (send.id, send.channel, send.hard);
+            let (id, original) = (send.id, send.channel);
+            if self.cadet.channel_info(original)?.send_credit == 0 {
+                continue;
+            }
+            let Some(PeerOwner::Operation(operation)) = channel.owner else {
+                return Err(Fault::Stale.into());
+            };
+            let operation_hard = channel.operation_hard.ok_or(Fault::Stale)?;
+            if self.core.operation_remaining(operation, self.now()?)? == 0
+                || Instant::now() >= operation_hard
+            {
+                let cleanup_hard = self.hard()?;
+                let channel = self.channels[index].as_mut().ok_or(Fault::Stale)?;
+                channel.retire_reason = Fault::Deadline;
+                channel.mark_closing(cleanup_hard);
+                return Ok(true);
+            }
+            // Waiting for peer credit spends only the original operation
+            // budget. The short local MQ write budget starts at admission.
+            let hard = self.hard()?.min(operation_hard);
             match self.cadet.send(original, 0, send.frame.bytes()) {
                 Ok(transmit) => {
                     self.pending = Some(Pending {
@@ -583,6 +602,7 @@ impl<'id, 'slots> Server<'id, 'slots> {
                     local_closing: false,
                     remote_closed: false,
                     input: None,
+                    operation_hard: None,
                     hard: None,
                     first: Some(hard),
                     retire_reason: Fault::Closed,

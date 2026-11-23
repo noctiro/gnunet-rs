@@ -65,6 +65,7 @@ pub(crate) enum Step<T: Copy> {
         tag: Option<T>,
         bytes: usize,
         complete: bool,
+        failure: Option<Error>,
     },
     Frame {
         epoch: Epoch,
@@ -338,34 +339,40 @@ impl<T: WriteLabel> Session<T> {
         {
             Poll::Pending => Poll::Pending,
             Poll::Ready(Err(e)) => Poll::Ready(Err(Error::Io(e))),
-            Poll::Ready(Ok(w)) => {
-                if w.origin.tag.is_none() {
-                    self.initial_bytes = self
-                        .initial_bytes
-                        .checked_add(w.bytes)
-                        .ok_or(Fault::Overflow)?;
-                    if w.complete {
-                        self.initialized = true;
-                        self.initial = None;
-                    }
-                } else if w.complete {
-                    let tag = w.origin.tag.ok_or(Fault::NotReady)?;
-                    let at = self
-                        .writes
-                        .iter()
-                        .position(|r| r.tag == tag)
-                        .ok_or(Fault::Stale)?;
-                    self.writes.remove(at);
-                }
-                self.read_first = true;
-                Poll::Ready(Ok(Step::Written {
-                    epoch: self.epoch.clone().ok_or(Fault::NotReady)?,
-                    tag: w.origin.tag,
-                    bytes: w.bytes,
-                    complete: w.complete,
-                }))
-            }
+            Poll::Ready(Ok(w)) => Poll::Ready(self.written(w)),
         }
+    }
+    fn written(&mut self, write: framing::WriteProgress<Origin<T>>) -> Result<Step<T>, Error> {
+        // Check before retiring the completed target. Actual positive/whole
+        // bytes still belong to the caller's receipt, even when this syscall
+        // crossed its original bound or the post-write Clock sample failed.
+        let failure = self.check().err();
+        if write.origin.tag.is_none() {
+            self.initial_bytes = self
+                .initial_bytes
+                .checked_add(write.bytes)
+                .ok_or(Fault::Overflow)?;
+            if write.complete {
+                self.initialized = true;
+                self.initial = None;
+            }
+        } else if write.complete {
+            let tag = write.origin.tag.ok_or(Fault::NotReady)?;
+            let at = self
+                .writes
+                .iter()
+                .position(|r| r.tag == tag)
+                .ok_or(Fault::Stale)?;
+            self.writes.remove(at);
+        }
+        self.read_first = true;
+        Ok(Step::Written {
+            epoch: self.epoch.clone().ok_or(Fault::NotReady)?,
+            tag: write.origin.tag,
+            bytes: write.bytes,
+            complete: write.complete,
+            failure,
+        })
     }
     pub fn poll(&mut self, cx: &mut Context<'_>) -> Poll<Result<Step<T>, Error>> {
         if let Some(context) = self.native_expired(cx) {
@@ -483,3 +490,6 @@ mod tests;
 
 #[cfg(all(test, unix))]
 mod provenance_tests;
+
+#[cfg(test)]
+mod write_tests;

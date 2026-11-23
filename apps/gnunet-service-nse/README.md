@@ -12,6 +12,11 @@ Official defaults are `WORKBITS=15`, `INTERVAL=1h` and `WORKDELAY=5ms`.
 See the [host API](../../adapters/nse-std/) for work, framing, proof recovery and
 statistics contracts.
 
+Set `[NSE] HISTOGRAM_DIR` to record CORE flood receive times in `timestamps`.
+The service starts a fresh file on launch and writes unsigned 64-bit big-endian
+GNUnet absolute microseconds. Readers can inspect complete records while the
+service runs. Shutdown diagnostics report queue drops and native write failures.
+
 Unix `UNIX_MATCH_UID` takes priority over `UNIX_MATCH_GID`. Both default false;
 malformed values fail configuration. Checks precede framing and pure START
 allocation. Windows protects local endpoint paths through native ACLs; an

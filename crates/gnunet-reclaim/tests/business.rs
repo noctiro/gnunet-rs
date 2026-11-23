@@ -72,6 +72,89 @@ fn output_written(job: &mut Job) -> Result<(), Error> {
     job.output_exposed(&token, size)?;
     job.output_written(&token)
 }
+
+#[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "asserts the modeled provider inputs"
+)]
+fn ticket_presents_each_credential_with_only_its_selected_attributes() -> Result<(), Error> {
+    let factory = Factory::new(Limits::default())?;
+    let namestore = factory.bind(Provider::Namestore)?;
+    let identity = factory.bind(Provider::Identity)?;
+    let provider = factory.bind(Provider::Credential)?;
+    let first = Identifier::new([1; 32]);
+    let second = Identifier::new([2; 32]);
+    let name = Name::new(b"public-mock")?;
+    let value = Sensitive::new(b"mock value\0");
+    let credential_row = |id| {
+        let job = factory.start(
+            Request::StoreCredential {
+                rid: 1,
+                expiration: RelativeTime::from_micros(1000),
+                key: key()?,
+                credential: Credential::new(id, CredentialType::JWT, name, value),
+            },
+            10,
+            1000,
+        )?;
+        prepared_row(&job)
+    };
+    let first_row = credential_row(first)?;
+    let second_row = credential_row(second)?;
+    let attributes =
+        [(3, first), (4, second), (5, Identifier::ZERO), (6, first)].map(|(id, credential)| {
+            Attribute::new(
+                Identifier::new([id; 32]),
+                credential,
+                AttributeType::STRING,
+                name,
+                value,
+            )
+        });
+    let [a, b, _, d] = attributes;
+    let mut selected = [0; 512];
+    let size = sequence::encode(&attributes, ListLimits::IPC, &mut selected)?;
+    let mut job = factory.start(
+        Request::IssueTicket {
+            rid: 2,
+            key: key()?,
+            uri: Uri::new(b"https://rp.example")?,
+            attributes: AttributeList::new(&selected[..size], ListLimits::IPC)?,
+            reserved: 0,
+        },
+        10,
+        1000,
+    )?;
+    let public = ZoneKey::new(ZoneKeyType::Edkey, [0x11; 32]);
+    complete(&mut job, &identity, Completion::PublicKey(public))?;
+    scan(&mut job, &namestore, &[&first_row, &second_row])?;
+
+    for (id, expected) in [(first, &[a.id, d.id][..]), (second, &[b.id][..])] {
+        let Action::Presentation(request) = job.prepared()?.ok_or(Error::NotReady)?.action else {
+            return Err(Error::Conflict);
+        };
+        let credential = request.credential();
+        assert_eq!(credential.id, id);
+        assert!(
+            request
+                .selected_attributes()
+                .map(|a| a.id)
+                .eq(expected.iter().copied())
+        );
+        complete(
+            &mut job,
+            &provider,
+            Completion::Presentation(Presentation::new(id, CredentialType::JWT, value)),
+        )?;
+    }
+    assert!(matches!(
+        job.prepared()?.ok_or(Error::NotReady)?.action,
+        Action::Identifier
+    ));
+    Ok(())
+}
+
 #[test]
 #[expect(
     clippy::panic_in_result_fn,

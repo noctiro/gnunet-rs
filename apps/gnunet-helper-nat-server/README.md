@@ -16,8 +16,9 @@ intent and require a complete line; exit zero is not a connectivity receipt.
 
 ## Platforms and lifetime
 
-Linux, macOS, FreeBSD 12+ and Windows use the same packet algorithms and
-500 ms alternating probe schedule. Output retains one bounded line with its
+Linux, Android system images, OpenHarmony standard systems, macOS, FreeBSD 12+
+and Windows use the same packet algorithms and 500 ms alternating probe
+schedule. Output retains one bounded line with its
 original cursor and two-second target. Unix checks its original parent and stop
 signals after credential dropping. Windows requires a qualified private byte
 pipe; the normal Rust NAT supervisor provides it and reader closure ends that

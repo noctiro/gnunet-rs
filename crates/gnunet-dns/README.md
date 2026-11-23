@@ -67,3 +67,8 @@ Opaque raw RDATA is not inspected, authenticated or relocated. If a type outside
 the structured native set embeds compression pointers, blindly changing packet
 layout can invalidate those opaque bytes, as with the C API. Callers that forward
 such records should preserve the original packet or provide that type grammar. The parser does not turn AD/DNSSEC flag bits into a verification claim.
+
+The `dnssec-crypto` feature supplies `dnssec::crypto::Backend` for callers
+validating DNSSEC signatures, DS and NSEC3. The backend verifies RSA, ECDSA,
+Ed25519 and Ed448 signatures in fixed storage. Callers supply trust anchors
+through their validation flow.

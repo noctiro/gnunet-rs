@@ -1,8 +1,8 @@
 # gnunet-cadet
 
-Exposes the existing CADET client as a binary stream and echo tool on Linux,
-macOS, FreeBSD and Windows. Its package is `gnunet-cadet-command` and its binary
-is `gnunet-cadet`.
+Exposes CADET binary streams, echo and management queries on Linux, macOS,
+FreeBSD and Windows. Its package is `gnunet-cadet-command` and its binary is
+`gnunet-cadet`.
 
 ## Invocation and protocol
 
@@ -10,13 +10,20 @@ is `gnunet-cadet`.
 gnunet-cadet -c gnunet.conf PEER PORT
 gnunet-cadet -c gnunet.conf --open-port PORT
 gnunet-cadet -c gnunet.conf --echo PEER PORT
+gnunet-cadet -c gnunet.conf --peers
+gnunet-cadet -c gnunet.conf --tunnels
+gnunet-cadet -c gnunet.conf --peer PEER
 ```
 
 `PEER [PORT]` opens an outbound channel; PORT defaults to `default`. `-o PORT`
 listens for one channel and withdraws the port after selecting it. Additional
 incoming channels are destroyed. `-e` selects periodic echo or an echo listener.
 Standard PROGRAM options select configuration, logging, help and version.
-Management commands remain in `gnunet-cli cadet peers|tunnels|paths`.
+
+`-P` lists peers, `-T` lists tunnels, and `-p PEER` lists paths to the selected
+peer. Each query writes the official text rows and completes when it receives
+the matching END from the configured CADET service. `-C CONNECTION_ID` is
+unavailable in the selected official service.
 
 PEER is the official 52-character identity. Non-NUL port-name bytes, up to 4096
 including an empty name, use the existing GNUnet SHA-512 primitive without a
@@ -78,6 +85,7 @@ These `[cadet-cli]` limits are local policy:
 Connection setup, submitted or held sends, partial frames, received processing
 loans and echo intents have fixed native/logical bounds. Admission retries and
 credit waits never renew them. Idle sessions have no invented overall expiry.
+Management queries use one `OPERATION_SECONDS` budget through the final END.
 Echo probes use one-second spacing; RTT is diagnostic. Native, stdin, stdout,
 Resolver, cleanup and Logger errors retain independent causes and known prefixes.
 See [open work](../../IMPLEMENTATION_STATUS.md) for remaining qualification.

@@ -107,7 +107,9 @@ impl Session<'_> {
         let incoming = if task.key.peer2 as usize == self.local {
             self.offers
                 .iter()
-                .find(|o| !o.claimed && o.peer == task.peer && Self::key_eq(o.key, task.key))
+                .find(|o| {
+                    o.available(self.now) && o.peer == task.peer && Self::key_eq(o.key, task.key)
+                })
                 .map(|o| o.id)
         } else {
             None
@@ -121,7 +123,6 @@ impl Session<'_> {
             peer: self.peers[task.peer],
             context: task.key,
             incoming,
-            lower_bound: self.lower_bound,
         };
         self.publish(action)?;
         self.tasks[i].state = TaskState::Starting;

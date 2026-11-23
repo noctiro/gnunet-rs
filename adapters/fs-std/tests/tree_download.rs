@@ -151,6 +151,175 @@ impl BlockSink for Discard {
     }
 }
 
+#[cfg(unix)]
+#[test]
+fn recursive_files_overlap_without_occupying_other_admitted_destinations() -> TestResult {
+    use gnunet_fs::content::BLOCK_BYTES;
+    use gnunet_fs_host::BlockSource;
+    use gnunet_wire::official::fs::{BlockType, ClientPut, Request, Response};
+    use std::num::NonZeroU32;
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::{UnixListener, UnixStream},
+    };
+
+    async fn query(stream: &mut UnixStream) -> TestResult<[u8; 64]> {
+        let size = stream.read_u16().await?;
+        let mut frame = vec![0; usize::from(size)];
+        frame
+            .get_mut(..2)
+            .ok_or("short search frame")?
+            .copy_from_slice(&size.to_be_bytes());
+        stream.read_exact(&mut frame[2..]).await?;
+        let Request::Search(search) = Request::decode(&frame)? else {
+            return Err("expected a file block lookup".into());
+        };
+        assert_eq!(search.block_type, BlockType::DBLOCK);
+        Ok(search.query)
+    }
+
+    async fn send(stream: &mut UnixStream, content: Content, cache: &mut Repository) -> TestResult {
+        let mut block = vec![0; BLOCK_BYTES + gnunet_fs::content::TAG_BYTES];
+        let size = cache.read_block(gnunet_fs::content::NodeRef::root(content), &mut block)?;
+        let response = Response::Put(ClientPut {
+            block_type: BlockType::DBLOCK,
+            expiration: AbsoluteTime::from_micros(1),
+            last_transmission: AbsoluteTime::from_micros(0),
+            num_transmissions: 0,
+            respect_offered: 0,
+            block: &block[..size],
+        });
+        let mut frame = vec![0; response.encoded_len()?];
+        response.encode(&mut frame)?;
+        stream.write_all(&frame).await?;
+        Ok(())
+    }
+
+    let temporary = Temporary::new()?;
+    let mut cache = Repository::open(temporary.0.join("cache"))?;
+    let mut buffers = Buffers::new();
+    let first = publish(&mut buffers, b"first", &mut cache)?;
+    let second = publish(&mut buffers, b"second", &mut cache)?;
+    let third = publish(&mut buffers, b"third", &mut cache)?;
+    let reserved = format!("0{:07}", std::process::id() % 10_000_000);
+    let record_name = format!("{reserved}\0");
+    let a = directory_bytes(&[
+        (first, entry_metadata(b"first.bin\0", false, None)?),
+        (second, entry_metadata(record_name.as_bytes(), false, None)?),
+    ])?;
+    let b = directory_bytes(&[(third, entry_metadata(b"third.bin\0", false, None)?)])?;
+    let left = publish(&mut buffers, &a, &mut cache)?;
+    let right = publish(&mut buffers, &b, &mut cache)?;
+    let root = directory_bytes(&[
+        (left, entry_metadata(b"a/\0", true, None)?),
+        (right, entry_metadata(b"b/\0", true, None)?),
+    ])?;
+    let root = publish(&mut buffers, &root, &mut cache)?;
+    assert!(
+        [root, left, right]
+            .into_iter()
+            .all(|content| content.size < BLOCK_BYTES as u64)
+    );
+    let mut output = OutputDir::open(&temporary.0)?;
+    let tree = temporary.0.join("tree");
+    runtime()?.block_on(async {
+        let socket = temporary.0.join("fs.sock");
+        let listener = UnixListener::bind(&socket)?;
+        let source = EndpointSource::unix(socket.clone());
+        let mut policy = options(&source)?;
+        policy.file_parallelism = NonZeroU32::MIN.saturating_add(2);
+        policy.transfer.request_parallelism = policy.file_parallelism;
+        let server = async {
+            let (mut directory, _) = listener.accept().await?;
+            assert_eq!(query(&mut directory).await?, root.query);
+            send(&mut directory, root, &mut cache).await?;
+            let mut directories = vec![left, right];
+            while !directories.is_empty() {
+                let (mut stream, _) = listener.accept().await?;
+                let received = query(&mut stream).await?;
+                let index = directories
+                    .iter()
+                    .position(|entry| entry.query == received)
+                    .ok_or("expected another directory before files")?;
+                send(&mut stream, directories.swap_remove(index), &mut cache).await?;
+            }
+            let mut files = vec![first, second, third];
+            let mut ready = Vec::new();
+            while !files.is_empty() {
+                let (mut stream, _) = listener.accept().await?;
+                let received = query(&mut stream).await?;
+                let index = files
+                    .iter()
+                    .position(|entry| entry.query == received)
+                    .ok_or("expected a distinct verified file")?;
+                ready.push((stream, files.swap_remove(index)));
+            }
+            assert_eq!(fs::read_dir(tree.join("a"))?.count(), 0);
+            assert_eq!(fs::read_dir(tree.join("b"))?.count(), 0);
+            for (mut stream, content) in ready.into_iter().rev() {
+                send(&mut stream, content, &mut cache).await?;
+            }
+            Ok::<_, Box<dyn std::error::Error>>(())
+        };
+        let work = output.download_tree("tree", source, root, &mut buffers, None, policy, |_| {
+            Control::Continue
+        });
+        let (finished, served) =
+            timeout(Duration::from_secs(3), async { tokio::join!(work, server) }).await?;
+        served?;
+        let finished = finished?;
+        assert_eq!(finished.progress.files_committed, 3);
+        assert_eq!(finished.walk.done, 6);
+        assert_eq!(fs::read(tree.join("a/first.bin"))?, b"first");
+        assert_eq!(fs::read(tree.join("a").join(&reserved))?, b"second");
+        assert_eq!(fs::read(tree.join("b/third.bin"))?, b"third");
+        assert_eq!(fs::read_dir(tree.join("a"))?.count(), 2);
+        assert_eq!(fs::read_dir(tree.join("b"))?.count(), 1);
+        assert!(
+            !fs::read_dir(&temporary.0)?
+                .filter_map(Result::ok)
+                .any(|entry| entry
+                    .file_name()
+                    .as_encoded_bytes()
+                    .starts_with(b".gnunet-fs-"))
+        );
+        // Reopen the tree, authenticate the directories again and reuse completed files.
+        let source = EndpointSource::unix(socket);
+        let mut resume = options(&source)?;
+        resume.file_parallelism = policy.file_parallelism;
+        let server = async {
+            let mut directories = vec![root, left, right];
+            while !directories.is_empty() {
+                let (mut stream, _) = listener.accept().await?;
+                let received = query(&mut stream).await?;
+                let index = directories
+                    .iter()
+                    .position(|entry| entry.query == received)
+                    .ok_or("completed file was requested again")?;
+                send(&mut stream, directories.swap_remove(index), &mut cache).await?;
+            }
+            Ok::<_, Box<dyn std::error::Error>>(())
+        };
+        let work = output.download_tree_resumable(
+            "tree",
+            source,
+            root,
+            &mut buffers,
+            resume,
+            gnunet_fs_host::IncompleteOutput::Keep,
+            |_| Control::Continue,
+        );
+        let (resumed, served) =
+            timeout(Duration::from_secs(3), async { tokio::join!(work, server) }).await?;
+        served?;
+        let resumed = resumed?;
+        assert_eq!(resumed.walk.done, 6);
+        assert_eq!(resumed.progress.files_committed, 3);
+        assert_eq!(resumed.progress.directories_created, 0);
+        Ok(())
+    })
+}
+
 #[test]
 fn cached_multi_path_content_and_official_directory_names_accept_verified_inline_and_fallback()
 -> TestResult {
@@ -219,6 +388,30 @@ fn cached_multi_path_content_and_official_directory_names_accept_verified_inline
         assert_eq!(fs::read_dir(tree.join("empty"))?.count(), 0);
         assert_eq!(fs::read_dir(tree.join("nested"))?.count(), 2);
         assert_eq!(fs::read_dir(&tree)?.count(), 4);
+
+        // A full optional-hint budget must leave the same tree retrievable.
+        assert_eq!(publish(&mut buffers, inline_bytes, &mut cache)?, inline);
+        let source = EndpointSource::unix(temporary.0.join("no-fs-service.sock"));
+        let mut policy = options(&source)?;
+        policy.max_total_inline_bytes = 0;
+        let cached = timeout(
+            Duration::from_secs(3),
+            output.download_tree(
+                "cache-only-tree",
+                source,
+                root,
+                &mut buffers,
+                Some(&mut cache),
+                policy,
+                |_| Control::Continue,
+            ),
+        )
+        .await??;
+        assert_eq!(cached.progress.files_committed, 4);
+        assert_eq!(
+            fs::read(temporary.0.join("cache-only-tree/inline.bin"))?,
+            inline_bytes
+        );
         Ok::<_, Box<dyn std::error::Error>>(())
     })
 }

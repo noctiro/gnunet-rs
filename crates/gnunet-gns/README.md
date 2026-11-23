@@ -2,10 +2,36 @@
 
 `gnunet-gns` owns recursive GNS authority and record decisions. It has no socket,
 scheduler, C ABI, native transport, or implicit DNS fallback. Default `no_std`
-builds expose allocation-free Start Zone selection. `alloc` adds a bounded
-multi-query `Resolver` with fallible allocation and explicit local policy.
+builds expose start-zone selection and a fixed resolver. The `alloc` feature
+adds a resolver with fallible allocation and explicit external dependency ports.
 
 ## Public interface
+
+### Fixed resolver
+
+Use `fixed::Resolver` for caller-owned query slots, one reusable plaintext
+workspace and a reply body supplied by the caller. Each authority requires its
+own revocation receipt before NAMECACHE and DHT lookup. The resolver handles
+PKEY and EDKEY delegation and GNS-local aliases and returns the serialized
+record count and body length. The embedding keeps the reply until its native
+writer settles and retires the exact dependency on cancellation. External DNS
+and system lookup use explicit providers. BOX and SBOX share the same original
+prefix selection as the allocating resolver. Fixed resolution uses GANA
+assignments and numeric service ports. An optional `BoxRegistry` supplies
+additional protocol and service names from the embedding's prepared registry.
+
+`Resolver::with_dns_policy` sets whether a lookup may follow GNS2DNS or an
+alias outside GNS. `DnsPolicy::Deny` still permits direct reads of delegation
+and alias records. The allocating resolver uses the same policy in `Limits`.
+In `fixed::Instance<Q, B, C, A>`, `Q` counts query slots, `B` counts shared DNS
+bridge slots, `C` is the byte capacity for server targets in each bridge, and
+`A` bounds distinct live addresses for each selected server. Each bridge
+also reserves 4 KiB for DNS security records. Targets and their addresses are
+tried in order. A delegation or server whose data exceeds a storage budget
+cannot expose a partial set. If no alternative succeeds, the lookup reports
+`Failure::Fault(Error::Capacity)`.
+
+### Allocating resolver
 
 For each admitted query, retain `QueryId`, read its original `Effect`, and return
 the matching typed receipt. Effect IDs are instance-branded and never reused. Cancellation invalidates all authority and nameserver children immediately. Transport retries may reread an effect but must retain its original identity. `failed` supplies dependency exhaustion/deadline; no operation succeeds merely
@@ -17,7 +43,7 @@ label before decrypting them. Every authority first requests a revocation check.
 store receipts re-open the block using current UTC, including shadow selection.
 
 Dependency ports cover revocation, encrypted cache read/write, encrypted remote
-storage, symbolic service mappings, recursive DNS, and default-system name
+storage, protocol and service mappings, recursive DNS, and default-system name
 resolution. GNS nameserver dependencies use internal frames and the original
 query's shared budgets. External DNS/system adapters must charge recursive work
 using `spent` and obey the effect's allowance. DNS effects are DNS-only and must

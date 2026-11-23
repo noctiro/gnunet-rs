@@ -106,6 +106,9 @@ impl<'view, 'scope, 'spec, 'slots, 'bytes, C: Clock>
                             SocketEvent::Failed(AcceptError::Accept(error)) => {
                                 self.state.diagnostic(Diagnostic::Accept(error))
                             }
+                            SocketEvent::Failed(AcceptError::Credentials(error)) => {
+                                self.state.diagnostic(Diagnostic::Credentials(error))
+                            }
                             SocketEvent::Diagnostic(diagnostic) => self
                                 .state
                                 .diagnostic(Diagnostic::AcceptedSocket(diagnostic)),
@@ -120,6 +123,11 @@ impl<'view, 'scope, 'spec, 'slots, 'bytes, C: Clock>
                 }
                 match self.admit(stream, peer) {
                     Ok(_admitted) => return Poll::Ready(Ok(true)),
+                    // In admit, only the original credential query returns Io.
+                    Err(Error::Io(error)) => {
+                        self.state.diagnostic(Diagnostic::Credentials(error));
+                        return Poll::Ready(Ok(true));
+                    }
                     Err(
                         Error::Capacity
                         | Error::Core(

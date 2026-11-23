@@ -1,7 +1,15 @@
 //! Current standard communicator IPC, independent of any TCP/UDP session.
 //! Parsing grants no authentication, queue lifetime, callback or source authority.
 use super::{Frame, MessageType, message_type as mt};
+use core::time::Duration;
 use gnunet_types::Error;
+
+/// Official default for peer inactivity on communicator connections.
+///
+/// This is a local timeout, never encoded in communicator IPC. TRANSPORT
+/// sends FLOW keepalives earlier so healthy idle connections remain open.
+pub const DEFAULT_PEER_IDLE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+
 /// Prefix before the complete inner message in SEND1209.
 pub const SEND_PREFIX: usize = 48;
 /// Prefix before the complete inner message in INCOMING1202.

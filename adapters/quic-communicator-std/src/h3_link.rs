@@ -360,7 +360,7 @@ impl<'id, 'slots, 'buf> Link<'id, 'slots, 'buf> {
         rows.resize_with(capacity, || None);
         let handshake = connection.handshake_data().ok_or(Protocol::NotReady)?;
         let handshake = handshake
-            .downcast::<quinn::crypto::rustls::HandshakeData>()
+            .downcast::<crate::quic_tls::HandshakeData>()
             .map_err(|_| Protocol::Unsupported)?;
         let alpn = handshake.protocol.as_deref().ok_or(Protocol::Unsupported)?;
         let authority = connection.remote_address().to_string();
@@ -482,7 +482,7 @@ impl<'id, 'slots, 'buf> Link<'id, 'slots, 'buf> {
     pub(crate) fn queue(
         &mut self,
         id: SendId,
-        bytes: &[u8],
+        bytes: Zeroizing<Vec<u8>>,
         hard: Instant,
         now: MonoInstant,
     ) -> Result<(), Failure> {
@@ -495,7 +495,7 @@ impl<'id, 'slots, 'buf> Link<'id, 'slots, 'buf> {
         if self.tx.is_some() {
             return Err(Protocol::Capacity.into());
         }
-        gnunet_wire::official::Frame::decode(bytes)?;
+        gnunet_wire::official::Frame::decode(&bytes)?;
         if bytes.len() > profile::ADVERTISED_MTU
             || bytes.len() > self.options.profile.limits.max_body
         {
@@ -517,13 +517,10 @@ impl<'id, 'slots, 'buf> Link<'id, 'slots, 'buf> {
         } else {
             None
         };
-        // Fallible immutable payload copy precedes all logical SEND admission.
-        let mut owned = Vec::new();
-        owned
-            .try_reserve_exact(bytes.len())
-            .map_err(|_| Protocol::Capacity)?;
-        owned.extend_from_slice(bytes);
-        let owned = owned_bytes(owned);
+        // Move the MQ admission allocation into immutable backend storage;
+        // retained h3/Quinn clones share its final zeroizing owner.
+        let total = bytes.len();
+        let owned = Bytes::from_owner(Erased(bytes));
         let marks = Rc::new(Acceptance::default());
         if let (Some(index), Some(request)) = (vacant, request) {
             let sender = match self.mode.as_ref() {
@@ -554,7 +551,7 @@ impl<'id, 'slots, 'buf> Link<'id, 'slots, 'buf> {
             self.tx = Some(Sending {
                 id,
                 body: None,
-                total: bytes.len(),
+                total,
                 hard,
                 marks,
                 reported: false,
@@ -563,7 +560,7 @@ impl<'id, 'slots, 'buf> Link<'id, 'slots, 'buf> {
             self.tx = Some(Sending {
                 id,
                 body: Some(owned),
-                total: bytes.len(),
+                total,
                 hard,
                 marks,
                 reported: false,

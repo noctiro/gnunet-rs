@@ -7,7 +7,7 @@ use gnunet_program_host::{
     service::{self, Preparation},
     shared_clock::SharedClock,
 };
-use gnunet_resolver_host::{MachineInputs, startup};
+use gnunet_resolver_host::startup;
 use gnunet_service_startup::{
     GroupsProfile, InheritedMode, InheritedResources, apply_privileges, configured_user,
     daemon::{self, Branch},
@@ -122,18 +122,6 @@ pub(super) fn run() -> Result<ExitCode, Failure> {
         // The actual target account creates new Unix paths. No old inode or
         // parent directory is chowned, and transferred sockets are not reopened.
         let bound = runtime.block_on(listeners.finish_with_access(unix.into()))?;
-        startup::verify_configured_identity(&config)?;
-        let files = MachineInputs::production(16 * 1024 * 1024);
-        for diagnostic in &files.diagnostics {
-            diagnostics.message(
-                "resolver.machine",
-                Level::WARNING,
-                format_args!(
-                    "resolver machine input {}: {}",
-                    diagnostic.source, diagnostic.error
-                ),
-            )?;
-        }
         runtime.block_on(async {
             let mut termination = gnunet_service_runtime::signals::Termination::new()?;
             let mut parent_control = parent_control.map(|control|control.register().map_err(|error|error.error)).transpose()?;
@@ -150,27 +138,18 @@ pub(super) fn run() -> Result<ExitCode, Failure> {
                 }
                 termination.poll_stop(cx)
             });
-            let report = startup::foreground_listening_with_clock(
-                &config, bound, files, &[],
-                |bound| {
-                    for error in bound.failures() {
-                        diagnostics.message("resolver.listener.alternate", Level::WARNING,
-                            format_args!("resolver alternate listener: {error}"))?;
-                    }
-                    diagnostics.message("resolver.ready", Level::INFO,
-                        format_args!("Resolver Host ready: actual core/stub/IDNA, selected UTC, machine data and original listeners"))?;
-                    let mut output = io::stdout().lock();
-                    writeln!(output, "READY resolver")?;
-                    output.flush()?;
-                    child.ready()
-                }, shutdown,
+            let report = startup::serve_standalone(
+                &config, bound, Arc::new(clock.clone()),
+                |diagnostic| diagnostics.machine_input(diagnostic),
+                |bound| std::future::ready(diagnostics.ready(bound).and_then(|()| child.ready())),
+                shutdown,
                 |event| {
                     if matches!(&event, gnunet_resolver_host::SocketEvent::Failed(error) if error.is_emfile()) { return; }
                     let (level, site) = if matches!(&event, gnunet_resolver_host::SocketEvent::Failed(_)) {
                         (Level::WARNING, "resolver.socket.failed")
                     } else { (Level::DEBUG, "resolver.socket.activity") };
                     diagnostics.observe(site, level, format_args!("resolver socket: {event:?}"));
-                }, Arc::new(clock.clone()),
+                },
             ).await;
             let report = service::retain_diagnostic(report, diagnostics.take_failure())?;
             let mut output = io::stdout().lock();

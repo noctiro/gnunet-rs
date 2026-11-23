@@ -13,14 +13,24 @@ gnunet-types.workspace = true
 gnunet-wire.workspace = true
 gnunet-vpn.workspace = true
 gnunet-tun-host.workspace = true
-tokio = { workspace = true, features = ["rt", "net", "time", "process", "io-util", "signal"] }
+tokio = { workspace = true, features = ["rt", "net", "time", "process", "io-util", "signal", "sync"] }
 zeroize = { workspace = true, features = ["alloc"] }
 
-[target.'cfg(any(windows, target_os = "macos", target_os = "freebsd"))'.dependencies]
+[target.'cfg(any(windows, target_os = "linux"))'.dependencies]
 gnunet-native.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+gnunet-wfp-dns.workspace = true
+gnunet-wfp-dns-host = { path = "../wfp-dns-std" }
+
+[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
+gnunet-native = { workspace = true, features = ["dns-proxy"] }
+gnunet-dnsstub = { workspace = true, features = ["alloc"] }
+getrandom.workspace = true
 
 [target.'cfg(any(target_os = "macos", target_os = "freebsd"))'.dependencies]
 gnunet-crypto.workspace = true
+gnunet-native = { workspace = true, features = ["socket-io"] }
 
 [target.'cfg(unix)'.dependencies]
 nix = { workspace = true, features = ["fs", "user", "signal", "process"] }

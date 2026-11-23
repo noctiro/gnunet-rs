@@ -20,7 +20,6 @@ use gnunet_fs::{
 use gnunet_fs_codec::Compressor;
 use gnunet_types::AbsoluteTime;
 use std::{
-    collections::BTreeSet,
     fs::{self, File},
     io,
     path::{Path, PathBuf},
@@ -30,12 +29,6 @@ use std::{
     },
     time::{SystemTime, UNIX_EPOCH},
 };
-#[cfg(unix)]
-const NATIVE_DIRECTORY_SYNC: gnunet_native::DirectorySync =
-    gnunet_native::DirectorySync::Synchronized;
-#[cfg(windows)]
-const NATIVE_DIRECTORY_SYNC: gnunet_native::DirectorySync =
-    gnunet_native::DirectorySync::Unavailable;
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 struct Temporary(PathBuf);
 impl Temporary {
@@ -180,9 +173,7 @@ fn interrupted_cancel_reconciles_real_original_link_without_replacing_foreign_na
             target: [0; 32],
             inline: None,
         }],
-        names: BTreeSet::new(),
-        path_bytes: 0,
-        inline_bytes: 0,
+        ..Paths::default()
     };
     let work = owner.begin()?.ok_or("missing root work")?;
     let receipt = buffers.visit_directory(
@@ -339,10 +330,8 @@ fn interrupted_cancel_reconciles_real_original_link_without_replacing_foreign_na
             .get(&binding.id)
             .ok_or("missing reconciled child")?;
         assert_eq!(entry.committed, Some(original));
-        assert_eq!(
-            entry.stage,
-            CommitStage::FileSynchronized(NATIVE_DIRECTORY_SYNC)
-        );
+        let barrier = gnunet_native::filesystem::Directory::open(&tree)?.sync()?;
+        assert_eq!(entry.stage, CommitStage::FileSynchronized(barrier));
         assert!(!entry.cleanup);
     }
     drop(task);

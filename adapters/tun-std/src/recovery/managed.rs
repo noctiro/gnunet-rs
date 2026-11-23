@@ -116,12 +116,53 @@ pub(crate) fn open(name: Option<&str>, path: &Path, limits: Limits) -> Result<Ow
     }
     let journal =
         Journal::open(path).map_err(|error| fail(OpenStage::Prepare, error, None, None))?;
-    let mut journal = recover::restore(journal)?;
+    let journal = recover::restore(journal)?;
+    create(journal, name, limits, Scope::Startup)
+}
+
+pub(crate) enum Scope {
+    Startup,
+    Recreation {
+        fib: u32,
+        until: tokio::time::Instant,
+    },
+}
+
+impl Scope {
+    fn fib(&self) -> Option<u32> {
+        match *self {
+            Self::Startup => None,
+            Self::Recreation { fib, .. } => Some(fib),
+        }
+    }
+
+    fn check_deadline(&self) -> io::Result<()> {
+        if matches!(*self, Self::Recreation { until, .. } if tokio::time::Instant::now() >= until) {
+            Err(io::ErrorKind::TimedOut.into())
+        } else {
+            Ok(())
+        }
+    }
+}
+
+pub(crate) fn create(
+    mut journal: Journal,
+    name: Option<&str>,
+    limits: Limits,
+    scope: Scope,
+) -> Result<OwnedTun, OpenError> {
+    if let Err(error) = scope.check_deadline() {
+        return Err(fail(OpenStage::Begin, error, Some(journal), None));
+    }
     let intent = match journal.begin(name) {
         Ok(intent) => intent,
         Err(error) => return Err(fail(OpenStage::Begin, error, Some(journal), None)),
     };
-    let mut handle = match platform::open_recorded(name, intent.nonce) {
+    if let Err(error) = scope.check_deadline() {
+        let cleanup = journal.abort(&intent).err();
+        return Err(fail(OpenStage::Begin, error, Some(journal), cleanup));
+    }
+    let mut handle = match platform::open_recorded(name, intent.nonce, scope.fib()) {
         Ok(handle) => handle,
         Err(CreationFailure::Unknown(error)) => {
             return Err(fail(OpenStage::Create, error, Some(journal), None));

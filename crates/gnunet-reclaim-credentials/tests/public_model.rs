@@ -1,7 +1,8 @@
 //! One source-only aggregate PUBLIC MOCK model. No real credential, private key,
 //! signature/proof/crypto, issuer network, store, plugin ABI or native process.
 use gnunet_reclaim::{
-    AttributeList, AttributeType, Credential, CredentialType, Identifier, Name, Sensitive,
+    AttributeList, AttributeType, Credential, CredentialType, Identifier, Name,
+    PresentationRequest, Sensitive,
 };
 use gnunet_reclaim_credentials::{
     Assurance, Limits, Nest, Stage, Token, ValueKind, Workspace, attribute_from_string,
@@ -57,7 +58,7 @@ fn public_claims_presentation_capacities_and_erasure() -> Result<(), Box<dyn std
         .ok_or(Error::NotFound)?;
     assert_eq!(unsupported.kind, 0x12345678);
     assert_eq!(unsupported.cause, Error::Unsupported);
-    let pres = presentation(credential, AttributeList::empty())?;
+    let pres = presentation(PresentationRequest::new(credential, AttributeList::empty()))?;
     assert_eq!(pres.credential, credential.id);
     assert_eq!(pres.value.expose(), raw.as_slice());
     assert_eq!(check_binding(pres, credential)?, Assurance::Unverified);
@@ -68,7 +69,7 @@ fn public_claims_presentation_capacities_and_erasure() -> Result<(), Box<dyn std
         Sensitive::new(b"NOT-A-PABC\0"),
     );
     assert_eq!(
-        presentation(pabc, AttributeList::empty())
+        presentation(PresentationRequest::new(pabc, AttributeList::empty()))
             .err()
             .ok_or(Error::NotFound)?
             .cause,
@@ -232,7 +233,7 @@ fn public_real_and_control_attribute_text() -> Result<(), Box<dyn std::error::Er
     assert_eq!(short, [0x55]);
     assert_eq!(claims.expose_payload().expose(), body);
     assert_eq!(
-        presentation(credential, AttributeList::empty())?
+        presentation(PresentationRequest::new(credential, AttributeList::empty()))?
             .value
             .expose(),
         raw

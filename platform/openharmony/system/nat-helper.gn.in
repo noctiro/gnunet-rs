@@ -1,0 +1,9 @@
+ohos_prebuilt_executable("@NAME@") {
+  source = "@NAME@"
+  output = "@NAME@"
+  install_enable = true
+  module_install_dir = "bin"
+  install_images = [ "system" ]
+  part_name = "@PART@"
+  subsystem_name = "@SUBSYSTEM@"
+}

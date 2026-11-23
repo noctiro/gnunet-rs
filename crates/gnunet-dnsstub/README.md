@@ -25,19 +25,20 @@ active only after that send attempt. Socket cache generations are independent
 of request generations; cancellation keeps sockets for reuse, while stop
 invalidates every token and requires the host to retire its original socket owners.
 
-Responses are `UnverifiedDatagram` values: the raw stub checks a configured
-source IP/port and the minimum twelve-byte header. It does not check DNS ID, QR,
-questions or DNSSEC. Repeated responses do not complete the request or stop its
-periodic retries. A late packet on a reused cached socket belongs to the current
+Responses are `UnverifiedDatagram` values. The raw stub checks the configured
+source IP, port and any applicable IPv6 zone, plus the minimum twelve-byte
+header. DNS ID, QR, questions and DNSSEC remain caller responsibilities.
+Repeated responses leave periodic retries active. A late packet on a reused
+cached socket belongs to the current
 raw callback and still needs higher-layer validation. A resolver owns its own
 deadline and cancels only after validating or abandoning its query.
 
 ## Native addresses and bounds
 
-Native IPv6 scope/flow values are retained for sending, while source matching
-follows C's IP/port comparison. Native IPv4 padding is never read. Finite capacity,
-generation and scheduler-counter exhaustion cause explicit errors without
-silently replacing protocol data or reusing old authority.
+Native IPv6 scope and flow values are retained for sending. A scoped source
+must use the configured zone, so the same link-local address on different links
+remains distinct. The flow label belongs to the datagram. Finite capacity,
+generation and scheduler-counter exhaustion return explicit errors.
 
 The core contains no OS socket, clock, entropy source or detached task. Its tests
 cover lazy effects, dual-family caches, stale results, admission refusal, retry,

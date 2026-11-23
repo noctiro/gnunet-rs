@@ -340,8 +340,6 @@ pub enum Action<'id> {
         context: RoundContext,
         /// Original actual pending offer, absent for outgoing.
         incoming: Option<OfferId<'id>>,
-        /// Actual old SET uint8 Byzantine lower bound.
-        lower_bound: u8,
     },
     /// Reject the same actual pending factory offer, not a replacement source.
     RejectOffer {
@@ -376,6 +374,16 @@ pub enum Action<'id> {
     },
 }
 impl Action<'_> {
+    /// Generic SET options for each reconciliation. Gradecast can compare
+    /// disjoint populations, so it supplies no shared-membership minimum.
+    pub const RECONCILIATION_OPTIONS: gnunet_wire::official::set::Options =
+        gnunet_wire::official::set::Options {
+            force_delta: 0,
+            force_full: 0,
+            byzantine: 1,
+            byzantine_lower_bound: 0,
+        };
+
     /// Exact installed old SET operation for source creation/listening: UNION2.
     #[must_use]
     pub const fn set_operation(&self) -> Option<u32> {
@@ -393,17 +401,11 @@ impl Action<'_> {
             None
         }
     }
-    /// Exact original standard SET options, with no hidden force-full alias or
-    /// private algorithm. A real native caller must pass these on the same intent.
+    /// Local generic SET options for a reconciliation action.
     #[must_use]
     pub const fn set_options(&self) -> Option<gnunet_wire::official::set::Options> {
         match self {
-            Self::Reconcile { lower_bound, .. } => Some(gnunet_wire::official::set::Options {
-                force_delta: 0,
-                force_full: 0,
-                byzantine: 1,
-                byzantine_lower_bound: *lower_bound,
-            }),
+            Self::Reconcile { .. } => Some(Self::RECONCILIATION_OPTIONS),
             _ => None,
         }
     }

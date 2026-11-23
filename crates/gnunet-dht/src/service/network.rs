@@ -1,7 +1,7 @@
 //! Bounded original-source R5N business owner. The native underlay must admit
 //! authenticated peer sources and retain complete frames before `admitted`.
 //! This module creates no listener, session, key, worker, scheduler or ACK.
-use super::{ClientId, Entry, LocalOwner, Output, Validity};
+use super::{Brand, ClientId, LocalOwner, Output, Reply, ValidatedBlock, Validity};
 use crate::routing::{self, Candidate, PeerBloom};
 use alloc::{borrow::Cow, collections::VecDeque, vec::Vec};
 use gnunet_block::ReplyEvaluation;
@@ -38,13 +38,24 @@ impl IncomingPath<'_> {
         Path::new(self.get.as_ref())
     }
 }
-fn own_path(path: Cow<'_, [u8]>) -> Result<Vec<u8>, Error> {
-    match path {
-        Cow::Owned(path) => Ok(path),
-        Cow::Borrowed(path) => copy(path),
-    }
+
+enum BlockOrigin<'a> {
+    PeerPut {
+        cache: bool,
+    },
+    PeerResult {
+        query_key: &'a [u8; 64],
+        cache: bool,
+    },
+    ForeignHello,
+    LocalHello,
 }
 
+struct CacheReplies<'id> {
+    outputs: Vec<Pending<'id>>,
+    filter: Filter,
+    complete: bool,
+}
 /// Same original local owner plus bounded peers, retries and reverse routes.
 /// Native queue/physical debts remain with the original native owner after a
 /// complete handoff. An empty queue here does not certify native quiescence.
@@ -80,7 +91,7 @@ pub struct NetworkOwner<'id> {
 impl<'id> NetworkOwner<'id> {
     /// Adopt exactly one existing local/cache owner; no new Instance is forged.
     pub fn new(
-        local: LocalOwner<'id>,
+        mut local: LocalOwner<'id>,
         identity: [u8; 32],
         limits: Limits,
         policy: Policy,
@@ -93,6 +104,9 @@ impl<'id> NetworkOwner<'id> {
         routes
             .try_reserve_exact(limits.routes)
             .map_err(|_| Error::Capacity)?;
+        local
+            .cache
+            .set_routing_scope(&identity, limits.cache_path_bytes);
         Ok(Self {
             peers: super::reserved(limits.peers)?,
             routes,
@@ -139,18 +153,7 @@ impl<'id> NetworkOwner<'id> {
             pending.retiring = true;
         }
         self.prune_unissued();
-        // The last retained PUT signature named the old local identity as its
-        // successor. A new signer cannot extend that link. Drop the old chain
-        // using its real final signer as the explicit truncation boundary.
-        for entry in &mut self.local.cache {
-            if let Some(last) = entry.put_path.last_chunk::<{ dht::PATH_ELEMENT_LEN }>() {
-                let mut predecessor = [0; 32];
-                predecessor.copy_from_slice(&last[64..]);
-                entry.truncated_peer = Some(predecessor);
-                entry.options |= u32::from(RouteOptions::TRUNCATED.bits());
-                entry.put_path = Vec::new();
-            }
-        }
+        self.local.cache.rotate_identity(&identity);
         self.local.own_hello = None;
         self.identity = identity;
         self.route_revision = revision;
@@ -357,11 +360,7 @@ impl<'id> NetworkOwner<'id> {
             routes: self.routes.len(),
             jobs: self.pending.len(),
             bytes: self.pending_bytes,
-            cache_path_bytes: self
-                .local
-                .cache
-                .iter()
-                .fold(0usize, |n, e| n.saturating_add(e.put_path.capacity())),
+            cache_path_bytes: self.local.cache.path_bytes(),
             monitor_fanouts: self.monitor_fanouts.len(),
             monitor_frames: self.monitor_frames,
             monitor_bytes: self.monitor_bytes,
@@ -651,7 +650,13 @@ impl<'id> NetworkOwner<'id> {
                 .iter()
                 .any(|q| q.client == client && q.key == *get.key && q.id == get.id)
         {
-            return self.local.ingest(client, input, now, blocks);
+            return self.local.ingest_request(
+                client,
+                request,
+                now,
+                blocks,
+                super::PutPlacement::DeliverOnly,
+            );
         }
         let next_retry = if matches!(request, ipc::Request::Get(_)) {
             finite_add(now, self.limits.retry_micros)?
@@ -661,20 +666,17 @@ impl<'id> NetworkOwner<'id> {
         let mut outputs = Vec::new();
         let mut put_intent = None;
         let mut put_blocked = false;
+        let placement = if let ipc::Request::Put(put) = request
+            && put.expiration.as_micros() >= now
+            && self.demultiplex(RouteOptions::from_bits(put.options as u16), put.key, None)
+        {
+            super::PutPlacement::Cache
+        } else {
+            super::PutPlacement::DeliverOnly
+        };
         match request {
             ipc::Request::Get(get) => {
-                let mut group = self.group(get.block_type, None, blocks, entropy)?;
-                // An exact retry of a logical GET preserves observed filters.
-                if let Some(q) = self
-                    .local
-                    .queries
-                    .iter()
-                    .find(|q| q.client == client && q.key == *get.key && q.id == get.id)
-                {
-                    for h in &q.seen {
-                        group.mark(h)?;
-                    }
-                }
+                let group = self.group(get.block_type, None, blocks, entropy)?;
                 outputs = self.forward_get(
                     get.block_type,
                     RouteOptions::from_bits(get.options as u16),
@@ -694,9 +696,10 @@ impl<'id> NetworkOwner<'id> {
                 // can accept this frame or expose related local query/monitor output.
                 // The official PUT protocol itself has no service ACK.
                 put_intent = Some(self.prepare_put(client, put, now)?);
+                let options = RouteOptions::from_bits(put.options as u16);
                 match self.plan_put(
                     put.block_type,
-                    RouteOptions::from_bits(put.options as u16),
+                    options,
                     origin_replication(put.replication),
                     0,
                     put.expiration.as_micros(),
@@ -715,7 +718,9 @@ impl<'id> NetworkOwner<'id> {
             _ => {}
         }
         self.reserve_outputs(&outputs)?;
-        let outcome = self.local.ingest(client, input, now, blocks)?;
+        let outcome = self
+            .local
+            .ingest_request(client, request, now, blocks, placement)?;
         if let super::Outcome::Get(query) | super::Outcome::Duplicate(query) = outcome {
             if self.local.queries.iter().any(|q| q.token == query) {
                 for output in &mut outputs {
@@ -733,7 +738,10 @@ impl<'id> NetworkOwner<'id> {
             }
         }
         if let Some(mut put) = put_intent {
-            if matches!(outcome, super::Outcome::Cached | super::Outcome::OpaquePut) {
+            if matches!(
+                outcome,
+                super::Outcome::Cached | super::Outcome::UncachedPut | super::Outcome::OpaquePut
+            ) {
                 for output in &mut outputs {
                     output.put = Some(put.id);
                     output.until = output.until.min(put.until);
@@ -1081,8 +1089,9 @@ impl<'id> NetworkOwner<'id> {
         now: u64,
         blocks: &mut impl NetworkBlocks,
     ) -> Result<(), Error> {
-        let entry = self.hello_entry(payload, now, blocks)?;
-        self.accept_entry(entry, Path::empty(), None, true, None, now, blocks)
+        let (key, expiration) = self.hello_facts(payload, now, blocks)?;
+        let block = hello_block(&key, payload, expiration);
+        self.accept_block(&block, BlockOrigin::ForeignHello, now, blocks)
     }
     /// Observe the actual current local PILS announcement, in that original
     /// source's observation order. Native callers must not route remote HELLOs
@@ -1095,27 +1104,27 @@ impl<'id> NetworkOwner<'id> {
         now: u64,
         blocks: &mut impl NetworkBlocks,
     ) -> Result<(), Error> {
-        let entry = self.hello_entry(payload, now, blocks)?;
-        if entry.key != routing::peer_key(&self.identity) {
+        let (key, expiration) = self.hello_facts(payload, now, blocks)?;
+        if key != routing::peer_key(&self.identity) {
             return Err(Error::Authentication);
         }
-        // Prepare the dedicated allocation before any local output or old
-        // announcement changes. The other bounded copy is transient input to
-        // the existing atomic local query/monitor transition.
-        let retained = entry_copy(&entry)?;
+        // Prepare the dedicated allocation before local output or the old
+        // announcement changes. Delivery uses the original borrowed HELLO.
+        let block = hello_block(&key, payload, expiration);
+        let retained = block.retain()?;
         if retained.payload.capacity() > self.local.limits.block_bytes {
             return Err(Error::Capacity);
         }
-        self.accept_entry(entry, Path::empty(), None, false, None, now, blocks)?;
+        self.accept_block(&block, BlockOrigin::LocalHello, now, blocks)?;
         self.local.own_hello = Some(retained);
         Ok(())
     }
-    fn hello_entry(
+    fn hello_facts(
         &self,
         payload: &[u8],
         now: u64,
         blocks: &mut impl NetworkBlocks,
-    ) -> Result<Entry, Error> {
+    ) -> Result<([u8; 64], u64), Error> {
         self.open()?;
         if payload.len() > self.local.limits.block_bytes {
             return Err(Error::TooLarge);
@@ -1132,16 +1141,7 @@ impl<'id> NetworkOwner<'id> {
         if blocks.validate(kind, &key, payload, now)? != Validity::Valid {
             return Err(Error::Authentication);
         }
-        Ok(Entry {
-            key,
-            kind,
-            options: 0,
-            expiration,
-            payload: copy(payload)?,
-            hash: hash512(payload),
-            put_path: Vec::new(),
-            truncated_peer: None,
-        })
+        Ok((key, expiration))
     }
     /// Clock-free actual original issued-provider retirement, not a timeout ACK.
     pub fn retired(&mut self, job: Job<'id>) -> Result<(), Error> {
@@ -1213,12 +1213,7 @@ impl<'id> NetworkOwner<'id> {
         self.pending.get_mut(i).ok_or(Error::Stale)
     }
     fn new_job(&mut self) -> Result<Job<'id>, Error> {
-        let serial = self.serial.checked_add(1).ok_or(Error::Overflow)?;
-        self.serial = serial;
-        Ok(Job {
-            brand: self.local.brand,
-            serial,
-        })
+        next_job(&mut self.serial, self.local.brand)
     }
     fn remove_job(&mut self, index: usize) {
         let p = self.pending.remove(index);
@@ -1312,6 +1307,22 @@ impl<'id> NetworkOwner<'id> {
             });
         }
         Ok(out)
+    }
+
+    fn demultiplex(
+        &self,
+        options: RouteOptions,
+        key: &[u8; 64],
+        visited: Option<&PeerBloom>,
+    ) -> bool {
+        options.contains(RouteOptions::DEMULTIPLEX_EVERYWHERE)
+            || routing::closest_among(
+                &self.identity,
+                key,
+                self.peers.iter().map(|peer| &peer.identity),
+                visited,
+                self.limits.bucket_size,
+            )
     }
     fn group(
         &self,
@@ -1519,27 +1530,101 @@ impl<'id> NetworkOwner<'id> {
     ) -> Result<Pending<'id>, Error> {
         let identity = self.peer(peer)?.identity;
         let job = self.new_job()?;
-        let mut message = block.result(requested);
-        if requested_options.contains(RouteOptions::RECORD_ROUTE) {
-            message.options = message.options | RouteOptions::RECORD_ROUTE;
-        } else {
-            message.options = RouteOptions::from_bits(
-                message.options.bits()
-                    & !(RouteOptions::RECORD_ROUTE.bits() | RouteOptions::TRUNCATED.bits()),
-            );
-            message.truncated_peer = None;
-            message.put_path = Path::empty();
-            message.get_path = Path::empty();
-        }
         Pending::result(
             job,
             peer,
             &identity,
-            message,
+            result_for(block, requested, requested_options),
             finite_add(now, self.limits.operation_lifetime_micros)?
                 .min(until)
                 .min(block.expiration),
         )
+    }
+
+    fn cache_replies(
+        &mut self,
+        peer: Peer<'id>,
+        get: GetMessage<'_>,
+        original_filter: &Filter,
+        now: u64,
+        until: u64,
+        blocks: &mut impl NetworkBlocks,
+    ) -> Result<Option<CacheReplies<'id>>, Error> {
+        self.local
+            .cache
+            .select(get.key, get.block_type, u32::from(get.options.bits()), now);
+        let own_hello = self
+            .local
+            .own_hello
+            .as_ref()
+            .filter(|entry| matches!(get.block_type, 0 | 13) && entry.expiration >= now);
+        if own_hello.is_none() && self.local.cache.selected().is_empty() {
+            return Ok(None);
+        }
+        let mut filter = original_filter.duplicate()?;
+        let identity = self.peer(peer)?.identity;
+        let until = finite_add(now, self.limits.operation_lifetime_micros)?.min(until);
+        let mut outputs = Vec::new();
+        let mut complete = false;
+        // Offer the original self announcement before the selected cache keys.
+        for entry in own_hello.into_iter().chain(
+            self.local
+                .cache
+                .selected()
+                .iter()
+                .map(|&index| &self.local.cache.entries()[index]),
+        ) {
+            if blocks.validate(entry.kind, &entry.key, &entry.payload, now)? != Validity::Valid {
+                continue;
+            }
+            let block = Block {
+                reserved: 0,
+                kind: entry.kind,
+                options: RouteOptions::from_bits(entry.options as u16),
+                expiration: entry.expiration,
+                payload: &entry.payload,
+                truncated: entry.truncated_peer.as_ref(),
+                put: Path::new(&entry.put_path)?,
+                get: Path::empty(),
+            };
+            let evaluation = evaluate_reply(
+                blocks,
+                get.block_type,
+                &entry.key,
+                get.extended_query,
+                &block,
+                &entry.hash,
+                now,
+                true,
+                &mut filter,
+            )?;
+            if !matches!(evaluation, ReplyEvaluation::More | ReplyEvaluation::Last) {
+                continue;
+            }
+            self.check_frame(
+                Charge::default(),
+                &outputs,
+                reply_length(get.key, get.options, &block)?,
+            )?;
+            outputs.try_reserve(1).map_err(|_| Error::Capacity)?;
+            let job = next_job(&mut self.serial, self.local.brand)?;
+            outputs.push(Pending::result(
+                job,
+                peer,
+                &identity,
+                result_for(&block, get.key, get.options),
+                until.min(block.expiration),
+            )?);
+            if evaluation == ReplyEvaluation::Last {
+                complete = true;
+                break;
+            }
+        }
+        Ok((!outputs.is_empty()).then_some(CacheReplies {
+            outputs,
+            filter,
+            complete,
+        }))
     }
     fn get(
         &mut self,
@@ -1574,113 +1659,69 @@ impl<'id> NetworkOwner<'id> {
         }
         let mut visited = PeerBloom::from_bytes(*get.peer_bloom);
         visited.insert_key(&routing::peer_key(&self.peer(peer)?.identity));
-        let candidates = self.candidates()?;
-        let local = get.options.contains(RouteOptions::DEMULTIPLEX_EVERYWHERE)
-            || routing::am_closest(
-                &self.identity,
-                get.key,
-                &candidates,
-                Some(&visited),
-                self.limits.bucket_size,
-            );
-        let mut outputs = Vec::new();
-        let mut last = false;
-        if local && (installed || get.block_type == 0) {
-            let selected = self.local.cache_selection_for(
-                get.key,
-                get.block_type,
-                u32::from(get.options.bits()),
-                now,
-            )?;
-            // The reference HELLO path offers our current announcement first,
-            // independently of the datacache's nearest-key subset. The same
-            // original BLOCK group suppresses already-known identities.
-            let own_hello = matches!(get.block_type, 0 | 13)
-                && self
-                    .local
-                    .own_hello
-                    .as_ref()
-                    .is_some_and(|e| e.expiration >= now);
-            for candidate in 0..selected.len() + usize::from(own_hello) {
-                let e = if own_hello && candidate == 0 {
-                    self.local.own_hello.as_ref().ok_or(Error::Stale)?
-                } else {
-                    &self.local.cache[selected[candidate - usize::from(own_hello)]]
-                };
-                if blocks.validate(e.kind, &e.key, &e.payload, now)? != Validity::Valid {
-                    continue;
-                }
-                let quote = Block {
-                    reserved: 0,
-                    kind: e.kind,
-                    options: RouteOptions::from_bits(e.options as u16),
-                    expiration: e.expiration,
-                    payload: &e.payload,
-                    truncated: e.truncated_peer.as_ref(),
-                    put: Path::new(&e.put_path)?,
-                    get: Path::empty(),
-                };
-                let evaluation = evaluate_reply(
-                    blocks,
-                    get.block_type,
-                    &e.key,
-                    get.extended_query,
-                    &quote,
-                    &e.hash,
-                    now,
-                    true,
-                    &mut filter,
-                )?;
-                if !matches!(evaluation, ReplyEvaluation::More | ReplyEvaluation::Last) {
-                    continue;
-                }
-                // Own only this selected bounded candidate while making the
-                // outbound job; never alias the cache across a mutable owner step.
-                self.check_frame(
-                    Charge::default(),
-                    &outputs,
-                    reply_length(get.key, get.options, &quote)?,
-                )?;
-                let value = entry_copy(e)?;
-                let block = Block {
-                    reserved: 0,
-                    kind: value.kind,
-                    options: RouteOptions::from_bits(value.options as u16),
-                    expiration: value.expiration,
-                    payload: &value.payload,
-                    truncated: value.truncated_peer.as_ref(),
-                    put: Path::new(&value.put_path)?,
-                    get: Path::empty(),
-                };
-                outputs.try_reserve(1).map_err(|_| Error::Capacity)?;
-                outputs.push(self.reply_to(peer, get.key, get.options, &block, now, until)?);
-                if evaluation == ReplyEvaluation::Last {
-                    last = true;
-                    break;
-                }
+        let local = self.demultiplex(get.options, get.key, Some(&visited));
+        let cached = if local && (installed || get.block_type == 0) {
+            match self.cache_replies(peer, get, &filter, now, until, blocks) {
+                Ok(replies) => replies,
+                Err(Error::Capacity) => None,
+                Err(error) => return Err(error),
             }
-        }
-        let forwarding_start = outputs.len();
-        if !last {
-            let forwarded = self.forward_get(
+        } else {
+            None
+        };
+        let mut forward = |owner: &mut Self, group: &Filter, charge: Charge| {
+            owner.forward_get(
                 get.block_type,
                 get.options,
                 get.desired_replication_level,
                 get.hop_count,
                 get.key,
                 get.extended_query,
-                &filter,
+                group,
                 visited,
                 now,
                 entropy,
-                Charge::of(&outputs)?,
-            )?;
-            outputs
-                .try_reserve(forwarded.len())
-                .map_err(|_| Error::Capacity)?;
-            outputs.extend(forwarded);
-        }
-        self.reserve_outputs(&outputs)?;
+                charge,
+            )
+        };
+        let (replies, mut forwarded, last) = match cached {
+            Some(CacheReplies {
+                outputs,
+                complete: true,
+                ..
+            }) => (outputs, Vec::new(), true),
+            Some(CacheReplies {
+                outputs,
+                filter: updated,
+                complete: false,
+            }) => {
+                match forward(self, &updated, Charge::of(&outputs)?) {
+                    Ok(forwarded) => {
+                        filter = updated;
+                        (outputs, forwarded, false)
+                    }
+                    Err(Error::Capacity) => {
+                        // A reply that could not be staged must not mark the
+                        // original group as having seen its block.
+                        drop(outputs);
+                        drop(updated);
+                        (
+                            Vec::new(),
+                            forward(self, &filter, Charge::default())?,
+                            false,
+                        )
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+            None => (
+                Vec::new(),
+                forward(self, &filter, Charge::default())?,
+                false,
+            ),
+        };
+        self.reserve_outputs(&replies)?;
+        self.reserve_outputs(&forwarded)?;
         let xquery = if existing.is_none() && !last {
             copy(get.extended_query)?
         } else {
@@ -1688,9 +1729,8 @@ impl<'id> NetworkOwner<'id> {
         };
         let mut monitor_frames = Vec::new();
         self.monitor_get(get, &mut monitor_frames)?;
-        // Cache RESULT replies are not forwarding this received GET.
         let monitor = self.prepare_monitor(
-            &mut outputs[forwarding_start..],
+            &mut forwarded,
             monitor_frames,
             0,
             get.block_type,
@@ -1721,7 +1761,8 @@ impl<'id> NetworkOwner<'id> {
             });
         }
         self.commit_monitor(monitor);
-        self.commit_outputs(outputs);
+        self.commit_outputs(replies);
+        self.commit_outputs(forwarded);
         Ok(if get.block_type == 0 || installed {
             Outcome::Get
         } else {
@@ -1775,19 +1816,7 @@ impl<'id> NetworkOwner<'id> {
         )?;
         let mut visited = PeerBloom::from_bytes(*put.peer_bloom);
         visited.insert_key(&routing::peer_key(&sender));
-        let cache = if installed {
-            let candidates = self.candidates()?;
-            path.options.contains(RouteOptions::DEMULTIPLEX_EVERYWHERE)
-                || routing::am_closest(
-                    &self.identity,
-                    put.key,
-                    &candidates,
-                    Some(&visited),
-                    self.limits.bucket_size,
-                )
-        } else {
-            false
-        };
+        let cache = installed && self.demultiplex(path.options, put.key, Some(&visited));
         let mut outputs = self.forward_put(
             put.block_type,
             path.options,
@@ -1836,28 +1865,20 @@ impl<'id> NetworkOwner<'id> {
             self.commit_outputs(outputs);
             return Ok(Outcome::OpaquePut);
         }
-        let entry = Entry {
-            key: *put.key,
-            kind: put.block_type,
-            options: u32::from(path.options.bits()),
-            expiration,
-            payload: copy(put.payload)?,
+        let block = ValidatedBlock {
+            reply: Reply {
+                key: put.key,
+                kind: put.block_type,
+                options: u32::from(path.options.bits()),
+                expiration,
+                payload: put.payload,
+                put: path.put()?,
+                get: Path::empty(),
+                truncated: path.truncated.as_ref(),
+            },
             hash: hash512(put.payload),
-            put_path: own_path(path.put)?,
-            truncated_peer: path.truncated,
         };
-        self.accept_entry(
-            entry,
-            Path::empty(),
-            None,
-            cache,
-            Some((
-                u32::from(put.hop_count),
-                u32::from(put.desired_replication_level),
-            )),
-            now,
-            blocks,
-        )?;
+        self.accept_block(&block, BlockOrigin::PeerPut { cache }, now, blocks)?;
         self.commit_monitor(monitor);
         self.commit_outputs(outputs);
         Ok(Outcome::Put)
@@ -2019,22 +2040,25 @@ impl<'id> NetworkOwner<'id> {
             self.commit_outputs(outputs);
             return Ok(Outcome::OpaqueResult);
         }
-        let entry = Entry {
-            key,
-            kind: result.block_type,
-            options: u32::from(path.options.bits()),
-            expiration,
-            payload: copy(result.payload)?,
+        let validated = ValidatedBlock {
+            reply: Reply {
+                key: &key,
+                kind: block.kind,
+                options: u32::from(block.options.bits()),
+                expiration,
+                payload: block.payload,
+                put: block.put,
+                get: block.get,
+                truncated: block.truncated,
+            },
             hash,
-            put_path: own_path(path.put)?,
-            truncated_peer: path.truncated,
         };
-        self.accept_entry(
-            entry,
-            Path::new(path.get.as_ref())?,
-            Some(result.key),
-            self.limits.cache_results,
-            None,
+        self.accept_block(
+            &validated,
+            BlockOrigin::PeerResult {
+                query_key: result.key,
+                cache: self.limits.cache_results,
+            },
             now,
             blocks,
         )?;
@@ -2182,47 +2206,29 @@ impl<'id> NetworkOwner<'id> {
         self.local.commit(stage);
         Ok(())
     }
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "The original block, response path, query key, cache policy and monitor fact remain explicit independent inputs"
-    )]
-    fn accept_entry(
+    fn accept_block(
         &mut self,
-        mut entry: Entry,
-        get_path: Path<'_>,
-        query_hash: Option<&[u8; 64]>,
-        cache: bool,
-        put: Option<(u32, u32)>,
+        block: &ValidatedBlock<'_>,
+        origin: BlockOrigin<'_>,
         now: u64,
         blocks: &mut impl NetworkBlocks,
     ) -> Result<(), Error> {
-        let existing =
-            self.local.cache.iter().position(|e| {
-                e.key == entry.key && e.kind == entry.kind && e.payload == entry.payload
-            });
-        if cache
-            && existing.is_none()
-            && (self.local.cache.len() == self.local.limits.cache_records
-                || self
-                    .local
-                    .cache_bytes
-                    .checked_add(entry.payload.len())
-                    .ok_or(Error::Overflow)?
-                    > self.local.limits.cache_bytes)
-        {
-            return Err(Error::Capacity);
-        }
-        // All fallible local frames, filters and metadata are prepared before
-        // any cache/seen/output mutation. The original query id remains intact.
+        let (query_key, cache) = match origin {
+            BlockOrigin::PeerPut { cache } => (None, cache),
+            BlockOrigin::PeerResult { query_key, cache } => (Some(query_key), cache),
+            BlockOrigin::ForeignHello => (None, true),
+            BlockOrigin::LocalHello => (None, false),
+        };
+        // Stage fallible frames and query filters before committing any effect.
         let mut local_stage = Vec::new();
         let mut updates = Vec::new();
         for (index, q) in self.local.queries.iter().enumerate() {
-            if query_hash.is_some_and(|key| q.key != *key) {
+            if query_key.is_some_and(|key| q.key != *key) {
                 continue;
             }
-            if let Some(last) =
-                self.local
-                    .deliver_paths(q, &entry, get_path, now, blocks, &mut local_stage)?
+            if let Some(last) = self
+                .local
+                .deliver(q, block, now, blocks, &mut local_stage)?
             {
                 updates.try_reserve(1).map_err(|_| Error::Capacity)?;
                 updates.push((index, last));
@@ -2230,8 +2236,8 @@ impl<'id> NetworkOwner<'id> {
         }
         // P2P PUT notifications belong to their separately reserved original
         // fanout. RESULT observations keep their existing local output path.
-        if put.is_none() {
-            self.monitor_block(&entry, get_path, None, &mut local_stage)?;
+        if !matches!(origin, BlockOrigin::PeerPut { .. }) {
+            self.monitor_reply(&block.reply, &mut local_stage)?;
         }
         for (index, last) in &updates {
             if !last {
@@ -2242,42 +2248,14 @@ impl<'id> NetworkOwner<'id> {
                 q.seen.try_reserve(1).map_err(|_| Error::Capacity)?;
             }
         }
-        let replace_cache = cache
-            && existing.is_none_or(|index| entry.expiration > self.local.cache[index].expiration);
-        if replace_cache {
-            entry
-                .put_path
-                .try_reserve_exact(get_path.as_bytes().len())
-                .map_err(|_| Error::Capacity)?;
-            let old = existing.map_or(0, |index| self.local.cache[index].put_path.capacity());
-            let current = self.local.cache.iter().try_fold(0usize, |n, e| {
-                n.checked_add(e.put_path.capacity()).ok_or(Error::Overflow)
-            })?;
-            let used = current
-                .checked_sub(old)
-                .and_then(|n| n.checked_add(entry.put_path.capacity()))
-                .ok_or(Error::Overflow)?;
-            if used > self.limits.cache_path_bytes {
-                return Err(Error::Capacity);
-            }
-        }
-        let hash = entry.hash;
-        if replace_cache {
-            entry.put_path.extend_from_slice(get_path.as_bytes());
-            if let Some(index) = existing {
-                if entry.expiration > self.local.cache[index].expiration {
-                    self.local.cache[index] = entry;
-                }
-            } else {
-                self.local.cache_bytes += entry.payload.len();
-                self.local.cache.push(entry);
-            }
+        if cache {
+            self.local.cache.store(block, now);
         }
         for (index, last) in updates.into_iter().rev() {
             if last {
                 self.local.queries.remove(index);
             } else {
-                self.local.queries[index].seen.push(hash);
+                self.local.queries[index].seen.push(block.hash);
             }
         }
         self.local.commit(local_stage);
@@ -2320,43 +2298,6 @@ impl<'id> NetworkOwner<'id> {
             });
         }
         Ok(())
-    }
-    fn monitor_block(
-        &self,
-        entry: &Entry,
-        get_path: Path<'_>,
-        put: Option<(u32, u32)>,
-        stage: &mut Vec<Output<'id>>,
-    ) -> Result<(), Error> {
-        if let Some((hop_count, replication)) = put {
-            return self.monitor_put(
-                ipc::MonitorPut {
-                    options: entry.options,
-                    block_type: entry.kind,
-                    hop_count,
-                    replication,
-                    expiration: AbsoluteTime::from_micros(entry.expiration),
-                    key: &entry.key,
-                    truncated_peer: entry.truncated_peer.as_ref(),
-                    put_path: Path::new(&entry.put_path)?,
-                    payload: &entry.payload,
-                },
-                stage,
-            );
-        }
-        self.monitor_reply(
-            &super::Reply {
-                key: &entry.key,
-                kind: entry.kind,
-                options: entry.options,
-                expiration: entry.expiration,
-                payload: &entry.payload,
-                put: Path::new(&entry.put_path)?,
-                get: get_path,
-                truncated: entry.truncated_peer.as_ref(),
-            },
-            stage,
-        )
     }
     fn monitor_reply(
         &self,
@@ -2457,10 +2398,21 @@ fn reply_length(
     block: &Block<'_>,
 ) -> Result<usize, Error> {
     let zero = [0; 64];
+    let mut message = result_for(block, requested, options);
+    message.sender_signature = options
+        .contains(RouteOptions::RECORD_ROUTE)
+        .then_some(&zero);
+    message.encoded_len()
+}
+
+fn result_for<'a>(
+    block: &'a Block<'_>,
+    requested: &'a [u8; 64],
+    options: RouteOptions,
+) -> ResultMessage<'a> {
     let mut message = block.result(requested);
     if options.contains(RouteOptions::RECORD_ROUTE) {
         message.options = message.options | RouteOptions::RECORD_ROUTE;
-        message.sender_signature = Some(&zero);
     } else {
         message.options = RouteOptions::from_bits(
             message.options.bits()
@@ -2469,20 +2421,29 @@ fn reply_length(
         message.put_path = Path::empty();
         message.get_path = Path::empty();
         message.truncated_peer = None;
-        message.sender_signature = None;
     }
-    message.encoded_len()
+    message
 }
-fn entry_copy(e: &Entry) -> Result<Entry, Error> {
-    Ok(Entry {
-        key: e.key,
-        kind: e.kind,
-        options: e.options,
-        expiration: e.expiration,
-        payload: copy(&e.payload)?,
-        hash: e.hash,
-        put_path: copy(&e.put_path)?,
-        truncated_peer: e.truncated_peer,
+fn hello_block<'a>(key: &'a [u8; 64], payload: &'a [u8], expiration: u64) -> ValidatedBlock<'a> {
+    ValidatedBlock {
+        reply: Reply {
+            key,
+            kind: 13,
+            options: 0,
+            expiration,
+            payload,
+            put: Path::empty(),
+            get: Path::empty(),
+            truncated: None,
+        },
+        hash: hash512(payload),
+    }
+}
+fn next_job<'id>(serial: &mut u64, brand: Brand<'id>) -> Result<Job<'id>, Error> {
+    *serial = serial.checked_add(1).ok_or(Error::Overflow)?;
+    Ok(Job {
+        brand,
+        serial: *serial,
     })
 }
 // Existing local-origin profile: retain the caller's original u32 intent and

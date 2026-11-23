@@ -4,6 +4,7 @@ use super::*;
 pub(super) enum Provenance {
     Created,
     Borrowed,
+    Provider,
     #[cfg(unix)]
     Helper,
 }
@@ -16,6 +17,24 @@ pub struct Device {
     pub(super) provenance: Provenance,
 }
 impl Device {
+    /// Adopt one application VPN provider and issue a fresh packet/settings epoch.
+    /// The provider owns its platform resources; no kernel interface is inferred.
+    pub fn from_provider(provider: impl provider::Provider + 'static) -> io::Result<Self> {
+        Ok(Self {
+            io: PacketIo::Provider(provider::Application::new(provider)?),
+            provenance: Provenance::Provider,
+        })
+    }
+
+    pub(crate) fn from_boxed_provider(
+        provider: Box<dyn provider::Provider>,
+    ) -> Result<Self, (io::Error, Box<dyn provider::Provider>)> {
+        Ok(Self {
+            io: PacketIo::Provider(provider::Application::from_boxed(provider)?),
+            provenance: Provenance::Provider,
+        })
+    }
+
     /// Adopt an already verified actual device for unchanged-plan verification.
     /// It must match the real desired snapshot/routes/DAD; no native write is
     /// performed to overwrite another owner's configuration or route on mismatch.
@@ -137,12 +156,12 @@ impl Device {
     }
     /// Original actual device identity; cloning this metadata does not clone FD.
     #[must_use]
-    pub fn epoch(&self) -> tun::Epoch {
+    pub fn epoch(&self) -> Option<tun::Epoch> {
         self.io.epoch()
     }
     /// Actual kernel-verified immutable interface name/index/mode.
     #[must_use]
-    pub fn info(&self) -> &tun::Info {
+    pub fn info(&self) -> Option<&tun::Info> {
         self.io.info()
     }
     /// Recover the same unique packet owner, never rebinding its old epoch. A
@@ -165,6 +184,8 @@ impl Device {
 pub enum PacketIo {
     /// Actual kernel-verified TUN/utun descriptor.
     Native(tun::AsyncTun),
+    /// Original application platform provider, with no descriptor-derived metadata.
+    Provider(provider::Application),
     /// Actual official helper child and its original typed packet pipes.
     #[cfg(unix)]
     Helper(tun::helper::Link),
@@ -183,25 +204,27 @@ impl Device {
 impl PacketIo {
     /// Original packet source lifetime.
     #[must_use]
-    pub fn epoch(&self) -> tun::Epoch {
+    pub fn epoch(&self) -> Option<tun::Epoch> {
         match self {
-            Self::Native(io) => io.epoch(),
+            Self::Native(io) => Some(io.epoch()),
+            Self::Provider(_) => None,
             #[cfg(unix)]
-            Self::Helper(io) => io.epoch(),
+            Self::Helper(io) => Some(io.epoch()),
         }
     }
     /// Actual native metadata; helper index is zero until initial observation.
     #[must_use]
-    pub fn info(&self) -> &tun::Info {
+    pub fn info(&self) -> Option<&tun::Info> {
         match self {
-            Self::Native(io) => io.info(),
+            Self::Native(io) => Some(io.info()),
+            Self::Provider(_) => None,
             #[cfg(unix)]
-            Self::Helper(io) => io.info(),
+            Self::Helper(io) => Some(io.info()),
         }
     }
     pub(super) fn is_helper(&self) -> bool {
         match self {
-            Self::Native(_) => false,
+            Self::Native(_) | Self::Provider(_) => false,
             #[cfg(unix)]
             Self::Helper(_) => true,
         }
@@ -213,13 +236,14 @@ impl PacketIo {
                 (!wanted.ipv4 || observed.ip_mtu(tun::Version::V4) == Some(configured))
                     && (!wanted.ipv6 || observed.ip_mtu(tun::Version::V6) == Some(configured))
             }
+            Self::Provider(_) => false,
             #[cfg(unix)]
             Self::Helper(io) => io.accepts_mtu(observed.link_mtu()),
         }
     }
     pub(super) fn initial_deadline(&self) -> Option<Instant> {
         match self {
-            Self::Native(_) => None,
+            Self::Native(_) | Self::Provider(_) => None,
             #[cfg(unix)]
             Self::Helper(io) => Some(io.initial_deadline()),
         }
@@ -231,7 +255,7 @@ impl PacketIo {
         #[cfg(not(unix))]
         let _ = cx;
         match self {
-            Self::Native(_) => Poll::Ready(Ok(())),
+            Self::Native(_) | Self::Provider(_) => Poll::Ready(Ok(())),
             #[cfg(unix)]
             Self::Helper(io) => io.poll_prepare(cx),
         }
@@ -240,7 +264,7 @@ impl PacketIo {
         #[cfg(not(unix))]
         let _ = cx;
         match self {
-            Self::Native(_) => None,
+            Self::Native(_) | Self::Provider(_) => None,
             #[cfg(unix)]
             Self::Helper(io) => io.poll_native_guard(cx),
         }
@@ -252,6 +276,7 @@ impl PacketIo {
     ) -> Result<tun::NativeSnapshot, tun::AdminFailure> {
         match self {
             Self::Native(io) => io.snapshot(until, options),
+            Self::Provider(_) => Err(tun::AdminFailure::Kernel(io::ErrorKind::Unsupported.into())),
             #[cfg(unix)]
             Self::Helper(io) => io.snapshot(until, options),
         }
@@ -265,6 +290,7 @@ impl PacketIo {
     ) -> io::Result<tun::Ipv6Watch> {
         match self {
             Self::Native(io) => io.watch_ipv6(address, prefix, until, options),
+            Self::Provider(_) => Err(io::ErrorKind::Unsupported.into()),
             #[cfg(unix)]
             Self::Helper(io) => io.watch_ipv6(address, prefix, until, options),
         }
@@ -278,6 +304,7 @@ impl PacketIo {
     ) -> Result<tun::RouteQuery, tun::AdminFailure> {
         match self {
             Self::Native(io) => io.query_route(destination, prefix, gateway, until),
+            Self::Provider(_) => Err(tun::AdminFailure::Kernel(io::ErrorKind::Unsupported.into())),
             #[cfg(unix)]
             Self::Helper(io) => io.query_route(destination, prefix, gateway, until),
         }
@@ -285,6 +312,7 @@ impl PacketIo {
     pub(super) fn plan(&mut self, action: tun::Action, until: Instant) -> io::Result<tun::Effect> {
         match self {
             Self::Native(io) => io.plan(action, until),
+            Self::Provider(_) => Err(io::ErrorKind::Unsupported.into()),
             #[cfg(unix)]
             Self::Helper(_) => Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
@@ -298,6 +326,11 @@ impl PacketIo {
     ) -> Result<tun::NativeApplied, tun::ApplyFailure> {
         match self {
             Self::Native(io) => io.apply(effect),
+            Self::Provider(_) => Err(tun::ApplyFailure {
+                effect,
+                error: io::ErrorKind::Unsupported.into(),
+                attempted: false,
+            }),
             #[cfg(unix)]
             Self::Helper(_) => Err(tun::ApplyFailure {
                 effect,
@@ -315,6 +348,11 @@ impl PacketIo {
     ) -> Result<tun::NativeRoute, tun::ApplyFailure> {
         match self {
             Self::Native(io) => io.route(effect),
+            Self::Provider(_) => Err(tun::ApplyFailure {
+                effect,
+                error: io::ErrorKind::Unsupported.into(),
+                attempted: false,
+            }),
             #[cfg(unix)]
             Self::Helper(_) => Err(tun::ApplyFailure {
                 effect,
@@ -329,6 +367,7 @@ impl PacketIo {
     pub(super) fn queue(&mut self, raw: &[u8], until: Instant) -> io::Result<tun::WriteId> {
         match self {
             Self::Native(io) => io.queue(raw, until),
+            Self::Provider(_) => Err(io::ErrorKind::Unsupported.into()),
             #[cfg(unix)]
             Self::Helper(io) => io.queue(raw, until),
         }
@@ -336,6 +375,7 @@ impl PacketIo {
     pub(super) fn poll_write(&mut self, cx: &mut Context<'_>) -> Poll<tun::WriteEvent> {
         match self {
             Self::Native(io) => io.poll_write(cx),
+            Self::Provider(_) => Poll::Ready(tun::WriteEvent::Closed),
             #[cfg(unix)]
             Self::Helper(io) => io.poll_write(cx),
         }
@@ -343,24 +383,42 @@ impl PacketIo {
     pub(super) fn poll_read(&mut self, cx: &mut Context<'_>) -> Poll<tun::ReadEvent> {
         match self {
             Self::Native(io) => io.poll_read(cx),
+            Self::Provider(_) => Poll::Ready(tun::ReadEvent::Closed),
             #[cfg(unix)]
             Self::Helper(io) => io.poll_read(cx),
         }
     }
     /// Close original descriptor/pipes. For Helper this only requests stop;
     /// caller must separately reap the same child, even on a failed build.
-    pub fn close(&mut self) -> tun::Loss {
+    pub fn close_native(&mut self) -> Option<tun::Loss> {
         match self {
-            Self::Native(io) => io.close(),
+            Self::Native(io) => Some(io.close()),
+            Self::Provider(_) => None,
             #[cfg(unix)]
-            Self::Helper(io) => io.close(),
+            Self::Helper(io) => Some(io.close()),
+        }
+    }
+    /// Close the original application platform source, when this IO owns one.
+    pub fn close_provider(&mut self) -> Option<provider::CloseOutcome> {
+        self.provider_mut()?.close()
+    }
+    pub(super) fn current(&self) -> bool {
+        match self {
+            Self::Provider(owner) => owner.current(),
+            _ => self.epoch().is_some_and(|epoch| epoch.current()),
+        }
+    }
+    pub(super) fn provider_mut(&mut self) -> Option<&mut provider::Application> {
+        match self {
+            Self::Provider(owner) => Some(owner),
+            _ => None,
         }
     }
     /// Wait the same original helper process after close, never a replacement PID.
     #[cfg(unix)]
     pub async fn reap_helper(&mut self) -> Option<tun::helper::Report> {
         match self {
-            Self::Native(_) => None,
+            Self::Native(_) | Self::Provider(_) => None,
             #[cfg(unix)]
             Self::Helper(io) => io.reap().await,
         }

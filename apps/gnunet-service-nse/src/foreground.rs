@@ -92,6 +92,14 @@ pub(super) async fn run(
     )
     .await;
     let report = service::retain_diagnostic(result, reports.take_error())?;
+    if let Some(histogram) = report.histogram
+        && (histogram.failure.is_some() || histogram.dropped != 0)
+    {
+        reports.warning(
+            "nse.histogram",
+            format_args!("NSE receive timestamps: {histogram:?}"),
+        );
+    }
     if !ready.get() {
         return Err(io::Error::new(
             io::ErrorKind::Interrupted,

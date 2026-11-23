@@ -20,6 +20,27 @@ pub enum Family {
     /// Optional JOSE-built /openid and discovery.
     Openid,
 }
+impl Family {
+    /// Implemented request methods for HTTP Allow and method rejection.
+    pub const fn allow_methods(self) -> &'static [u8] {
+        match self {
+            Self::Identity | Self::Namestore => b"GET, POST, PUT, DELETE, OPTIONS",
+            Self::Reclaim => b"GET, POST, DELETE, OPTIONS",
+            Self::Copying | Self::Gns => b"GET, OPTIONS",
+            Self::Config | Self::Openid => b"GET, POST, OPTIONS",
+        }
+    }
+
+    /// Access-Control-Allow-Methods value emitted by the official plugin.
+    /// This is separate from HTTP Allow: some plugins advertise methods
+    /// that their router does not dispatch, or omit methods it does.
+    pub const fn cors_methods(self) -> &'static [u8] {
+        match self {
+            Self::Copying | Self::Config => b"GET",
+            _ => b"GET, POST, PUT, DELETE, OPTIONS",
+        }
+    }
+}
 /// One actual official method/namespace contract.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Endpoint {
@@ -91,6 +112,26 @@ pub enum Endpoint {
     Jwks,
     /// Actual OPTIONS for the selected namespace.
     Options(Family),
+}
+impl Endpoint {
+    /// Namespace that supplies this endpoint.
+    pub const fn family(self) -> Family {
+        use Endpoint::*;
+        match self {
+            Identities | IdentityName | IdentityPublic | IdentityCreate | IdentityRenameName
+            | IdentityRenamePublic | IdentityDeleteName | IdentityDeletePublic | IdentitySign => {
+                Family::Identity
+            }
+            Names | NameAppend | NameReplace | NameDelete | NameImport => Family::Namestore,
+            Attributes | AttributeStore | AttributeDelete | Credentials | CredentialStore
+            | CredentialDelete | Tickets | Revoke | Consume => Family::Reclaim,
+            Copying => Family::Copying,
+            ConfigGet | ConfigPost => Family::Config,
+            GnsGet => Family::Gns,
+            Authorize | Login | Token | Userinfo | Discovery | Jwks => Family::Openid,
+            Options(family) => family,
+        }
+    }
 }
 /// One original decoded route and original raw query, with no private Debug data.
 #[derive(Clone, Copy)]

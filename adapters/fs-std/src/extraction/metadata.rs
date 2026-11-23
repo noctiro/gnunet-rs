@@ -1,6 +1,8 @@
 //! Owned extraction selection crosses the existing worker boundary; native
 //! handles are created, used and explicitly closed only inside that worker.
-use super::{Context, Error, ManualMetadata, Policy};
+use super::{
+    Context, Error, ManualMetadata, PdfExternalStreams, PdfRecipientAuthorization, Policy,
+};
 pub use gnunet_extractor_host::{
     Authorization as NativeMetadataAuthorization, Configuration as NativeMetadataConfiguration,
 };
@@ -21,6 +23,13 @@ struct NativeConfig {
     provider: NativeMetadataConfiguration,
     limits: NativeMetadataLimits,
 }
+#[derive(Clone, Default)]
+enum PdfRecipientAccess {
+    #[default]
+    Unselected,
+    Required([u8; 32]),
+    Authorized(PdfRecipientAuthorization),
+}
 /// Owned extraction configuration with optional runtime-only execution authority.
 /// Clones share configuration/capability payloads. Native handles stay on the
 /// worker; Debug does not disclose plugin options.
@@ -28,6 +37,8 @@ struct NativeConfig {
 pub struct MetadataSettings {
     selection: SelectionData,
     manual: Option<Arc<ManualMetadata>>,
+    pdf_streams: Option<Arc<PdfExternalStreams>>,
+    pdf_recipient: PdfRecipientAccess,
     authorization: Option<NativeMetadataAuthorization>,
 }
 impl std::fmt::Debug for MetadataSettings {
@@ -50,6 +61,8 @@ impl MetadataSettings {
         Self {
             selection,
             manual: None,
+            pdf_streams: None,
+            pdf_recipient: PdfRecipientAccess::Unselected,
             authorization: None,
         }
     }
@@ -67,6 +80,50 @@ impl MetadataSettings {
     }
     pub(crate) fn manual(&self) -> Option<Arc<ManualMetadata>> {
         self.manual.clone()
+    }
+    /// Attach caller-supplied PDF stream data bound to original document versions.
+    #[must_use]
+    pub fn with_pdf_external_streams(mut self, streams: PdfExternalStreams) -> Self {
+        self.pdf_streams = (!streams.is_empty()).then(|| Arc::new(streams));
+        self
+    }
+    pub(super) fn pdf_streams(&self) -> Option<&PdfExternalStreams> {
+        self.pdf_streams.as_deref()
+    }
+    /// Select live PDF recipient authority. A restored selection requires
+    /// the same public credential identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns a binding error if the selected identity differs.
+    pub fn with_pdf_recipient(
+        mut self,
+        authorization: &PdfRecipientAuthorization,
+    ) -> Result<Self, Error> {
+        if self
+            .pdf_recipient_id()
+            .is_some_and(|id| id != *authorization.identity())
+        {
+            return Err(Error::Binding);
+        }
+        self.pdf_recipient = PdfRecipientAccess::Authorized(authorization.clone());
+        Ok(self)
+    }
+
+    pub(super) fn pdf_recipient(&self) -> Result<Option<&PdfRecipientAuthorization>, Error> {
+        match &self.pdf_recipient {
+            PdfRecipientAccess::Unselected => Ok(None),
+            PdfRecipientAccess::Required(_) => Err(Error::PdfRecipientRequired),
+            PdfRecipientAccess::Authorized(authority) => Ok(Some(authority)),
+        }
+    }
+
+    fn pdf_recipient_id(&self) -> Option<[u8; 32]> {
+        match &self.pdf_recipient {
+            PdfRecipientAccess::Unselected => None,
+            PdfRecipientAccess::Required(id) => Some(*id),
+            PdfRecipientAccess::Authorized(authority) => Some(*authority.identity()),
+        }
     }
     /// Validate/copy exact selected FS.EXTRACTORS bytes without loading code.
     /// Explicit disablement wins; absent config/library selects builtins.
@@ -151,31 +208,58 @@ impl MetadataSettings {
         );
         Ok(self)
     }
-    /// Reattach current runtime authority to restored data. An already held
-    /// capability stays valid when no current authority is supplied. Absent
-    /// current authority leaves restored data unapproved;
-    /// actual native execution then fails before any loader call. Mismatching
-    /// current authority is refused rather than broadening its selection.
+    /// Reattach matching native provider and PDF recipient authority to
+    /// restored selections. A held capability stays valid when the current
+    /// settings omit it. Extraction fails before opening a provider or source
+    /// when a recorded selection still requires authorization.
     pub fn with_authorization_from(self, current: &Self) -> Result<Self, Error> {
-        if self.native_configuration().is_none() {
-            return Ok(self);
-        }
-        match &current.authorization {
-            Some(authority) => self.with_native_authorization(authority),
-            None => Ok(self),
+        let restored = match (self.native_configuration(), &current.authorization) {
+            (Some(_), Some(authority)) => self.with_native_authorization(authority)?,
+            _ => self,
+        };
+        match (restored.pdf_recipient_id(), &current.pdf_recipient) {
+            (Some(_), PdfRecipientAccess::Authorized(authority)) => {
+                restored.with_pdf_recipient(authority)
+            }
+            _ => Ok(restored),
         }
     }
-    /// Freeze the exact automatic extraction selection and native limits for a
-    /// private durable owner. No provider/configuration file is opened here.
-    /// Manual publication annotations are outside automatic keyword recovery
-    /// and are explicitly refused rather than silently omitted.
+    /// Freeze the automatic extraction selection, native limits and bound PDF
+    /// data for a private durable owner. Reads each held bound PDF to identify
+    /// its exact contents. Manual publication annotations are refused.
     pub fn snapshot(&self) -> Result<Vec<u8>, Error> {
-        snapshot::encode(self)
+        snapshot::encode(self, None)
     }
-    /// Restore the same bounded automatic selection without re-reading live
-    /// configuration or loading a provider. This is private task data, not a
-    /// GNUnet message, provider-identity certificate or extraction receipt.
-    /// Runtime execution authority is always absent after restoration.
+    #[cfg(feature = "network")]
+    pub(crate) fn snapshot_for_document(&self, file: &std::fs::File) -> Result<Vec<u8>, Error> {
+        snapshot::encode(self, Some(super::pdf_streams::observe(file)?))
+    }
+    #[cfg(feature = "network")]
+    pub(crate) fn check_bound_document(&self, file: &std::fs::File) -> Result<(), Error> {
+        if let Some(streams) = self.pdf_streams()
+            && let observed = super::pdf_streams::observe(file)?
+            && !streams
+                .documents()
+                .iter()
+                .any(|doc| doc.observed == observed)
+        {
+            return Err(Error::SourceChanged);
+        }
+        Ok(())
+    }
+    #[cfg(feature = "network")]
+    pub(crate) fn agrees_with_bound_digest(&self, digest: [u8; 64]) -> bool {
+        self.pdf_streams().is_none_or(|streams| {
+            streams
+                .documents()
+                .iter()
+                .all(|doc| doc.matches_frozen_digest(digest))
+        })
+    }
+    /// Restore private automatic extraction settings. PDF bindings require
+    /// matching document identity, version and content before use. Native
+    /// provider execution and selected PDF recipient keys require their live
+    /// runtime authorizations.
     pub fn from_snapshot(bytes: &[u8]) -> Result<Self, Error> {
         snapshot::decode(bytes)
     }
@@ -197,7 +281,8 @@ impl MetadataSettings {
     }
     /// Retained shared settings payload, including native option/path capacities.
     /// Clones share these allocations; an enclosing owner charges them once.
-    /// This excludes the enclosing handle and native provider allocations.
+    /// This excludes the enclosing handle, native provider allocations and
+    /// independently owned runtime credentials.
     pub fn retained_bytes(&self) -> Result<usize, Error> {
         let native = if let SelectionData::Native(c) = &self.selection {
             std::mem::size_of::<NativeConfig>()
@@ -214,7 +299,13 @@ impl MetadataSettings {
         } else {
             0
         };
-        native.checked_add(manual).ok_or(Error::Limit)
+        let external = self.pdf_streams.as_deref().map_or(0, |streams| {
+            streams.retained_bytes() + 2 * std::mem::size_of::<usize>()
+        });
+        native
+            .checked_add(manual)
+            .and_then(|size| size.checked_add(external))
+            .ok_or(Error::Limit)
     }
     pub(crate) fn open<C: FnMut(crate::Progress) -> crate::Control>(
         &self,

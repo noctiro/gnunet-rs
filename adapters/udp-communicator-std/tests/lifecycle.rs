@@ -52,7 +52,7 @@ impl Entropy for Random {
     }
 }
 async fn driver(local: &Identity) -> Result<(Driver, TcpStream), Box<dyn std::error::Error>> {
-    let socket = DatagramSocket::bind("127.0.0.1:0".parse()?)?;
+    let socket = DatagramSocket::bind("127.0.0.1:0".parse()?, Default::default())?;
     let target = socket.local_address();
     let (service, communicator) = support::pair().await?;
     let configuration = Configuration {
@@ -83,7 +83,7 @@ async fn original_closed(driver: &Driver, mut service: TcpStream) -> Test {
     assert!(wire.is_empty());
     // The same actual endpoint can be rebound only after the original native
     // owner has retired; this is stronger than a logical closed flag alone.
-    let rebound = DatagramSocket::bind(driver.local_address())?;
+    let rebound = DatagramSocket::bind(driver.local_address(), Default::default())?;
     assert_eq!(rebound.local_address(), driver.local_address());
     Ok(())
 }
@@ -261,7 +261,7 @@ async fn finish_cancels_original_unsent_datagram_then_drains_failure_and_queue_e
     let peer = Identity::from_seed([5; 32]).peer();
     let remote = std::net::UdpSocket::bind("127.0.0.1:0")?;
     remote.set_nonblocking(true)?;
-    let socket = DatagramSocket::bind("127.0.0.1:0".parse()?)?;
+    let socket = DatagramSocket::bind("127.0.0.1:0".parse()?, Default::default())?;
     let (mut service, communicator) = support::pair().await?;
     let configuration = Configuration {
         local: local.peer(),

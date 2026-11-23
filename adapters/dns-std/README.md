@@ -42,11 +42,11 @@ existing retry and socket replacement behavior.
 
 ## Response and deadline contracts
 
-A drive deadline limits how long the caller waits; it is not a DNS request
-deadline and never manufactures a result. The raw stub does not check DNS ID,
-QR, questions, names or DNSSEC. Configured-source replies may repeat, and retries
-continue until cancel or stop. The resolver above this layer must validate its
-response and manage its original deadline.
+A drive deadline limits how long the caller waits. The raw stub compares the
+native IPv6 source zone with the configured resolver endpoint. Configured-source
+replies may repeat, and retries continue until cancel or stop. The resolver above
+this layer validates DNS ID, QR, questions, names and DNSSEC as required by its
+protocol and manages its original request deadline.
 
 `cargo test -p gnunet-dnsstub-host --locked --offline` runs local IPv4/IPv6
 UDP lifecycle, filter, cache, cancellation, fairness, oversize and syscall-error

@@ -16,7 +16,7 @@ use std::{
     rc::Rc,
     time::Duration,
 };
-use tokio::{net::UdpSocket, time::Instant};
+use tokio::time::Instant;
 mod selection;
 pub use selection::{
     ReadFailure, ReadObservations, ReadStage, ReadTarget, Selected, SelectionReport,
@@ -464,10 +464,10 @@ pub async fn discover(
     }
     gate.check()?;
     let socket = gate
-        .run(UdpSocket::bind(SocketAddr::new(
+        .bind_udp(SocketAddr::new(
             local.unwrap_or(Ipv4Addr::UNSPECIFIED).into(),
             0,
-        )))
+        ))
         .await?;
     socket.set_multicast_ttl_v4(2)?;
     if let Some(local) = local {

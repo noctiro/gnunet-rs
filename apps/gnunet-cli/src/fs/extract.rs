@@ -1,10 +1,14 @@
 //! Offline metadata preview over one owned, joined extraction worker. There is
 //! no repository, publication plan, content encoder or service endpoint here.
-use super::stop::StopEvents;
+use super::{publish::progress, stop::StopEvents};
 use gnunet::fs::metadata as md;
 use gnunet::fs_host::{
     Control,
-    extraction::{self, ExtractedObject, InspectionFailure, InspectionReport, Limits, Policy},
+    extraction::{
+        self, ExtractedObject, InspectionEvent, InspectionFailure, InspectionReport, Limits,
+        MetadataSettings, Policy,
+    },
+    publication::plan::tree::Event,
 };
 use std::{
     error::Error,
@@ -162,7 +166,7 @@ impl Failure {
 
 // Serialize borrowed byte slices directly. The largest live object is bounded
 // by the shared extraction policy; neither JSON Values nor a tree are retained.
-fn row(out: &mut impl Write, ordinal: u64, object: &ExtractedObject) -> io::Result<()> {
+fn row(out: &mut (impl Write + ?Sized), ordinal: u64, object: &ExtractedObject) -> io::Result<()> {
     let metadata =
         match md::decode_uncompressed(&object.metadata, md::Limits::default(), md::Mode::Strict)
             .map_err(io::Error::other)?
@@ -240,8 +244,49 @@ pub(super) fn run(
     let hard = Instant::now()
         .checked_add(Duration::from_micros(args.interval))
         .ok_or("extraction deadline is too large")?;
-    out.deadline(hard);
     let metadata = args.metadata.select()?;
+    inspect(
+        args.source,
+        hard,
+        metadata,
+        Policy::default(),
+        out,
+        |out, ordinal, object| row(out, ordinal, object),
+        Display::Grouped,
+    )
+}
+
+pub(super) enum Display {
+    Grouped,
+    Official {
+        verbose: u32,
+        publication_date: Option<Vec<u8>>,
+    },
+}
+
+enum Row {
+    Object(ExtractedObject),
+    Update(progress::Update),
+}
+
+fn closed_output() -> extraction::Error {
+    extraction::Error::Io(io::Error::new(
+        io::ErrorKind::BrokenPipe,
+        "extraction output receiver closed",
+    ))
+}
+
+pub(super) fn inspect(
+    source: PathBuf,
+    hard: Instant,
+    metadata: MetadataSettings,
+    mut policy: Policy,
+    out: &mut super::Output<'_, impl Write>,
+    mut write_object: impl FnMut(&mut dyn Write, u64, &ExtractedObject) -> io::Result<()>,
+    display: Display,
+) -> Result<(), Box<dyn Error>> {
+    out.deadline(hard);
+    policy.extract = metadata.automatic_keywords_enabled();
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?
@@ -262,63 +307,117 @@ pub(super) fn run(
             let stop = Arc::clone(&gate.stop);
             let worker_stop = Arc::clone(&stop);
             let (sender, mut objects) = tokio::sync::mpsc::channel(1);
+            let phases = sender.clone();
+            let json_summary = matches!(display, Display::Grouped);
+            let verbose = match &display {
+                Display::Grouped => 0,
+                Display::Official { verbose, .. } => *verbose,
+            };
+            let verbose_source = (verbose != 0).then(|| source.clone());
             let (done, mut result) = tokio::sync::oneshot::channel();
             let worker = std::thread::Builder::new()
                 .name("gnunet-fs-extract".into())
                 .spawn(move || {
-                    let policy = Policy {
-                        extract: metadata.automatic_keywords_enabled(),
-                        ..Default::default()
+                    let control = move |_| {
+                        if worker_stop.load(Ordering::Acquire) || Instant::now() >= hard {
+                            Control::Cancel
+                        } else {
+                            Control::Continue
+                        }
                     };
-                    let result = extraction::inspect_with_metadata(
-                        &args.source,
-                        Limits::default(),
-                        policy,
-                        metadata,
-                        move |_| {
-                            if worker_stop.load(Ordering::Acquire) || Instant::now() >= hard {
-                                Control::Cancel
-                            } else {
-                                Control::Continue
-                            }
-                        },
-                        move |object| {
-                            if stop.load(Ordering::Acquire) || Instant::now() >= hard {
-                                return Err(extraction::Error::Cancelled);
-                            }
-                            // The consumer continues draining after any stop/output
-                            // refusal until this sender closes, so backpressure can
-                            // wait for that actual event without a polling wake loop.
-                            sender.blocking_send(object).map_err(|_| {
-                                extraction::Error::Io(io::Error::new(
-                                    io::ErrorKind::BrokenPipe,
-                                    "extraction output receiver closed",
-                                ))
-                            })?;
-                            if stop.load(Ordering::Acquire) || Instant::now() >= hard {
-                                return Err(extraction::Error::Cancelled);
+                    let visit = move |object| {
+                        if stop.load(Ordering::Acquire) || Instant::now() >= hard {
+                            return Err(extraction::Error::Cancelled);
+                        }
+                        // The consumer continues draining after any stop/output
+                        // refusal until this sender closes, so backpressure can
+                        // wait for that actual event without a polling wake loop.
+                        sender
+                            .blocking_send(Row::Object(object))
+                            .map_err(|_| closed_output())?;
+                        if stop.load(Ordering::Acquire) || Instant::now() >= hard {
+                            return Err(extraction::Error::Cancelled);
+                        }
+                        Ok(())
+                    };
+                    let observe = move |event: InspectionEvent<'_>| {
+                        let send = |phase| -> Result<(), extraction::Error> {
+                            if let Some(update) = progress::select(verbose, phase) {
+                                phases
+                                    .blocking_send(Row::Update(update))
+                                    .map_err(|_| closed_output())?;
                             }
                             Ok(())
-                        },
-                    );
+                        };
+                        match event {
+                            InspectionEvent::Scanning {
+                                relative,
+                                directory,
+                            } => send(Event::Scanning {
+                                relative,
+                                directory,
+                            }),
+                            InspectionEvent::Extracted(relative) => {
+                                send(Event::Extracted(relative))
+                            }
+                            InspectionEvent::Complete => {
+                                send(Event::ScanComplete)?;
+                                send(Event::MetadataComplete)
+                            }
+                        }
+                    };
+                    let result = match display {
+                        Display::Grouped => extraction::inspect_observed(
+                            &source,
+                            Limits::default(),
+                            policy,
+                            metadata,
+                            control,
+                            visit,
+                            observe,
+                        ),
+                        Display::Official {
+                            publication_date, ..
+                        } => extraction::inspect_trimmed(
+                            &source,
+                            Limits::default(),
+                            policy,
+                            metadata,
+                            publication_date.as_deref(),
+                            control,
+                            visit,
+                            observe,
+                        ),
+                    };
                     let _undelivered = done.send(result);
                 });
             match worker {
                 Err(error) => failure.worker = Some(error),
                 Ok(worker) => {
-                    while let Some(object) = poll_fn(|cx| {
+                    while let Some(item) = poll_fn(|cx| {
                         gate.poll(cx);
                         objects.poll_recv(cx)
                     })
                     .await
                     {
                         if failure.output.is_none() && !gate.stop.load(Ordering::Acquire) {
-                            match row(out, failure.emitted + 1, &object) {
-                                Ok(()) => failure.emitted += 1,
-                                Err(error) => {
-                                    failure.output = Some(error);
-                                    gate.stop.store(true, Ordering::Release);
+                            let output = match item {
+                                Row::Object(object) => {
+                                    write_object(out, failure.emitted + 1, &object)
+                                        .map(|()| failure.emitted += 1)
                                 }
+                                Row::Update(update) => {
+                                    let source = verbose_source.as_deref().ok_or_else(|| {
+                                        io::Error::other("missing extraction progress source")
+                                    });
+                                    source.and_then(|source| {
+                                        progress::write_update(out, source, update)
+                                    })
+                                }
+                            };
+                            if let Err(error) = output {
+                                failure.output = Some(error);
+                                gate.stop.store(true, Ordering::Release);
                             }
                         }
                     }
@@ -356,7 +455,9 @@ pub(super) fn run(
             failure.signal = gate.signal_error;
             let complete = failure.complete();
             out.cleanup()?;
-            failure.terminal_output = terminal(out, &failure).err();
+            if json_summary {
+                failure.terminal_output = terminal(out, &failure).err();
+            }
             if complete && failure.terminal_output.is_none() {
                 Ok(())
             } else {

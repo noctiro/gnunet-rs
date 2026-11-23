@@ -9,14 +9,16 @@ use gnunet_types::Error;
 use std::{
     env,
     error::Error as StdError,
-    fs::File,
-    io::{self, BufRead, Read, Write},
+    io::{self, BufRead, Write},
 };
 
-struct Random(File);
+struct Random;
 impl Entropy for Random {
     fn fill(&mut self, output: &mut [u8]) -> Result<(), Error> {
-        self.0.read_exact(output).map_err(|_| Error::Entropy)
+        getrandom::fill(output).map_err(|_| {
+            output.fill(0);
+            Error::Entropy
+        })
     }
 }
 fn decode(text: &str) -> Result<Vec<u8>, Box<dyn StdError>> {
@@ -50,7 +52,7 @@ fn main() -> Result<(), Box<dyn StdError>> {
     let seed: [u8; 32] = decode(&args[1])?.try_into().map_err(|_| "seed length")?;
     let peer: [u8; 32] = decode(&args[2])?.try_into().map_err(|_| "peer length")?;
     let identity = Identity::from_seed(seed);
-    let mut random = Random(File::open("/dev/urandom")?);
+    let mut random = Random;
     let mut session = Session::<65535>::new(
         &identity,
         EddsaPublicKey::from_bytes(peer),

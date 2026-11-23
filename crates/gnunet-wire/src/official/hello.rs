@@ -18,6 +18,14 @@ pub const SIGNATURE_PURPOSE: u32 = 7;
 /// Signed purpose8, expiration8 and address hash64.
 pub const SIGNED_PAYLOAD_LEN: usize = 80;
 
+/// Read the expiration claimed by a raw HELLO block header without parsing
+/// addresses or checking the signature. Use only after authenticating the block
+/// when enforcing the timestamp as a validity bound.
+pub fn block_expiration(input: &[u8]) -> Result<AbsoluteTime, Error> {
+    let encoded = input.get(96..BLOCK_HEADER_LEN).ok_or(Error::Truncated)?;
+    AbsoluteTime::decode(encoded)
+}
+
 /// Caller-owned input/work ceilings, in addition to official wire-width limits.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct HelloLimits {
@@ -122,7 +130,7 @@ impl<'a> UnverifiedHello<'a> {
         Self::from_parts(
             input[..32].try_into().map_err(|_| Error::Truncated)?,
             input[32..96].try_into().map_err(|_| Error::Truncated)?,
-            AbsoluteTime::decode(&input[96..104])?,
+            block_expiration(input)?,
             &input[104..],
             None,
             limits,

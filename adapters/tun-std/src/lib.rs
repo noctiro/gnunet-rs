@@ -51,6 +51,13 @@ use types::Stamp;
 pub use types::{Epoch, Info, Limits};
 mod owned;
 pub use owned::OwnedTun;
+#[cfg(target_os = "freebsd")]
+pub use owned::{
+    FreeBsdRecovery, FreeBsdRecreate, FreeBsdRecreateStartError, FreeBsdRecreated, FreeBsdReopen,
+    FreeBsdReopenError, FreeBsdReopenStage, FreeBsdReopenStartError, FreeBsdReopened,
+    FreeBsdRestartError, FreeBsdRestartStage, FreeBsdRouteKey, FreeBsdUnconfirmedClose,
+    FreeBsdVacancy,
+};
 #[cfg(windows)]
 pub use owned::{
     WintunAdoptionError, WintunRecovery, WintunReopen, WintunReopenError, WintunReopenStage,

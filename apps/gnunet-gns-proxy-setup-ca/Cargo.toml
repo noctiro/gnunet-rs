@@ -12,6 +12,7 @@ gnunet-types.workspace = true
 gnunet-native.workspace = true
 gnunet-service-runtime.workspace = true
 gnunet-service-startup.workspace = true
+gnunet-tls-crypto-host.workspace = true
 tokio = { workspace = true, features = ["rt", "net", "time", "signal"] }
 rcgen.workspace = true
 base64ct = { workspace = true, features = ["alloc"] }

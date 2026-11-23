@@ -13,7 +13,7 @@ import observe
 
 
 def package():
-    return {'name':'unit','version':'0.1.0','edition':'2024','license':'MPL-2.0','rust_version':'1.99.1','features':{'default':[]},'dependencies':[{'name':'gnunet-native','req':'*','source':None,'kind':None,'rename':None,'optional':False,'uses_default_features':False,'target':None,'path':'/native','features':[]}]}
+    return {'name':'unit','version':'0.1.0','edition':'2024','license':'MPL-2.0','rust_version':'1.100.0','features':{'default':[]},'dependencies':[{'name':'gnunet-native','req':'*','source':None,'kind':None,'rename':None,'optional':False,'uses_default_features':False,'target':None,'path':'/native','features':[]}]}
 
 
 def test_output():
@@ -49,6 +49,16 @@ class Guards(unittest.TestCase):
             with self.subTest(key=key):
                 changed=copy.deepcopy(p);changed['dependencies'][0][key]=value;self.assertNotEqual(baseline,verify.contract(changed,Path('/native')))
         changed=copy.deepcopy(p);changed['features']['extra']=[];self.assertNotEqual(baseline,verify.contract(changed,Path('/native')))
+    def test_probe_is_the_only_permitted_lock_change(self):
+        header = 'version = 4\n'
+        pinned = '\n[[package]]\nname = "dep"\nversion = "1.0.0"\nchecksum = "original"\n'
+        probe = '\n[[package]]\nname = "canonical-accept-probe"\nversion = "0.1.0"\ndependencies = ["dep"]\n'
+        verify.check_probe_lock(header + pinned, header + probe + pinned)
+        for modified in (header + pinned, header + probe + probe + pinned,
+                         header + probe + pinned.replace('"original"', '"new"'),
+                         header + probe + pinned.replace('"1.0.0"', '"1.0.1"')):
+            with self.subTest(modified=modified), self.assertRaises(ValueError):
+                verify.check_probe_lock(header + pinned, modified)
     def test_native_dependency_role_rejects_foreign_path(self):
         with self.assertRaises(ValueError):verify.contract(package(),Path('/foreign'))
         self.assertEqual(verify.local_roles({'packages':[{'name':'one','source':None,'id':'one','manifest_path':'/root/a/Cargo.toml'}]},Path('/root')),{'one':'a/Cargo.toml'})

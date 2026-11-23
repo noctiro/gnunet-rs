@@ -197,7 +197,7 @@ fn required_keyword_pending_match_survives_reopen_and_duplicate_hit_adds_no_raw_
         let second_run=task.run(source.duplicate()?,deadline(&source)?,|progress,event|{
             if progress.replayed_observations==1&&progress.results==1&&progress.visible_results==0 {historical_pending=true;}
             match event {
-                Event::Live{step:Step::Ignored,..}=>{ignored.store(true,Ordering::SeqCst);Control::Continue}
+                Event::Live{step:Step::Native{step:ipc::Step::Ignored,..},..}=>{ignored.store(true,Ordering::SeqCst);Control::Continue}
                 Event::Live{step:Step::Result{..},record:Some(record),..}=>{
                     assert!(historical_pending);assert!(ignored.load(Ordering::SeqCst));assert_eq!(progress.recorded_observations,2);
                     assert_eq!(progress.new_observations,1);assert_eq!(progress.new_visible_results,1);assert_eq!(record.mandatory_missing(),0);

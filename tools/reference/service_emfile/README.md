@@ -61,7 +61,7 @@ python3 -B verify.py --repo /absolute/repo \
 ```
 
 The output must be disjoint from every input. The wrapper uses pinned
-Cargo1.99.1, offline/locked builds, jobs2 and an output-local target; it validates
+Cargo1.100.0, offline/locked builds, jobs2 and an output-local target; it validates
 one Cargo compiler artifact rather than guessing a previously compiled
 binary. It runs strict package lints and the four process profiles. Sources,
 file membership, tools, receipts, binaries, C source and normal libraries are

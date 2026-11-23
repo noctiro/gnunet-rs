@@ -63,11 +63,15 @@ impl Arguments {
                     .unwrap_or(u64::try_from(default.as_micros())?),
             ))
         };
-        let path = |key: &[u8], default: PathBuf| -> Result<PathBuf, Failure> {
+        let path = |key: &[u8]| -> Result<Option<PathBuf>, Failure> {
             Ok(c.get(section, key)
                 .map(|_| c.get_filename(section, key, &gnunet_config::ProcessEnvironment))
-                .transpose()?
-                .unwrap_or(default))
+                .transpose()?)
+        };
+        let executable = |key: &[u8]| -> Result<Option<PathBuf>, Failure> {
+            Ok(c.get(section, key)
+                .map(|_| c.get_absolute_filename(section, key, &gnunet_config::ProcessEnvironment))
+                .transpose()?)
         };
         let d = provider::Limits::default();
         let provider_limits = provider::Limits {
@@ -83,32 +87,18 @@ impl Arguments {
             cleanup_grace: time(b"CLEANUP_GRACE", d.cleanup_grace)?,
         };
         #[cfg(unix)]
-        let launcher = if c.get(section, b"LAUNCHER").is_some() {
-            c.get_filename(section, b"LAUNCHER", &gnunet_config::ProcessEnvironment)?
-        } else {
-            c.project_data()
-                .libexec_binary_path(b"gnunet-arm-spawn-helper")?
+        let launcher = match executable(b"LAUNCHER")? {
+            Some(launcher) => launcher,
+            None => c
+                .project_data()
+                .libexec_binary_path(b"gnunet-arm-spawn-helper")?,
         };
-        #[cfg(unix)]
-        let pdflatex = Some(path(b"PDFLATEX", PathBuf::from("/usr/bin/pdflatex"))?);
-        #[cfg(unix)]
-        let ghostscript = Some(path(b"GHOSTSCRIPT", PathBuf::from("/usr/bin/gs"))?);
-        #[cfg(windows)]
-        let pdflatex = c
-            .get(section, b"PDFLATEX")
-            .map(|_| c.get_filename(section, b"PDFLATEX", &gnunet_config::ProcessEnvironment))
-            .transpose()?;
-        #[cfg(windows)]
-        let ghostscript = c
-            .get(section, b"GHOSTSCRIPT")
-            .map(|_| c.get_filename(section, b"GHOSTSCRIPT", &gnunet_config::ProcessEnvironment))
-            .transpose()?;
         let renderer = Arc::new(provider::Settings {
-            pdflatex,
-            ghostscript,
+            pdflatex: executable(b"PDFLATEX")?,
+            ghostscript: executable(b"GHOSTSCRIPT")?,
             #[cfg(unix)]
             launcher,
-            temp_root: path(b"TEMP_ROOT", std::env::temp_dir())?,
+            temp_root: path(b"TEMP_ROOT")?.unwrap_or_else(std::env::temp_dir),
             #[cfg(unix)]
             configuration: Arc::new(c.duplicate()?),
             limits: provider_limits,

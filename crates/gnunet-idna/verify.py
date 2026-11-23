@@ -6,6 +6,11 @@ Source tables are checked rather than rewritten. No network is used.
 """
 import argparse,hashlib,json,pathlib,re,subprocess,sys,time,tarfile
 ROOT=pathlib.Path(__file__).resolve().parent
+TOOLS=ROOT.parents[1]/"tools"
+sys.dont_write_bytecode=True
+sys.path.insert(0,str(TOOLS))
+from cargo_artifacts import CargoArtifacts
+from rust_toolchain import rust_channel
 EXPECTED={'libidn2_archive':'f557911bf6171621e1f72ff35f5b1825bb35b52ed45325dcdee931e5d3c0787a','libunistring_archive':'5b0ecd46cbf225375f20ab4056197e66a7ac590e2684c069af407ae3383c9d81','ucd15':'cb1c663d053926500cd501229736045752713a066bd75802098598b7a7056177','ucd18':'7b3e555514060b92290d154f53655c5eb0fa62b16eb04c03434ff72d1a66a0d8'}
 COUNTS={'selected':174,'normal':95370,'normal15':95370,'normal18':100855,'scalar':3336189,'properties':134172,'idna15':50120,'alabels':2223872,'context':770860,'puny_fuzz':200000,'expanded_nfc':6,'invalid_utf8':130578,'parsed_label':1,'compressed_name':1233,'compressed_record':1,'dns_flags':65536,'dns_constants':1,'dns_header':65536}
 GNUNET_INPUTS={'src/include/gnunet_tun_lib.h':'4df0fd8a7749134b4bd64fc891924037dd4688e95060657298807a1b032ef419','src/lib/util/dnsparser.c':'9659bf2c49618c229d0b1ee91ecd1abb4a013708110193724d255e00acbc9ec8','src/include/gnunet_dnsparser_lib.h':'f5fb0c9441f5075113df938c74e7cc75b79135e4c4ca1738205a1fddc6493904'}
@@ -14,7 +19,8 @@ def sha(p):return hashlib.sha256(p.read_bytes()).hexdigest()
 def main():
  p=argparse.ArgumentParser(description=__doc__)
  for name in ['gnunet-source','reference-build','reference-library','idn2-library','unistring-library','libidn2-source','libidn2-archive','libunistring-archive','ucd15','ucd18','output']:p.add_argument('--'+name,type=pathlib.Path,required=True)
- a=p.parse_args();a=argparse.Namespace(**{k:v.resolve() for k,v in vars(a).items()});out=a.output
+ p.add_argument('--toolchain')
+ a=p.parse_args();channel=rust_channel(ROOT.parents[1],a.toolchain);a=argparse.Namespace(**{k:v.resolve() for k,v in vars(a).items() if k!='toolchain'});out=a.output
  assert not out.is_relative_to(ROOT) and not ROOT.is_relative_to(out),'Output and source directories must be disjoint'
  out.mkdir(parents=True,exist_ok=False);commands=[];start=time.time();libs=[a.reference_library,a.idn2_library,a.unistring_library]
  def run(argv,name,cwd=ROOT):
@@ -23,10 +29,10 @@ def main():
   commands.append({'argv':argv,'cwd':str(cwd),'exit_code':r.returncode,'stdout':name+'.stdout','stderr':name+'.stderr','elapsed_seconds':time.monotonic()-t})
   if r.returncode:raise RuntimeError(name+' failed: '+r.stderr[-6000:])
   return r.stdout
- cargo=['cargo','+1.99.1'];common=['--manifest-path',ROOT/'Cargo.toml','--target-dir',out/'cargo-target','--offline','--locked']
+ cargo=['cargo','+'+channel];common=['--manifest-path',ROOT/'Cargo.toml','--target-dir',out/'cargo-target','--offline','--locked']
  meta=json.loads(run([*cargo,'metadata','--format-version','1','--manifest-path',ROOT/'Cargo.toml','--offline','--locked'],'cargo-metadata'))
  def inputs():
-  paths=[ROOT/'Cargo.toml',ROOT/'README.md',ROOT/'UPSTREAM.md',ROOT/'generate.py',ROOT/'verify.py']
+  paths=[ROOT/'Cargo.toml',ROOT/'README.md',ROOT/'UPSTREAM.md',ROOT/'generate.py',ROOT/'verify.py',TOOLS/'cargo_artifacts.py',TOOLS/'rust_toolchain.py']
   for sub in ['src','tests','tools','examples','data']:paths.extend(x for x in (ROOT/sub).rglob('*') if x.is_file() and '__pycache__' not in x.parts)
   for package in meta['packages']:
    if package['source'] is not None:continue
@@ -44,10 +50,10 @@ def main():
   for name,expected in GNUNET_INPUTS.items():assert sha(a.gnunet_source/name)==expected,name
   with tarfile.open(a.libidn2_archive) as archive:
    for name in IDN2_INPUTS:assert archive.extractfile('libidn2-2.3.8/lib/'+name).read()==(a.libidn2_source/'lib'/name).read_bytes(),name+' changed from pinned GNU archive'
-  for argv,name in [([*cargo,'--version'],'cargo-version'),(['rustc','+1.99.1','--version'],'rustc-version'),(['rustfmt','+1.99.1','--version'],'rustfmt-version'),(['cc','--version'],'cc-version'),([sys.executable,'--version'],'python-version')]:run(argv,name)
+  for argv,name in [([*cargo,'--version'],'cargo-version'),(['rustc','+'+channel,'--version'],'rustc-version'),(['rustfmt','+'+channel,'--version'],'rustfmt-version'),(['cc','--version'],'cc-version'),([sys.executable,'--version'],'python-version')]:run(argv,name)
   run([sys.executable,'-B',ROOT/'tools/guard_tests.py'],'tool-output-boundaries')
   data_args=['--libidn2-source',a.libidn2_source,'--ucd15',a.ucd15,'--ucd18',a.ucd18]
-  run([sys.executable,'-B',ROOT/'generate.py','--check',*data_args],'table-regeneration')
+  run([sys.executable,'-B',ROOT/'generate.py','--check','--toolchain',channel,*data_args],'table-regeneration')
   run([*cargo,'fmt','--manifest-path',ROOT/'Cargo.toml','--','--check'],'format')
   rust_stdout=run([*cargo,'test',*common],'rust-tests')
   actual_tests=re.findall(r'^test (.+?) \.\.\. ok$',rust_stdout,re.M)
@@ -63,14 +69,14 @@ def main():
   run([*cargo,'clippy','--all-targets',*common,'--','-D','warnings'],'clippy')
   run([*cargo,'doc','--no-deps',*common],'documentation')
   for target in ['thumbv6m-none-eabi','thumbv7em-none-eabi']:run([*cargo,'check','--lib','--target',target,*common],'embedded-'+target)
-  run([*cargo,'build','--release','--example','probe',*common],'rust-probe-build')
-  run([*cargo,'build','--release','--example','native_pack_probe',*common],'rust-native-pack-probe-build')
+  build=run([*cargo,'build','--release','--example','idna_probe','--example','native_pack_probe','--message-format=json',*common],'rust-probe-build')
+  probes=CargoArtifacts(build)
   run([*cargo,'tree','--edges','normal','--manifest-path',ROOT/'Cargo.toml','--offline','--locked'],'production-dependency-tree')
   ref=[]
   for name in ['gnunet_source','reference_build','reference_library','idn2_library','unistring_library']:ref.extend(['--'+name.replace('_','-'),getattr(a,name)])
   run([sys.executable,'-B',ROOT/'tools/build_probe.py',*ref,'--output',out/'native'],'c-probe-build')
-  c=out/'native/c-probe';rust=out/'cargo-target/release/examples/probe'
-  native_pack_c=out/'native/native-pack-probe';native_pack_rust=out/'cargo-target/release/examples/native_pack_probe'
+  c=out/'native/c-probe';rust=probes.example('idna_probe',ROOT/'Cargo.toml')
+  native_pack_c=out/'native/native-pack-probe';native_pack_rust=probes.example('native_pack_probe',ROOT/'Cargo.toml')
   run([sys.executable,'-B',ROOT/'tools/native_pack_compare.py','--c-probe',native_pack_c,'--rust-probe',native_pack_rust,'--output',out/'native-pack.json'],'native-pack-boundaries')
   native_pack=json.loads((out/'native-pack.json').read_text());assert native_pack['status']=='passed' and native_pack['comparisons']==3846 and native_pack['functional_mismatches']==0
   result['native_pack']={'cases':3846,'functional_mismatches':0,'receipt':'native-pack.json','sha256':sha(out/'native-pack.json')}

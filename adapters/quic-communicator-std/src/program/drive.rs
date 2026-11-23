@@ -1,16 +1,9 @@
 //! Original communicator, statistics and Resolver owners through bounded shutdown.
-use super::{
-    Failure, credentials,
-    failure::Failures,
-    observation,
-    reporting::Reports,
-    resources,
-    settings::{self, Settings},
-};
+use super::{Failure, failure::Failures, observation, reporting::Reports, settings::Settings};
 use crate::{
-    Buffers, Instance, Progress, Runtime, Sources,
+    Progress, Runtime, Sources,
+    frame_pool::FramePool,
     statistics::{self, StatisticsFactory},
-    tls::Profile,
 };
 use gnunet_client_host::{EndpointSource, LiveConfiguration};
 use gnunet_program_host::policy::Level;
@@ -41,13 +34,13 @@ pub(super) async fn run_native<F: StatisticsFactory>(
             return stopped.map_err(|error| Box::new(error) as Failure);
         }
         let mut statistics_storage = F::storage();
-        let instance = Instance::new();
-        let mut pils = gnunet_pils::client::Instance::new();
+        let configured = settings.configured;
+        let profile = configured.profile;
         let source =
             |name: &'static [u8]| EndpointSource::live(live.clone(), name, resolution.clone());
         let mut section = Vec::new();
-        section.try_reserve_exact(settings::section(settings.profile).len())?;
-        section.extend_from_slice(settings::section(settings.profile));
+        section.try_reserve_exact(profile.section().len())?;
+        section.extend_from_slice(profile.section());
         let sources = Sources {
             transport: source(b"transport"),
             pils: source(b"pils"),
@@ -57,111 +50,44 @@ pub(super) async fn run_native<F: StatisticsFactory>(
                     gnunet_nat_client_host::native_profile()?,
                 ),
                 section,
-                addresses: settings.nat_addresses,
+                addresses: configured.nat_addresses,
             }),
         };
         let statistics_clock = sources.transport.clock();
-        let (mut bodies, body_bytes) = resources::bodies(&settings)?;
-        let credentials = credentials::prepare(settings.profile, settings.pair.as_ref())?;
+        let pool = FramePool::new(profile, configured.limits, configured.frame_pool_bytes)?;
+        let (tls, directory_sync) = configured.prepare_tls()?;
         reports.borrow_mut().log(
             "quic.credentials.publication",
             Level::DEBUG,
-            format_args!(
-                "TLS pair directory observations: {:?}",
-                credentials.directory_sync
-            ),
+            format_args!("TLS pair directory observations: {:?}", directory_sync),
         );
-        let tls = credentials.tls;
         if stopping.get() || reports.borrow().failed() {
             return Ok(());
         }
         if let Poll::Ready(stopped) = poll_fn(|cx| Poll::Ready(signals.poll_stop(cx))).await {
             return stopped.map_err(|error| Box::new(error) as Failure);
         }
-        let bind = settings.bind.socket()?;
-        match settings.profile {
-            Profile::Raw => {
-                let mut loans = Vec::new();
-                loans.try_reserve_exact(bodies.len())?;
-                for b in &mut bodies {
-                    loans.push(Some(&mut b[..]))
-                }
-                resources::loans(&settings, body_bytes, 0, loans.capacity())?;
-                let mut runtime = Runtime::new(
-                    &instance,
-                    &mut pils,
-                    sources,
-                    bind,
-                    tls,
-                    Buffers::Raw(&mut loans),
-                    settings.limits,
-                )?;
-                let statistics_config = statistics::Configuration {
-                    profile: settings.profile,
-                    live: live.clone(),
-                    resolution: resolution.clone(),
-                    clock: statistics_clock.clone(),
-                    initial: runtime.metrics(),
-                };
-                serve::<F>(
-                    &mut runtime,
-                    &mut resolver,
-                    &mut signals,
-                    &reports,
-                    &stopping,
-                    &mut statistics_storage,
-                    statistics_config,
-                )
-                .await
-            }
-            Profile::Http3 => {
-                #[cfg(not(feature = "h3-profile"))]
-                {
-                    Err("HTTP3 foreground requires h3-profile".into())
-                }
-                #[cfg(feature = "h3-profile")]
-                {
-                    let mut slots = Vec::new();
-                    slots.try_reserve_exact(bodies.len())?;
-                    for b in &mut bodies {
-                        slots.push(gnunet_transport_quic::h3::Slot::new(&mut b[..]))
-                    }
-                    let slots_capacity = slots.capacity();
-                    let mut loans = Vec::new();
-                    loans.try_reserve_exact(settings.limits.backend.connections)?;
-                    for group in slots.chunks_mut(settings.limits.h3_polls + 2) {
-                        loans.push(Some(group))
-                    }
-                    resources::loans(&settings, body_bytes, slots_capacity, loans.capacity())?;
-                    let mut runtime = Runtime::new(
-                        &instance,
-                        &mut pils,
-                        sources,
-                        bind,
-                        tls,
-                        Buffers::Http3(&mut loans),
-                        settings.limits,
-                    )?;
-                    let statistics_config = statistics::Configuration {
-                        profile: settings.profile,
-                        live: live.clone(),
-                        resolution: resolution.clone(),
-                        clock: statistics_clock,
-                        initial: runtime.metrics(),
-                    };
-                    serve::<F>(
-                        &mut runtime,
-                        &mut resolver,
-                        &mut signals,
-                        &reports,
-                        &stopping,
-                        &mut statistics_storage,
-                        statistics_config,
-                    )
-                    .await
-                }
-            }
-        }
+        let bind = configured.bind.socket()?;
+        pool.run(sources, bind, tls, Default::default(), async |runtime| {
+            let statistics_config = statistics::Configuration {
+                profile,
+                live,
+                resolution,
+                clock: statistics_clock,
+                initial: runtime.metrics(),
+            };
+            serve::<F>(
+                runtime,
+                &mut resolver,
+                &mut signals,
+                &reports,
+                &stopping,
+                &mut statistics_storage,
+                statistics_config,
+            )
+            .await
+        })
+        .await
     }
     .await;
     let disconnect = resolver.disconnect().err().map(|e| Box::new(e) as Failure);

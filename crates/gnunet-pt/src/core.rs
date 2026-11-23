@@ -8,6 +8,7 @@ use crate::{
 };
 use alloc::vec::Vec;
 use core::{cell::Cell, fmt};
+use gnunet_wire::official::dns::ReplyLimit;
 /// Caller-owned domain; counters never wrap and no entropy is required for IDs.
 #[derive(Default)]
 pub struct Instance {
@@ -150,6 +151,7 @@ impl Limits {
 struct SourceRow<'a> {
     source: Source<'a>,
     stage: Stage,
+    answer_bytes: usize,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Phase<'a> {
@@ -173,6 +175,7 @@ struct Row<'a> {
     id: [u8; 8],
     packet: Vec<u8>,
     output: Vec<u8>,
+    answer_bytes: usize,
     plan: Vec<AddressRecord>,
     replacements: Vec<Replacement>,
     until: u64,
@@ -183,7 +186,7 @@ struct Exit<'a> {
     ad: Advertisement,
     tunnel: Option<Tunnel<'a>>,
     until: u64,
-    ready: bool,
+    credit: u32,
     opening: bool,
     next_id: u32,
     transmitted: u32,
@@ -338,12 +341,17 @@ impl<'a> Core<'a> {
     }
     /// Bind only after the caller observes a real native DNS attachment. Each
     /// stage has one current source; other sources cannot finish its requests.
-    pub fn attached(&mut self, stage: Stage) -> Result<Source<'a>, Error> {
+    /// The original source's per-reply capacity bounds admitted work.
+    pub fn attached(&mut self, stage: Stage, replies: ReplyLimit) -> Result<Source<'a>, Error> {
         if self.sources.iter().any(|s| s.stage == stage) {
             return Err(Error::Conflict);
         }
         let source = Source(self.brand()?);
-        self.sources.push(SourceRow { source, stage });
+        self.sources.push(SourceRow {
+            source,
+            stage,
+            answer_bytes: self.limits.packet_bytes.min(replies.answer_bytes()),
+        });
         Ok(source)
     }
     /// Physical source loss retires its requests without reassigning old opaque
@@ -378,7 +386,7 @@ impl<'a> Core<'a> {
     /// Standalone callers must mint finite targets once and retain an independent
     /// original native hard bound. A later logical rollback never remints them;
     /// `limits.timeout` is admission policy for that caller, not a fresh TTL here.
-    /// POST reserves the transformed reply; PRE reserves the configured maximum
+    /// POST reserves the transformed reply. PRE reserves its source's maximum
     /// reply and query envelope in one reusable buffer before emitting work.
     /// Capacity refusal leaves no admitted request.
     ///
@@ -393,12 +401,12 @@ impl<'a> Core<'a> {
         expires: u64,
         now: u64,
     ) -> Result<Request<'a>, Error> {
-        let stage = self
+        let original = self
             .sources
             .iter()
             .find(|s| s.source == source)
-            .map(|s| s.stage)
             .ok_or(Error::Stale)?;
+        let answer_bytes = original.answer_bytes;
         if self.rows.len() >= self.limits.requests {
             return Err(Error::Capacity);
         }
@@ -411,7 +419,7 @@ impl<'a> Core<'a> {
         packet::validate(dns, &mut self.scratch_a, self.limits.dns())?;
         let mut plan = Vec::new();
         let mut replacements = Vec::new();
-        let phase = if stage == Stage::Post {
+        let phase = if original.stage == Stage::Post {
             let n = packet::scan(
                 dns,
                 self.families,
@@ -419,6 +427,9 @@ impl<'a> Core<'a> {
                 &mut self.scratch_a,
                 self.limits.dns(),
             )?;
+            if n != 0 && dns.len() > answer_bytes {
+                return Err(Error::TooLarge);
+            }
             plan = vector(n)?;
             plan.extend_from_slice(&self.record_scratch[..n]);
             replacements = vector(n)?;
@@ -431,15 +442,15 @@ impl<'a> Core<'a> {
             if gnunet_dns::Header::decode(dns)?.flags.query_or_response() {
                 return Err(Error::Malformed);
             }
+            if answer_bytes < gnunet_dns::HEADER_LEN {
+                return Err(Error::TooLarge);
+            }
             Phase::PreReady
         };
         replacements.clear();
         let reply_bytes = match phase {
             Phase::AllocReady => dns.len(),
-            Phase::PreReady => self
-                .limits
-                .packet_bytes
-                .max(dns.len().checked_add(4).ok_or(Error::Overflow)?),
+            Phase::PreReady => answer_bytes.max(dns.len().checked_add(4).ok_or(Error::Overflow)?),
             _ => 0,
         };
         self.charge(dns.len().checked_add(reply_bytes).ok_or(Error::Overflow)?)?;
@@ -461,6 +472,7 @@ impl<'a> Core<'a> {
             id,
             packet,
             output,
+            answer_bytes,
             plan,
             replacements,
             until: expires,
@@ -525,7 +537,7 @@ impl<'a> Core<'a> {
             ad,
             tunnel: None,
             until: ad.expires(),
-            ready: false,
+            credit: 0,
             opening: false,
             next_id: 0,
             transmitted: 0,
@@ -543,7 +555,7 @@ impl<'a> Core<'a> {
     pub fn withdraw_exit(&mut self, peer: [u8; 32]) -> Result<(), Error> {
         if let Some(exit) = self.exits.iter_mut().find(|e| e.ad.peer() == peer) {
             exit.until = 0;
-            exit.ready = false;
+            exit.credit = 0;
             exit.closing = exit.tunnel.is_some();
         }
         Ok(())
@@ -569,7 +581,7 @@ impl<'a> Core<'a> {
         if self.exits[i].closing || now >= self.exits[i].until {
             return Err(Error::Stale);
         }
-        self.exits[i].ready = available > 0;
+        self.exits[i].credit = available;
         Ok(())
     }
     /// Actual channel destruction/loss clears the original channel mapping and
@@ -584,7 +596,7 @@ impl<'a> Core<'a> {
         self.exits[i].answered = 0;
         self.exits[i].failed = 0;
 
-        self.exits[i].ready = false;
+        self.exits[i].credit = 0;
         self.exits[i].opening = false;
         self.exits[i].closing = false;
         self.exits[i].retry = now.checked_add(self.limits.retry).ok_or(Error::Overflow)?;
@@ -658,18 +670,22 @@ impl<'a> Core<'a> {
         };
         Ok(())
     }
-    /// Real local send admission retains original attempt identity and cannot be
-    /// mistaken for Written or an actual DNS reply.
+    /// Real local send admission consumes one channel credit and one retry
+    /// attempt. Preparation only reserves the original channel-local ID.
+    /// This is neither Written nor an actual DNS reply.
     pub fn send_queued(&mut self, attempt: Attempt<'a>) -> Result<(), Error> {
-        let r = self
+        let i = self
             .rows
-            .iter_mut()
-            .find(|r| matches!(r.phase,Phase::SendReady(a,_,_) if a==attempt))
+            .iter()
+            .position(|r| matches!(r.phase,Phase::SendReady(a,_,_) if a==attempt))
             .ok_or(Error::Stale)?;
-        let Phase::SendReady(a, t, id) = r.phase else {
+        let Phase::SendReady(a, t, id) = self.rows[i].phase else {
             return Err(Error::Conflict);
         };
-        r.phase = Phase::SendQueued(a, t, id);
+        let e = self.tunnel(t)?;
+        self.exits[e].credit = self.exits[e].credit.checked_sub(1).ok_or(Error::NotReady)?;
+        self.rows[i].attempts += 1;
+        self.rows[i].phase = Phase::SendQueued(a, t, id);
         Ok(())
     }
     /// Whole local write of this exact application transmit. Remote response is
@@ -692,8 +708,9 @@ impl<'a> Core<'a> {
         exit.transmitted = exit.transmitted.saturating_add(1);
         Ok(())
     }
-    /// Consume one actual reply only from its exact current channel and unique
-    /// per-channel DNS ID, with the original question/opcode structurally bound.
+    /// Consume one actual reply only from its exact channel and DNS ID, with
+    /// the original question and opcode bound. Drop an authenticated response
+    /// that exceeds the original local source's per-reply capacity.
     pub fn response(
         &mut self,
         tunnel: Tunnel<'a>,
@@ -727,16 +744,20 @@ impl<'a> Core<'a> {
         )? {
             return Err(Error::Authentication);
         }
-        // Validation caps the DNS payload at packet_bytes. Admission already
-        // charged that full capacity, independently of other in-flight replies.
+        // Admission charged the exact source's reply cap independently of the
+        // buffer's capacity for the outbound CADET query.
         let row = &mut self.rows[i];
-        if dns.len() > row.output.capacity() {
-            return Err(Error::Conflict);
+        if dns.len() > row.answer_bytes {
+            row.phase = Phase::DropReady;
+        } else {
+            if dns.len() > row.output.capacity() {
+                return Err(Error::Conflict);
+            }
+            row.output.clear();
+            row.output.extend_from_slice(dns);
+            row.output[..2].copy_from_slice(&row.packet[..2]);
+            row.phase = Phase::ReplyReady;
         }
-        row.output.clear();
-        row.output.extend_from_slice(dns);
-        row.output[..2].copy_from_slice(&row.packet[..2]);
-        row.phase = Phase::ReplyReady;
         self.exits[e].answered = self.exits[e].answered.saturating_add(1);
         Ok(true)
     }
@@ -793,12 +814,9 @@ impl<'a> Core<'a> {
                 (u64::from(e.answered) + u64::from(e.failed)).min(u64::from(e.transmitted));
             let poor = finished > 20 && u64::from(e.failed) * 100 > finished * 25;
             let ids_exhausted = e.next_id > u32::from(u16::MAX);
-            if ids_exhausted {
-                e.ready = false;
-            }
             let drained=ids_exhausted&&!self.rows.iter().any(|r|matches!(r.phase,Phase::SendReady(_,t,_)|Phase::SendQueued(_,t,_)|Phase::Waiting(_,t,_) if Some(t)==e.tunnel));
             if now >= e.until || poor || drained {
-                e.ready = false;
+                e.credit = 0;
                 if e.tunnel.is_some() {
                     e.closing = true;
                 }
@@ -928,7 +946,7 @@ impl<'a> Core<'a> {
                 for offset in 0..self.exits.len() {
                     let e = (self.cursor + offset) % self.exits.len();
                     let row = &self.exits[e];
-                    if !row.ready
+                    if row.credit == 0
                         || row.closing
                         || row.opening
                         || row.until <= now
@@ -948,7 +966,13 @@ impl<'a> Core<'a> {
                         + (10_000 * u64::from(row.answered))
                             .checked_div(finished)
                             .unwrap_or(0);
-                    if weight > best {
+                    // One prepared query reserves this tunnel until actual
+                    // admission or retirement, without consuming native credit.
+                    if weight > best
+                        && !self.rows.iter().any(|request| {
+                            matches!(request.phase, Phase::SendReady(_, tunnel, _) if Some(tunnel) == row.tunnel)
+                        })
+                    {
                         chosen = Some(e);
                         best = weight;
                     }
@@ -970,28 +994,26 @@ impl<'a> Core<'a> {
                     crate::exit::encode_query(&row.packet, &mut row.output)?;
                     row.output[4..6].copy_from_slice(&id.to_be_bytes());
                     row.phase = Phase::SendReady(attempt, tunnel, id);
-                    row.attempts += 1;
                     self.exits[e].next_id = u32::from(id) + 1;
-                    self.exits[e].ready = false;
                     self.cursor = (e + 1) % self.exits.len();
                 }
             }
         }
-        if let Some(row) = self
-            .rows
-            .iter()
-            .find(|row| matches!(row.phase, Phase::SendReady(..)))
-        {
+        // An updated native window can park a prepared query while another
+        // tunnel keeps sending. The parked attempt and bytes stay immutable.
+        for row in &self.rows {
             let Phase::SendReady(attempt, tunnel, _) = row.phase else {
-                return Err(Error::Conflict);
+                continue;
             };
-            return Ok(Some(Work::Send {
-                attempt,
-                request: row.request,
-                tunnel,
-                message: &row.output,
-                expires: row.until,
-            }));
+            if self.exits[self.tunnel(tunnel)?].credit != 0 {
+                return Ok(Some(Work::Send {
+                    attempt,
+                    request: row.request,
+                    tunnel,
+                    message: &row.output,
+                    expires: row.until,
+                }));
+            }
         }
         Ok(None)
     }

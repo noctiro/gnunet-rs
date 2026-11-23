@@ -1,4 +1,4 @@
-use crate::{backend, worker};
+use crate::{Error, backend, worker};
 use gnunet_namestore::{ChangeKind, Code, StreamLimits, StreamLoss};
 use gnunet_service_runtime::{
     accepted::SocketEvent,
@@ -8,47 +8,6 @@ use gnunet_service_runtime::{
 };
 use gnunet_types::Error as Fault;
 use std::{io, rc::Rc, sync::Arc, time::Duration};
-/// Actual original error, never a fabricated successful RESULT_CODE.
-#[derive(Debug)]
-pub enum Error {
-    /// Pure/core/resource ownership failure.
-    Protocol(Fault),
-    /// Original socket/reactor failure.
-    Io(io::Error),
-    /// Original canonical clock read/subscription failure.
-    Clock(Fault),
-    /// Original native persistence/cleanup cause.
-    Storage(Arc<backend::Failure>),
-}
-impl std::fmt::Display for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Protocol(e) => write!(f, "NAMESTORE protocol: {e}"),
-            Self::Io(e) => e.fmt(f),
-            Self::Clock(e) => write!(f, "NAMESTORE clock: {e}"),
-            Self::Storage(e) => e.fmt(f),
-        }
-    }
-}
-impl std::error::Error for Error {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Protocol(error) | Self::Clock(error) => Some(error),
-            Self::Io(error) => Some(error),
-            Self::Storage(error) => Some(error.as_ref()),
-        }
-    }
-}
-impl From<Fault> for Error {
-    fn from(e: Fault) -> Self {
-        Self::Protocol(e)
-    }
-}
-impl From<io::Error> for Error {
-    fn from(e: io::Error) -> Self {
-        Self::Io(e)
-    }
-}
 pub(super) struct Domain {
     pub _private: u8,
 }
@@ -127,7 +86,7 @@ impl Default for Limits {
             output_frames: 1,
             output_bytes: 65535,
             io_slice_bytes: 65535,
-            snapshot_body_bytes: 8 * 1024 * 1024,
+            snapshot_body_bytes: crate::snapshot::DEFAULT_BODY_BYTES,
             iterators: 1,
             streams: StreamLimits::default(),
             first_input: Duration::from_secs(30),

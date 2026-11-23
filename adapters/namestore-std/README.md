@@ -7,19 +7,21 @@ Framed I/O. It borrows one separately and explicitly started
 `gnunet_snapshot_host::worker::Worker`. It creates no Resolver, thread/task,
 identity runtime, key generator, cryptographic operation or GNS host.
 
-`Server::recover(&mut Store, Loaded, coreLimits, criticalFn)` checks the actual
-`Namespace::Namestore` and matching original physical generation before reading
-its qualified body. A newly created generation0 namespace is initialized under
-that same held lease with a real 12-byte `GNMCORE1`/zero-count canonical image. The synchronous initialization transaction completes before recover returns,
-worker startup, socket business or READY; normal cancellation cannot split it
-at an await. Its committed generation is1, without a client transaction,
-monitor event or business-commit count. Existing marked generation0/missing
-canonical state is refused. A committed zero-length body is also refused;
-a normal committed empty authority has the valid 12-byte format. Actual commit
-errors retain the original Storage failure Arc, exposure and error source chain. File flush/readback and directory-barrier availability follow the [shared snapshot contract](../snapshot-std/README.md#initialization-and-transaction-contracts). No silent reset or legacy state import is attempted. `Server::new(core, &mut Worker, generation, Limits, Ports)` also checks the
-worker namespace. Accepted sources get checked original Client identities,
-finite deadlines and their own retained cursors. Constructor/admission allocation
-is fallible; canonical ACL/Unix credential checks precede private frame allocation.
+`database::Options` validates the service and offline tool's storage profile.
+Its `open` retains one qualified NAMESTORE writer and its loaded image as a
+single owner. Service recovery commits a new store's valid empty image under
+that lease before starting a worker or serving clients. A previously marked
+store requires a valid canonical image for service recovery. The offline
+tool can initialize an absent image or explicitly replace the original
+inventory under the same lease.
+
+The store retains native file synchronization, publication exposure, readback
+and the available directory barrier through each transaction. The server
+checks the original worker namespace. Accepted sources get their own
+identities, deadlines and cursors. ACL and Unix credential admission precede
+private frame allocation.
+[Snapshot contract](../snapshot-std/README.md#initialization-and-transaction-contracts) ·
+[Offline command](../../apps/gnunet-service-namestore/README.md#offline-maintenance)
 
 ## Commands and persistence
 

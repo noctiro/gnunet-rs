@@ -57,7 +57,7 @@ pub(super) fn render(
         return Err(io::ErrorKind::InvalidInput.into());
     }
     Ok(format!(
-        "pass out quick route-to ({interface} {ipv4}) inet proto udp from any to any port 53 group != {gid} no state label \"{label}\"\npass out quick route-to ({interface} {ipv6}) inet6 proto udp from ! fe80::/10 to any port 53 group != {gid} no state label \"{label}\"\npass in quick on {interface} inet proto udp from any port 53 to any no state label \"{label}\"\npass in quick on {interface} inet6 proto udp from any port 53 to any no state label \"{label}\"\n"
+        "pass out quick route-to ({interface} {ipv4}) inet proto udp from any to any port 53 group != {gid} no state label \"{label}\"\npass out quick route-to ({interface} {ipv6}) inet6 proto udp from ! fe80::/9 to ! fe80::/9 port 53 group != {gid} no state label \"{label}\"\npass in quick on {interface} inet proto udp from any port 53 to any no state label \"{label}\"\npass in quick on {interface} inet6 proto udp from any port 53 to any no state label \"{label}\"\n"
     ))
 }
 

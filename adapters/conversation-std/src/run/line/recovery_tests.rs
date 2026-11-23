@@ -135,6 +135,12 @@ struct Fixture {
     directory: Directory,
 }
 async fn fixture() -> Result<Fixture, Failure> {
+    fixture_with_limits(Limits::default().peer_input, None).await
+}
+async fn fixture_with_limits(
+    peer_input: Duration,
+    payload_budget: Option<usize>,
+) -> Result<Fixture, Failure> {
     let directory = Directory::new()?;
     let frontend_listener = Listener::bind(directory.0.join("f"))?;
     let frontend = Stream::connect(directory.0.join("f")).await?;
@@ -148,11 +154,12 @@ async fn fixture() -> Result<Fixture, Failure> {
         gnunet_client_host::EndpointSource::unix_with_clock(cadet_path, clock.clone()),
         gnunet_client_host::EndpointSource::unix_with_clock(pils_path, clock.clone()),
     )?;
-    let limits = Limits {
+    let mut limits = Limits {
         clients: 1,
         calls: 4,
         frame_bytes: 512,
         io_slice_bytes: 1,
+        peer_input,
         core: gnunet_conversation::Limits {
             calls: 4,
             frame_bytes: 500,
@@ -176,6 +183,15 @@ async fn fixture() -> Result<Fixture, Failure> {
         },
         ..Default::default()
     };
+    if let Some(bytes) = payload_budget {
+        limits.core.queued_bytes = limits.core.frame_bytes;
+        let mut brand = Instance::new();
+        let core = Session::new(&mut brand, Identity::new([1; 32], 1)?, limits.core, 0)?;
+        limits.core.retained_bytes = core
+            .retained_bytes()?
+            .checked_add(bytes)
+            .ok_or(Fault::Overflow)?;
+    }
     limits.validate()?;
     let io = Framed::new(
         Connection::from_unix(accepted),
@@ -387,6 +403,270 @@ fn cadet_replacement_preserves_the_line_and_reannounces_only_the_logical_port()
         }
         Ok(())
     })
+}
+
+#[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "Assert original CADET EOF, local call retirement and reannounced listening port"
+)]
+fn partial_cadet_input_deadline_replaces_only_the_cadet_source() -> Result<(), Failure> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?
+        .block_on(async {
+            tokio::time::timeout(Duration::from_secs(6), async {
+                let Fixture { directory: _directory, mut line, frontend, pils_listener, cadet_listener, clock, limits } =
+                    fixture_with_limits(Duration::from_millis(200), None).await?;
+                let (pils_stream, _) = during(line.as_mut(), pils_listener.accept()).await??;
+                let now = clock.sample()?.now.as_micros();
+                let producer = Service::<512>::new(MasterKey::from_seed([7; 32]), Profile::Reference029, now, limits.hello)?;
+                let peer = *producer.identity().public_key().as_bytes();
+                during(line.as_mut(), write_all(&pils_stream, producer.announcement())).await??;
+                let port = [9; 64];
+                during(line.as_mut(), write_all(&frontend, &local(Message::Register { reserved: 0, port: &port })?)).await??;
+                let (original, _) = during(line.as_mut(), cadet_listener.accept()).await??;
+                let opened = during(line.as_mut(), frame(&original, Vec::new())).await??;
+                assert!(matches!(Request::decode(&opened)?, Request::PortOpen { port: p } if p == port));
+
+                let mut secret = [7; 36];
+                secret[..4].copy_from_slice(&KeyType::Eddsa.value().to_be_bytes());
+                let signed = SignedRing::sign(&SecretKey::new(secret)?, &port, &peer, now + 60_000_000)?;
+                let create = response(Response::ChannelCreate { channel: 1, peer: [8; 32], port, options: 0 })?;
+                let incoming = response(Response::Data { channel: 1, priority: 0, messages: &ring(&signed)? })?;
+                during(line.as_mut(), write_all(&original, &create)).await??;
+                during(line.as_mut(), write_all(&original, &incoming)).await??;
+                let heard = during(line.as_mut(), frame(&frontend, Vec::new())).await??;
+                let Message::Ring { cid, .. } = Message::decode(&heard)? else {
+                    return Err("missing Ring on original Line".into());
+                };
+                let ack = during(line.as_mut(), frame(&original, Vec::new())).await??;
+                assert!(matches!(Request::decode(&ack)?, Request::Ack { channel: 1 }));
+
+                let stalled = response(Response::Data { channel: 1, priority: 0,
+                    messages: &local(Message::PeerControl(PeerControl::HangUp))? })?;
+                during(line.as_mut(), write_all(&original, &stalled[..3])).await??;
+                let ended = during(line.as_mut(), read_exact(&original, &mut [0])).await?;
+                assert_eq!(ended.err().map(|error| error.kind()), Some(io::ErrorKind::UnexpectedEof));
+
+                let (replacement, _) = during(line.as_mut(), cadet_listener.accept()).await??;
+                let announced = during(line.as_mut(), frame(&replacement, Vec::new())).await??;
+                assert!(matches!(Request::decode(&announced)?, Request::PortOpen { port: p } if p == port));
+                let hung_up = during(line.as_mut(), frame(&frontend, Vec::new())).await??;
+                assert!(matches!(Message::decode(&hung_up)?, Message::Control { action: ClientControl::HangUp, cid: actual } if actual == cid));
+                during(line.as_mut(), write_all(&replacement, &create)).await??;
+                during(line.as_mut(), write_all(&replacement, &incoming)).await??;
+                let heard = during(line.as_mut(), frame(&frontend, Vec::new())).await??;
+                assert!(matches!(Message::decode(&heard)?, Message::Ring { cid: actual, .. } if actual != cid));
+                let ack = during(line.as_mut(), frame(&replacement, Vec::new())).await??;
+                assert!(matches!(Request::decode(&ack)?, Request::Ack { channel: 1 }));
+
+                drop(frontend);
+                let report = line.as_mut().await;
+                assert!(matches!(report.first_cadet_loss, Some(cadet::LossCause::Requested)));
+                assert!(report.first_pils_loss.is_none());
+                assert_eq!(report.calls_started, 2);
+                assert_eq!(report.calls_closed, 2);
+                assert!(report.cleanup.is_none() && report.undrained == 0);
+                Ok::<_, Failure>(())
+            }).await?
+        })
+}
+
+#[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "Verify an original timed-out channel closes without losing another active call"
+)]
+fn held_cadet_packet_deadline_closes_only_its_original_call() -> Result<(), Failure> {
+    tokio::runtime::Builder::new_current_thread().enable_all().build()?.block_on(async {
+        tokio::time::timeout(Duration::from_secs(6), async {
+            let Fixture { directory: _directory, mut line, frontend, pils_listener, cadet_listener, clock, limits } =
+                fixture_with_limits(Duration::from_millis(500), Some(128)).await?;
+            let (pils_stream, _) = during(line.as_mut(), pils_listener.accept()).await??;
+            let now = clock.sample()?.now.as_micros();
+            let producer = Service::<512>::new(MasterKey::from_seed([7; 32]), Profile::Reference029, now, limits.hello)?;
+            let peer = *producer.identity().public_key().as_bytes();
+            during(line.as_mut(), write_all(&pils_stream, producer.announcement())).await??;
+            let port = [9; 64];
+            let register = local(Message::Register { reserved: 0, port: &port })?;
+            during(line.as_mut(), write_all(&frontend, &register)).await??;
+            let (native, _) = during(line.as_mut(), cadet_listener.accept()).await??;
+            let opened = during(line.as_mut(), frame(&native, Vec::new())).await??;
+            assert!(matches!(Request::decode(&opened)?, Request::PortOpen { port: p } if p == port));
+
+            let mut secret = [7; 36];
+            secret[..4].copy_from_slice(&KeyType::Eddsa.value().to_be_bytes());
+            let signed = SignedRing::sign(&SecretKey::new(secret)?, &port, &peer, now + 60_000_000)?;
+            let ring = ring(&signed)?;
+            let mut cids = [0; 2];
+            for channel in [1, 2] {
+                let create = response(Response::ChannelCreate { channel, peer: [8; 32], port, options: 0 })?;
+                let incoming = response(Response::Data { channel, priority: 0, messages: &ring })?;
+                during(line.as_mut(), write_all(&native, &create)).await??;
+                during(line.as_mut(), write_all(&native, &incoming)).await??;
+                let heard = during(line.as_mut(), frame(&frontend, Vec::new())).await??;
+                let Message::Ring { cid, .. } = Message::decode(&heard)? else {
+                    return Err("missing Ring".into());
+                };
+                cids[usize::try_from(channel)? - 1] = cid;
+                let ack = during(line.as_mut(), frame(&native, Vec::new())).await??;
+                assert!(matches!(Request::decode(&ack)?, Request::Ack { channel: actual } if actual == channel));
+                let credit = response(Response::Ack { channel })?;
+                during(line.as_mut(), write_all(&native, &credit)).await??;
+                let pickup = local(Message::Control { cid, action: ClientControl::PickUp })?;
+                during(line.as_mut(), write_all(&frontend, &pickup)).await??;
+                let picked_up = during(line.as_mut(), frame(&native, Vec::new())).await??;
+                assert!(matches!(Request::decode(&picked_up)?, Request::Data { channel: actual, messages, .. }
+                    if actual == channel && matches!(Message::decode(messages)?, Message::PeerControl(PeerControl::PickUp))));
+            }
+
+            let oversized_for_queue = local(Message::PeerAudio(&[0x42; 400]))?;
+            let holding = response(Response::Data { channel: 1, priority: 0, messages: &oversized_for_queue })?;
+            during(line.as_mut(), write_all(&native, &holding)).await??;
+            let retired = during(line.as_mut(), frame(&native, Vec::new())).await??;
+            assert!(matches!(Request::decode(&retired)?, Request::ChannelDestroy { channel: 1 }));
+            let hangup = during(line.as_mut(), frame(&frontend, Vec::new())).await??;
+            assert!(matches!(Message::decode(&hangup)?, Message::Control { cid, action: ClientControl::HangUp } if cid == cids[0]));
+
+            let audio = local(Message::PeerAudio(b"live"))?;
+            let next = response(Response::Data { channel: 2, priority: 0, messages: &audio })?;
+            during(line.as_mut(), write_all(&native, &next)).await??;
+            let heard = during(line.as_mut(), frame(&frontend, Vec::new())).await??;
+            assert!(matches!(Message::decode(&heard)?, Message::Audio { cid, data: b"live" } if cid == cids[1]));
+            let ack = during(line.as_mut(), frame(&native, Vec::new())).await??;
+            assert!(matches!(Request::decode(&ack)?, Request::Ack { channel: 2 }));
+
+            drop(frontend);
+            let report = line.as_mut().await;
+            assert!(report.first_cadet_loss.is_none() && report.first_pils_loss.is_none());
+            assert_eq!(report.calls_started, 2);
+            assert_eq!(report.calls_closed, 2);
+            assert!(report.cleanup.is_none() && report.undrained == 0);
+            Ok::<_, Failure>(())
+        }).await?
+    })
+}
+
+#[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "Assert original media bytes, actual MQ loss and fresh call ownership without audio devices"
+)]
+fn active_media_replacement_loses_the_original_prefix_without_replaying_it() -> Result<(), Failure>
+{
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?
+        .block_on(async {
+            tokio::time::timeout(Duration::from_secs(10), async {
+                let Fixture {
+                    directory: _directory,
+                    mut line,
+                    frontend,
+                    pils_listener,
+                    cadet_listener,
+                    clock,
+                    limits,
+                } = fixture().await?;
+                let (pils_stream, _) = during(line.as_mut(), pils_listener.accept()).await??;
+                let now = clock.sample()?.now.as_micros();
+                let producer = Service::<512>::new(
+                    MasterKey::from_seed([7; 32]),
+                    Profile::Reference029,
+                    now,
+                    limits.hello,
+                )?;
+                let peer = *producer.identity().public_key().as_bytes();
+                during(line.as_mut(), write_all(&pils_stream, producer.announcement())).await??;
+                let port = [9; 64];
+                during(
+                    line.as_mut(),
+                    write_all(&frontend, &local(Message::Register { reserved: 0, port: &port })?),
+                ).await??;
+                let (original, _) = during(line.as_mut(), cadet_listener.accept()).await??;
+                let opened = during(line.as_mut(), frame(&original, Vec::new())).await??;
+                assert!(matches!(Request::decode(&opened)?, Request::PortOpen { port: p } if p == port));
+                let mut secret = [7; 36];
+                secret[..4].copy_from_slice(&KeyType::Eddsa.value().to_be_bytes());
+                let key = SecretKey::new(secret)?;
+                let signed = SignedRing::sign(&key, &port, &peer, now + 60_000_000)?;
+                during(
+                    line.as_mut(),
+                    write_all(&original, &response(Response::ChannelCreate { channel: 1, peer: [8; 32], port, options: 0 })?),
+                ).await??;
+                during(
+                    line.as_mut(),
+                    write_all(&original, &response(Response::Data { channel: 1, priority: 0, messages: &ring(&signed)? })?),
+                ).await??;
+                let heard = during(line.as_mut(), frame(&frontend, Vec::new())).await??;
+                let Message::Ring { cid, .. } = Message::decode(&heard)? else {
+                    return Err("original Ring absent".into());
+                };
+                let ack = during(line.as_mut(), frame(&original, Vec::new())).await??;
+                assert!(matches!(Request::decode(&ack)?, Request::Ack { channel: 1 }));
+                during(line.as_mut(), write_all(&original, &response(Response::Ack { channel: 1 })?)).await??;
+                during(
+                    line.as_mut(),
+                    write_all(&frontend, &local(Message::Control { action: ClientControl::PickUp, cid })?),
+                ).await??;
+                let pickup = during(line.as_mut(), frame(&original, Vec::new())).await??;
+                assert!(matches!(Request::decode(&pickup)?, Request::Data { channel: 1, messages, .. }
+                    if matches!(Message::decode(messages)?, Message::PeerControl(PeerControl::PickUp))));
+                during(line.as_mut(), write_all(&original, &response(Response::Ack { channel: 1 })?)).await??;
+
+                // Exercise media in both directions on the original active call.
+                let incoming = [0x24; 32];
+                during(
+                    line.as_mut(),
+                    write_all(&original, &response(Response::Data { channel: 1, priority: 0, messages: &local(Message::PeerAudio(&incoming))? })?),
+                ).await??;
+                let audio = during(line.as_mut(), frame(&frontend, Vec::new())).await??;
+                assert!(matches!(Message::decode(&audio)?, Message::Audio { cid: actual, data }
+                    if actual == cid && data == incoming));
+                let ack = during(line.as_mut(), frame(&original, Vec::new())).await??;
+                assert!(matches!(Request::decode(&ack)?, Request::Ack { channel: 1 }));
+
+                let outgoing = [0x42; 400];
+                during(line.as_mut(), write_all(&frontend, &local(Message::Audio { cid, data: &outgoing })?)).await??;
+                let mut prefix = [0];
+                during(line.as_mut(), read_exact(&original, &mut prefix)).await??;
+                // One-byte syscall slices retain a real exposed original frame.
+                // Closing its MQ must not finish that frame on a fresh source.
+                drop(original);
+
+                let (replacement, _) = during(line.as_mut(), cadet_listener.accept()).await??;
+                let announced = during(line.as_mut(), frame(&replacement, Vec::new())).await??;
+                assert!(matches!(Request::decode(&announced)?, Request::PortOpen { port: p } if p == port));
+                let ended = during(line.as_mut(), frame(&frontend, Vec::new())).await??;
+                assert!(matches!(Message::decode(&ended)?, Message::Control { action: ClientControl::HangUp, cid: actual }
+                    if actual == cid));
+
+                // Reusing the numeric channel cannot inherit the retired call,
+                // its media, or the original receive/send credit.
+                during(
+                    line.as_mut(),
+                    write_all(&replacement, &response(Response::ChannelCreate { channel: 1, peer: [8; 32], port, options: 0 })?),
+                ).await??;
+                during(
+                    line.as_mut(),
+                    write_all(&replacement, &response(Response::Data { channel: 1, priority: 0, messages: &ring(&signed)? })?),
+                ).await??;
+                let heard = during(line.as_mut(), frame(&frontend, Vec::new())).await??;
+                assert!(matches!(Message::decode(&heard)?, Message::Ring { cid: actual, .. } if actual != cid));
+                let ack = during(line.as_mut(), frame(&replacement, Vec::new())).await??;
+                assert!(matches!(Request::decode(&ack)?, Request::Ack { channel: 1 }));
+                drop(frontend);
+                let report = line.as_mut().await;
+                assert!(report.first_cadet_loss.is_some() && report.first_pils_loss.is_none());
+                assert!(report.effects_lost >= 1);
+                assert!(report.cleanup.is_none() && report.undrained == 0);
+                assert_eq!(report.calls_started, 2);
+                assert_eq!(report.calls_closed, 2);
+                assert!(report.physical_closed && report.cadet_closed && report.pils_closed);
+                Ok::<_, Failure>(())
+            }).await?
+        })
 }
 
 #[test]

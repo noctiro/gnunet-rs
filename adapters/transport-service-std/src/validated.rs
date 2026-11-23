@@ -93,7 +93,7 @@ pub struct RetiredValidation<'id> {
     /// Actual processing/local/unknown assurance of this old effect only.
     pub outcome: RetiredOutcome,
     /// Original native/worker-port failure, independent of any known raw code.
-    pub failure: Option<crate::epoch::SharedFailure>,
+    pub failure: Option<crate::SharedFailure>,
 }
 /// Actual local/native assurance of the original retirement.
 pub enum RetiredOutcome {
@@ -351,61 +351,9 @@ impl<'id> ValidatedStore<'id> {
     pub fn idle(&self) -> bool {
         self.pending.is_none()
     }
-    /// A real source failure cannot be repaired merely by rebuilding Engine.
+    /// Whether this store still owns a healthy PEERSTORE source.
     pub fn reusable(&self) -> bool {
         !self.failed
-    }
-    /// Drain an already retired Engine's exact original STORE, without admitting
-    /// an unstarted effect. The native operation itself remains on its source.
-    pub fn poll_retired(
-        &mut self,
-        cx: &mut Context<'_>,
-    ) -> Poll<Result<Option<RetiredValidation<'id>>, Fault>> {
-        if self.pending.is_none() {
-            return Poll::Ready(Ok(None));
-        }
-        let never_admitted = self.pending.as_ref().is_some_and(|p| p.operation.is_none());
-        if !never_admitted && self.pending.as_ref().is_some_and(|p| p.result.is_none()) {
-            match self.poll(cx) {
-                Poll::Pending => return Poll::Pending,
-                Poll::Ready(Ok(())) => {}
-                Poll::Ready(Err(_)) => {}
-            }
-            if self.pending.as_ref().is_some_and(|p| p.result.is_none()) {
-                return Poll::Pending;
-            }
-        }
-        if self.failed {
-            let (mut retired, cleanup) = self.retire_now();
-            if !cleanup.is_empty()
-                && let Some(done) = &mut retired
-            {
-                done.failure = Some(crate::epoch::SharedFailure::new(Box::new(
-                    crate::Failures {
-                        original: done
-                            .failure
-                            .as_ref()
-                            .map(crate::epoch::SharedFailure::boxed),
-                        cleanup,
-                    },
-                )));
-            }
-            return Poll::Ready(Ok(retired));
-        }
-        let row = self.pending.take().ok_or(Fault::Stale)?;
-        let failure = self.take_error().map(crate::epoch::SharedFailure::new);
-        let outcome = retired_outcome(&row);
-        self.retry = None;
-        Poll::Ready(Ok(Some(RetiredValidation {
-            peer: row.peer,
-            address: row.address,
-            expiration: row.until,
-            bounds: row.bounds,
-            operation: row.operation,
-            epoch: row.epoch,
-            outcome,
-            failure,
-        })))
     }
     /// Physically close first, then transfer every original effect/result without
     /// clock/IO admission. An absent result remains Unknown, never rolled back.
@@ -437,7 +385,7 @@ impl<'id> ValidatedStore<'id> {
                 }
             }
         }
-        let failure = self.take_error().map(crate::epoch::SharedFailure::new);
+        let failure = self.take_error().map(crate::SharedFailure::new);
         let retired = self.pending.take().map(|row| {
             let outcome = retired_outcome(&row);
             RetiredValidation {

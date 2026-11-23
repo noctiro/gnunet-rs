@@ -7,8 +7,8 @@ gnunet-service-cadet -c official.conf
 Application IPC supports ports, local loopback channels, source credit,
 receive completion and channel retirement. The default peer backend composes
 CORE, DHT and PILS with authenticated KX/ratchet and reliable channels.
-`[cadet-rust] PEER_CORE=NO` selects local-only operation and rejects remote opens
-and peer-management queries.
+`[cadet-rust] PEER_CORE=NO` selects local-only operation and rejects remote opens.
+Peer, tunnel and path queries return empty lists in this mode.
 
 ## Configuration and startup
 
@@ -30,7 +30,7 @@ falls back to another profile.
 
 Startup waits for verified PILS identity and, in peer mode, matching DH/signing
 providers and durable monotime reservation. The separate
-[readiness owner](src/readiness.rs) writes stdout READY and consumes the original
+[readiness owner](../../adapters/cadet-std/src/startup/readiness.rs) writes stdout READY and consumes the original
 parent capability once after local construction. Its finite wait observes logging
 and the same sticky stop subscription used by identity and node work. A failed or
 canceled submission cannot start another readiness attempt. Readiness does not
@@ -106,11 +106,13 @@ reused only after their effects and IO retire.
 
 ## Discovery and monitoring
 
-Non-neighbor opens issue DHT_HELLO GETs with RECORD_ROUTE and
+Non-neighbor opens and disconnected established tunnels issue DHT_HELLO GETs with RECORD_ROUTE and
 DEMULTIPLEX_EVERYWHERE. `[cadet] DHT_REPLICATION_LEVEL` defaults to 3. Each result
-must match the original key/type, verify HELLO and all recorded-path signatures,
-and lead through a current CORE neighbor. Native query/open deadlines remain
-fixed through STOP, cancellation and source recovery.
+must match the original key and type and verify the HELLO and recorded-path
+signatures. Each GET retains up to three verified paths with distinct first
+hops. Admission requires a current CORE neighbor for the selected first hop.
+Native query and open deadlines remain fixed through STOP, cancellation and
+source recovery.
 
 Current peer demand also owns bounded TRANSPORT application preferences: one
 BEST_EFFORT, bandwidth-zero registration per peer MQ. Retiring a source discards
@@ -125,6 +127,10 @@ accepted outgoing work retains its settlement authority. Remote sends drain on
 peer ACK; loopback sends drain after the immutable DATA frame is written.
 A fixed 120-second additional channel-drain bound does not extend earlier
 operation/process deadlines. Repeated Destroy never renews it.
+
+After the application server stops, peer mode closes the original CORE, DH and
+signing sources and drains their effect receipts within the same shutdown grace.
+Failure or expiry uses the forced retirement path.
 
 The shared `cadet` STATISTICS publisher samples after application and peer
 retirement while inventory still exists. Queue admission is not a transmitted

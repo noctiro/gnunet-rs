@@ -72,6 +72,27 @@ impl<'id> Engine<'id, '_, '_> {
         &mut self,
         tun: Tun<'id>,
     ) -> Result<RoutingRequest<'id>, Error> {
+        self.owned_recovery_request(tun, RouteAction::Verify)
+    }
+
+    /// Offer restoration after a proved packet descriptor close on the same
+    /// exclusively owned interface. The provider must observe the original
+    /// scope before repair and verify the complete plan before admission.
+    ///
+    /// # Errors
+    /// Refuses the same states as [`Self::routing_verification_request`].
+    pub fn routing_restoration_request(
+        &mut self,
+        tun: Tun<'id>,
+    ) -> Result<RoutingRequest<'id>, Error> {
+        self.owned_recovery_request(tun, RouteAction::Restore)
+    }
+
+    fn owned_recovery_request(
+        &mut self,
+        tun: Tun<'id>,
+        action: RouteAction,
+    ) -> Result<RoutingRequest<'id>, Error> {
         let old = self.tun_ref(tun, true)?;
         if !matches!(old.routes, RouteState::Present | RouteState::Unknown) {
             return Err(Error::PermissionDenied);
@@ -86,9 +107,9 @@ impl<'id> Engine<'id, '_, '_> {
             queued: false,
             revoked: false,
         });
-        state.routing_action = RouteAction::Verify;
+        state.routing_action = action;
         Ok(RoutingRequest {
-            action: RouteAction::Verify,
+            action,
             routing: Routing { tun, serial },
             ipv4: self.limits.ipv4,
             ipv6: self.limits.ipv6,
@@ -102,9 +123,26 @@ impl<'id> Engine<'id, '_, '_> {
     /// # Errors
     /// Refuses another action, unqueued/revoked work and stale/dead sources.
     pub fn route_reverified(&mut self, routing: Routing<'id>) -> Result<(), Error> {
+        self.finish_owned_recovery(routing, RouteAction::Verify)
+    }
+
+    /// Accept the completed restoration of the exact original owned plan.
+    /// This requires current interface, address, DAD and route observations.
+    ///
+    /// # Errors
+    /// Refuses the same states as [`Self::route_reverified`].
+    pub fn route_restored(&mut self, routing: Routing<'id>) -> Result<(), Error> {
+        self.finish_owned_recovery(routing, RouteAction::Restore)
+    }
+
+    fn finish_owned_recovery(
+        &mut self,
+        routing: Routing<'id>,
+        action: RouteAction,
+    ) -> Result<(), Error> {
         let old = self.tun_ref(routing.tun, true)?;
         let work = self.routing_ref(routing, true)?;
-        if old.routing_action != RouteAction::Verify || old.routes.is_borrowed() {
+        if old.routing_action != action || old.routes.is_borrowed() {
             return Err(Error::PermissionDenied);
         }
         if !work.queued {

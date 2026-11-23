@@ -27,6 +27,9 @@ impl Scanner {
     pub(crate) fn next(&self) -> Instant {
         self.next
     }
+    pub(crate) fn request_refresh(&mut self) {
+        self.next = self.next.min(Instant::now());
+    }
     pub(crate) fn refresh(&mut self) -> io::Result<bool> {
         if Instant::now() < self.next {
             return Ok(false);

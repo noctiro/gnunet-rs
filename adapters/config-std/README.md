@@ -1,6 +1,6 @@
 # Host configuration
 
-`gnunet-config` implements GNUnet v0.29.1 host configuration APIs and the
+`gnunet-config` implements GNUnet host configuration APIs and the
 `gnunet-config-diff` command in safe Rust. The ordinary `gnunet-config` binary
 is composed in `gnunet-program-host`. This crate forbids unsafe code; OS calls
 that require unsafe code belong to `gnunet-native`.
@@ -38,8 +38,10 @@ lists preserve the pinned escaping/tokenization rules.
 `get_path` uses the process's read-only environment. `get_filename`,
 `expand_dollar`, `expand_filename` and `parse_with_environment` can use a supplied
 `Environment` for isolated deployments/tests. Dollar expansion checks PATHS
-before environment variables, preserves undefined references, supports braced
-defaults, and detects recursive definitions without changing global environment.
+before environment variables, preserves undefined references and supports braced
+defaults. A variable already being expanded is undefined for that nested term,
+so its default is used or the reference stays literal. Empty and recursive terms
+do not prevent later expressions from expanding. Global environment is unchanged.
 
 Unix filenames preserve native bytes. Windows paths retain drive, UNC and
 verbatim namespaces; PATH discovery handles quoted entries and `.exe` anchors.
@@ -116,6 +118,6 @@ relative to an original native directory and exact child name. The caller owns
 administrative namespace exclusion and supplies its original target/deadline
 fence. This entry performs no filename expansion, parent creation or symlink
 resolution. Native private permissions apply to new output. Its receipt retains
-the published object and separate directory-barrier capability; failure records
-publication uncertainty, writer close and original temporary cleanup. The ordinary
-path-oriented command writer retains its existing public behavior.
+the published object and the directory-barrier result. Windows flushes the original
+file after publication. Failures retain publication uncertainty, writer close and
+original temporary cleanup. [Publication contract](../native-std/API.md#anchored-filesystem-operations)

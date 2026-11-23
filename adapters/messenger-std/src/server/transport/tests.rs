@@ -105,6 +105,25 @@ async fn unwritten() -> Result<(), Failure> {
     let (peer, _) = listener.accept().await?;
     let room = server.core.room([7; 64], None)?;
     server.drain_events();
+    let until = Instant::now() + limits.operation_lifetime;
+    let opening = server
+        .start_room_channel(room, [77; 32], ChannelAdmission::Entry(until))?
+        .ok_or(Fault::NotReady)?;
+    server.refresh_cadet_pending(until);
+    check(
+        server
+            .cadet_pending
+            .is_some_and(|(_, expiry)| expiry == until),
+    )?;
+    server.expire_cadet_output(&mut |_| {})?;
+    check(
+        server.cadet.epoch() == Some(epoch)
+            && server.cadet.pending_transmit().is_none()
+            && server.cadet_admission.is_none()
+            && server.cadet.channel_info(opening).is_err()
+            && server.tunnels.iter().all(Option::is_none)
+            && matches!(peer.try_read(&mut [0]), Err(error) if error.kind() == io::ErrorKind::WouldBlock),
+    )?;
     for row in 0..4 {
         let remote = [u8::try_from(row + 1)?; 32];
         let channel = server.cadet.open(remote, [9; 64])?;
@@ -144,12 +163,15 @@ async fn unwritten() -> Result<(), Failure> {
             padding::Decode::Required,
             None,
         )?;
+        let mut handshake = PeerHandshake::default();
+        handshake.observe_credit();
+        handshake.observe_info();
         server.tunnels[row] = Some(Tunnel {
             room,
             source,
             channel,
             peer: remote,
-            compatible: true,
+            handshake,
             info_queued: true,
             closing: false,
             remote_closed: false,

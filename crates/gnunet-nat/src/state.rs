@@ -1,9 +1,10 @@
 //! Bounded NAT service business state. Providers supply actual interface,
 //! resolver, STUN or mapping observations; intent/worker completion alone does
 //! not add an address. Notifications are a bounded queue on original sources.
+pub use crate::address::Advertised;
 use crate::{
     Error,
-    address::{SocketAddress, select},
+    address::{AddressPolicy, SocketAddress},
 };
 use alloc::{collections::VecDeque, string::String, vec::Vec};
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -88,14 +89,6 @@ pub struct RegistrationInput<'a> {
     pub bindings: &'a [SocketAddress],
     /// Actual policy resolved for this registration.
     pub options: Options,
-}
-/// Actual address plus its advertised classification.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct Advertised {
-    /// Actual discovered endpoint.
-    pub address: SocketAddress,
-    /// Original/provider class bits.
-    pub class: AddressClass,
 }
 /// Which external action supplied a provider. Creating a provider is only
 /// a lease: its address set remains empty until publish_snapshot succeeds.
@@ -623,6 +616,10 @@ impl Core {
         if r.flags & nat::ADDRESSES == 0 {
             return Ok(out);
         }
+        let policy = AddressPolicy {
+            return_local_addresses: r.options.return_local_addresses,
+            disable_v6: r.options.disable_v6,
+        };
         for p in &self.providers {
             let (addresses, expires) = match override_ {
                 Override::Remove(id) if *id == p.provider => continue,
@@ -633,7 +630,7 @@ impl Core {
                 continue;
             }
             for &a in addresses {
-                if r.options.disable_v6 && matches!(a.address, SocketAddress::V6 { .. }) {
+                if !policy.allows(a.address) {
                     continue;
                 }
                 match p.kind {
@@ -705,19 +702,8 @@ impl Core {
                     _ => {}
                 }
                 for &binding in &r.bindings {
-                    if let Some(address) = select(
-                        binding,
-                        a.address,
-                        a.class,
-                        r.options.return_local_addresses,
-                    ) {
-                        self.push(
-                            &mut out,
-                            Advertised {
-                                address,
-                                class: a.class,
-                            },
-                        )?;
+                    if let Some(selected) = policy.select(binding, a) {
+                        self.push(&mut out, selected)?;
                     }
                 }
             }

@@ -14,8 +14,8 @@ canceled waits retain their original connection and byte cursor.
 Names are anchored to that directory; identities preserve the complete native
 representation, including Windows file IDs. A completed transaction requires file
 sync, original-object publication, exact bytes/identity readback and physical
-writer authority. `directory_sync()` reports naming-barrier capability separately;
-Windows reports `Unavailable` rather than manufacturing directory durability.
+writer authority. `directory_sync()` reports the actual directory barrier
+separately. [Native directory barrier](../native-std/API.md#anchored-filesystem-operations)
 
 Unknown publication retains the original candidate, predecessor and staged file,
 blocking new writes/timestamp reservations until explicit recovery under the same

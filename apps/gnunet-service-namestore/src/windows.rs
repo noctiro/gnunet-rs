@@ -116,7 +116,7 @@ pub(super) fn run() -> Result<(), Failure> {
             ))?
         } else {
             let _entered = runtime.enter();
-            BoundListeners::from_activation(activation)?
+            BoundListeners::from_activation_with_access(activation, settings.unix)?
         };
         for error in bound.failures() {
             reports.warning(

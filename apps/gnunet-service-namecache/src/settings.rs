@@ -1,6 +1,6 @@
-//! Official service keys and explicit internal volatile-memory resource policy.
+//! Official service keys and native cache resource policy.
 use crate::Failure;
-use gnunet_config::Configuration;
+use gnunet_config::{Configuration, ProcessEnvironment};
 use gnunet_ipc_unix::producer;
 use gnunet_namecache_host::server;
 use gnunet_service_runtime::{
@@ -8,9 +8,36 @@ use gnunet_service_runtime::{
     service::{ServiceOptions, ShutdownMode},
     service_options,
 };
-use std::time::Duration;
+use std::{path::PathBuf, time::Duration};
 
 const LOCAL: &[u8] = b"namecache-rust";
+fn storage(c: &Configuration) -> Result<Option<PathBuf>, Failure> {
+    if let Some(backend) = c.get(LOCAL, b"BACKEND") {
+        if backend.eq_ignore_ascii_case(b"memory") {
+            if c.get(LOCAL, b"DIRECTORY").is_some() {
+                return Err("NAMECACHE DIRECTORY requires BACKEND = files".into());
+            }
+            return Ok(None);
+        }
+        if !backend.eq_ignore_ascii_case(b"files") {
+            return Err("NAMECACHE BACKEND must be files or memory".into());
+        }
+    }
+    if c.get(LOCAL, b"DIRECTORY").is_some() {
+        return Ok(Some(c.get_filename(
+            LOCAL,
+            b"DIRECTORY",
+            &ProcessEnvironment,
+        )?));
+    }
+    let input = b"${GNUNET_DATA_HOME}/namecache-rust";
+    let expanded = c.expand_dollar(input, &ProcessEnvironment)?;
+    if expanded == input {
+        return Err("set [namecache-rust] DIRECTORY or GNUNET_DATA_HOME".into());
+    }
+    Ok(Some(c.expand_filename(&expanded, &ProcessEnvironment)?))
+}
+
 fn n(c: &Configuration, key: &[u8], default: usize) -> Result<usize, Failure> {
     Ok(c.get(LOCAL, key)
         .map(|_| c.get_number(LOCAL, key))
@@ -50,6 +77,7 @@ fn duration(c: &Configuration, key: &[u8], default: u64) -> Result<Duration, Fai
     Ok(Duration::from_micros(us))
 }
 pub(super) struct Settings {
+    pub directory: Option<PathBuf>,
     pub core: gnunet_namecache::Limits,
     pub native: server::Limits,
     pub options: ServiceOptions,
@@ -61,11 +89,6 @@ pub(super) struct Settings {
 }
 impl Settings {
     pub fn read(c: &Configuration) -> Result<Self, Failure> {
-        if c.get(LOCAL, b"BACKEND")
-            .is_some_and(|value| !value.eq_ignore_ascii_case(b"memory"))
-        {
-            return Err("NAMECACHE Rust BACKEND must be memory; no SQL plugin or durable storage backend is implemented by this foreground".into());
-        }
         let d = gnunet_namecache::Limits::default();
         let core = gnunet_namecache::Limits {
             entries: n(c, b"MAX_ENTRIES", d.entries)?,
@@ -97,6 +120,7 @@ impl Settings {
             return Err("invalid NAMECACHE entry/cache/block/frame resource bounds".into());
         }
         Ok(Self {
+            directory: storage(c)?,
             core,
             native,
             options: service_options(c, b"namecache", ShutdownMode::Immediate)?,

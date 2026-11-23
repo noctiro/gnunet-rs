@@ -25,7 +25,7 @@ fn run() -> Result<(), Failure> {
         getopt::Options,
         helpers::{self, Filename, Target},
         logging::Logger,
-        program::{self, Defaults, Invocation, NlsDisabled, Preparation},
+        program::{self, Defaults, Invocation, Preparation},
         reporting::Reporter,
         shared_clock::SharedClock,
     };
@@ -69,13 +69,12 @@ fn run() -> Result<(), Failure> {
         select_default_filename: true,
         defaults: Defaults::Native,
     };
-    let prepared = program::prepare(
+    let prepared = program::prepare_installed(
         config,
         invocation,
         options,
         std::env::args_os(),
         &program::Environment::capture(),
-        &mut NlsDisabled,
         &mut logger,
         &clock,
         &mut io::stdout().lock(),

@@ -71,11 +71,13 @@ pub(super) fn policy(
 
 #[cfg(unix)]
 fn native_username() -> Result<Vec<u8>, Failure> {
-    Ok(uzers::get_user_by_uid(nix::unistd::geteuid().as_raw())
-        .ok_or("effective REST username unavailable")?
-        .name()
-        .as_encoded_bytes()
-        .to_vec())
+    Ok(
+        gnunet_native::accounts::user_by_uid(nix::unistd::geteuid().as_raw())?
+            .ok_or("effective REST username unavailable")?
+            .name()
+            .to_bytes()
+            .to_vec(),
+    )
 }
 #[cfg(windows)]
 fn native_username() -> Result<Vec<u8>, Failure> {

@@ -27,10 +27,11 @@ use tokio::time::Instant;
 use zeroize::Zeroizing;
 mod data;
 mod driver;
+pub(super) mod standalone;
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 const MAX_TIMEOUT_MS: u64 = 86_400_000;
 const MAX_ROWS: u64 = 1_000_000;
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Action {
     AttributeStore,
     AttributeDelete,
@@ -74,8 +75,6 @@ impl Action {
 }
 struct Command {
     action: Action,
-    socket: PathBuf,
-    identity_socket: Option<PathBuf>,
     ego: Zeroizing<Vec<u8>>,
     name: Zeroizing<Vec<u8>>,
     value: Zeroizing<Vec<u8>>,
@@ -94,17 +93,52 @@ struct Command {
     scan_limit: u64,
     output_bytes: usize,
 }
+struct ExplicitEndpoints {
+    reclaim: PathBuf,
+    identity: Option<PathBuf>,
+}
 #[derive(Clone, Copy)]
 struct Window {
     hard: Instant,
     until: u64,
 }
+impl Window {
+    fn new(source: &EndpointSource, timeout: Duration) -> Result<Self> {
+        let origin = Instant::now();
+        let now = source.clock().sample()?.now.as_micros();
+        Ok(Self {
+            until: now
+                .checked_add(u64::try_from(timeout.as_micros())?)
+                .filter(|n| *n != u64::MAX)
+                .ok_or("canonical deadline overflow")?,
+            hard: origin
+                .checked_add(timeout)
+                .ok_or("native deadline overflow")?,
+        })
+    }
+
+    fn within(self, limit: Self) -> Self {
+        Self {
+            until: self.until.min(limit.until),
+            hard: self.hard.min(limit.hard),
+        }
+    }
+}
 struct Output<'w, W> {
     writer: &'w mut W,
     remaining: usize,
+    mode: OutputMode,
+}
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum OutputMode {
+    Json,
+    Text,
 }
 impl<W: Write> Output<'_, W> {
     fn emit(&mut self, value: Value) -> Result<()> {
+        if self.mode == OutputMode::Text {
+            return Ok(());
+        }
         let bytes = Zeroizing::new(serde_json::to_vec(&value)?);
         let needed = bytes
             .len()
@@ -115,6 +149,23 @@ impl<W: Write> Output<'_, W> {
         }
         self.remaining -= needed;
         self.writer.write_all(&bytes)?;
+        self.writer.write_all(b"\n")?;
+        self.writer.flush()?;
+        Ok(())
+    }
+
+    fn line(&mut self, fields: &[&[u8]]) -> Result<()> {
+        let needed = fields.iter().try_fold(1usize, |size, field| {
+            size.checked_add(field.len())
+                .ok_or("RECLAIM line size overflow")
+        })?;
+        self.remaining = self
+            .remaining
+            .checked_sub(needed)
+            .ok_or("RECLAIM output byte bound reached")?;
+        for field in fields {
+            self.writer.write_all(field)?;
+        }
         self.writer.write_all(b"\n")?;
         self.writer.flush()?;
         Ok(())
@@ -155,7 +206,7 @@ fn unhex(input: &str, max: usize) -> Result<Zeroizing<Vec<u8>>> {
 fn identifier(value: &str) -> Result<Identifier> {
     Ok(Identifier::decode(&unhex(value, 32)?)?)
 }
-fn parse(args: &[OsString]) -> Result<Command> {
+fn parse(args: &[OsString]) -> Result<(Command, ExplicitEndpoints)> {
     let (action,n)=match args.first().and_then(|a|a.to_str()) {
         Some("attribute-store")=>(Action::AttributeStore,2),Some("attribute-delete")=>(Action::AttributeDelete,1),
         Some("attribute-get")=>(Action::AttributeGet,1),Some("attribute-list")=>(Action::AttributeList,0),
@@ -165,38 +216,15 @@ fn parse(args: &[OsString]) -> Result<Command> {
         Some("ticket-revoke")=>(Action::TicketRevoke,1),Some("ticket-consume")=>(Action::TicketConsume,2),
         _=>return Err("expected reclaim attribute-store|attribute-delete|attribute-get|attribute-list|credential-store|credential-delete|credential-get|credential-list|ticket-issue|ticket-list|ticket-revoke|ticket-consume".into()),
     };
-    let socket = PathBuf::from(args.get(1).ok_or("missing explicit RECLAIM UNIXPATH")?);
+    let mut endpoints = ExplicitEndpoints {
+        reclaim: PathBuf::from(args.get(1).ok_or("missing explicit RECLAIM UNIXPATH")?),
+        identity: None,
+    };
     let inputs = args
         .get(2..2 + n)
         .ok_or("missing RECLAIM positional input")?;
     let store = matches!(action, Action::AttributeStore | Action::CredentialStore);
-    let mut command = Command {
-        action,
-        socket,
-        identity_socket: None,
-        ego: Zeroizing::new(Vec::new()),
-        name: Zeroizing::new(Vec::new()),
-        value: Zeroizing::new(Vec::new()),
-        kind: 1,
-        id: None,
-        credential: None,
-        flags: None,
-        ticket: Zeroizing::new(Vec::new()),
-        uri: Zeroizing::new(Vec::new()),
-        ids: Vec::new(),
-        names: Vec::new(),
-        expiration: RelativeTime::from_micros(3_600_000_000),
-        timeout: Duration::from_secs(30),
-        limits: Limits {
-            operations: 1,
-            source_bytes: 65535,
-            reconnect: false,
-            ..Limits::default()
-        },
-        limit: 10_000,
-        scan_limit: 10_000,
-        output_bytes: 16 * 1024 * 1024,
-    };
+    let mut command = Command::new(action);
     let mut timeout_ms = 30_000u64;
     let mut ego_present = false;
     let mut encoding = "text";
@@ -206,7 +234,7 @@ fn parse(args: &[OsString]) -> Result<Command> {
         let option = text(&args[at])?;
         let value = args.get(at + 1).ok_or("missing RECLAIM option value")?;
         match option {
-            "--identity-socket" => command.identity_socket = Some(PathBuf::from(value)),
+            "--identity-socket" => endpoints.identity = Some(PathBuf::from(value)),
             "--ego" => {
                 command.ego = bytes(value, identity::Limits::default().name_bytes)?;
                 ego_present = true;
@@ -267,13 +295,13 @@ fn parse(args: &[OsString]) -> Result<Command> {
         return Err("RECLAIM deadline overflow".into());
     }
     if action != Action::TicketConsume {
-        if command.identity_socket.is_none() {
+        if endpoints.identity.is_none() {
             return Err("required --identity-socket UNIXPATH".into());
         }
         if !ego_present {
             return Err("required --ego NAME (opaque original IDENTITY lookup)".into());
         }
-    } else if command.identity_socket.is_some() || ego_present {
+    } else if endpoints.identity.is_some() || ego_present {
         return Err("ticket-consume takes no private identity/ego".into());
     }
     if store {
@@ -282,42 +310,10 @@ fn parse(args: &[OsString]) -> Result<Command> {
         let raw = crate::argument::wire_bytes(&inputs[1])?;
         command.value = match encoding {
             "hex" => unhex(text(&inputs[1])?, 65535)?,
-            "text" => {
-                let length = raw
-                    .len()
-                    .checked_add(1)
-                    .filter(|n| *n <= 65535)
-                    .ok_or("text value too large")?;
-                let mut value = Zeroizing::new(Vec::new());
-                value.try_reserve_exact(length)?;
-                value.resize(length, 0);
-                let written = if action == Action::AttributeStore {
-                    credentials::attribute_from_string(
-                        AttributeType::new(command.kind),
-                        raw,
-                        &mut value,
-                    )?
-                } else {
-                    credentials::credential_from_string(
-                        CredentialType::new(command.kind),
-                        raw,
-                        &mut value,
-                    )?
-                };
-                value.truncate(written);
-                value
-            }
+            "text" => command.text_value(raw)?,
             _ => return Err("--encoding must be text|hex".into()),
         };
-        let length = if action == Action::AttributeStore {
-            command.attribute(None)?.encoded_len()?
-        } else {
-            command.credential(None)?.encoded_len()?
-        };
-        if ipc::STORE_PREFIX + gnunet::wire::identity::KEY_LEN + length > command.limits.frame_bytes
-        {
-            return Err("complete STORE exceeds the official original frame bound".into());
-        }
+        command.validate_store()?;
     }
     if matches!(
         action,
@@ -376,9 +372,67 @@ fn parse(args: &[OsString]) -> Result<Command> {
         }
         _ => {}
     }
-    Ok(command)
+    Ok((command, endpoints))
 }
 impl Command {
+    fn new(action: Action) -> Self {
+        Self {
+            action,
+            ego: Zeroizing::new(Vec::new()),
+            name: Zeroizing::new(Vec::new()),
+            value: Zeroizing::new(Vec::new()),
+            kind: 1,
+            id: None,
+            credential: None,
+            flags: None,
+            ticket: Zeroizing::new(Vec::new()),
+            uri: Zeroizing::new(Vec::new()),
+            ids: Vec::new(),
+            names: Vec::new(),
+            expiration: RelativeTime::from_micros(3_600_000_000),
+            timeout: Duration::from_secs(30),
+            limits: Limits {
+                operations: 1,
+                source_bytes: 65535,
+                reconnect: false,
+                ..Limits::default()
+            },
+            limit: 10_000,
+            scan_limit: 10_000,
+            output_bytes: 16 * 1024 * 1024,
+        }
+    }
+
+    fn text_value(&self, raw: &[u8]) -> Result<Zeroizing<Vec<u8>>> {
+        let length = raw
+            .len()
+            .checked_add(1)
+            .filter(|n| *n <= 65535)
+            .ok_or("text value too large")?;
+        let mut value = Zeroizing::new(Vec::new());
+        value.try_reserve_exact(length)?;
+        value.resize(length, 0);
+        let written = if self.action == Action::AttributeStore {
+            credentials::attribute_from_string(AttributeType::new(self.kind), raw, &mut value)?
+        } else {
+            credentials::credential_from_string(CredentialType::new(self.kind), raw, &mut value)?
+        };
+        value.truncate(written);
+        Ok(value)
+    }
+
+    fn validate_store(&self) -> Result<()> {
+        let length = if self.action == Action::AttributeStore {
+            self.attribute(None)?.encoded_len()?
+        } else {
+            self.credential(None)?.encoded_len()?
+        };
+        if ipc::STORE_PREFIX + gnunet::wire::identity::KEY_LEN + length > self.limits.frame_bytes {
+            return Err("complete STORE exceeds the official original frame bound".into());
+        }
+        Ok(())
+    }
+
     fn attribute<'a>(&'a self, old: Option<Attribute<'a>>) -> Result<Attribute<'a>> {
         Ok(Attribute {
             kind: AttributeType::new(self.kind),
@@ -455,51 +509,128 @@ pub(super) fn run(args: &[OsString], out: &mut impl Write) -> Result<()> {
     if args.is_empty() || args.first().is_some_and(|s| s == OsStr::new("--help")) {
         return help(out);
     }
-    let command = parse(args)?;
+    let (command, endpoints) = parse(args)?;
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?
         .block_on(async {
-            let source = EndpointSource::unix(command.socket.clone());
-            let clock = source.clock();
-            let now = clock.sample()?.now.as_micros();
-            let window = Window {
-                until: now
-                    .checked_add(u64::try_from(command.timeout.as_micros())?)
-                    .filter(|n| *n != u64::MAX)
-                    .ok_or("canonical deadline overflow")?,
-                hard: Instant::now()
-                    .checked_add(command.timeout)
-                    .ok_or("native deadline overflow")?,
-            };
-            let interrupt = tokio::signal::ctrl_c();
-            tokio::pin!(interrupt);
-            let mut output = Output {
-                writer: out,
-                remaining: command.output_bytes,
-            };
-            let key = if let Some(path) = &command.identity_socket {
-                Some(
-                    driver::ego(
-                        &command,
-                        EndpointSource::unix_with_clock(path.clone(), clock),
-                        window,
-                        interrupt.as_mut(),
-                        &mut output,
-                    )
-                    .await?,
-                )
-            } else {
-                None
-            };
-            driver::execute(
-                &command,
-                source,
-                key.as_ref(),
+            let source = EndpointSource::unix(endpoints.reclaim);
+            let identity = endpoints
+                .identity
+                .map(|path| EndpointSource::unix_with_clock(path, source.clock()));
+            execute(command, source, identity, OutputMode::Json, out).await
+        })
+}
+
+async fn execute(
+    command: Command,
+    source: EndpointSource,
+    identity: Option<EndpointSource>,
+    mode: OutputMode,
+    out: &mut impl Write,
+) -> Result<()> {
+    execute_actions(
+        std::slice::from_ref(&command),
+        &command.ego,
+        source,
+        identity,
+        mode,
+        out,
+    )
+    .await
+}
+
+async fn execute_actions(
+    commands: &[Command],
+    ego: &[u8],
+    source: EndpointSource,
+    identity: Option<EndpointSource>,
+    mode: OutputMode,
+    out: &mut impl Write,
+) -> Result<()> {
+    let first = commands
+        .first()
+        .ok_or("RECLAIM invocation has no actions")?;
+    let timeout = commands.iter().fold(first.timeout, |longest, command| {
+        longest.max(command.timeout)
+    });
+    let window = Window::new(&source, timeout)?;
+    let interrupt = tokio::signal::ctrl_c();
+    tokio::pin!(interrupt);
+    let mut output = Output {
+        writer: out,
+        remaining: first.output_bytes,
+        mode,
+    };
+    let key = if let Some(identity) = identity {
+        Some(
+            driver::ego(
+                ego,
+                timeout,
+                identity,
                 window,
                 interrupt.as_mut(),
                 &mut output,
             )
-            .await
-        })
+            .await?,
+        )
+    } else {
+        None
+    };
+    let mut original = Some(source);
+    for (position, command) in commands.iter().enumerate() {
+        let source = if position + 1 == commands.len() {
+            original.take().ok_or("RECLAIM source already consumed")?
+        } else {
+            original
+                .as_ref()
+                .ok_or("RECLAIM source already consumed")?
+                .duplicate()?
+        };
+        let step = if command.timeout < timeout {
+            window.within(Window::new(&source, command.timeout)?)
+        } else {
+            window
+        };
+        let result = driver::execute(
+            command,
+            source,
+            key.as_ref(),
+            step,
+            interrupt.as_mut(),
+            &mut output,
+        )
+        .await;
+        if let Err(error) = result {
+            if commands.len() == 1 {
+                return Err(error);
+            }
+            return Err(ActionFailure {
+                action: command.action,
+                cause: error,
+            }
+            .into());
+        }
+    }
+    Ok(())
+}
+
+#[derive(Debug)]
+struct ActionFailure {
+    action: Action,
+    cause: Box<dyn Error>,
+}
+impl std::fmt::Display for ActionFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "RECLAIM {:?} failed ({})",
+            self.action, self.cause
+        )
+    }
+}
+impl Error for ActionFailure {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        Some(self.cause.as_ref())
+    }
 }

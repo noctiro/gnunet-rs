@@ -1,6 +1,11 @@
 //! One actual Driver, shared Resolver and bounded statistics owner through cleanup.
 use crate::{
-    Factory, Failure, Settings, control::Control, factory, reporting::Diagnostics, statistics,
+    Factory, Failure, Settings,
+    control::Control,
+    factory,
+    profiler::{Policy, RoundProgress, Rounds},
+    reporting::Diagnostics,
+    statistics,
 };
 use gnunet_client_host::{EndpointSource, LiveConfiguration};
 use gnunet_program_host::policy::Level;
@@ -101,11 +106,17 @@ impl std::error::Error for LifecycleFailure {
 pub(crate) struct Inputs<'a> {
     pub(crate) config: gnunet_config::Configuration,
     pub(crate) settings: Settings,
-    pub(crate) bound: &'a BoundListeners,
     pub(crate) clock: Arc<dyn RuntimeClock>,
     pub(crate) control: StopSignals,
-    pub(crate) notification: gnunet_program_host::service::native::Readiness<'a>,
+    pub(crate) frontend: Frontend<'a>,
     pub(crate) diagnostics: &'a Diagnostics,
+}
+pub(crate) enum Frontend<'a> {
+    Service {
+        bound: &'a BoundListeners,
+        notification: gnunet_program_host::service::native::Readiness<'a>,
+    },
+    Profiler(Policy),
 }
 fn due(duration: Duration) -> Result<Instant, Failure> {
     Instant::now()
@@ -180,33 +191,59 @@ pub(crate) async fn run<F: Factory + 'static>(input: Inputs<'_>) -> Result<Repor
     let Inputs {
         config,
         settings,
-        bound,
         clock,
         control,
-        notification,
+        frontend,
         diagnostics,
     } = input;
-    let listeners = bound.listeners();
-    for error in bound.failures() {
-        diagnostics.message(
-            "regex.listener.alternate",
-            Level::WARNING,
-            format_args!("REGEX alternate listener failed: {error}"),
-        )?;
-    }
     let mut control = Control::new(control);
+    let core = gnunet_regex_service::Core::new(settings.core)?;
+    let ports = Ports {
+        clock: clock.clone(),
+        options: match &frontend {
+            Frontend::Service { .. } => settings.service(&config)?,
+            Frontend::Profiler(_) => Default::default(),
+        },
+        unix: settings.unix,
+    };
+    let (listeners, mut notification, mut rounds, server) = match frontend {
+        Frontend::Service {
+            bound,
+            notification,
+        } => {
+            for error in bound.failures() {
+                diagnostics.message(
+                    "regex.listener.alternate",
+                    Level::WARNING,
+                    format_args!("REGEX alternate listener failed: {error}"),
+                )?;
+            }
+            (
+                bound.listeners(),
+                Some(notification),
+                None,
+                Server::new(core, settings.host, ports)?,
+            )
+        }
+        Frontend::Profiler(policy) => {
+            let server = Server::publisher(
+                core,
+                settings.host,
+                ports,
+                gnunet_wire::official::regex::StringBytes::new(&policy.expression)?,
+                policy.compression,
+            )?;
+            (
+                Vec::new(),
+                None,
+                Some(Rounds::new(policy.maximum_delay, settings.startup)),
+                server,
+            )
+        }
+    };
     let startup_until = due(settings.startup)?;
     let mut startup_timer = Box::pin(tokio::time::sleep_until(startup_until));
-    let core = gnunet_regex_service::Core::new(settings.core)?;
-    let server = Server::new(
-        core,
-        settings.host,
-        Ports {
-            clock: clock.clone(),
-            options: settings.service(&config)?,
-            unix: settings.unix,
-        },
-    )?;
+    let profiling = rounds.is_some();
     let live = LiveConfiguration::new(config);
     let (resolution, mut broker) = gnunet_resolver_broker::broker::<64, 4096>(
         live.clone(),
@@ -228,13 +265,18 @@ pub(crate) async fn run<F: Factory + 'static>(input: Inputs<'_>) -> Result<Repor
     )?;
     let mut statistics_instance = gnunet_client::statistics_handle::Instance::new();
     let mut stat_error = None;
-    let mut stats = match statistics::Owner::new(
+    let mut stats = match statistics::Owner::with_namespace(
         &mut statistics_instance,
         live.clone(),
         shared.clone(),
         clock.clone(),
         server.core().metrics(),
         settings.statistics,
+        if profiling {
+            statistics::Namespace::Profiler
+        } else {
+            statistics::Namespace::Service
+        },
     ) {
         Ok(owner) => Some(owner),
         Err(error) => {
@@ -315,7 +357,6 @@ pub(crate) async fn run<F: Factory + 'static>(input: Inputs<'_>) -> Result<Repor
     };
     let mut stopping = false;
     let mut ready = false;
-    let mut notification = Some(notification);
     let mut driver_closed = false;
     let mut stats_closing = false;
     let mut retirement_notice = None;
@@ -342,6 +383,11 @@ pub(crate) async fn run<F: Factory + 'static>(input: Inputs<'_>) -> Result<Repor
                     errors.first("REGEX actual PILS/DHT startup deadline expired; not ready".into());
                     need_stop = true;
                 }
+                if let Some(rounds) = &mut rounds && rounds.expired(cx) {
+                    errors.first(io::Error::new(io::ErrorKind::TimedOut,
+                        "REGEX profiler publication round expired").into());
+                    need_stop = true;
+                }
             }
             // Native guards precede canonical-clock dependent polls. Driver
             // itself checks IPC/DHT/PILS native guards at every original poll.
@@ -363,6 +409,12 @@ pub(crate) async fn run<F: Factory + 'static>(input: Inputs<'_>) -> Result<Repor
                 match driver.poll(cx, &listeners, None, |event| diagnostics.host(event)) {
                     Poll::Ready(Ok(Progress::Closed)) => {
                         driver_closed = true;
+                        changed = true;
+                    }
+                    Poll::Ready(Ok(Progress::BackendFailure { error, .. })) if profiling && !stopping => {
+                        errors.first(error);
+                        begin_stop(&mut driver, &mut errors, &mut stopping,
+                            &mut retirement_notice, settings.shutdown_grace, diagnostics);
                         changed = true;
                     }
                     Poll::Ready(Ok(event)) => {
@@ -399,13 +451,15 @@ pub(crate) async fn run<F: Factory + 'static>(input: Inputs<'_>) -> Result<Repor
                         let result = (|| -> io::Result<()> {
                             diagnostics.message("regex.ready", Level::INFO, format_args!(
                                 "REGEX actual IPC/Driver current PILS identity and original DHT provider ready"))?;
-                            let mut out = io::stdout().lock();
-                            writeln!(out, "READY regex")?;
-                            out.flush()?;
+                            if !profiling {
+                                let mut out = io::stdout().lock();
+                                writeln!(out, "READY regex")?;
+                                out.flush()?;
+                            }
                             Ok(())
                         })();
                         match result {
-                            Ok(()) => { ready = true; notify = true; },
+                            Ok(()) => { ready = true; notify = notification.is_some(); },
                             Err(error) => {
                                 errors.first(Box::new(error));
                                 begin_stop(&mut driver, &mut errors, &mut stopping,
@@ -421,6 +475,27 @@ pub(crate) async fn run<F: Factory + 'static>(input: Inputs<'_>) -> Result<Repor
                             &mut retirement_notice, settings.shutdown_grace, diagnostics);
                         abort_statistics(&mut stats, &mut errors, diagnostics);
                         changed = true;
+                    }
+                }
+            }
+            if !stopping && ready && let Some(rounds) = &mut rounds {
+                match rounds.poll(cx, &mut driver) {
+                    Ok(RoundProgress::Idle) => {}
+                    Ok(RoundProgress::Started) => {
+                        if let Some(stats) = &mut stats {
+                            stats.announcement_started();
+                        }
+                        changed = true;
+                    }
+                    Ok(RoundProgress::Completed) => changed = true,
+                    Ok(RoundProgress::Done) => {
+                        changed |= begin_stop(&mut driver, &mut errors, &mut stopping,
+                            &mut retirement_notice, settings.shutdown_grace, diagnostics);
+                    }
+                    Err(error) => {
+                        errors.first(error);
+                        changed |= begin_stop(&mut driver, &mut errors, &mut stopping,
+                            &mut retirement_notice, settings.shutdown_grace, diagnostics);
                     }
                 }
             }

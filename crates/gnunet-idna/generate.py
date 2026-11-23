@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """Reproduce Unicode 15.1 Rust tables from fixed official source bytes."""
-import hashlib,json,pathlib,zipfile,argparse,subprocess
+import hashlib,json,pathlib,zipfile,argparse,subprocess,sys
 ROOT=pathlib.Path(__file__).resolve().parent
+sys.dont_write_bytecode=True
+sys.path.insert(0,str(ROOT.parents[1]/"tools"))
+from rust_toolchain import rust_channel
 parser=argparse.ArgumentParser(description=__doc__)
 action=parser.add_mutually_exclusive_group(required=True)
 action.add_argument('--check',action='store_true')
@@ -9,6 +12,7 @@ action.add_argument('--output',type=pathlib.Path)
 parser.add_argument('--libidn2-source',type=pathlib.Path,required=True)
 parser.add_argument('--ucd15',type=pathlib.Path,required=True)
 parser.add_argument('--ucd18',type=pathlib.Path,required=True)
+parser.add_argument('--toolchain')
 args=parser.parse_args()
 DEST=ROOT if args.check else args.output.resolve()
 if not args.check:
@@ -140,7 +144,7 @@ table('SCRIPT18','(u32,u32,u8)',compress(scripts18))
 table('DECOMPOSITION18','(u32,u16,u8)',dectable18)
 table('DECOMPOSED18','u32',flatseq18)
 table('COMPOSITION18','(u32,u32,u32)',pairs18)
-generated=subprocess.run(['rustfmt','+1.99.1','--edition','2024','--emit','stdout'],input=''.join(out),capture_output=True,text=True,check=True).stdout
+generated=subprocess.run(['rustfmt','+'+rust_channel(ROOT.parents[1],args.toolchain),'--edition','2024','--emit','stdout'],input=''.join(out),capture_output=True,text=True,check=True).stdout
 if args.check:assert (ROOT/'src/tables.rs').read_text()==generated,'generated tables changed'
 else:(DEST/'src/tables.rs').write_text(generated)
 provenance=json.dumps({'unicode_version':'15.1.0','libidn2_version':'2.3.8','libidn2_tar_sha256':'f557911bf6171621e1f72ff35f5b1825bb35b52ed45325dcdee931e5d3c0787a','ucd_zip_sha256':hashlib.sha256(UCD.read_bytes()).hexdigest(),'runtime_unicode_version':'18.0.0','ucd18_zip_sha256':hashlib.sha256(UCD18.read_bytes()).hexdigest(),'source_inputs':inputs,'table_sha256':hashlib.sha256(generated.encode()).hexdigest(),'max_canonical_decomposition':max(x[2] for x in dectable),'counts':{'mapping':len(mapping),'mapped_codepoints':len(mapchars),'validity':len(valid),'decomposition':len(dectable),'composition':len(pairs),'ccc_ranges':len(compress(ccc)),'joining_ranges':len(compress(jt))}},indent=2)+'\n'

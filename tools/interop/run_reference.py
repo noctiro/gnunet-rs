@@ -19,8 +19,11 @@ import tempfile
 import time
 import unittest
 
-REVISION = "346358e26d4dcc2dc4f51bef5d52dca29c7d8165"
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "tools"))
+from reference_policy import reference_target
+
+_, REVISION = reference_target()
 SOURCE_DIRS = ("crates", "adapters", "apps", "tools", "tests", ".cargo", ".github")
 SOURCE_FILES = ("Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "ARCHITECTURE.md", "README.md", "rustfmt.toml")
 IGNORED_DIRS = {"target", ".git", "__pycache__"}

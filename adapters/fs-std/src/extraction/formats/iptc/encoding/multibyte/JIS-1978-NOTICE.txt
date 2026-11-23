@@ -1,0 +1,51 @@
+JIS C 6226-1978 (ISO-IR 42) mapping data
+
+ISO registration: https://itscj.ipsj.or.jp/ir/042.pdf
+
+The packed repertoire joins the position-to-CID mappings in Adobe's 78-H
+(version 10.006) with the CID-to-Unicode mappings in Adobe-Japan1-UCS2
+(version 10.002). The two sources and their SHA-256 digests are:
+
+https://raw.githubusercontent.com/adobe-type-tools/cmap-resources/master/Adobe-Japan1-7/CMap/78-H
+bf1b3dcae13713e5c1ba7422c7803561d46762448ef433d06405b766f5142e73
+https://raw.githubusercontent.com/adobe-type-tools/mapping-resources-pdf/master/pdf2unicode/Adobe-Japan1-UCS2
+6a9693361647a37996312cc57071bb79f8c06411207be7c730a83fda1254cd82
+
+The table follows row and cell order, with rows 0x21–0x27 followed by rows
+0x30–0x73. Each three-byte little-endian word holds a Unicode scalar in its
+low 21 bits; zero means unassigned. The next two bits select no variation
+selector, U+FE00, U+E0100 or U+E0101, respectively.
+
+Copyright 1990-2019 Adobe. All rights reserved.
+Copyright 1990-2023 Adobe. All rights reserved.
+
+Redistribution and use in source and binary forms, with or
+without modification, are permitted provided that the
+following conditions are met:
+
+Redistributions of source code must retain the above
+copyright notice, this list of conditions and the following
+disclaimer.
+
+Redistributions in binary form must reproduce the above
+copyright notice, this list of conditions and the following
+disclaimer in the documentation and/or other materials
+provided with the distribution.
+
+Neither the name of Adobe nor the names of its contributors
+may be used to endorse or promote products derived from
+this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND
+CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES,
+INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
+MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR
+CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
+OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.

@@ -15,7 +15,49 @@ pub enum ArmAbi {
     /// This profile requires separate normal-platform interoperability evidence.
     U64Align4,
 }
+
+// Mirrors the field layout of the unpacked C aggregates in service/arm/arm.h.
+// These types describe sizes only; the codec still writes explicit wire bytes.
+#[repr(C)]
+struct NativeCommand {
+    size: u16,
+    message_type: u16,
+    reserved: u32,
+    id: u64,
+}
+
+#[repr(C)]
+struct NativeResult {
+    command: NativeCommand,
+    result: u32,
+}
+
+#[repr(C)]
+struct NativeList {
+    command: NativeCommand,
+    count: u16,
+}
+
 impl ArmAbi {
+    /// Select the official local C ABI, or override it for an explicitly
+    /// configured peer. The layout is not negotiated on the wire.
+    pub fn configured(override_value: Option<&[u8]>) -> Result<Self, &'static str> {
+        match override_value {
+            Some(b"align8") => Ok(Self::U64Align8),
+            Some(b"align4") => Ok(Self::U64Align4),
+            Some(_) => Err("[arm-rust] ABI must be align8 or align4"),
+            None => match (
+                core::mem::size_of::<NativeCommand>(),
+                core::mem::size_of::<NativeResult>(),
+                core::mem::size_of::<NativeList>(),
+            ) {
+                (COMMAND_BYTES, 24, 24) => Ok(Self::U64Align8),
+                (COMMAND_BYTES, 20, 20) => Ok(Self::U64Align4),
+                _ => Err("unsupported local ARM C layout; select explicit [arm-rust] ABI"),
+            },
+        }
+    }
+
     /// Complete fixed result sizeof from the selected C aggregate ABI.
     pub const fn result_bytes(self) -> usize {
         match self {

@@ -15,6 +15,7 @@ use rustls::{
     crypto::{CryptoProvider, verify_tls12_signature, verify_tls13_signature},
     pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime},
     server::{NoServerSessionStorage, ParsedCertificate},
+    sign::{CertifiedKey, SingleCertAndKey},
 };
 use std::{fmt, sync::Arc};
 
@@ -27,6 +28,15 @@ pub enum Profile {
     Http3,
 }
 impl Profile {
+    /// Official configuration section and NAT registration section name.
+    #[must_use]
+    pub const fn section(self) -> &'static [u8] {
+        match self {
+            Self::Raw => b"communicator-quic",
+            Self::Http3 => b"communicator-http3",
+        }
+    }
+
     fn protocols(self) -> Vec<Vec<u8>> {
         match self {
             Self::Raw => raw::ALPNS
@@ -130,10 +140,35 @@ pub fn server(
     key: PrivateKeyDer<'static>,
     profile: Profile,
 ) -> Result<ServerConfig, Error> {
-    let mut config = ServerConfig::builder_with_provider(provider)
+    server_with(provider, profile, |provider| {
+        CertifiedKey::from_der(certificates, key, provider)
+    })
+}
+
+#[cfg(feature = "fresh-tls")]
+pub(super) fn server_with_generated_key(
+    provider: Arc<CryptoProvider>,
+    certificate: CertificateDer<'static>,
+    key: gnunet_tls_crypto_host::certificate::P256Key,
+    profile: Profile,
+) -> Result<ServerConfig, Error> {
+    server_with(provider, profile, |_| {
+        let certified = CertifiedKey::new(vec![certificate], key.into_tls_signing_key());
+        certified.keys_match()?;
+        Ok(certified)
+    })
+}
+
+fn server_with(
+    provider: Arc<CryptoProvider>,
+    profile: Profile,
+    certify: impl FnOnce(&CryptoProvider) -> Result<CertifiedKey, Error>,
+) -> Result<ServerConfig, Error> {
+    let builder = ServerConfig::builder_with_provider(provider)
         .with_protocol_versions(&[&rustls::version::TLS13])?
-        .with_no_client_auth()
-        .with_single_cert(certificates, key)?;
+        .with_no_client_auth();
+    let certified = certify(builder.crypto_provider())?;
+    let mut config = builder.with_cert_resolver(Arc::new(SingleCertAndKey::from(certified)));
     config.alpn_protocols = profile.protocols();
     config.session_storage = Arc::new(NoServerSessionStorage {});
     config.send_tls13_tickets = 0;

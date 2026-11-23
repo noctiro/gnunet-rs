@@ -1,8 +1,12 @@
 //! AF_UNIX sockets over Tokio/Mio's Windows stream-socket readiness machinery.
 //! The private carrier registers the original Winsock handle for generic stream
 //! I/O. Native accept, address queries and service tags retain AF_UNIX identity.
-use gnunet_native::local_socket::{self, Address};
-use socket2::{Domain, SockAddr, SockRef, Socket, Type};
+use crate::{CreatedPath, activation::ActivatedLocalSocket, local_listener::PreparedLocalListener};
+use gnunet_native::{
+    local_path::{EndpointAccess, EndpointProtection},
+    local_socket::{self, Address, named_address},
+};
+use socket2::{Domain, SockRef, Socket, Type};
 use std::{
     fmt, io,
     os::windows::io::{AsRawSocket, AsSocket, BorrowedSocket},
@@ -45,26 +49,21 @@ fn check_stream(socket: &Socket) -> io::Result<()> {
     }
     Ok(())
 }
-fn endpoint(path: &Path) -> io::Result<SockAddr> {
-    let text = path
-        .to_str()
-        .filter(|value| !value.is_empty() && !value.as_bytes().contains(&0))
-        .ok_or(io::ErrorKind::InvalidInput)?;
-    SockAddr::unix(text)
-}
 /// Original nonblocking Windows AF_UNIX listening socket.
 /// The caller separately owns endpoint ACLs and filesystem-node cleanup.
 #[derive(Debug)]
 pub struct Listener {
     registration: Registration,
+    access: Option<EndpointAccess>,
 }
 impl Listener {
     /// Bind one native AF_UNIX stream listener under the entered I/O runtime.
     /// Existing nodes are never removed. The caller owns endpoint ACL policy
     /// and filesystem-node cleanup, including a failure after successful bind.
     pub fn bind(path: impl AsRef<Path>) -> io::Result<Self> {
+        let address = named_address(path.as_ref())?;
         let socket = Socket::new(Domain::UNIX, Type::STREAM, None)?;
-        socket.bind(&endpoint(path.as_ref())?)?;
+        socket.bind(&address)?;
         socket.listen(128)?;
         Self::from_bound_socket(socket)
     }
@@ -79,12 +78,33 @@ impl Listener {
     /// # Panics
     /// Like Tokio native registration, panics if the entered runtime disables I/O.
     pub fn from_bound_socket(socket: Socket) -> io::Result<Self> {
+        Self::register(socket, None)
+    }
+    // Preparation binds this DACL and path guard to the original socket.
+    pub(crate) fn from_prepared(
+        prepared: PreparedLocalListener,
+    ) -> io::Result<(Self, CreatedPath, Vec<io::Error>)> {
+        let (socket, path, warnings, protection) = prepared.into_protected_parts();
+        Ok((
+            Self::register(socket, Some(protection.access()))?,
+            path,
+            warnings,
+        ))
+    }
+    pub(crate) fn from_activated(socket: ActivatedLocalSocket) -> io::Result<Self> {
+        let (socket, protection) = socket.into_parts();
+        Self::register(socket, protection.as_ref().map(EndpointProtection::access))
+    }
+    fn register(socket: Socket, access: Option<EndpointAccess>) -> io::Result<Self> {
         check_stream(&socket)?;
         local_socket::local_address(socket.as_socket())?;
         if !local_socket::is_listener(socket.as_socket())? {
             return Err(io::ErrorKind::InvalidInput.into());
         }
-        Registration::new(socket).map(|registration| Self { registration })
+        Registration::new(socket).map(|registration| Self {
+            registration,
+            access,
+        })
     }
     /// Native bound name, without a filesystem lookup or peer authority.
     ///
@@ -117,7 +137,9 @@ impl Listener {
                 Ok((socket, _)) => {
                     return Poll::Ready((|| {
                         let peer = local_socket::peer_address(socket.as_socket())?;
-                        Ok((Stream::from_connected_socket(socket)?, peer))
+                        let mut stream = Stream::from_connected_socket(socket)?;
+                        stream.listener_access = self.access;
+                        Ok((stream, peer))
                     })());
                 }
             }
@@ -144,6 +166,7 @@ impl AsSocket for Listener {
 #[derive(Debug)]
 pub struct Stream {
     registration: Registration,
+    listener_access: Option<EndpointAccess>,
 }
 impl Stream {
     /// Take an already connected AF_UNIX stream into the reactor without copying
@@ -160,7 +183,10 @@ impl Stream {
             return Err(io::ErrorKind::InvalidInput.into());
         }
         local_socket::peer_address(socket.as_socket())?;
-        Registration::new(socket).map(|registration| Self { registration })
+        Registration::new(socket).map(|registration| Self {
+            registration,
+            listener_access: None,
+        })
     }
     /// Connect to a native Windows UTF-8 filesystem endpoint. Dropping the future
     /// closes its original socket; it cannot retract a peer's earlier acceptance.
@@ -173,7 +199,7 @@ impl Stream {
     /// Panics if the entered runtime disables I/O.
     pub async fn connect(path: impl AsRef<Path>) -> io::Result<Self> {
         tokio::runtime::Handle::try_current().map_err(io::Error::other)?;
-        let address = endpoint(path.as_ref())?;
+        let address = named_address(path.as_ref())?;
         let socket = Socket::new(Domain::UNIX, Type::STREAM, None)?;
         socket.set_nonblocking(true)?;
         match socket.connect(&address) {
@@ -196,11 +222,19 @@ impl Stream {
                     Err(error) => Err(error),
                 }
             }) {
-                Ok(()) => return Ok(Self { registration }),
+                Ok(()) => {
+                    return Ok(Self {
+                        registration,
+                        listener_access: None,
+                    });
+                }
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => continue,
                 Err(error) => return Err(error),
             }
         }
+    }
+    pub(crate) const fn listener_access(&self) -> Option<EndpointAccess> {
+        self.listener_access
     }
     /// Native local name; it may be unnamed for an outgoing client.
     ///

@@ -221,6 +221,9 @@ async fn actual_foreground_clock_refusal_drains_original_sockets_and_cleans_same
             activation: Activation::default(),
             state_directory: root.join("state"),
             local_key: LocalKeyCapability { ikm_file: seed },
+            network_changes: Default::default(),
+            peer_mode: startup::PeerMode::Listening,
+            socket_policy: Default::default(),
             limits: Limits {
                 sessions: 1,
                 ..Limits::default()

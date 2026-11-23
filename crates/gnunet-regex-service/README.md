@@ -1,11 +1,9 @@
 # REGEX service core
 
-The default build is no_std/noalloc and exposes a checked borrowed `StateBlock`
-with complete destination/edge/proof/token validation and linear longest-edge
-traversal. `alloc` adds the bounded `Core`, its complete existing REGEX
-compiler, and original local operation/output tokens. There is no C FFI,
-private wire, native DHT implementation, socket, background task or implicit
-clock in this crate.
+The default build exposes the shared `SearchQuery` and checked borrowed
+`StateBlock` without allocation. The `alloc` feature adds the bounded `Core`,
+the REGEX compiler, and lifecycle management for IPC clients, backend operations,
+and output. The host supplies clocks, identity, IPC and DHT access.
 
 ## Public interface
 
@@ -26,22 +24,24 @@ client. Scheduling is independently monotonic; record expiry uses logical
 UTC and permits wall adjustment. Host native hard bounds remain external and
 must never be reconstructed by retries or canonical-clock changes.
 
-SEARCH starts at SHA512(first min(length,24) bytes) and a type22 GET with the
-remaining suffix plus NUL. Each returned checked state chooses the first longest
-nonempty matching token, and starts/joins the exact (key, position, type) query
-for that SAME original search. Different offsets/types/search allocations never
-merge merely because a state key is equal. At a fully consumed accepting state,
-it starts type23 with exactly zero xquery bytes. Every type23 reply is
-checked for original query key/type, DHT expiry, exact accepting block, actual
-peer Ed25519 signature and signed expiry before producing an IPC result. Equality
-with expiry is current. Search stays live after any result; there is no invented
-ACK, cancellation frame, request RID or DONE.
+`SearchQuery` starts a type 22 GET at the SHA-512 hash of the first 24 bytes
+(or the complete input if shorter), with the remaining suffix and one NUL.
+After checking the state block and proof key, it follows the first longest
+nonempty matching token. A fully consumed accepting state starts a type 23 GET
+with zero xquery bytes. The shared API checks the reply key and type and verifies
+the accepting block's Ed25519 signature and signed expiry. Equality with expiry
+is current. The owner correlates replies to their original backend operations
+and checks DHT expiry separately.
+
+`Core` deduplicates queries by key, offset and type only within the same original
+search. A successful result leaves the search open for further replies.
 
 Original accepting GET/PUT predecessor identities are retained in supplied order
-for the RESULT622 payload. They are route metadata, not authentication. Bounded exact block fingerprints suppress duplicate replies; branches, live
-queries, payload bytes, compiler work, output frames and path counts all have
-separate admission limits. Capacity errors admit no half result/branch. Existing
-queued result debt is preserved until original write/abort.
+for the RESULT622 payload as route metadata. The bounded fingerprint cache
+suppresses recent duplicate blocks within each original GET and evicts its oldest
+entry when full. Branches, live queries, payload bytes, compiler work, output
+frames and path counts have separate admission limits. Capacity errors admit no
+half result or branch. Existing queued results remain until written or aborted.
 
 `next_work_with_sign(false)` never leases an additional signature while the real
 single-slot signer is occupied; original Retire work has priority over all other
@@ -70,13 +70,6 @@ The core consumes `gnunet-regex::accept`. Both PUT types use replication 5 and
 expiry `now + 1h`: state uses options 1/type 22, accepting uses options 3/type 23.
 Purpose-18 signed material expires at `now + 24h`. State/accepting wire bytes,
 initial-prefix bytes and path ordering follow the pinned source contract.
-
-This is pure service-state production code, not a complete deployed
-service. The native IPC host, PILS owner and standard SERVICE coordinator
-are separate layers. An caller-owned DHT production binding is required;
-none is invented or obtained through the stopped native/network DHT task here. These compile/metadata checks execute no model, crypto, key, product
-hash, entropy, store, worker, native, C or network path. They do not establish
-official interoperability or measured performance.
 
 `Metrics` exposes nine fixed official diagnostic names as a readonly cumulative
 snapshot. All counters saturate as lower bounds and never fail business work. `put_admitted` counts only the first original provider admission, while

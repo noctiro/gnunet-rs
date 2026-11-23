@@ -4,7 +4,7 @@ use domain::{OperationPhase, RoomPhase, Work};
 use gnunet_types::Error as Fault;
 use wire::{body::Body, padding};
 impl<'a, E: crypto::Entropy, const N: usize> Api<'a, E, N> {
-    fn binding(work: &Work<'a>) -> Binding<'a> {
+    fn binding(work: &Work<'a, domain::OwnedBytes>) -> Binding<'a> {
         match work {
             Work::Wire { binding, .. }
             | Work::Sign { binding, .. }
@@ -14,9 +14,7 @@ impl<'a, E: crypto::Entropy, const N: usize> Api<'a, E, N> {
         }
     }
     pub(crate) fn free_jobs(&self) -> usize {
-        self.limits
-            .operations
-            .saturating_sub(self.leases.len().saturating_add(self.reservations))
+        self.capacity().ordinary_free()
     }
     pub(crate) fn reset_decryption(&mut self) {
         self.decrypt_remaining = self
@@ -82,7 +80,12 @@ impl<'a, E: crypto::Entropy, const N: usize> Api<'a, E, N> {
                     let matching = self.core.members(room)?.any(|(s, _, id, phase)| {
                         s == member && id == join.id && phase == domain::SessionPhase::Active
                     });
-                    if matching && self.core.joined(room)? {
+                    if matching
+                        && match self.rooms[index].source {
+                            Some(source) => self.core.source_joined(source)?,
+                            None => false,
+                        }
+                    {
                         let span = join.span;
                         if let Some(key) = self.rooms[index]
                             .join
@@ -132,10 +135,12 @@ impl<'a, E: crypto::Entropy, const N: usize> Api<'a, E, N> {
         }
         Ok(())
     }
-    fn initialize_room(&mut self, index: usize, now: u64) -> Result<bool, Error> {
+    pub(crate) fn initialize_room(&mut self, index: usize, now: u64) -> Result<bool, Error> {
         if self.free_jobs() == 0
             || self.changing.is_some()
             || self.rooms[index].close_after.is_some()
+            || (self.rooms[index].frontier.is_some() || self.rooms[index].frontier_required)
+                && !self.frontier_bootstrap_allowed(index)
         {
             return Ok(false);
         }
@@ -248,7 +253,9 @@ impl<'a, E: crypto::Entropy, const N: usize> Api<'a, E, N> {
                 if matches!(w, Work::EpochRecord { .. }) && self.record_blocked {
                     return None;
                 }
-                if matches!(w, Work::Wire { .. }) && (self.native_blocked || self.domain_blocked) {
+                // Semantic capacity cannot block already-owned native work:
+                // required GET replies may be what releases that capacity.
+                if matches!(w, Work::Wire { .. }) && self.native_blocked {
                     return None;
                 }
                 if matches!(w, Work::Wire { .. })
@@ -454,6 +461,7 @@ impl<'a, E: crypto::Entropy, const N: usize> Api<'a, E, N> {
                 Err(domain::Error::Protocol(Fault::NotReady)) => continue,
                 Err(e) => return Err(e.into()),
             }
+            crate::dependencies::retire_stopped(&mut self.core, self.rooms[i].room, source)?;
             self.leases
                 .retain(|lease| lease.operation != leave && lease.operation != child);
             let room = self.rooms[i].room;
@@ -530,8 +538,9 @@ impl<'a, E: crypto::Entropy, const N: usize> Api<'a, E, N> {
             return Ok(());
         }
         self.restore_memberships(now)?;
+        self.drive_frontiers(now)?;
         for _ in 0..self.limits.work_per_poll {
-            if self.rooms.is_empty() || self.scan_remaining == 0 || self.domain_blocked {
+            if self.rooms.is_empty() || self.scan_remaining == 0 {
                 break;
             }
             self.scan_remaining -= 1;
@@ -539,6 +548,14 @@ impl<'a, E: crypto::Entropy, const N: usize> Api<'a, E, N> {
             self.room_cursor = self.room_cursor.checked_add(1).ok_or(Fault::Overflow)?;
             if self.rooms[i].source.is_none() {
                 continue;
+            }
+            self.observe_frontier_need(i, now)?;
+            self.drive_history_request(i, now)?;
+            self.drive_dependencies(i, now)?;
+            if self.domain_blocked {
+                self.take_domain_work(self.rooms[i].room)?;
+                self.execute_work(now)?;
+                break;
             }
             match self.core.advance(self.rooms[i].room, now) {
                 Ok(steps) => {
@@ -548,6 +565,8 @@ impl<'a, E: crypto::Entropy, const N: usize> Api<'a, E, N> {
                 }
                 Err(domain::Error::Protocol(Fault::WouldBlock | Fault::Capacity)) => {
                     self.domain_blocked = true;
+                    self.take_domain_work(self.rooms[i].room)?;
+                    self.execute_work(now)?;
                     break;
                 }
                 Err(e) => return Err(e.into()),
@@ -565,10 +584,14 @@ impl<'a, E: crypto::Entropy, const N: usize> Api<'a, E, N> {
                 }
             } else if self.rooms[i].closing_span.is_none() {
                 self.initialize_room(i, now)?;
+                self.drive_history_request(i, now)?;
+                self.drive_dependencies(i, now)?;
                 if self.rooms[i].join.is_none()
                     && self.changing.is_none()
                     && self.free_jobs() > 0
                     && self.rooms[i].auto_epoch
+                    && self.rooms[i].frontier.is_none()
+                    && !self.rooms[i].frontier_required
                     && !self.leases.iter().any(|lease| {
                         lease.room == self.rooms[i].room && matches!(lease.intent, Intent::Epoch)
                     })
@@ -578,13 +601,15 @@ impl<'a, E: crypto::Entropy, const N: usize> Api<'a, E, N> {
                         self.rooms[i].epoch,
                     )
                 {
+                    self.frontier_capacity()?;
                     let span = Span::new(now, self.limits.operation_lifetime)?;
-                    match self.core.drive_epoch(
+                    match self.core.drive_epoch_with_group_keys(
                         source,
                         member,
                         &mut self.entropy,
                         now,
                         span.logical,
+                        self.limits.group_keys,
                     ) {
                         Ok(Some(operation)) => self.record_job(
                             self.rooms[i].room,
@@ -614,6 +639,26 @@ impl<'a, E: crypto::Entropy, const N: usize> Api<'a, E, N> {
             self.execute_work(now)?;
             self.decrypt_some()?;
             self.observe_rooms()?;
+            self.observe_frontier_need(i, now)?;
+        }
+        // A semantic capacity refusal in one room cannot strand already-owned
+        // work in another. Protocol GETs can release the blocked graph capacity.
+        for _ in 0..self.limits.work_per_poll.min(self.rooms.len()) {
+            if self.rooms.is_empty() {
+                break;
+            }
+            let index = self.room_cursor % self.rooms.len();
+            self.room_cursor = self.room_cursor.checked_add(1).ok_or(Fault::Overflow)?;
+            if self.rooms[index].source.is_none() {
+                continue;
+            }
+            self.observe_frontier_need(index, now)?;
+            if self.domain_blocked {
+                self.drive_history_request(index, now)?;
+            }
+            self.drive_dependencies(index, now)?;
+            self.take_domain_work(self.rooms[index].room)?;
+            self.execute_work(now)?;
         }
         self.observe_subscriptions(Some(now))
             .map_err(|(_, error)| Error::Domain(error))?;
@@ -626,6 +671,7 @@ impl<'a, E: crypto::Entropy, const N: usize> Api<'a, E, N> {
         Ok((!self.domain_blocked
             && (self.scan_remaining > 0
                 || self.subscription_scan_remaining > 0 && self.free_jobs() > 0))
+            || self.frontier_runnable()?
             || self.decrypt_remaining > 0
             || self.work_index().is_some())
     }

@@ -49,6 +49,130 @@ fn fixture(path: &Path) -> io::Result<()> {
     )?;
     Ok(())
 }
+
+#[test]
+fn located_tree_embeds_each_authenticated_child_uri_and_preserves_chk_fallback() -> TestResult {
+    let temp = Temporary::new()?;
+    let source = temp.0.join("source");
+    fixture(&source)?;
+    let input = InputDir::open(&source)?;
+    let mut repo = Repository::open(temp.0.join("objects"))?;
+    let key = gnunet_crypto::EddsaPrivateKey::from_seed([17; 32]);
+    let expiration = gnunet_types::AbsoluteTime::from_micros(1_000_000_000);
+    let mut ordinal = 0;
+    let mut signer = |content| {
+        let sign = ordinal != 1;
+        ordinal += 1;
+        if sign {
+            gnunet_fs::Location::sign(content, &key, expiration)
+                .map(Some)
+                .map_err(Error::from)
+        } else {
+            Ok(None)
+        }
+    };
+    let mut locations = Locations::new(&mut signer);
+    let limits = Limits::default();
+    let mut buffers = Buffers::new();
+    let (tree, puts) = prepare_tree_observed(
+        &mut repo,
+        &input,
+        None,
+        &mut buffers,
+        limits,
+        &mut OriginalMetadata,
+        None,
+        Some(&mut locations),
+        |_| Control::Continue,
+    )?;
+    assert_eq!(locations.values.len() + 1, tree.objects.len());
+    assert_eq!(
+        locations
+            .values
+            .last()
+            .ok_or("missing signed root")?
+            .1
+            .content(),
+        tree.root
+    );
+    drop(input);
+    fs::remove_dir_all(&source)?;
+    let mut inline_buffers = Buffers::new();
+    for parent in tree.objects.iter().filter(|object| object.directory) {
+        buffers.visit_directory(
+            &mut repo,
+            parent.content,
+            limits.file,
+            dir::Limits::default(),
+            |entry| {
+                let entry = entry.entry();
+                let name = dir::filename(entry.metadata.items()).ok_or(crate::Error::Corrupt)?;
+                let mut path = parent.path.clone();
+                if !path.is_empty() {
+                    path.push(b'/');
+                }
+                path.extend_from_slice(name);
+                let (ordinal, child) = tree
+                    .objects
+                    .iter()
+                    .enumerate()
+                    .find(|(_, child)| child.path == path)
+                    .ok_or(crate::Error::Corrupt)?;
+                let uri = entry.uri()?;
+                match uri {
+                    Uri::Location(location) => {
+                        assert_eq!(location.content(), child.content);
+                        assert_eq!(location.peer(), key.public_key());
+                        assert_ne!(ordinal, 1);
+                    }
+                    Uri::Content(content) => {
+                        assert_eq!(ordinal, 1);
+                        assert_eq!(content, child.content);
+                    }
+                    _ => return Err(crate::Error::Corrupt),
+                }
+                let hint = dir::hints(entry.metadata.items()).next();
+                if child.path == b"nested/large" {
+                    assert!(hint.is_none());
+                } else {
+                    let hint = hint.ok_or(crate::Error::Corrupt)?;
+                    let layout = gnunet_fs::content::Layout::new(child.content.size);
+                    crate::resize(
+                        &mut inline_buffers.keys,
+                        layout.required_keys(),
+                        Default::default(),
+                    )?;
+                    let verified = dir::verify_inline(
+                        hint,
+                        uri,
+                        dir::InlineBuffers {
+                            keys: &mut inline_buffers.keys,
+                            index: &mut inline_buffers.index,
+                            encoded: &mut inline_buffers.encoded,
+                        },
+                        layout.encoded_tree_bytes(),
+                    )?;
+                    assert_eq!(verified.content(), child.content);
+                    if child.path == b"a" || child.path == b"b" {
+                        assert_eq!(verified.bytes(), b"same repeated plaintext");
+                    }
+                }
+                Ok(())
+            },
+        )?;
+    }
+    let plan = Plan {
+        artifact: Artifact::Tree(tree),
+        puts,
+    };
+    assert_eq!(
+        plan.verify(&mut repo, &mut buffers, limits, |_| Control::Continue)?
+            .puts(),
+        plan.puts.len()
+    );
+    Ok(())
+}
+
 #[test]
 fn full_tree_reauthenticates_after_the_original_source_is_removed_and_rejects_a_renamed_manifest_child()
 -> TestResult {
@@ -56,6 +180,44 @@ fn full_tree_reauthenticates_after_the_original_source_is_removed_and_rejects_a_
     let source = temp.0.join("source");
     fixture(&source)?;
     let input = InputDir::open(&source)?;
+    let expected_large = (2 * BLOCK_BYTES + 3) as u64;
+    let expected_total = expected_large + 2 * b"same repeated plaintext".len() as u64;
+    let mut scanned = false;
+    let mut aggregate = Vec::new();
+    let mut leaf_completed = false;
+    let leaf = Path::new("nested").join("large");
+    let mut report = |event: Event<'_>| {
+        if let Event::Encoding {
+            relative,
+            completed,
+            total,
+            ..
+        } = event
+        {
+            if relative.as_os_str().is_empty() && total == expected_total {
+                aggregate.push(completed);
+            }
+            if relative == leaf.as_path() && completed == expected_large && total == expected_large
+            {
+                leaf_completed = true;
+            }
+        } else if matches!(event, Event::ScanComplete) {
+            scanned = true;
+        }
+        Control::Continue
+    };
+    let measured = measure_tree_observed(
+        &input,
+        &source,
+        &mut Buffers::new(),
+        Limits::default(),
+        &mut OriginalMetadata,
+        Some(&mut report),
+        |_| Control::Continue,
+    )?;
+    assert!(scanned && leaf_completed);
+    assert_eq!(aggregate.last(), Some(&expected_total));
+    assert!(aggregate.windows(2).all(|values| values[0] < values[1]));
     let mut repo = Repository::open(temp.0.join("objects"))?;
     let (tree, puts) = prepare_tree(
         &mut repo,
@@ -66,6 +228,14 @@ fn full_tree_reauthenticates_after_the_original_source_is_removed_and_rejects_a_
         |_| Control::Continue,
     )?;
     assert_eq!(tree.objects.len(), 6);
+    assert_eq!(measured.len(), tree.objects.len());
+    for (expected, measured) in tree.objects.iter().zip(measured) {
+        assert_eq!(
+            gnunet_native::os_bytes::encode(measured.relative.as_os_str()).as_ref(),
+            expected.path.as_slice()
+        );
+        assert_eq!(measured.content, expected.content);
+    }
     assert!(tree.sources.is_empty());
     assert!(tree.objects.last().is_some_and(|object| object.directory
         && object.path.is_empty()

@@ -18,8 +18,10 @@ import subprocess
 import sys
 import time
 
-REVISION = "346358e26d4dcc2dc4f51bef5d52dca29c7d8165"
-TAG = "v0.29.1"
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from reference_policy import POLICY, reference_target
+
+TAG, REVISION = reference_target()
 TARGETS = {
     "client": "src/cli/statistics/gnunet-statistics",
     "service": "src/service/statistics/gnunet-service-statistics",
@@ -130,6 +132,10 @@ def build_reference(args):
               "host": {"system": platform.system(), "machine": platform.machine()},
               "scope": "Full upstream STATISTICS executables and normal util/statistics shared libraries; other GNUnet services are not built by this target selection."}
     try:
+        policy_sha256 = sha256(POLICY)
+        if reference_target() != (TAG, REVISION):
+            raise ValueError("reference policy changed before building")
+        report["reference_policy_sha256"] = policy_sha256
         report["upstream"] = source_state(source)
         env = dict(os.environ)
         if args.deps_prefix:
@@ -159,8 +165,8 @@ def build_reference(args):
         report["artifacts"], report["libraries"], report["default_configurations"] = stage_outputs(build, prefix)
         report["generated_config"] = {"path": str(build / "gnunet_private_config.h"), "sha256": sha256(build / "gnunet_private_config.h")}
         report["source_unchanged"] = source_state(source) == report["upstream"]
-        if not report["source_unchanged"]:
-            raise ValueError("reference source changed during build")
+        if not report["source_unchanged"] or sha256(POLICY) != policy_sha256:
+            raise ValueError("reference source or compatibility policy changed during build")
         report["runtime_environment"] = {"GNUNET_PREFIX": str(prefix), "LD_LIBRARY_PATH": str(prefix / "lib"), "DYLD_LIBRARY_PATH": str(prefix / "lib")}
         report["status"] = "passed"
     except Exception as error:
@@ -173,14 +179,20 @@ def build_reference(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--source", required=True, type=Path)
-    parser.add_argument("--output", required=True, type=Path)
-    parser.add_argument("--prefix", required=True, type=Path)
+    parser.add_argument("--print-target", choices=("release", "revision"))
+    parser.add_argument("--source", type=Path)
+    parser.add_argument("--output", type=Path)
+    parser.add_argument("--prefix", type=Path)
     parser.add_argument("--deps-prefix", type=Path)
     parser.add_argument("--meson", default=shutil.which("meson") or "meson", type=Path)
     parser.add_argument("--ninja", type=Path)
     parser.add_argument("--jobs", default=4, type=int)
     args = parser.parse_args()
+    if args.print_target:
+        print(TAG if args.print_target == "release" else REVISION)
+        return 0
+    if None in (args.source, args.output, args.prefix):
+        parser.error("--source, --output and --prefix are required to build the reference")
     if not 1 <= args.jobs <= 64:
         parser.error("--jobs must be 1..64")
     return build_reference(args)

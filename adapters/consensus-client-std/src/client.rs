@@ -348,21 +348,22 @@ impl Client {
     pub fn close(&mut self) -> Loss {
         self.retire(Cause::Cancelled)
     }
-    fn check(&self) -> Result<(), Error> {
-        if self.closed {
-            return Err(Fault::Closed.into());
-        }
+    fn active_bounds(&self) -> Bounds {
         let bounds = [self.initial.as_ref(), self.input.as_ref()]
             .into_iter()
             .flatten()
             .fold(self.overall.bounds(), |bounds, phase| {
                 bounds.capped_by(phase.bounds())
             });
-        let bounds = self
-            .queue
+        self.queue
             .iter()
-            .fold(bounds, |bounds, pending| bounds.capped_by(pending.original));
-        bounds.check(self.source.clock().as_ref())?;
+            .fold(bounds, |bounds, pending| bounds.capped_by(pending.original))
+    }
+    fn check(&self) -> Result<(), Error> {
+        if self.closed {
+            return Err(Fault::Closed.into());
+        }
+        self.active_bounds().check(self.source.clock().as_ref())?;
         Ok(())
     }
     fn native(&mut self, cx: &mut Context<'_>) -> bool {
@@ -379,17 +380,7 @@ impl Client {
     /// Earliest original native target, usable while external output is blocked.
     #[must_use]
     pub fn native_deadline(&self) -> Instant {
-        let mut at = self.overall.bounds().hard();
-        for b in [self.initial.as_ref(), self.input.as_ref()]
-            .into_iter()
-            .flatten()
-        {
-            at = at.min(b.bounds().hard());
-        }
-        for p in &self.queue {
-            at = at.min(p.original.hard());
-        }
-        at
+        self.active_bounds().hard()
     }
     /// Clock-free hard fence; returns a real physical retirement before loss.
     pub fn poll_native_guard(&mut self, cx: &mut Context<'_>) -> Option<Loss> {
@@ -508,7 +499,11 @@ impl Client {
         Poll::Pending
     }
     fn poll_output(&mut self, cx: &mut Context<'_>) -> Poll<Result<Progress, Error>> {
-        self.check()?;
+        if self.closed {
+            return Poll::Ready(Err(Fault::Closed.into()));
+        }
+        let bounds = self.active_bounds();
+        bounds.check(self.source.clock().as_ref())?;
         if let Some(front) = self.queue.front_mut() {
             if let Some(bytes) = front.bytes.take() {
                 let framing = self.channel.framing_mut().ok_or(Fault::NotReady)?;
@@ -539,8 +534,22 @@ impl Client {
                 .checked_add(step.bytes)
                 .ok_or(Fault::Overflow)?;
             if step.complete {
-                let mut p = self.queue.pop_front().ok_or(Fault::NotReady)?;
-                p.whole = true;
+                front.whole = true;
+                match front.tag {
+                    Tag::Join => self.joined = true,
+                    Tag::Insert(_) => {
+                        self.inserts_written =
+                            self.inserts_written.checked_add(1).ok_or(Fault::Overflow)?
+                    }
+                    Tag::Conclude => self.concluded = true,
+                }
+            }
+            // Keep the original row and all its deadlines through the native
+            // step. On a late result, retirement returns the actual prefix
+            // (even a whole frame) without publishing a timely receipt.
+            bounds.check(self.source.clock().as_ref())?;
+            if step.complete {
+                let p = self.queue.pop_front().ok_or(Fault::NotReady)?;
                 self.queue_bytes = self
                     .queue_bytes
                     .checked_sub(p.length)
@@ -549,16 +558,8 @@ impl Client {
                     .queue_capacity_bytes
                     .checked_sub(p.capacity)
                     .ok_or(Fault::Conflict)?;
-                match p.tag {
-                    Tag::Join => {
-                        self.joined = true;
-                        self.initial = None;
-                    }
-                    Tag::Insert(_) => {
-                        self.inserts_written =
-                            self.inserts_written.checked_add(1).ok_or(Fault::Overflow)?
-                    }
-                    Tag::Conclude => self.concluded = true,
+                if p.tag == Tag::Join {
+                    self.initial = None;
                 }
                 return Poll::Ready(Ok(Progress::Written(Receipt {
                     epoch: self.epoch.clone().ok_or(Fault::StaleGeneration)?,

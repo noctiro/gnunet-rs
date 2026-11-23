@@ -387,6 +387,13 @@ fn dword(input: &[u8], at: usize) -> Result<u32, Error> {
     let b = input.get(at..at + 4).ok_or(Error::Truncated)?;
     Ok(u32::from_be_bytes([b[0], b[1], b[2], b[3]]))
 }
+// C stores htons(length) in a native uint32_t and reads it back with ntohs.
+const fn global_length_offset(profile: Profile) -> usize {
+    match profile.endian {
+        Endian::Little => 4,
+        Endian::Big => 6,
+    }
+}
 fn size(kind: MessageType, prefix: usize, tail: usize) -> Result<usize, Error> {
     let n = prefix.checked_add(tail).ok_or(Error::Overflow)?;
     MessageHeader::from_total_size(kind, n)?;
@@ -421,9 +428,9 @@ pub enum Request<'a> {
         /// Remote external IPv4 address.
         remote: RawAddress<'a>,
     },
-    /// Submit a textual global IPv4 address, without NUL.
+    /// Submit a textual address hint, normally without NUL.
     AddGlobal {
-        /// Raw literal, constrained to INET_ADDRSTRLEN-1 bytes.
+        /// Original candidate bytes. The NAT service only uses IPv4 literals.
         address: &'a [u8],
     },
 }
@@ -474,17 +481,12 @@ impl<'a> Request<'a> {
                 Ok(Self::Reverse { local, remote })
             }
             mt::NAT_ADD_GLOBAL_ADDRESS => {
-                let raw = dword(input, 4)?; // C assigns htons16 into a native uint32_t, then calls ntohs16 on it.
-                let n = match profile.endian {
-                    Endian::Little => (raw >> 16) as usize,
-                    Endian::Big => raw as usize,
-                };
-                if n >= 16 || input.len() != 8 + n {
+                let address = input.get(8..).ok_or(Error::Truncated)?;
+                let n = usize::from(word(input, global_length_offset(profile))?);
+                if address.len() != n {
                     return Err(Error::Malformed);
                 }
-                Ok(Self::AddGlobal {
-                    address: &input[8..],
-                })
+                Ok(Self::AddGlobal { address })
             }
             _ => Err(Error::Unsupported),
         }
@@ -546,12 +548,7 @@ impl<'a> Request<'a> {
                 }
                 Ok(40)
             }
-            Self::AddGlobal { address } => {
-                if address.len() >= 16 {
-                    return Err(Error::TooLarge);
-                }
-                size(self.message_type(), 8, address.len())
-            }
+            Self::AddGlobal { address } => size(self.message_type(), 8, address.len()),
         }
     }
     /// Encode exact original native fields, including the active C global-length quirk.
@@ -590,12 +587,9 @@ impl<'a> Request<'a> {
                 out[24..40].copy_from_slice(remote.bytes);
             }
             Self::AddGlobal { address } => {
-                let len = address.len() as u32;
-                let raw = match profile.endian {
-                    Endian::Little => len << 16,
-                    Endian::Big => len,
-                };
-                out[4..8].copy_from_slice(&raw.to_be_bytes());
+                let at = global_length_offset(profile);
+                out[4..8].fill(0);
+                out[at..at + 2].copy_from_slice(&(address.len() as u16).to_be_bytes());
                 out[8..n].copy_from_slice(address);
             }
         }

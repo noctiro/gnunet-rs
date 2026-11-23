@@ -2,11 +2,14 @@
 """Actual normal PROGRAM -> Resolver selection and source SPEEDUP/driver wake.
 No DNS/public network is used: only two owned Unix peers, with child IP denied.
 """
-import argparse,asyncio,json,os,re,shutil,struct,subprocess,tempfile,time
+import argparse,asyncio,json,os,re,shutil,struct,subprocess,tempfile,time,sys
 from pathlib import Path
 from _common import sha,local_snapshot,require_disjoint_output,require_lint_contract
 from normal_reference import load,compile_probe
 BASE=Path(__file__).resolve().parents[1]
+sys.dont_write_bytecode=True
+sys.path.insert(0,str(BASE.parents[1]/"tools"))
+from rust_toolchain import rust_channel
 def save(p,v):p.write_text(json.dumps(v,indent=2)+'\n')
 async def frame(reader):
  h=await reader.readexactly(4);n,k=struct.unpack('!HH',h)
@@ -82,4 +85,4 @@ async def main(a):
 if __name__=='__main__':
  p=argparse.ArgumentParser()
  for key in ['repo','source','reference','rust','output']:p.add_argument('--'+key,type=Path,required=True)
- p.add_argument('--toolchain',default='1.99.1');asyncio.run(main(p.parse_args()))
+ p.add_argument('--toolchain');a=p.parse_args();a.toolchain=rust_channel(a.repo.resolve(),a.toolchain);asyncio.run(main(a))

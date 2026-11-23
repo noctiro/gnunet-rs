@@ -247,6 +247,11 @@ impl EdkeyDerivedSecret {
     }
 }
 
+/// Validate the canonical prime-order public point used by GNUnet's Edwards ECDSA.
+pub fn validate_pkey(public: &[u8; 32]) -> Result<(), Error> {
+    valid_point(public).map(|_| ())
+}
+
 /// Verify GNUnet's Edwards ECDSA signature with exact purpose/size checking.
 pub fn verify_pkey(
     public: &[u8; 32],

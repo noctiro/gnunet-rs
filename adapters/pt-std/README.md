@@ -14,13 +14,18 @@ absolute expiry and native hard bound. Only that original callback can receive
 the reply. `drive` is a cancel-safe observation wait; `stop` physically retires
 the original owners without sampling a clock and returns independent failures.
 
-Source loss cancels the original VPN allocation interests and DNS callbacks.
+DNS source loss cancels its callbacks and their original VPN allocation interests.
 Reconnection sends fresh INIT frames without replaying old answers or callbacks.
+When PRE loses its DNS connection, PT also retires the original PRE CADET
+connection and settles its tunnels before admitting new PRE work.
 Allocation replies must match their original operations and address families.
 The VPN client retains partial cancellation debt after the DNS callback is gone.
 PT polls its native guards before its own clock wait and settles local outcomes
 without a clock sample. A healthy VPN MQ survives DNS replacement; old allocation
 results cannot satisfy a successor callback with the same opaque DNS ID.
+After VPN MQ loss, an operation with zero bytes sent can use the replacement MQ
+with its original DNS callback and deadlines. A possibly exposed allocation
+causes the original callback to drop.
 
 The [interception module](src/owner/interception.rs) retains rejected callbacks
 until their original Drop decision can be admitted. A full DNS output budget
@@ -29,6 +34,11 @@ retries keep the original token and deadlines. Callback metadata follows each
 enabled DNS client's native request limit, independently of the core's smaller
 business-admission budget. Only local reply admission advances its decision
 state; whole-write and source retirement remain separate observations.
+
+At attachment, the DNS client supplies a per-reply limit derived from the wire
+frame size and its empty output budget. PRE drops a validated answer above that
+limit. POST checks the unchanged payload length before allocating VPN mappings
+for a rewrite. Full queues still apply bounded backpressure to replies that fit.
 
 ## DNS and VPN translation
 
@@ -62,6 +72,11 @@ attempt count, DNS IDs, questions and opcode. IDs do not wrap: after 65,536 IDs,
 the old channel drains its outstanding requests and is destroyed before a new
 generation opens. Whole writes, answers and timeouts remain distinct facts.
 
+A prepared query keeps its exact attempt and channel-local DNS ID. Admission to
+the CADET client consumes channel credit and one request attempt. A zero-credit
+update parks the query while other tunnels can send. Retiring an unqueued query
+releases its reservation on the tunnel.
+
 The caller supplies a [discovery port](src/discovery.rs).
 [`discovery::Native`](src/discovery/native.rs) owns a readonly DHT GET for
 SHA512("dns"), block type 10, replication 1, DEMULTIPLEX_EVERYWHERE and an empty
@@ -74,9 +89,10 @@ remote success nor absence of matching exits.
 The [advertisement owner](src/owner/advertisements.rs) binds verified blocks to
 their original query and native lease. The [PRE host](src/owner/pre.rs) handles
 CADET events and classifies one nested DNS frame per turn, allowing ready DNS
-decisions to advance between frames. Query transmission, retries and valid
-responses reuse the core's admission-time reply reservation. A fixed parser or
-size refusal withdraws that exit rather than retrying an inadmissible frame.
+decisions to advance between frames. The owner resumes CADET input after the
+original receive acknowledgement is written or the delivery is retired. Queries,
+retries and valid responses reuse the core's admission-time reply reservation.
+A fixed parser or size refusal withdraws the exit.
 
 The bounded lease table keeps one monotonic absolute-expiry floor. Expired
 admitted leases, observed on the canonical clock or at their original native
@@ -112,8 +128,13 @@ The daemon has NOARMBIND=YES and publishes no listening-service readiness.
 Native hard bounds are checked before canonical-clock waits, including partial
 VPN/CADET input, callbacks, allocations, control writes and exit leases. Every
 bound is minted once. Clock rollback and backpressure cannot renew it. A partial
-transmit at expiry retires its physical MQ. Provider construction failures also
-disconnect the original Resolver and preserve cleanup failures.
+transmit or held reply at expiry retires its physical CADET MQ and removes its
+old tunnel mappings before another PRE send is selected. Retries keep their
+original callback deadlines. The VPN client owns its partial-input
+deadline. The daemon sets it from the configured control timeout. PT settles
+each original VPN operation from its matching local completion and retains
+queued work awaiting submission. Provider construction failures disconnect the
+original Resolver and preserve cleanup failures.
 
 Fixed channel-retry targets participate in the shared clock wakeup, so an idle
 provider set can reopen a retired channel without unrelated traffic. Already due

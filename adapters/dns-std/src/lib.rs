@@ -11,8 +11,9 @@ use gnunet_dnsstub::{Action, HeapDnsStub as Core};
 pub use gnunet_dnsstub::{
     Admission, DropReason, Family, RequestId, ServerId, SocketId, Stopped, UnverifiedDatagram,
 };
+use gnunet_service_runtime::network::SocketPolicy;
 use gnunet_types::{Duration, Error, MonoInstant};
-use socket2::{Domain, Protocol, SockRef, Socket, Type};
+use socket2::SockRef;
 use std::{
     fmt,
     future::Future,
@@ -171,6 +172,25 @@ impl std::fmt::Debug for SocketReservations {
     }
 }
 impl SocketReservations {
+    /// Retain these exact original UDP sockets for another asynchronous owner.
+    /// Only the bounded reservation list is allocated; no socket is opened,
+    /// duplicated or sent through, and original cache identities stay intact.
+    ///
+    /// # Errors
+    /// Preserves allocation failure before cloning any socket owner.
+    pub fn try_clone(&self) -> io::Result<Self> {
+        let mut sockets = Vec::new();
+        sockets
+            .try_reserve_exact(self.sockets.len())
+            .map_err(io::Error::other)?;
+        sockets.extend(self.sockets.iter().map(|original| ReservedSocket {
+            id: original.id,
+            local: original.local,
+            _socket: std::sync::Arc::clone(&original._socket),
+        }));
+        Ok(Self { sockets })
+    }
+
     /// Verify the lease still names this stub's original open cache objects.
     pub fn belongs_to<const R: usize, const N: usize, const S: usize>(
         &self,
@@ -189,12 +209,17 @@ impl SocketReservations {
                     })
             })
     }
+    /// Borrow the actual original UDP socket owners for native policy setup.
+    #[cfg(any(windows, target_os = "linux"))]
+    pub fn sockets(&self) -> impl ExactSizeIterator<Item = &UdpSocket> + '_ {
+        self.sockets.iter().map(|socket| socket._socket.as_ref())
+    }
     /// Immutable original cache tokens and numeric wildcard/port bindings.
     pub fn endpoints(&self) -> impl ExactSizeIterator<Item = (SocketId, SocketAddr)> + '_ {
         self.sockets.iter().map(|socket| (socket.id, socket.local))
     }
 }
-type Caches<const R: usize> = [[Option<Cached>; 2]; R];
+type CacheSlot = [Option<Cached>; 2];
 #[derive(Default)]
 struct RetryTimer {
     at: Option<MonoInstant>,
@@ -243,25 +268,27 @@ fn admit<const R: usize, const N: usize, const S: usize>(
 }
 fn stop<const R: usize, const N: usize, const S: usize>(
     core: &mut Core<R, N, S>,
-    caches: &mut Caches<R>,
+    caches: &mut [CacheSlot],
     timer: &mut RetryTimer,
 ) -> Stopped {
     let stopped = core.stop();
+    clear_socket_cache(caches, timer);
+    stopped
+}
+fn clear_socket_cache(caches: &mut [CacheSlot], timer: &mut RetryTimer) {
     for pair in caches {
         for cached in pair {
             *cached = None;
         }
     }
-    timer.at = None;
-    timer.sleep = None;
-    stopped
+    *timer = RetryTimer::default();
 }
 /// Restricted synchronous callback operations. Mutations take effect before the
 /// next packet/effect is polled. Stop releases this stub's socket references.
 /// Resolve returns its evicted failure token explicitly, even within callbacks.
 pub struct CallbackContext<'a, const R: usize, const N: usize, const S: usize> {
     core: &'a mut Core<R, N, S>,
-    caches: &'a mut Caches<R>,
+    caches: &'a mut [CacheSlot],
     timer: &'a mut RetryTimer,
     epoch: Instant,
 }
@@ -313,7 +340,7 @@ impl<const R: usize, const N: usize, const S: usize> CallbackContext<'_, R, N, S
 /// At most two actual sockets are retained per slot, independently by family.
 pub struct DnsStub<const R: usize, const N: usize, const S: usize> {
     core: Core<R, N, S>,
-    caches: Caches<R>,
+    caches: Vec<CacheSlot>,
     buffer: Vec<u8>,
     max_response: usize,
     epoch: Instant,
@@ -321,25 +348,48 @@ pub struct DnsStub<const R: usize, const N: usize, const S: usize> {
     read_cursor: usize,
     action_first: bool,
     reserved: Option<Family>,
+    socket_policy: SocketPolicy,
 }
 impl<const R: usize, const N: usize, const S: usize> DnsStub<R, N, S> {
     /// Construct outside or inside Tokio, without opening sockets. Responses are
     /// limited explicitly (12..=65535); receive storage is limit+1, so oversize
     /// datagrams cannot be mistaken for complete packets.
     pub fn start(num_sockets: usize, max_response: usize) -> Result<Self, Error> {
+        Self::start_with_socket_policy(num_sockets, max_response, SocketPolicy::default())
+    }
+
+    /// Construct without opening sockets and keep the original preparation
+    /// policy for all future opens, including after network changes or retries.
+    pub fn start_with_socket_policy(
+        num_sockets: usize,
+        max_response: usize,
+        socket_policy: SocketPolicy,
+    ) -> Result<Self, Error> {
         if !(12..=65535).contains(&max_response) {
             return Err(Error::InvalidInput);
         }
+        let core = gnunet_dnsstub::DnsStub::<R, N, S>::start_heap(num_sockets)?;
+        let mut caches = Vec::new();
+        caches
+            .try_reserve_exact(core.slot_count())
+            .map_err(|_| Error::Capacity)?;
+        caches.resize_with(core.slot_count(), || [None, None]);
+        let mut buffer = Vec::new();
+        buffer
+            .try_reserve_exact(max_response + 1)
+            .map_err(|_| Error::Capacity)?;
+        buffer.resize(max_response + 1, 0);
         Ok(Self {
-            core: gnunet_dnsstub::DnsStub::<R, N, S>::start_heap(num_sockets)?,
-            caches: std::array::from_fn(|_| [None, None]),
-            buffer: vec![0; max_response + 1],
+            core,
+            caches,
+            buffer,
             max_response,
             epoch: Instant::now(),
             timer: RetryTimer::default(),
             read_cursor: 0,
             action_first: true,
             reserved: None,
+            socket_policy,
         })
     }
     /// Add an explicit numeric IP at port53. No hostname lookup is performed.
@@ -349,6 +399,23 @@ impl<const R: usize, const N: usize, const S: usize> DnsStub<R, N, S> {
     /// Add an explicit endpoint at the configured list head, retaining duplicates.
     pub fn add_dns_sa(&mut self, endpoint: SocketAddr) -> Result<ServerId, Error> {
         self.core.add_dns_sa(endpoint)
+    }
+    /// Replace all upstreams in preference order, retiring the original
+    /// requests and native sockets. Empty disables new admission. Reserved
+    /// capture sockets are immutable and refuse replacement.
+    pub fn replace_servers(&mut self, endpoints: &[SocketAddr]) -> Result<(), Error> {
+        if self.core.is_stopped() {
+            return Err(Error::Closed);
+        }
+        if endpoints.len() > S {
+            return Err(Error::Capacity);
+        }
+        if self.reserved.is_some() {
+            return Err(Error::Conflict);
+        }
+        self.core.replace_servers(endpoints)?;
+        clear_socket_cache(&mut self.caches, &mut self.timer);
+        Ok(())
     }
     /// Change future retry periods without resetting already scheduled work.
     pub fn set_retry(&mut self, retry: Duration) -> Result<(), Error> {
@@ -439,7 +506,7 @@ impl<const R: usize, const N: usize, const S: usize> DnsStub<R, N, S> {
                 } else {
                     self.core.prepare_socket(slot, family)?
                 };
-                let cached = match Self::bind(id) {
+                let cached = match self.bind(id) {
                     Ok(cached) => cached,
                     Err(error) => {
                         self.core.socket_opened(id, false)?;
@@ -463,12 +530,12 @@ impl<const R: usize, const N: usize, const S: usize> DnsStub<R, N, S> {
         self.reserved = Some(family);
         Ok(SocketReservations { sockets })
     }
-    fn bind(socket: SocketId) -> io::Result<Cached> {
-        let (domain, address) = match socket.family() {
-            Family::V4 => (Domain::IPV4, SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0))),
-            Family::V6 => (Domain::IPV6, SocketAddr::from((Ipv6Addr::UNSPECIFIED, 0))),
+    fn bind(&self, socket: SocketId) -> io::Result<Cached> {
+        let address = match socket.family() {
+            Family::V4 => SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0)),
+            Family::V6 => SocketAddr::from((Ipv6Addr::UNSPECIFIED, 0)),
         };
-        let raw = Socket::new(domain, Type::DGRAM, Some(Protocol::UDP))?;
+        let raw = self.socket_policy.open_udp(address)?;
         #[cfg(windows)]
         {
             use std::os::windows::io::AsSocket;
@@ -509,7 +576,7 @@ impl<const R: usize, const N: usize, const S: usize> DnsStub<R, N, S> {
                         "reserved DNSSTUB sockets cannot be replaced or extended",
                     ))
                 } else {
-                    Self::bind(socket)
+                    self.bind(socket)
                 };
                 self.core.socket_opened(socket, cached.is_ok())?;
                 let result = match cached {
@@ -743,6 +810,24 @@ impl<const R: usize, const N: usize, const S: usize> Drop for DnsStub<R, N, S> {
 #[cfg(test)]
 mod tests {
     use super::unbiased_with;
+    #[test]
+    fn heap_tables_keep_the_native_owner_independent_of_capacity() -> Result<(), gnunet_types::Error>
+    {
+        use super::DnsStub;
+        use gnunet_types::Error;
+
+        type Small = DnsStub<1, 16, 1>;
+        type Resolver = DnsStub<128, 271, 128>;
+        if size_of::<Small>() != size_of::<Resolver>() {
+            return Err(Error::Conflict);
+        }
+        let stub = Resolver::start(3, 512)?;
+        if stub.caches.len() != 3 || stub.cached_socket_count() != 0 || stub.buffer.len() != 513 {
+            return Err(Error::Conflict);
+        }
+        Ok(())
+    }
+
     #[test]
     fn unbiased_sampling_rejects_low_residue_instead_of_modulo_bias() {
         let mut draws = [0_u32, 1, 5, 6].into_iter();

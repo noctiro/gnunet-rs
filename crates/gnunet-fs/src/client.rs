@@ -181,6 +181,8 @@ enum Phase {
 /// RecentWindow replays its newest fitting hashes and filters all duplicates
 /// locally. Continued replays every hash across individually leased official
 /// frames, for a service with working same-query continuation merge semantics.
+/// Verified historic hints share this storage but yield to new live results;
+/// configured prior results and newly accepted live digests remain strict.
 pub struct Client<'id, 'request, const KNOWN: usize> {
     identity: &'id Instance,
     request: Request<'request>,
@@ -193,6 +195,8 @@ pub struct Client<'id, 'request, const KNOWN: usize> {
     failure: Option<Failure>,
     known: [[u8; 64]; KNOWN],
     known_len: usize,
+    history_start: usize,
+    history_end: usize,
     send_offset: usize,
     lease_sequence: u64,
     leased_end: usize,
@@ -250,6 +254,8 @@ impl<'id, 'request, const KNOWN: usize> Client<'id, 'request, KNOWN> {
             failure: None,
             known: [[0; 64]; KNOWN],
             known_len: 0,
+            history_start: 0,
+            history_end: 0,
             send_offset: 0,
             lease_sequence: 0,
             leased_end: 0,
@@ -263,6 +269,10 @@ impl<'id, 'request, const KNOWN: usize> Client<'id, 'request, KNOWN> {
         for digest in prior_results {
             client.remember(*digest)?;
         }
+        // Configured prior results are strict. Only later verified-history
+        // hints occupy the contiguous evictable range after this prefix.
+        client.history_start = client.known_len;
+        client.history_end = client.known_len;
         Ok(client)
     }
 
@@ -291,10 +301,53 @@ impl<'id, 'request, const KNOWN: usize> Client<'id, 'request, KNOWN> {
     pub const fn failure(&self) -> Option<Failure> {
         self.failure
     }
-    /// Exact accepted whole-block digests, suitable for original-plugin filtering.
+    /// Exact retained whole-block digests, suitable for original-plugin filtering.
+    /// Historical hints do not establish fresh availability or current validity.
     #[must_use]
     pub fn known_results(&self) -> &[[u8; 64]] {
         &self.known[..self.known_len]
+    }
+
+    /// Warm the initial streaming search's seen set from authenticated history.
+    /// The caller must verify the complete original block against this exact
+    /// query before supplying its whole-block digest. A query, URI or plaintext
+    /// hash cannot replace that digest. This records no fresh native result.
+    ///
+    /// Configured prior results remain strict. Historic hints retain only their
+    /// newest fitting entries; a new live result can evict the oldest hint but
+    /// never a configured or live digest. Zero capacity retains no hints. Both
+    /// wire replay policies use this same ordinary known-result array.
+    ///
+    /// # Errors
+    /// Refuses non-streaming operations, a previously attached connection, or
+    /// an owner that is no longer in its original unconnected phase. Hint
+    /// capacity never fails restoration or changes the original time/phase.
+    pub fn remember_verified_history(&mut self, digest: [u8; 64]) -> Result<(), Error> {
+        if !matches!(self.request, Request::Search(search)
+            if matches!(search.block_type, BlockType::UBLOCK | BlockType::ANY))
+        {
+            return Err(Error::InvalidInput);
+        }
+        if self.phase != Phase::NeedConnection || self.serial != 0 || self.epoch.is_some() {
+            return Err(Error::NotReady);
+        }
+        if let Some(index) = self.known[..self.known_len]
+            .iter()
+            .position(|old| *old == digest)
+        {
+            if (self.history_start..self.history_end).contains(&index) {
+                self.known.copy_within(index + 1..self.history_end, index);
+                self.known[self.history_end - 1] = digest;
+            }
+            return Ok(());
+        }
+        if self.known_len == KNOWN && !self.evict_history() {
+            return Ok(());
+        }
+        self.known[self.known_len] = digest;
+        self.known_len += 1;
+        self.history_end = self.known_len;
+        Ok(())
     }
 
     /// Attach a fresh physical connection. No FS INIT handshake is invented.
@@ -567,6 +620,9 @@ impl<'id, 'request, const KNOWN: usize> Client<'id, 'request, KNOWN> {
 
     fn remember(&mut self, digest: [u8; 64]) -> Result<(), Error> {
         if !self.contains(&digest) {
+            if self.known_len == KNOWN && !self.evict_history() {
+                return Err(Error::Capacity);
+            }
             let slot = self.known.get_mut(self.known_len).ok_or(Error::Capacity)?;
             *slot = digest;
             self.known_len += 1;
@@ -577,6 +633,17 @@ impl<'id, 'request, const KNOWN: usize> Client<'id, 'request, KNOWN> {
         self.known[..self.known_len]
             .iter()
             .any(|seen| seen == digest)
+    }
+
+    fn evict_history(&mut self) -> bool {
+        if self.history_start == self.history_end {
+            return false;
+        }
+        self.known
+            .copy_within(self.history_start + 1..self.known_len, self.history_start);
+        self.known_len -= 1;
+        self.history_end -= 1;
+        true
     }
     fn check_epoch(&self, epoch: Epoch<'id>) -> Result<(), Error> {
         if self.epoch == Some(epoch) {
@@ -876,6 +943,197 @@ mod tests {
             digest[..8].copy_from_slice(&(index as u64).to_be_bytes());
             digest
         })
+    }
+
+    #[test]
+    fn verified_history_is_bounded_before_connection_and_uses_both_wire_replay_policies()
+    -> Result<(), Error> {
+        let strict = [[1; 64], [2; 64]];
+        let expected = [strict[0], strict[1], [5; 64], [4; 64]];
+        for policy in [SeenReplay::RecentWindow, SeenReplay::Continued] {
+            let mut identity = Instance::new();
+            let mut client = Client::<4>::new_with_known(
+                &mut identity,
+                search(BlockType::UBLOCK, [7; 64], &strict[0]),
+                Limits {
+                    seen_replay: policy,
+                    ..Limits::default()
+                },
+                AbsoluteTime::from_micros(0),
+                AbsoluteTime::from_micros(100),
+                &strict,
+            )?;
+            for digest in [[3; 64], [4; 64], [5; 64], [4; 64], strict[0]] {
+                client.remember_verified_history(digest)?;
+            }
+            assert_eq!(client.known_results(), &expected);
+            let epoch = client.begin_connection(AbsoluteTime::from_micros(1))?;
+            assert_eq!(
+                client.remember_verified_history([8; 64]),
+                Err(Error::NotReady)
+            );
+            let mut bytes = [0; 112 + 2 * 64];
+            let prepared = client.prepare(epoch, AbsoluteTime::from_micros(2), &mut bytes)?;
+            let Request::Search(frame) = Request::decode(prepared.bytes())? else {
+                return Err(Error::Malformed);
+            };
+            let expected_first = match policy {
+                SeenReplay::RecentWindow => &expected[2..],
+                SeenReplay::Continued => &expected[..2],
+            };
+            assert_eq!(frame.seen, expected_first.as_flattened());
+            assert_eq!(
+                frame.options & gnunet_wire::official::fs::SEARCH_CONTINUED != 0,
+                policy == SeenReplay::Continued
+            );
+            client.written(&prepared, AbsoluteTime::from_micros(2))?;
+            if policy == SeenReplay::Continued {
+                let mut bytes = [0; 112 + 2 * 64];
+                let prepared = client.prepare(epoch, AbsoluteTime::from_micros(3), &mut bytes)?;
+                let Request::Search(frame) = Request::decode(prepared.bytes())? else {
+                    return Err(Error::Malformed);
+                };
+                assert_eq!(frame.seen, expected[2..].as_flattened());
+                assert_eq!(frame.options, 0);
+                client.written(&prepared, AbsoluteTime::from_micros(3))?;
+            }
+            client.retire(epoch, AbsoluteTime::from_micros(4))?;
+            assert!(client.connection_needed());
+            assert_eq!(
+                client.remember_verified_history([8; 64]),
+                Err(Error::NotReady)
+            );
+            assert_eq!(client.known_results(), &expected);
+        }
+
+        let mut identity = Instance::new();
+        let mut zero = Client::<0>::new(
+            &mut identity,
+            search(BlockType::ANY, [7; 64], &[]),
+            Limits::default(),
+            AbsoluteTime::from_micros(0),
+            AbsoluteTime::from_micros(100),
+        )?;
+        zero.remember_verified_history([8; 64])?;
+        assert!(zero.known_results().is_empty());
+        let mut identity = Instance::new();
+        let mut listing = Client::<1>::new(
+            &mut identity,
+            Request::IndexList,
+            Limits::default(),
+            AbsoluteTime::from_micros(0),
+            AbsoluteTime::from_micros(100),
+        )?;
+        assert_eq!(
+            listing.remember_verified_history([8; 64]),
+            Err(Error::InvalidInput)
+        );
+        let mut identity = Instance::new();
+        assert!(matches!(
+            Client::<1>::new_with_known(
+                &mut identity,
+                search(BlockType::UBLOCK, [7; 64], &[]),
+                Limits::default(),
+                AbsoluteTime::from_micros(0),
+                AbsoluteTime::from_micros(100),
+                &strict,
+            ),
+            Err(Error::Capacity)
+        ));
+        Ok(())
+    }
+
+    fn history_block(
+        label: &[u8],
+        revision: u8,
+        frame: &mut [u8],
+    ) -> Result<([u8; 64], usize), Error> {
+        let publisher = crate::ublock::Publisher::keyword(label, crate::ublock::Limits::default())
+            .map_err(|_| Error::InvalidInput)?;
+        let mut bytes = [0; 1024];
+        let block = publisher
+            .seal(
+                b"",
+                Content {
+                    key: [revision; 64],
+                    query: [revision; 64],
+                    size: u64::from(revision),
+                }
+                .uri(),
+                None,
+                &mut bytes,
+            )
+            .map_err(|_| Error::Authentication)?;
+        let length = put(BlockType::UBLOCK, block.bytes()).encode(frame)?;
+        Ok((hash512(block.bytes()), length))
+    }
+
+    #[test]
+    fn actual_live_blocks_replace_history_but_never_configured_or_observed_live_digests()
+    -> Result<(), Error> {
+        let label = b"verified-seen-history";
+        let lookup = crate::ublock::Context::keyword(label, crate::ublock::Limits::default())
+            .map_err(|_| Error::InvalidInput)?;
+        let mut frames = [[0; 1024]; 4];
+        let (first, first_length) = history_block(label, 1, &mut frames[0])?;
+        let (second, second_length) = history_block(label, 2, &mut frames[1])?;
+        let (fresh, fresh_length) = history_block(label, 3, &mut frames[2])?;
+        let (another, another_length) = history_block(label, 4, &mut frames[3])?;
+        let strict = [0x91; 64];
+        let mut identity = Instance::new();
+        let mut client = Client::<3>::new(
+            &mut identity,
+            search(BlockType::UBLOCK, *lookup.query(), &strict),
+            Limits::default(),
+            AbsoluteTime::from_micros(0),
+            AbsoluteTime::from_micros(100),
+        )?;
+        client.remember_verified_history(first)?;
+        client.remember_verified_history(second)?;
+        let epoch = client.begin_connection(AbsoluteTime::from_micros(1))?;
+        let mut bytes = [0; 112 + 3 * 64];
+        let prepared = client.prepare(epoch, AbsoluteTime::from_micros(2), &mut bytes)?;
+        client.written(&prepared, AbsoluteTime::from_micros(2))?;
+        // A retransmitted historical observation remains an evictable hint.
+        assert_eq!(
+            client.receive(
+                epoch,
+                AbsoluteTime::from_micros(3),
+                &frames[0][..first_length]
+            )?,
+            Event::Ignored
+        );
+        assert_eq!(client.known_results(), &[strict, first, second]);
+        assert!(matches!(
+            client.receive(
+                epoch,
+                AbsoluteTime::from_micros(4),
+                &frames[2][..fresh_length]
+            )?,
+            Event::Block(_)
+        ));
+        assert_eq!(client.known_results(), &[strict, second, fresh]);
+        assert!(matches!(
+            client.receive(
+                epoch,
+                AbsoluteTime::from_micros(5),
+                &frames[3][..another_length]
+            )?,
+            Event::Block(_)
+        ));
+        assert_eq!(client.known_results(), &[strict, fresh, another]);
+        // With all hints gone, the original strict capacity policy is unchanged.
+        assert_eq!(
+            client.receive(
+                epoch,
+                AbsoluteTime::from_micros(6),
+                &frames[1][..second_length]
+            ),
+            Err(Error::Capacity)
+        );
+        assert_eq!(client.known_results(), &[strict, fresh, another]);
+        assert!(client.failure().is_none());
+        Ok(())
     }
 
     #[test]

@@ -82,7 +82,13 @@ fn peer(listener: TcpListener, set: bool, blocked: bool) -> io::Result<()> {
         Err(error) => Err(error),
     }
 }
-fn run(set: bool, blocked: bool) -> Result<()> {
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum Program {
+    Grouped,
+    Standalone,
+}
+
+fn run(program: Program, set: bool, blocked: bool) -> Result<()> {
     let nonce = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
     let directory =
         Directory(std::env::temp_dir().join(format!("gn-cli-{}-{nonce:x}", std::process::id())));
@@ -97,7 +103,10 @@ fn run(set: bool, blocked: bool) -> Result<()> {
         ),
     )?;
     let server = thread::spawn(move || peer(listener, set, blocked));
-    let mut command = Command::new(env!("CARGO_BIN_EXE_gnunet-cli"));
+    let mut command = Command::new(match program {
+        Program::Grouped => env!("CARGO_BIN_EXE_gnunet-cli"),
+        Program::Standalone => env!("CARGO_BIN_EXE_gnunet-statistics"),
+    });
     for (key, _) in std::env::vars_os() {
         if key.to_str().is_some_and(|key| {
             let key = key.to_ascii_uppercase();
@@ -106,12 +115,32 @@ fn run(set: bool, blocked: bool) -> Result<()> {
             command.env_remove(key);
         }
     }
-    command
-        .args(["statistics", if set { "set" } else { "get" }, "-c"])
-        .arg(directory.0.join("config"))
-        .args(["-", "s", "p"]);
-    if set {
-        command.args(["9", "--persistent"]);
+    match program {
+        Program::Grouped => {
+            command
+                .args(["statistics", if set { "set" } else { "get" }, "-c"])
+                .arg(directory.0.join("config"))
+                .args(["-", "s", "p"]);
+            if set {
+                command.args(["9", "--persistent"]);
+            }
+        }
+        Program::Standalone => {
+            command.arg("-c").arg(directory.0.join("config")).args([
+                "-s",
+                "s",
+                "-n",
+                "p",
+                "-r",
+                "127.0.0.1",
+                "-q",
+                "-S",
+                ",",
+            ]);
+            if set {
+                command.args(["-p", "9"]);
+            }
+        }
     }
     let started = Instant::now();
     let mut child = OriginalChild(
@@ -170,7 +199,16 @@ fn run(set: bool, blocked: bool) -> Result<()> {
         .into());
     }
     let output = fs::read_to_string(directory.0.join("out"))?;
-    if set {
+    if program == Program::Standalone {
+        let expected = if set {
+            String::new()
+        } else {
+            format!("{:16},\n", 9)
+        };
+        if output != expected {
+            return Err(format!("unexpected standalone output: {output:?}").into());
+        }
+    } else if set {
         if output != "{\"event\":\"statistics_set_confirmed\"}\n" {
             return Err(format!("unexpected SET output: {output}").into());
         }
@@ -183,14 +221,22 @@ fn run(set: bool, blocked: bool) -> Result<()> {
 }
 #[test]
 fn configured_get_streams_value_and_real_end() -> Result<()> {
-    run(false, false)
+    run(Program::Grouped, false, false)
 }
 #[test]
 fn configured_set_requires_real_processing_confirmation() -> Result<()> {
-    run(true, false)
+    run(Program::Grouped, true, false)
+}
+#[test]
+fn standalone_get_uses_official_filter_and_text_output() -> Result<()> {
+    run(Program::Standalone, false, false)
+}
+#[test]
+fn standalone_set_waits_for_processing_without_a_text_receipt() -> Result<()> {
+    run(Program::Standalone, true, false)
 }
 #[cfg(windows)]
 #[test]
 fn unread_output_pipe_exits_at_the_original_get_deadline() -> Result<()> {
-    run(false, true)
+    run(Program::Grouped, false, true)
 }

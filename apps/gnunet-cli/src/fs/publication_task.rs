@@ -534,7 +534,8 @@ pub(super) fn create_keywords(
 ) -> Result<(), Box<dyn Error>> {
     let parsed = super::publish::settings::keyword_arguments(args, false)?;
     let args = parsed.positional;
-    let mut metadata = super::publish::settings::RecordMetadata::new(parsed.manual)?;
+    let mut metadata =
+        super::publish::settings::RecordMetadata::new(parsed.manual, parsed.compression)?;
     let metadata = metadata.plan()?;
     let Uri::Keywords(query) =
         Uri::parse(crate::argument::wire_bytes(args[1])?, UriLimits::default())?
@@ -559,7 +560,8 @@ pub(super) fn create_namespace(
 ) -> Result<(), Box<dyn Error>> {
     let parsed = super::publish::settings::metadata_arguments(args, 5, 5, &[])?;
     let args = parsed.positional;
-    let mut metadata = super::publish::settings::RecordMetadata::new(parsed.manual)?;
+    let mut metadata =
+        super::publish::settings::RecordMetadata::new(parsed.manual, parsed.compression)?;
     let metadata = metadata.plan()?;
     let key = KeyFile::open(Path::new(args[1]))?;
     let target = Uri::parse(crate::argument::wire_bytes(args[4])?, UriLimits::default())?;
@@ -586,7 +588,8 @@ pub(super) fn create_managed_namespace(
         .map(crate::argument::wire_bytes)
         .transpose()?;
     let args = parsed.positional;
-    let mut metadata = super::publish::settings::RecordMetadata::new(parsed.manual)?;
+    let mut metadata =
+        super::publish::settings::RecordMetadata::new(parsed.manual, parsed.compression)?;
     let metadata = metadata.plan()?;
     let key = KeyFile::open(Path::new(args[1]))?;
     let mut graph = Graph::open(

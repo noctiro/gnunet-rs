@@ -11,6 +11,7 @@ mod output;
 use output::{Recorder, combine};
 
 type CheckResult<T> = Result<T, Box<dyn Error>>;
+const DAEMON_BUILD_TARGET: &str = "target/daemon-reference-build";
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Stage {
     Format,
@@ -37,7 +38,7 @@ const DEFAULT: &[Stage] = &[
 ];
 const SOURCE: &[Stage] = &[Stage::Format, Stage::Policy];
 const NATIVE: &[Stage] = &[Stage::Portable, Stage::Profiles, Stage::Lint, Stage::Test];
-const USAGE: &str = "expected verify [all|source|native|format|lint|tools|profiles|portable|runtime|test|embedded|reference|daemon-reference] [--log-dir PATH]; reference groups require GNUNET_REFERENCE_SOURCE; daemon-reference also requires GNUNET_REFERENCE_BUILD";
+const USAGE: &str = "expected verify [all|source|native|format|lint|tools|profiles|portable|runtime|test|embedded|reference|daemon-reference] [--log-dir PATH]; reference requires GNUNET_REFERENCE_SOURCE and GNUNET_CONFIG_REFERENCE_SOURCE; daemon-reference requires GNUNET_REFERENCE_SOURCE and GNUNET_REFERENCE_BUILD";
 
 impl Stage {
     const fn name(self) -> &'static str {
@@ -424,21 +425,60 @@ fn commands(stage: Stage) -> Vec<Vec<&'static str>> {
             "gnunet-cli",
             "-p",
             "gnunet-service-statistics",
+            "--bin",
+            "gnunet-cli",
+            "--bin",
+            "gnunet-statistics",
+            "--bin",
+            "gnunet-service-statistics",
+            "--no-default-features",
+            "--features",
+            "gnunet-cli/statistics",
             "--target-dir",
-            "target",
+            DAEMON_BUILD_TARGET,
             "--locked",
         ]],
     }
 }
-fn reference_source(value: Option<OsString>) -> CheckResult<PathBuf> {
-    let value = value.filter(|value| !value.is_empty()).ok_or(
-        "reference requires GNUNET_REFERENCE_SOURCE pointing to the clean pinned v0.29.1 checkout",
-    )?;
+fn reference_source(variable: &str, value: Option<OsString>) -> CheckResult<PathBuf> {
+    let value = value.filter(|value| !value.is_empty()).ok_or_else(|| {
+        format!("reference requires {variable} pointing to its clean pinned checkout")
+    })?;
     let path = PathBuf::from(value).canonicalize()?;
     if !path.is_dir() {
-        return Err("GNUNET_REFERENCE_SOURCE must be a directory".into());
+        return Err(format!("{variable} must be a directory").into());
     }
     Ok(path)
+}
+/// Each oracle validates its own revision; retain distinct source arguments even
+/// when several comparisons share the same output root and invocation group.
+fn component_reference_args(
+    source: &Path,
+    configuration_source: &Path,
+    output: &Path,
+) -> Vec<Vec<OsString>> {
+    let mut commands = vec![reference_args(source, output)];
+    for (script, source, directory) in [
+        (
+            "adapters/config-std/tests/upstream_oracle.py",
+            configuration_source,
+            "configuration",
+        ),
+        (
+            "adapters/statistics-store/tests/upstream_oracle.py",
+            source,
+            "statistics-store",
+        ),
+    ] {
+        commands.push(vec![
+            script.into(),
+            "--source".into(),
+            source.as_os_str().to_owned(),
+            "--output".into(),
+            output.join(directory).into_os_string(),
+        ]);
+    }
+    commands
 }
 fn reference_args(source: &Path, output: &Path) -> Vec<OsString> {
     vec![
@@ -452,14 +492,17 @@ fn reference_args(source: &Path, output: &Path) -> Vec<OsString> {
     ]
 }
 fn daemon_reference_args(receipt: &Path, output: &Path) -> Vec<OsString> {
+    let binary = |name| format!("{DAEMON_BUILD_TARGET}/debug/{name}").into();
     vec![
         "tools/reference/statistics_daemons.py".into(),
         "--reference".into(),
         receipt.as_os_str().to_owned(),
         "--rust-client".into(),
-        "target/debug/gnunet-cli".into(),
+        binary("gnunet-cli"),
+        "--rust-statistics".into(),
+        binary("gnunet-statistics"),
         "--rust-service".into(),
-        "target/debug/gnunet-service-statistics".into(),
+        binary("gnunet-service-statistics"),
         "--output".into(),
         output.as_os_str().to_owned(),
     ]
@@ -498,7 +541,18 @@ pub(crate) fn verify_matrix(args: &[String]) -> CheckResult<()> {
 
 fn verify_stage(stage: Stage, recorder: &mut Recorder) -> CheckResult<()> {
     let source = if matches!(stage, Stage::Reference | Stage::DaemonReference) {
-        Some(reference_source(env::var_os("GNUNET_REFERENCE_SOURCE"))?)
+        Some(reference_source(
+            "GNUNET_REFERENCE_SOURCE",
+            env::var_os("GNUNET_REFERENCE_SOURCE"),
+        )?)
+    } else {
+        None
+    };
+    let configuration_source = if stage == Stage::Reference {
+        Some(reference_source(
+            "GNUNET_CONFIG_REFERENCE_SOURCE",
+            env::var_os("GNUNET_CONFIG_REFERENCE_SOURCE"),
+        )?)
     } else {
         None
     };
@@ -541,27 +595,10 @@ fn verify_stage(stage: Stage, recorder: &mut Recorder) -> CheckResult<()> {
             })?;
             recorder.command("python3", &daemon_reference_args(&receipt, &output))?;
         } else {
-            recorder.command("python3", &reference_args(&source, &output))?;
-            for (script, directory) in [
-                (
-                    "adapters/config-std/tests/upstream_oracle.py",
-                    "configuration",
-                ),
-                (
-                    "adapters/statistics-store/tests/upstream_oracle.py",
-                    "statistics-store",
-                ),
-            ] {
-                recorder.command(
-                    "python3",
-                    &[
-                        OsString::from(script),
-                        OsString::from("--source"),
-                        source.as_os_str().to_owned(),
-                        OsString::from("--output"),
-                        output.join(directory).into_os_string(),
-                    ],
-                )?;
+            let configuration_source =
+                configuration_source.ok_or("component reference has no configuration source")?;
+            for args in component_reference_args(&source, &configuration_source, &output) {
+                recorder.command("python3", &args)?;
             }
         }
         writeln!(
@@ -716,8 +753,7 @@ mod tests {
         Ok(())
     }
     #[test]
-    fn embedded_matrix_checks_both_targets_and_the_independent_noalloc_fixture() -> CheckResult<()>
-    {
+    fn embedded_checks_facade_and_independent_allocation_fixture() -> CheckResult<()> {
         let commands = commands(Stage::Embedded);
         for target in crate::checks::EMBEDDED_TARGETS {
             let target_jobs: Vec<_> = commands
@@ -733,17 +769,27 @@ mod tests {
             }
             if !target_jobs
                 .iter()
-                .any(|command| command.contains(&"tests/embedded/noalloc/Cargo.toml"))
+                .any(|command| command.windows(2).any(|pair| pair == ["-p", "gnunet"]))
+                || !target_jobs
+                    .iter()
+                    .any(|command| command.contains(&"tests/embedded/noalloc/Cargo.toml"))
             {
-                return Err("independent allocation fixture omitted".into());
+                return Err(format!("missing facade or allocation fixture: {target}").into());
             }
         }
         Ok(())
     }
     #[test]
     fn reference_requires_source_and_uses_the_actual_official_cli() -> CheckResult<()> {
-        if reference_source(None).is_ok() || reference_source(Some(OsString::new())).is_ok() {
-            return Err("reference ran without a reference tree".into());
+        for variable in ["GNUNET_REFERENCE_SOURCE", "GNUNET_CONFIG_REFERENCE_SOURCE"] {
+            for value in [None, Some(OsString::new())] {
+                let Err(error) = reference_source(variable, value) else {
+                    return Err("reference ran without a reference tree".into());
+                };
+                if !error.to_string().contains(variable) {
+                    return Err("missing source error lost the required input name".into());
+                }
+            }
         }
         let build = commands(Stage::Reference);
         if !build[0].contains(&"gnunet-cli") || !build[0].contains(&"--bin") {
@@ -763,12 +809,63 @@ mod tests {
         Ok(())
     }
     #[test]
-    fn daemon_reference_builds_both_rust_participants_and_preserves_receipt_path() -> CheckResult<()>
+    fn component_reference_routes_each_oracle_to_its_selected_source() -> CheckResult<()> {
+        let source = Path::new("/baseline reference");
+        let configuration_source = Path::new("/configuration reference");
+        let output = Path::new("target/reference run");
+        let commands = component_reference_args(source, configuration_source, output);
+        if commands.len() != 3 || commands[0] != reference_args(source, output) {
+            return Err("component reference lost its baseline protocol comparison".into());
+        }
+        for (args, script, source, directory) in [
+            (
+                &commands[1],
+                "adapters/config-std/tests/upstream_oracle.py",
+                configuration_source,
+                "configuration",
+            ),
+            (
+                &commands[2],
+                "adapters/statistics-store/tests/upstream_oracle.py",
+                source,
+                "statistics-store",
+            ),
+        ] {
+            if args.len() != 5
+                || args[0] != script
+                || args[1] != "--source"
+                || args[2] != source.as_os_str()
+                || args[3] != "--output"
+                || args[4] != output.join(directory).as_os_str()
+            {
+                return Err("component oracle source or output path was mixed or split".into());
+            }
+        }
+        Ok(())
+    }
+    #[test]
+    fn daemon_reference_builds_each_rust_participant_and_preserves_receipt_path() -> CheckResult<()>
     {
         let build = commands(Stage::DaemonReference);
-        if !build[0].contains(&"gnunet-cli")
-            || !build[0].contains(&"gnunet-service-statistics")
+        let binaries: Vec<_> = build[0]
+            .windows(2)
+            .filter(|args| args[0] == "--bin")
+            .map(|args| args[1])
+            .collect();
+        if binaries
+            != [
+                "gnunet-cli",
+                "gnunet-statistics",
+                "gnunet-service-statistics",
+            ]
             || !build[0].contains(&"--locked")
+            || !build[0].contains(&"--no-default-features")
+            || !build[0]
+                .windows(2)
+                .any(|args| args == ["--features", "gnunet-cli/statistics"])
+            || !build[0]
+                .windows(2)
+                .any(|args| args == ["--target-dir", DAEMON_BUILD_TARGET])
         {
             return Err("daemon reference is missing a production participant".into());
         }
@@ -776,11 +873,21 @@ mod tests {
             Path::new("/reference build/result.json"),
             Path::new("target/daemon proof"),
         );
-        if args.len() != 9
-            || args[2] != "/reference build/result.json"
-            || args[4] != "target/debug/gnunet-cli"
-            || args[6] != "target/debug/gnunet-service-statistics"
-            || args[8] != "target/daemon proof"
+        if !args.iter().map(OsString::as_os_str).eq([
+            "tools/reference/statistics_daemons.py",
+            "--reference",
+            "/reference build/result.json",
+            "--rust-client",
+            "target/daemon-reference-build/debug/gnunet-cli",
+            "--rust-statistics",
+            "target/daemon-reference-build/debug/gnunet-statistics",
+            "--rust-service",
+            "target/daemon-reference-build/debug/gnunet-service-statistics",
+            "--output",
+            "target/daemon proof",
+        ]
+        .into_iter()
+        .map(std::ffi::OsStr::new))
         {
             return Err("daemon reference argv changed a participant or split a path".into());
         }

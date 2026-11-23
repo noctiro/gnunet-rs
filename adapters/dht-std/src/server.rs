@@ -22,6 +22,7 @@ use gnunet_service_runtime::{
     accepted::{AcceptState, AcceptedConnection},
     clock::{ClockSubscription, RuntimeClock},
     framing::{Accounting, Budget, Class, Framed, Limits as FrameLimits, OwnedFrame, ReadStep},
+    network::SocketPolicy,
     service::Listener,
 };
 use gnunet_transport_application_host as application;
@@ -177,8 +178,20 @@ impl<'id> Server<'id> {
     pub fn new(
         instances: &'id mut Instances,
         ports: Ports,
+        limits: Limits,
+        blocks: Blocks,
+    ) -> Result<Self, Error> {
+        Self::new_with_socket_policy(instances, ports, limits, blocks, &SocketPolicy::default())
+    }
+
+    /// Construct with the application's policy for direct-IP underlay datagrams.
+    /// The caller's local service selectors keep their own original IPC policy.
+    pub fn new_with_socket_policy(
+        instances: &'id mut Instances,
+        ports: Ports,
         mut limits: Limits,
         blocks: Blocks,
+        socket_policy: &SocketPolicy,
     ) -> Result<Self, Error> {
         if blocks.hello_profile != limits.pils_profile.hello() {
             return Err(Fault::Conflict.into());
@@ -199,13 +212,10 @@ impl<'id> Server<'id> {
             carrier_limit
         };
         limits.network.put_frame_limit = limits.network.put_frame_limit.min(carrier_limit);
-        for source in [
-            &ports.core,
-            &ports.pils,
-            &ports.nse,
-            &ports.peerstore,
-            &ports.transport,
-        ] {
+        for source in [&ports.core, &ports.pils, &ports.peerstore, &ports.transport]
+            .into_iter()
+            .chain(ports.nse.as_ref())
+        {
             if !Arc::ptr_eq(&ports.clock, &source.clock()) {
                 return Err(Fault::Conflict.into());
             }
@@ -258,7 +268,9 @@ impl<'id> Server<'id> {
         let ip_result = limits
             .underlays
             .ip
-            .map(|config| crate::ip::Client::new(&mut instances.ip, config))
+            .map(|config| {
+                crate::ip::Client::new_with_socket_policy(&mut instances.ip, config, socket_policy)
+            })
             .transpose();
         let mut core_failure = None;
         let mut ip_failure = None;
@@ -327,12 +339,10 @@ impl<'id> Server<'id> {
             limits.input_lifetime,
         )?;
         let nse = if core.is_some() {
-            Some(nse::Subscription::new(
-                &mut instances.nse,
-                ports.nse,
-                None,
-                limits.nse,
-            )?)
+            ports
+                .nse
+                .map(|source| nse::Subscription::new(&mut instances.nse, source, None, limits.nse))
+                .transpose()?
         } else {
             None
         };

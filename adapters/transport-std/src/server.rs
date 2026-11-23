@@ -5,6 +5,7 @@ use crate::framed::Framed;
 use gnunet_crypto::Entropy;
 use gnunet_service_runtime::service::Listener;
 use gnunet_service_runtime::{connection::Connection, framing::OwnedFrame};
+use gnunet_transport::p2p::DvFrame;
 use gnunet_transport::{
     ClientId, Engine, Output, PeerId, QueueRejection, ReceiveOutcome, Signer, Times, WorkDeferral,
     WorkStatus,
@@ -102,8 +103,8 @@ struct Client {
     input: Option<Instant>,
     output: Option<Instant>,
     monitor: bool,
-    // First positive RX byte fixes the original local DV source. Native retire
-    // closes retained old-source partial/complete RX before any new source.
+    // First positive RX byte fixes the original local DV source until the
+    // frame can be classified. Incomplete input keeps that original tag.
     dv_rx_source: Option<gnunet_transport::dv_bridge::Source>,
 }
 /// Caller-driven process-level TRANSPORT IPC host, with fair socket directions.
@@ -386,6 +387,83 @@ impl Server {
             .position(|c| c.id == *id)
             .ok_or(Error::Stale)?;
         self.close(index)
+    }
+    /// Apply the replacement after the original output fence has settled.
+    /// Communicator streams and address leases retain their original owners.
+    pub fn replace_local_peer(&mut self, peer: PeerId) -> Result<(), Error> {
+        if self.has_identity_output() {
+            return Err(Error::WouldBlock);
+        }
+        self.engine.replace_local_peer(peer)
+    }
+    fn has_identity_output(&self) -> bool {
+        self.pending_frame.is_some()
+            || self.pending_validated.is_some()
+            || self.engine.snapshot().outputs != 0
+            || self
+                .clients
+                .iter()
+                .any(|client| client.io.queued_frames() != 0)
+    }
+    /// Close CORE streams and settle already admitted output on its originals.
+    /// Native bounds may retire an original stream. No request, job, signature
+    /// or transport tick is admitted while the identity is being replaced.
+    /// A retiring DV source can settle its original flow-control output. The
+    /// fence completes after it detaches, and leaves tagged frames to the
+    /// original bridge.
+    pub fn poll_identity_outputs(
+        &mut self,
+        cx: &mut Context<'_>,
+        store: &mut impl AddressStore,
+    ) -> Poll<Result<(), Error>> {
+        if self.engine.dv_source_accepting() {
+            return Poll::Pending;
+        }
+        for index in (0..self.clients.len()).rev() {
+            if self.engine.is_core_client(&self.clients[index].id)? {
+                self.close(index)?;
+            }
+        }
+        if self.poll_native_guard(cx)?.is_some() {
+            cx.waker().wake_by_ref();
+            return Poll::Pending;
+        }
+        let prepared = self.poll_outputs(cx, store);
+        if let Poll::Ready(Err(error)) = prepared {
+            return Poll::Ready(Err(error));
+        }
+        let clients = self.clients.len();
+        let mut pending = prepared.is_pending() || self.engine.dv_source_active();
+        let mut observer = dv_bridge::NoObserver;
+        for _ in 0..clients {
+            let index = self.cursor % clients;
+            self.cursor = index + 1;
+            if self.clients[index].io.queued_frames() == 0 {
+                continue;
+            }
+            if self.clients[index].io.tagged_sends().next().is_some() {
+                pending = true;
+                continue;
+            }
+            match self.poll_native_write(cx, index, &mut observer) {
+                Poll::Ready(Ok(())) => {
+                    cx.waker().wake_by_ref();
+                    return Poll::Pending;
+                }
+                Poll::Ready(Err(error)) => return Poll::Ready(Err(error)),
+                Poll::Pending => pending = true,
+            }
+        }
+        if pending {
+            // Staging an Engine frame above may introduce an earlier native
+            // deadline even when every socket write is currently blocked.
+            if self.poll_native_guard(cx)?.is_some() {
+                cx.waker().wake_by_ref();
+            }
+            Poll::Pending
+        } else {
+            Poll::Ready(Ok(()))
+        }
     }
     /// Physically retire one exact failed observer before any old source IO.
     fn retire_monitor(&mut self) -> Result<Option<ClientId>, Error> {
@@ -811,7 +889,14 @@ impl Server {
         maintenance: bool,
     ) -> Result<Option<Step>, Error> {
         let frame = self.clients[index].io.frame().ok_or(Error::NotReady)?;
-        let dv_bound = if self.engine.dv_source_active() && dv_bridge::is_dv(frame) {
+        let dv_input = dv_bridge::classify_dv(frame);
+        let origin = self.clients[index].dv_rx_source.as_ref();
+        let current = self.engine.dv_current_source();
+        if dv_input == Some(DvFrame::Direct) && origin.is_some() && origin != current {
+            self.close_observed(index, RetirementCause::DvSourceRetired)?;
+            return Ok(Some(Step::Progress));
+        }
+        let dv_bound = if current.is_some() && dv_input.is_some() {
             // A complete raw DV head may be waiting on Actor slots
             // that themselves owe SEND_ACKs later on this same MQ.
             // Move it to the existing bounded Engine inbox, retaining
@@ -820,14 +905,10 @@ impl Server {
             if !self.engine.dv_source_accepting() {
                 return Ok(None);
             }
-            let Some(source) = self.clients[index].dv_rx_source.clone() else {
+            let Some(source) = origin.filter(|_| origin == current).cloned() else {
                 self.close_observed(index, RetirementCause::DvSourceRetired)?;
                 return Ok(Some(Step::Progress));
             };
-            if self.engine.dv_current_source() != Some(&source) {
-                self.close_observed(index, RetirementCause::DvSourceRetired)?;
-                return Ok(Some(Step::Progress));
-            }
             let hard = self.clients[index]
                 .input
                 .unwrap_or(self.clients[index].lease)
@@ -941,6 +1022,54 @@ impl Server {
             }
         };
         Ok(Some(step))
+    }
+    fn poll_native_write(
+        &mut self,
+        cx: &mut Context<'_>,
+        index: usize,
+        observer: &mut dyn dv_bridge::NativeObserver,
+    ) -> Poll<Result<(), Error>> {
+        let engine = &mut self.engine;
+        let mut progress_error = None;
+        let actual = self.clients[index]
+            .io
+            .poll_write_observed(cx, |id, bytes, complete| {
+                let parent = engine.dv_chunk_parent(id);
+                if let Err(error) = engine.dv_ipc_progress(id, bytes, complete) {
+                    progress_error.get_or_insert(error);
+                }
+                if let Some(parent) = parent
+                    && let Err(error) = observer.exposed(&parent, bytes)
+                {
+                    progress_error.get_or_insert(error);
+                }
+            });
+        if let Some(error) = progress_error {
+            if let Err(cleanup) = self.close(index) {
+                observer.cleanup(cleanup);
+            }
+            return Poll::Ready(Err(error));
+        }
+        match actual {
+            Poll::Ready(Ok(progress)) => {
+                if self.clients[index].io.queued_frames() == 0 {
+                    self.clients[index].output = None;
+                } else if progress.completed_frames > 0 {
+                    self.clients[index].output = Some(
+                        Instant::now()
+                            .checked_add(self.native.output)
+                            .ok_or(Error::Overflow)?,
+                    );
+                }
+                self.poll_native_guard(cx)?;
+                Poll::Ready(Ok(()))
+            }
+            Poll::Ready(Err(_)) => {
+                self.close(index)?;
+                Poll::Ready(Ok(()))
+            }
+            Poll::Pending => Poll::Pending,
+        }
     }
     /// Poll one fair native/protocol step. No tasks or background writers are spawned.
     /// Local resource/storage failure is returned unchanged; it may follow input
@@ -1088,17 +1217,17 @@ impl Server {
                         bytes,
                         complete,
                     })) => {
-                        if bytes > 0 && self.clients[index].input.is_none() {
-                            self.clients[index].dv_rx_source =
-                                self.engine.dv_current_source().cloned();
+                        let client = &mut self.clients[index];
+                        if bytes > 0 && client.input.is_none() {
+                            client.dv_rx_source = self.engine.dv_current_source().cloned();
                         }
                         let held_dv = complete
-                            && self.engine.dv_source_active()
-                            && self.clients[index].io.frame().is_some_and(dv_bridge::is_dv);
+                            && client.io.frame().and_then(dv_bridge::classify_dv).is_some();
                         if complete && !held_dv {
-                            self.clients[index].input = None;
-                        } else if bytes > 0 && self.clients[index].input.is_none() {
-                            self.clients[index].input = Some(
+                            client.input = None;
+                            client.dv_rx_source = None;
+                        } else if bytes > 0 && client.input.is_none() {
+                            client.input = Some(
                                 Instant::now()
                                     .checked_add(self.native.input)
                                     .ok_or(Error::Overflow)?,
@@ -1117,49 +1246,8 @@ impl Server {
                     }
                     Poll::Pending => {}
                 }
-            } else {
-                let engine = &mut self.engine;
-                let mut progress_error = None;
-                let actual =
-                    self.clients[index]
-                        .io
-                        .poll_write_observed(cx, |id, bytes, complete| {
-                            let parent = engine.dv_chunk_parent(id);
-                            if let Err(error) = engine.dv_ipc_progress(id, bytes, complete) {
-                                progress_error.get_or_insert(error);
-                            }
-                            if let Some(parent) = parent
-                                && let Err(error) = observer.exposed(&parent, bytes)
-                            {
-                                progress_error.get_or_insert(error);
-                            }
-                        });
-                if let Some(error) = progress_error {
-                    if let Err(cleanup) = self.close(index) {
-                        observer.cleanup(cleanup);
-                    }
-                    return Poll::Ready(Err(error));
-                }
-                match actual {
-                    Poll::Ready(Ok(progress)) => {
-                        if self.clients[index].io.queued_frames() == 0 {
-                            self.clients[index].output = None;
-                        } else if progress.completed_frames > 0 {
-                            self.clients[index].output = Some(
-                                Instant::now()
-                                    .checked_add(self.native.output)
-                                    .ok_or(Error::Overflow)?,
-                            );
-                        }
-                        self.poll_native_guard(cx)?;
-                        return Poll::Ready(Ok(Step::Progress));
-                    }
-                    Poll::Ready(Err(_)) => {
-                        self.close(index)?;
-                        return Poll::Ready(Ok(Step::Progress));
-                    }
-                    Poll::Pending => {}
-                }
+            } else if let Poll::Ready(result) = self.poll_native_write(cx, index, observer) {
+                return Poll::Ready(result.map(|()| Step::Progress));
             }
         }
         Poll::Pending
@@ -1333,6 +1421,46 @@ mod framing_resource_tests {
                 Poll::Pending
             }
         }
+    }
+    #[tokio::test(flavor = "current_thread")]
+    async fn identity_output_fence_writes_original_and_leaves_input_unread()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let local = PeerId([1; 32]);
+        let engine = Engine::new(local, gnunet_transport::Limits::default())?;
+        let mut server = Server::new(engine, 1, 65535)?;
+        let (native, mut remote) = crate::test_support::pair().await?;
+        let id = server.admit(native)?;
+        let source = server.dv_attach_source(local)?;
+        let original = [0, 4, 4, 230];
+        server.pending_frame = Some((id, OwnedFrame::new(original.to_vec())));
+        remote.write_all(&original).await?;
+        let mut store = StoreGate {
+            ready: true,
+            waker: None,
+        };
+        let mut actual = [0; 4];
+        server.dv_begin_retire_source(&source)?;
+        tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::select! {
+                biased;
+                result = poll_fn(|cx| server.poll_identity_outputs(cx, &mut store)) => {
+                    result?;
+                    Err("retiring DV source completed the replacement fence".into())
+                }
+                result = remote.read_exact(&mut actual) => {
+                    result?;
+                    Ok::<(), Box<dyn std::error::Error>>(())
+                }
+            }
+        })
+        .await??;
+        server.dv_retire_source(&source)?;
+        poll_fn(|cx| server.poll_identity_outputs(cx, &mut store)).await?;
+        assert_eq!(actual, original);
+        assert!(server.pending_frame.is_none());
+        assert!(server.clients[0].io.frame().is_none());
+        assert_eq!(server.clients[0].io.written_cursor(), original.len() as u64);
+        Ok(())
     }
     /// The private barrier/result markers deliberately isolate host ownership;
     /// the real Unix callback below must neither replace nor prematurely take

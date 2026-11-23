@@ -11,6 +11,8 @@ mod neighbours;
 mod own_hello;
 mod server;
 mod signer;
+#[cfg(feature = "startup")]
+pub mod startup;
 pub use server::Server;
 
 #[cfg(test)]

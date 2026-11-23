@@ -16,7 +16,7 @@ pub(super) async fn probe(
     output: &mut Output,
 ) -> Result<(), Cause> {
     output.status(format_args!(
-        "CA provider: rcgen 0.14.10 with AWS-LC; OpenSSL/GnuTLS binaries are not required"
+        "CA provider: RustCrypto P-256 signing with rcgen certificate encoding"
     ))?;
     match helper
         .run(&[OsString::from("-H")], None, budget, output.verbose)

@@ -1,6 +1,31 @@
 //! Original DNS callback decisions, source binding and deferred refusal writes.
-use super::{Bound, Callback, Counter, Event, Failure, Fault, Owner, Stage, dns};
+use super::{Bound, Callback, Counter, Event, Failure, Failures, Fault, Owner, Stage, dns};
+use std::{error::Error, fmt};
 use tokio::time::Instant;
+
+#[derive(Debug)]
+struct SourceLoss {
+    stage: Stage,
+    cause: dns::Cause,
+}
+impl fmt::Display for SourceLoss {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "original {:?} DNS source lost: {:?}",
+            self.stage, self.cause
+        )
+    }
+}
+impl Error for SourceLoss {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match &self.cause {
+            dns::Cause::Io(error) => Some(error),
+            dns::Cause::Clock(error) | dns::Cause::Protocol(error) => Some(error),
+            _ => None,
+        }
+    }
+}
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub(super) enum Resolution {
@@ -10,6 +35,31 @@ pub(super) enum Resolution {
 }
 
 impl<'a, 'slots> Owner<'a, 'slots> {
+    pub(super) fn recover_dns_source(
+        &mut self,
+        stage: Stage,
+        cause: dns::Cause,
+    ) -> Result<Event, Failure> {
+        let mut cleanup = Vec::new();
+        if let Err(error) = self.source_lost(stage) {
+            cleanup.push(error);
+        }
+        let reconnect = self
+            .dns(stage)
+            .and_then(|client| client.reconnect().map_err(Failure::from));
+        if let Err(error) = reconnect {
+            cleanup.push(error);
+        }
+        if cleanup.is_empty() {
+            Ok(Event::DnsLost { stage, cause })
+        } else {
+            Err(Box::new(Failures {
+                original: Some(Box::new(SourceLoss { stage, cause })),
+                cleanup,
+            }))
+        }
+    }
+
     pub(super) fn on_dns(
         &mut self,
         stage: Stage,
@@ -23,7 +73,8 @@ impl<'a, 'slots> Owner<'a, 'slots> {
                 if self.source(stage).is_some() {
                     return Err(Fault::Conflict.into());
                 }
-                let source = self.core.attached(stage)?;
+                let replies = self.dns(stage)?.reply_limit();
+                let source = self.core.attached(stage, replies)?;
                 *self.source_mut(stage) = Some((epoch, source));
                 Ok(Event::DnsAttached(stage))
             }
@@ -135,11 +186,7 @@ impl<'a, 'slots> Owner<'a, 'slots> {
                 }
                 Ok(Event::DnsReplyWritten(stage))
             }
-            dns::Progress::Lost { cause, .. } => {
-                self.source_lost(stage)?;
-                self.dns(stage)?.reconnect()?;
-                Ok(Event::DnsLost { stage, cause })
-            }
+            dns::Progress::Lost { cause, .. } => self.recover_dns_source(stage, cause),
             dns::Progress::Retry { .. } | dns::Progress::Unavailable(_) => {
                 self.blocked |= port;
                 self.delay()?;

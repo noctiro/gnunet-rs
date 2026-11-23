@@ -12,6 +12,10 @@ use gnunet_types::Error as Fault;
 use std::future::poll_fn;
 use tokio::time::Instant;
 use zeroize::Zeroizing;
+
+mod credentials;
+use credentials::CredentialRows;
+
 impl<I: gnunet_dns::Idna> Context<'_, I> {
     pub(crate) async fn reclaim(
         &self,
@@ -133,6 +137,7 @@ impl<I: gnunet_dns::Idna> Context<'_, I> {
             let mut json = Json::new(self.limits.output_bytes)?;
             json.raw(b"[")?;
             let mut count = 0;
+            let mut credentials = CredentialRows::new(self.limits);
             loop {
                 match poll_fn(|cx| iterator.poll(cx, Some(hard))).await? {
                     Progress::Item { reply, .. } => {
@@ -150,7 +155,7 @@ impl<I: gnunet_dns::Idna> Context<'_, I> {
                             ipc::Response::Credential {
                                 credential: Some(item),
                                 ..
-                            } => self.credential_json(&mut json, item)?,
+                            } => credentials.write(&mut json, item)?,
                             ipc::Response::Ticket {
                                 ticket: Some(ticket),
                                 uri: Some(uri),
@@ -272,74 +277,6 @@ impl<I: gnunet_dns::Idna> Context<'_, I> {
             ipc::Response::Success { result, .. } => Err(Error::Status(i64::from(result))),
             _ => Err(Fault::Malformed.into()),
         }
-    }
-    fn credential_json(&self, json: &mut Json, item: Credential<'_>) -> Result<(), Error> {
-        json.raw(b"{\"value\":")?;
-        json.string(formats::credential_value_string(item.kind, item.value)?.expose())?;
-        json.raw(b",\"name\":")?;
-        json.string(item.name.bytes())?;
-        json.raw(b",\"type\":")?;
-        json.string(if item.kind == CredentialType::JWT {
-            b"JWT"
-        } else if item.kind == CredentialType::PABC {
-            b"PABC"
-        } else {
-            return Err(Fault::Unsupported.into());
-        })?;
-        json.raw(b",\"id\":")?;
-        json.base32(item.id.bytes())?;
-        let mut payload = bytes(self.limits.bytes)?;
-        let mut tokens = Vec::new();
-        tokens
-            .try_reserve_exact(self.limits.json.nodes)
-            .map_err(|_| Fault::Capacity)?;
-        tokens.resize(self.limits.json.nodes, gnunet_json::Token::EMPTY);
-        let mut stack = Vec::new();
-        stack
-            .try_reserve_exact(self.limits.json.depth)
-            .map_err(|_| Fault::Capacity)?;
-        stack.resize(self.limits.json.depth, gnunet_json::Nest::EMPTY);
-        let mut workspace = formats::Workspace::new(&mut payload, &mut tokens, &mut stack);
-        let limits = formats::Limits {
-            input_bytes: self.limits.bytes,
-            payload_bytes: self.limits.bytes,
-            nodes: self.limits.json.nodes,
-            depth: self.limits.json.depth,
-            attributes: self.limits.items,
-            work: self.limits.json.work,
-        };
-        let claims = workspace.credential(item, limits)?;
-        if let Some(issuer) = claims.lookup(b"iss") {
-            let issuer = issuer.string()?;
-            json.raw(b",\"issuer\":")?;
-            json.string(&decoded(issuer)?)?;
-        }
-        if claims.lookup(b"exp").is_some() {
-            json.raw(b",\"expiration\":")?;
-            json.number(claims.expiration()?.as_micros())?;
-        }
-        json.raw(b",\"attributes\":[")?;
-        for (n, claim) in claims.attributes().enumerate() {
-            if n >= self.limits.items {
-                return Err(Fault::Capacity.into());
-            }
-            if n != 0 {
-                json.raw(b",")?
-            }
-            let name = normalize(&decoded(claim.name)?, self.limits.bytes)?;
-            let mut value = bytes(claim.value.attribute_len()?)?;
-            claim.value.write_attribute(&mut value)?;
-            let item = Attribute::new(
-                Identifier::ZERO,
-                Identifier::ZERO,
-                AttributeType::STRING,
-                Name::new(&name)?,
-                Sensitive::new(&value),
-            );
-            attribute_json(json, item, true)?;
-        }
-        json.raw(b"]}")?;
-        Ok(())
     }
 }
 fn subject_path(endpoint: Endpoint, suffix: &[u8]) -> Result<(&[u8], &[u8]), Error> {

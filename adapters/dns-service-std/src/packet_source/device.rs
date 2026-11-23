@@ -1,8 +1,8 @@
 //! Native whole-packet I/O with one source-bound DNS effect and fixed deadline.
-use super::{Packet, PacketExposure, Retirement, SourceEvent, Write};
+use super::{PacketExposure, Retirement, SourceEvent, Write, raw};
 use crate::{Error, core};
 use gnunet_service_runtime::framing::OwnedFrame;
-use gnunet_tun_host::{AsyncTun, Loss, ReadEvent, WriteEvent, WriteId};
+use gnunet_tun_host::{AsyncTun, Loss, ReadEvent, Unsent, WriteEvent, WriteId};
 use gnunet_types::Error as Fault;
 use std::{
     future::Future,
@@ -20,7 +20,21 @@ struct Pending<'id> {
 struct Stopped<'id> {
     effect: core::Effect<'id>,
     total: usize,
-    reason: Error,
+    reason: Unsent,
+}
+impl<'id> Stopped<'id> {
+    fn into_event(self) -> SourceEvent<'id> {
+        let reason = match self.reason {
+            Unsent::Cancelled => Fault::Cancelled,
+            Unsent::Deadline => Fault::Deadline,
+        };
+        SourceEvent::OutputStopped {
+            effect: self.effect,
+            exposure: PacketExposure::UnsubmittedPacket,
+            total: self.total,
+            reason: reason.into(),
+        }
+    }
 }
 pub(super) struct Device<'id> {
     tun: AsyncTun,
@@ -49,6 +63,9 @@ impl<'id> Device<'id> {
     pub fn writable(&self) -> bool {
         self.initialized() && self.pending.is_none() && self.stopped.is_none()
     }
+    pub fn packet_capacity(&self) -> usize {
+        self.tun.packet_capacity()
+    }
     pub fn pending(&self) -> Option<(core::Effect<'id>, usize, usize)> {
         self.pending
             .as_ref()
@@ -73,12 +90,12 @@ impl<'id> Device<'id> {
             .filter(|pending| pending.effect.request() == request)
             .ok_or(Fault::StaleGeneration)?;
         match self.tun.cancel(&pending.write)? {
-            WriteEvent::Unsent { write, .. } if write == pending.write => {
+            WriteEvent::Unsent { write, reason } if write == pending.write => {
                 let pending = self.pending.take().ok_or(Fault::StaleGeneration)?;
                 self.stopped = Some(Stopped {
                     effect: pending.effect,
                     total: pending.bytes,
-                    reason: Fault::Deadline.into(),
+                    reason,
                 });
                 Ok(())
             }
@@ -131,12 +148,7 @@ impl<'id> Device<'id> {
     }
     pub fn poll_guard(&mut self, cx: &mut Context<'_>) -> Poll<SourceEvent<'id>> {
         if let Some(stopped) = self.stopped.take() {
-            return Poll::Ready(SourceEvent::OutputStopped {
-                effect: stopped.effect,
-                exposure: PacketExposure::UnsubmittedPacket,
-                total: stopped.total,
-                reason: stopped.reason,
-            });
+            return Poll::Ready(stopped.into_event());
         }
         if let Poll::Ready(retired) = self.poll_retirement() {
             return Poll::Ready(SourceEvent::Retired(retired));
@@ -159,13 +171,13 @@ impl<'id> Device<'id> {
         match self.tun.poll_read(cx) {
             Poll::Pending => Poll::Pending,
             Poll::Ready(ReadEvent::Packet(packet)) => {
-                Poll::Ready(SourceEvent::Packet(Packet::device(packet)))
+                Poll::Ready(SourceEvent::Input(raw::device(packet)))
             }
             Poll::Ready(ReadEvent::Lost(loss)) => {
                 self.lost(loss);
                 self.poll_guard(cx)
             }
-            Poll::Ready(ReadEvent::WriteExpired(write)) => self.expired(write),
+            Poll::Ready(ReadEvent::WriteExpired(write)) => self.unsent(write, Unsent::Deadline),
             Poll::Ready(ReadEvent::Rejected(_) | ReadEvent::WaitDeadline) => {
                 Poll::Ready(SourceEvent::Activity)
             }
@@ -174,7 +186,7 @@ impl<'id> Device<'id> {
             ))),
         }
     }
-    fn expired(&mut self, write: WriteId) -> Poll<SourceEvent<'id>> {
+    fn unsent(&mut self, write: WriteId, reason: Unsent) -> Poll<SourceEvent<'id>> {
         if !self
             .pending
             .as_ref()
@@ -188,12 +200,12 @@ impl<'id> Device<'id> {
         let Some(pending) = self.pending.take() else {
             return Poll::Pending;
         };
-        Poll::Ready(SourceEvent::OutputStopped {
+        let stopped = Stopped {
             effect: pending.effect,
-            exposure: PacketExposure::UnsubmittedPacket,
             total: pending.bytes,
-            reason: Fault::Deadline.into(),
-        })
+            reason,
+        };
+        Poll::Ready(stopped.into_event())
     }
     fn write(&mut self, cx: &mut Context<'_>) -> Poll<SourceEvent<'id>> {
         if self.pending.is_none() {
@@ -226,7 +238,7 @@ impl<'id> Device<'id> {
                 self.lost(loss);
                 self.poll_guard(cx)
             }
-            Poll::Ready(WriteEvent::Unsent { write, .. }) => self.expired(write),
+            Poll::Ready(WriteEvent::Unsent { write, reason }) => self.unsent(write, reason),
             Poll::Ready(WriteEvent::WaitDeadline) => Poll::Pending,
             Poll::Ready(WriteEvent::Idle | WriteEvent::Closed) => Poll::Ready(SourceEvent::Failed(
                 io::Error::other("DNS original native write disappeared"),

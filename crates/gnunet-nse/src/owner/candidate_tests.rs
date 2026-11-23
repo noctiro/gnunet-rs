@@ -29,11 +29,12 @@ fn pending<'i>(instance: &'i mut Instance) -> Result<Service<'i, 2, 0>, Error> {
     let identity = Identity {
         key: [1; 32],
         epoch: service.fresh()?,
-        proof: None,
-        counter: 0,
-        work_id: service.fresh()?,
-        work_ready: false,
-        exhausted: false,
+        proof: LocalProof::Searching(Search {
+            counter: 0,
+            id: service.fresh()?,
+            ready: false,
+        }),
+        activation: Activation::Immediate,
     };
     service.current = 2000;
     service.next = 3000;
@@ -112,7 +113,7 @@ fn qualified_local_promotion_keeps_ties_and_original_issued_effects() -> Result<
         let mut identity = service.identity.ok_or(Error::NotReady)?;
         // Structural post-proof state only; valid_proof/default authentication
         // are not exercised by this ranking/immutable-effect case.
-        identity.proof = Some([7; 8]);
+        identity.proof = LocalProof::Confirmed([7; 8]);
         service.identity = Some(identity);
         let mut local = Entry {
             frame: frame(2000, 4, identity.key),

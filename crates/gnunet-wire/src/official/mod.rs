@@ -43,6 +43,7 @@ pub mod scalarproduct;
 pub mod set;
 pub mod seti;
 pub mod setu;
+pub mod testing;
 mod time;
 /// Official physical-queue monitoring and virtual-link listing IPC.
 pub mod transport_monitor;

@@ -8,7 +8,7 @@ use gnunet_client_host::{
     channel::{Channel, ConnectionStep},
 };
 use gnunet_service_runtime::clock::Alarm;
-use gnunet_service_runtime::framing::{self, Class, OwnedFrame, ReadStep};
+use gnunet_service_runtime::framing::{self, Class, OwnedFrame, ReadStep, WriteProgress};
 use gnunet_types::Error as Fault;
 use gnunet_wire::official::scalarproduct::{ClientRequest, ClientResponse};
 use std::{
@@ -282,39 +282,48 @@ impl Client {
         {
             Poll::Pending => Poll::Pending,
             Poll::Ready(Err(e)) => Poll::Ready(Err(e.into())),
-            Poll::Ready(Ok(w)) => {
-                if self.pending != Some(w.origin) {
-                    return Poll::Ready(Err(Fault::Stale.into()));
-                }
-                self.partial = self.partial.checked_add(w.bytes).ok_or(Fault::Overflow)?;
-                self.written = self
-                    .written
-                    .checked_add(u64::try_from(w.bytes).map_err(|_| Fault::Overflow)?)
-                    .ok_or(Fault::Overflow)?;
-                if w.complete {
-                    self.offset = self
-                        .offset
-                        .checked_add(w.origin.count)
-                        .filter(|n| *n <= self.total)
-                        .ok_or(Fault::Overflow)?;
-                    self.frames = self.frames.checked_add(1).ok_or(Fault::Overflow)?;
-                    self.pending = None;
-                    self.write = None;
-                    self.initial = None;
-                    self.partial = 0;
-                    if self.offset == self.total {
-                        self.elements = Vec::new();
-                    }
-                }
-                self.read_first = true;
-                Poll::Ready(Ok(Progress::Written {
-                    epoch: self.epoch.clone().ok_or(Fault::Stale)?,
-                    bytes: w.bytes,
-                    complete: w.complete,
-                    receipt: self.receipt(),
-                }))
+            Poll::Ready(Ok(written)) => Poll::Ready(self.record_write(written)),
+        }
+    }
+    fn record_write(&mut self, written: WriteProgress<Chunk>) -> Result<Progress, Error> {
+        if self.pending != Some(written.origin) {
+            return Err(Fault::Stale.into());
+        }
+        self.partial = self
+            .partial
+            .checked_add(written.bytes)
+            .ok_or(Fault::Overflow)?;
+        self.written = self
+            .written
+            .checked_add(u64::try_from(written.bytes).map_err(|_| Fault::Overflow)?)
+            .ok_or(Fault::Overflow)?;
+        if written.complete {
+            self.offset = self
+                .offset
+                .checked_add(written.origin.count)
+                .filter(|n| *n <= self.total)
+                .ok_or(Fault::Overflow)?;
+            self.frames = self.frames.checked_add(1).ok_or(Fault::Overflow)?;
+            self.partial = 0;
+        }
+        // Keep the actual exposure in the receipt even if this write crossed
+        // the phase target. Check the original phase before retiring it.
+        self.check()?;
+        if written.complete {
+            self.pending = None;
+            self.write = None;
+            self.initial = None;
+            if self.offset == self.total {
+                self.elements = Vec::new();
             }
         }
+        self.read_first = true;
+        Ok(Progress::Written {
+            epoch: self.epoch.clone().ok_or(Fault::Stale)?,
+            bytes: written.bytes,
+            complete: written.complete,
+            receipt: self.receipt(),
+        })
     }
     fn read(&mut self, cx: &mut Context<'_>) -> Poll<Result<Progress, Error>> {
         if self.frames == 0 {
@@ -342,25 +351,25 @@ impl Client {
                 range: raw.range,
                 product,
             };
+            self.check()?;
             let receipt = self.receipt();
             self.physical_close();
             return Poll::Ready(Ok(Progress::Result { response, receipt }));
         }
-        match framed.poll_read(cx) {
-            Poll::Pending => Poll::Pending,
-            Poll::Ready(Err(e)) => Poll::Ready(Err(e.into())),
-            Poll::Ready(Ok(ReadStep::Eof)) => {
-                Poll::Ready(Ok(Progress::Lost(self.lost(Cause::Eof))))
-            }
-            Poll::Ready(Ok(ReadStep::Progress { bytes, .. })) => {
-                if bytes > 0 && self.input.is_none() {
+        let Poll::Ready(observed) = framed.poll_read(cx) else {
+            return Poll::Pending;
+        };
+        self.input_bytes = framed.read_progress_bytes();
+        match observed? {
+            ReadStep::Eof => Poll::Ready(Ok(Progress::Lost(self.lost(Cause::Eof)))),
+            ReadStep::Progress { .. } => {
+                if self.input.is_none() {
                     self.input = Some(Alarm::phase(
                         self.source.clock().as_ref(),
                         self.limits.input_timeout,
                         self.overall.bounds(),
                     )?);
                 }
-                self.input_bytes = self.input_bytes.checked_add(bytes).ok_or(Fault::Overflow)?;
                 if self.expired(cx) {
                     return Poll::Ready(Err(Fault::Deadline.into()));
                 }
@@ -439,3 +448,6 @@ impl Drop for Client {
         self.physical_close();
     }
 }
+
+#[cfg(test)]
+mod tests;

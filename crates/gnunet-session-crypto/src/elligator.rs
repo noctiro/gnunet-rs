@@ -12,7 +12,7 @@ use curve25519_dalek::{
 };
 use gnunet_crypto::Entropy;
 use gnunet_types::Error;
-use subtle::{ConditionallySelectable, ConstantTimeEq};
+use subtle::ConditionallySelectable;
 use zeroize::{Zeroize, Zeroizing};
 #[path = "elligator_torsion.rs"]
 mod torsion;
@@ -135,7 +135,7 @@ impl Secret {
     pub fn public(&self, tweak: u8) -> Result<(EcdhePublic, Representative), Error> {
         // Normal libsodium rejects the original all-zero scalar even after
         // applying its clamp. A safe Rust caller receives an error, not abort.
-        if bool::from(ConstantTimeEq::ct_eq(self.0.as_ref(), &[0; 32])) {
+        if bool::from(subtle::ConstantTimeEq::ct_eq(self.0.as_ref(), &[0; 32])) {
             return Err(Error::InvalidInput);
         }
         let high = Zeroizing::new(EdwardsPoint::mul_base_clamped(*self.0));
@@ -148,7 +148,7 @@ impl Secret {
             *low = EdwardsPoint::conditional_select(
                 &low,
                 &point,
-                ConstantTimeEq::ct_eq(&index, &(i as u8)),
+                subtle::ConstantTimeEq::ct_eq(&index, &(i as u8)),
             );
         }
         let point = Zeroizing::new(*high + *low);

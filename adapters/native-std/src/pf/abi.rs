@@ -87,20 +87,36 @@ impl<'src> Record<'src> {
         let bytes = if family == IPV4 { 4 } else { 16 };
         key.source[..bytes].copy_from_slice(&self.0[source..source + bytes]);
         key.destination[..bytes].copy_from_slice(&self.0[destination..destination + bytes]);
-        let source = if family == IPV4 {
-            IpAddr::from([key.source[0], key.source[1], key.source[2], key.source[3]])
-        } else {
-            IpAddr::from(key.source)
-        };
-        if !local.contains(&source)
-            || matches!(source, IpAddr::V6(ip) if ip.is_unicast_link_local())
-        {
+        let addresses = [key.source, key.destination].map(|bytes| {
+            if family == IPV4 {
+                IpAddr::from([bytes[0], bytes[1], bytes[2], bytes[3]])
+            } else {
+                IpAddr::from(bytes)
+            }
+        });
+        if !local.contains(&addresses[0]) || !addresses.into_iter().all(raw_endpoint) {
             return None;
         }
         let name = &self.0[8..24];
         let end = name.iter().position(|byte| *byte == 0)?;
         key.interface[..end].copy_from_slice(&name[..end]);
         Some(key)
+    }
+}
+
+fn raw_endpoint(address: IpAddr) -> bool {
+    match address {
+        IpAddr::V4(ip) => !ip.is_unspecified() && !ip.is_multicast() && !ip.is_broadcast(),
+        IpAddr::V6(ip) => {
+            let bytes = ip.octets();
+            // PF exports no separate native zone for either link-local or
+            // legacy site-local addresses. Mapped sockaddr eligibility does not
+            // turn an IPv6 PF tuple into an IPv4 raw packet.
+            !ip.is_unspecified()
+                && !ip.is_multicast()
+                && ip.to_ipv4_mapped().is_none()
+                && !(bytes[0] == 0xfe && bytes[1] & 0x80 != 0)
+        }
     }
 }
 

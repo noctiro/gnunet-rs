@@ -205,6 +205,11 @@ impl Selection {
         limits.operation_lifetime = timeout;
         let public = self.public.get()? != 0;
         limits.automatic_epochs = !public;
+        limits.group_keys = config
+            .get(b"messenger", b"MESSENGER_GROUP_KEYS")
+            .map(|_| config.get_yesno(b"messenger", b"MESSENGER_GROUP_KEYS"))
+            .transpose()?
+            .unwrap_or(limits.group_keys);
         limits.core.validate()?;
         Ok(Settings {
             ego,

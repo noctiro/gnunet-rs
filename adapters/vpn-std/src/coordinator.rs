@@ -9,7 +9,7 @@ use gnunet_service_runtime::{
 };
 use gnunet_tun_host as tun;
 use gnunet_types::Error as Fault;
-use gnunet_vpn as core;
+use gnunet_vpn::{self as core, PeerProfiles};
 use std::{
     fmt,
     future::{Future, poll_fn},
@@ -26,10 +26,14 @@ pub use types::*;
 mod device;
 use device::Provenance;
 pub use device::{Device, PacketIo};
+/// Bounded application VPN mailbox and controller.
+pub mod application;
 mod control;
 mod packets;
 mod peer;
-#[cfg(windows)]
+/// Application packet and routing provider boundary.
+pub mod provider;
+#[cfg(any(windows, target_os = "freebsd"))]
 mod recovery;
 #[cfg(windows)]
 pub use recovery::{WintunPhysicalFailure, WintunRecoveryFailure};
@@ -45,17 +49,108 @@ struct Discovery<'id> {
     request: core::DiscoveryRequest<'id>,
     queued: bool,
 }
+#[derive(Clone, Copy)]
+struct PeerRoute {
+    identity: [u8; 32],
+    af: core::AfProfile,
+}
+impl PeerRoute {
+    fn for_open(
+        selected: Option<Self>,
+        identity: [u8; 32],
+        profiles: &PeerProfiles,
+    ) -> Result<Self, Fault> {
+        match selected {
+            Some(route) if route.identity == identity => Ok(route),
+            Some(_) => Err(Fault::Authentication),
+            None => Ok(Self {
+                identity,
+                af: profiles.profile(&identity),
+            }),
+        }
+    }
+}
+
+#[cfg(test)]
+mod peer_route_tests {
+    use super::*;
+
+    #[test]
+    fn known_peer_and_fixed_exit_keep_their_own_profile() -> Result<(), Fault> {
+        let identity = [1; 32];
+        let profiles = PeerProfiles::new(
+            core::AfProfile::LINUX,
+            [(identity, core::AfProfile::DARWIN)],
+        )?;
+        let named = PeerRoute::for_open(None, identity, &profiles)?;
+        let fallback = PeerRoute::for_open(None, [2; 32], &profiles)?;
+        let fixed = PeerRoute {
+            identity,
+            af: core::AfProfile::FREEBSD,
+        };
+        let selected = PeerRoute::for_open(Some(fixed), identity, &profiles)?;
+        if named.af != core::AfProfile::DARWIN
+            || fallback.af != core::AfProfile::LINUX
+            || selected.af != core::AfProfile::FREEBSD
+            || !matches!(
+                PeerRoute::for_open(Some(fixed), [2; 32], &profiles),
+                Err(Fault::Authentication)
+            )
+        {
+            return Err(Fault::Conflict);
+        }
+        Ok(())
+    }
+}
 struct Link<'id, 'cadet> {
     flow: core::Flow<'id>,
-    open: Option<core::Open<'id>>,
-    channel: Option<cadet::Channel<'cadet>>,
-    peer: Option<core::Peer<'id>>,
-    af: core::AfProfile,
-    create_written: bool,
-    remote_closed: bool,
-    open_until: Option<Instant>,
+    selected_route: Option<PeerRoute>,
+    attachment: Option<Attachment<'id, 'cadet>>,
     input: Option<Input<'cadet, 'id>>,
     discovery: Option<Discovery<'id>>,
+}
+impl<'id, 'cadet> Link<'id, 'cadet> {
+    fn peer(&self) -> Option<core::Peer<'id>> {
+        match self.attachment.as_ref()?.state {
+            AttachmentState::Bound(peer) => Some(peer),
+            AttachmentState::Opening { .. } => None,
+        }
+    }
+
+    fn remote_closed(&self) -> bool {
+        self.attachment.as_ref().is_some_and(|a| a.remote_closed)
+    }
+}
+struct Attachment<'id, 'cadet> {
+    channel: cadet::Channel<'cadet>,
+    state: AttachmentState<'id>,
+    remote_closed: bool,
+}
+enum AttachmentState<'id> {
+    Opening {
+        open: core::Open<'id>,
+        route: PeerRoute,
+        progress: OpeningProgress,
+    },
+    Bound(core::Peer<'id>),
+}
+enum OpeningProgress {
+    WritingCreate { until: Instant },
+    WaitingForCredit { until: Instant },
+    Expired,
+}
+impl AttachmentState<'_> {
+    fn open_deadline(&self) -> Option<Instant> {
+        match self {
+            Self::Opening {
+                progress:
+                    OpeningProgress::WritingCreate { until }
+                    | OpeningProgress::WaitingForCredit { until },
+                ..
+            } => Some(*until),
+            _ => None,
+        }
+    }
 }
 #[derive(Clone, Copy)]
 enum Action<'id> {
@@ -82,12 +177,39 @@ struct Pending<'id, 'cadet> {
     action: Action<'id>,
     until: Instant,
 }
+enum PacketWrite {
+    Native(tun::WriteId),
+    Provider {
+        request: provider::PacketRequest,
+        bytes: usize,
+    },
+}
+impl PacketWrite {
+    fn native(&self) -> Option<&tun::WriteId> {
+        match self {
+            Self::Native(id) => Some(id),
+            Self::Provider { .. } => None,
+        }
+    }
+}
 struct TunOutput<'id> {
-    write: tun::WriteId,
+    write: PacketWrite,
     effect: core::Effect<'id>,
 }
+enum IncomingPacket {
+    Native(tun::Received),
+    Provider(Vec<u8>),
+}
+impl IncomingPacket {
+    fn bytes(&self) -> &[u8] {
+        match self {
+            Self::Native(packet) => packet.bytes(),
+            Self::Provider(packet) => packet,
+        }
+    }
+}
 struct TunInput {
-    packet: tun::Received,
+    packet: IncomingPacket,
     until: Instant,
 }
 /// Actual bounded VPN runtime. It creates no hidden worker, task or discovery
@@ -97,6 +219,7 @@ pub struct Coordinator<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy> {
     cadet: cadet::Client<'cadet, 'cstore>,
     device: Device,
     policies: &'policy [ConfiguredExit],
+    profiles: &'policy PeerProfiles,
     limits: Limits,
     links: Vec<Option<Link<'id, 'cadet>>>,
     cursor: usize,
@@ -112,7 +235,7 @@ pub struct Coordinator<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy> {
     timer: Option<Pin<Box<Sleep>>>,
     timer_at: Option<Instant>,
     report: Report,
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "freebsd"))]
     recovery: recovery::Recovery,
 }
 impl<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy>
@@ -127,12 +250,13 @@ impl<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy>
     pub fn new(
         parts: Parts<'id, 'store, 'bytes, 'cadet, 'cstore>,
         policies: &'policy [ConfiguredExit],
+        profiles: &'policy PeerProfiles,
         limits: Limits,
     ) -> Result<Self, BuildFailure<Parts<'id, 'store, 'bytes, 'cadet, 'cstore>>> {
         let validate = || -> Result<(), Error> {
             if limits.flows == 0
                 || !(68..=65535).contains(&limits.mtu)
-                || !parts.device.epoch().current()
+                || !parts.device.io.current()
                 || parts.cadet.pending_transmit().is_some()
                 || parts.server.engine().has_tun_source()
                 || parts.server.engine().flows().next().is_some()
@@ -141,7 +265,6 @@ impl<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy>
             {
                 return Err(Fault::InvalidInput.into());
             }
-            limits.service_af.validate()?;
             for d in [
                 limits.control_timeout,
                 limits.input_timeout,
@@ -181,6 +304,7 @@ impl<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy>
             cadet: parts.cadet,
             device: parts.device,
             policies,
+            profiles,
             limits,
             links,
             cursor: 0,
@@ -196,7 +320,7 @@ impl<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy>
             timer: None,
             timer_at: None,
             report: Report::default(),
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "freebsd"))]
             recovery: recovery::Recovery::default(),
         })
     }
@@ -206,6 +330,14 @@ impl<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy>
     pub fn tun_ready(&self) -> Result<bool, Fault> {
         self.source
             .map_or(Ok(false), |source| self.server.engine().tun_ready(source))
+    }
+
+    pub(crate) fn startup_ready(&self) -> Result<bool, Fault> {
+        Ok(!self.retiring() && self.cadet.epoch().is_some() && self.tun_ready()?)
+    }
+
+    pub(crate) const fn retiring(&self) -> bool {
+        self.stopping.is_some() || self.closed.is_some()
     }
     /// Consume the first independent cleanup failure, retaining the permanent
     /// closed state and all original physical reports. Repeated calls cannot
@@ -234,6 +366,10 @@ impl<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy>
                 prior_tun: closed.prior_tun_close_error.take(),
                 control: closed.control_close_error.take(),
                 tun: closed.tun.as_mut().and_then(|loss| loss.close_error.take()),
+                provider: closed
+                    .provider
+                    .as_mut()
+                    .and_then(|closed| closed.error.take()),
             })
     }
     /// Original canonical clock, shared with both actual MQ owners.
@@ -273,7 +409,7 @@ impl<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy>
     /// Original packet-source scope; it confers neither helper interface ownership
     /// nor administrative routing authority.
     #[must_use]
-    pub fn device_epoch(&self) -> tun::Epoch {
+    pub fn device_epoch(&self) -> Option<tun::Epoch> {
         self.device.epoch()
     }
     /// Inspect a completed hard-stop report. Unknown routes and external jobs are
@@ -284,7 +420,7 @@ impl<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy>
     }
     /// Actual current packet source metadata, without claiming helper ownership.
     #[must_use]
-    pub fn device_info(&self) -> &tun::Info {
+    pub fn device_info(&self) -> Option<&tun::Info> {
         self.device.info()
     }
     /// Whether the actual packet owner is the original helper child/pipes.
@@ -310,7 +446,7 @@ impl<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy>
             }
             Some(tun::ReadEvent::WriteExpired(write)) => {
                 let p = self.output.take().ok_or(Fault::StaleGeneration)?;
-                if p.write != write {
+                if p.write.native() != Some(&write) {
                     self.output = Some(p);
                     return Err(Fault::StaleGeneration.into());
                 }
@@ -330,9 +466,11 @@ impl<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy>
         cx.waker().wake_by_ref();
     }
     fn find(&self, channel: cadet::Channel<'cadet>) -> Option<usize> {
-        self.links
-            .iter()
-            .position(|l| l.as_ref().is_some_and(|l| l.channel == Some(channel)))
+        self.links.iter().position(|l| {
+            l.as_ref()
+                .and_then(|l| l.attachment.as_ref())
+                .is_some_and(|a| a.channel == channel)
+        })
     }
     fn flow_index(&self, flow: core::Flow<'id>) -> Option<usize> {
         self.links
@@ -350,13 +488,8 @@ impl<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy>
             .ok_or(Fault::Capacity)?;
         self.links[i] = Some(Link {
             flow,
-            open: None,
-            channel: None,
-            peer: None,
-            af: self.limits.service_af,
-            create_written: false,
-            remote_closed: false,
-            open_until: None,
+            selected_route: None,
+            attachment: None,
             input: None,
             discovery: None,
         });
@@ -400,22 +533,34 @@ impl<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy>
             })
             .ok_or_else(|| Fault::StaleGeneration.into())
     }
-    /// Apply a real original provider result with the endpoint's explicit AF ABI.
-    /// This does not retire the original asynchronous provider job.
+    /// Apply one result from the original Internet gateway discovery.
+    /// Fix the candidate's transmit profile before CADET binds the selected peer.
+    /// The caller still owns the discovery job and its result frame.
     pub fn select_exit(
         &mut self,
         d: core::Discovery<'id>,
         peer: [u8; 32],
-        af: core::AfProfile,
-    ) -> Result<(), Error> {
-        af.validate()?;
+    ) -> Result<core::AfProfile, Error> {
         let i = self.discovery_index(d)?;
         if self.stopping.is_some() || self.closed.is_some() {
             return Err(Fault::Closed.into());
         }
+        let discovery = self.links[i]
+            .as_ref()
+            .and_then(|link| link.discovery)
+            .ok_or(Fault::StaleGeneration)?;
+        if !discovery.queued
+            || self.server.engine().flow_info(d.flow())?.phase != core::Phase::Discovering
+        {
+            return Err(Fault::StaleGeneration.into());
+        }
+        let af = self.profiles.gateway_profile(&peer);
         self.server.engine_mut().select_exit(d, peer)?;
-        self.links[i].as_mut().ok_or(Fault::StaleGeneration)?.af = af;
-        Ok(())
+        self.links[i]
+            .as_mut()
+            .ok_or(Fault::StaleGeneration)?
+            .selected_route = Some(PeerRoute { identity: peer, af });
+        Ok(af)
     }
     /// Record a genuine original discovery failure without claiming retirement.
     pub fn discovery_failed(
@@ -454,9 +599,13 @@ impl<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy>
     /// Stop new input and admission under one original finite shutdown grace.
     /// Existing immutable physical attempts retain their original owners.
     pub fn request_shutdown(&mut self) {
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "freebsd"))]
         {
             self.recovery.hard = None;
+        }
+        #[cfg(target_os = "freebsd")]
+        {
+            self.recovery.retry_at = None;
         }
         if self.stopping.is_none() && self.closed.is_none() {
             self.stopping = Some(
@@ -506,8 +655,7 @@ impl<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy>
             let Some(l) = self.links[i].as_ref() else {
                 continue;
             };
-            if l.channel.is_none()
-                && l.open.is_none()
+            if l.attachment.is_none()
                 && l.input.is_none()
                 && l.discovery.is_none()
                 && self.server.engine().flow_info(l.flow)?.phase == core::Phase::Closing
@@ -544,6 +692,11 @@ impl<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy>
         if let Some(p) = self.native.as_ref() {
             put(p.until);
         }
+        if let Some(p) = self.output.as_ref()
+            && let PacketWrite::Provider { request, .. } = &p.write
+        {
+            put(request.deadline);
+        }
         if let Some(p) = self.input.as_ref() {
             put(p.until);
         }
@@ -551,16 +704,20 @@ impl<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy>
             if let Some(p) = l.input.as_ref() {
                 put(p.until);
             }
-            if let Some(t) = l.open_until {
+            if let Some(t) = l.attachment.as_ref().and_then(|a| a.state.open_deadline()) {
                 put(t);
             }
         }
         if let Some(t) = self.control_deadline() {
             put(t);
         }
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "freebsd"))]
         if let Some(hard) = self.recovery.hard {
             put(hard);
+        }
+        #[cfg(target_os = "freebsd")]
+        if let Some(retry) = self.recovery.retry_at {
+            put(retry);
         }
         at
     }
@@ -574,12 +731,12 @@ impl<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy>
         if self.closed.is_some() {
             return Poll::Ready(Ok(Progress::Stopped));
         }
-        #[cfg(windows)]
-        if self
-            .recovery
-            .hard
-            .is_some_and(|hard| Instant::now() >= hard)
+        #[cfg(any(windows, target_os = "freebsd"))]
+        if let Some(deadline) = self.recovery.hard
+            && Instant::now() >= deadline
         {
+            #[cfg(target_os = "freebsd")]
+            observe(Event::FreeBsdRecoveryExpired { deadline });
             self.request_shutdown();
         }
         if self.stopping.is_some_and(|t| Instant::now() >= t) {
@@ -587,6 +744,12 @@ impl<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy>
             return Poll::Ready(Ok(Progress::Stopped));
         }
         let mut activity = self.poll_native_guard(cx, observe)?;
+        let application = self.device.provenance == Provenance::Provider;
+        if application {
+            // A reported provider revocation fences new local leases before
+            // the IPC owner can observe or commit another request.
+            activity |= self.poll_control(cx, observe)?;
+        }
         // Each class is polled once, regardless of activity on another class.
         if !self.ipc_stopped {
             match self
@@ -602,10 +765,14 @@ impl<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy>
                 _ => {}
             }
         }
-        match self.poll_control(cx, observe) {
+        match if application {
+            Ok(false)
+        } else {
+            self.poll_control(cx, observe)
+        } {
             Ok(progress) => activity |= progress,
             Err(error) => {
-                #[cfg(windows)]
+                #[cfg(any(windows, target_os = "freebsd"))]
                 if matches!(&error, Error::Admin(_) | Error::Native(_)) {
                     match self.retire_missing_interface(observe) {
                         Ok(true) => {
@@ -621,11 +788,11 @@ impl<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy>
                 } else {
                     return Poll::Ready(Err(error));
                 }
-                #[cfg(unix)]
+                #[cfg(all(unix, not(target_os = "freebsd")))]
                 return Poll::Ready(Err(error));
             }
         }
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "freebsd"))]
         self.observe_recovery()?;
         activity |= self.poll_backend(cx, observe)?;
         activity |= self.poll_tun_output(cx, observe)?;
@@ -635,17 +802,20 @@ impl<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy>
         activity |= self.advance_input(observe)?;
         activity |= self.work(observe)?;
         activity |= self.release_finished()?;
+        #[cfg(target_os = "freebsd")]
+        {
+            activity |= self.poll_freebsd_recovery(cx, observe)?;
+        }
         if self.stopping.is_some()
             && self.control_released()
             && self.server.ipc_quiescent()
             && self.native.is_none()
             && self.output.is_none()
-            && self.links.iter().flatten().all(|l| {
-                l.channel.is_none()
-                    && l.open.is_none()
-                    && l.input.is_none()
-                    && l.discovery.is_none()
-            })
+            && self
+                .links
+                .iter()
+                .flatten()
+                .all(|l| l.attachment.is_none() && l.input.is_none() && l.discovery.is_none())
         {
             self.close(observe);
             return Poll::Ready(Ok(Progress::Stopped));

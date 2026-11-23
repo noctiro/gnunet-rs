@@ -75,6 +75,7 @@ pub struct Set {
     copy_connect: Option<CopyTicket>,
     alarm: NativeAlarm,
     closed: bool,
+    pending_loss: Option<SetLoss>,
 }
 impl Set {
     pub(crate) fn new(
@@ -113,6 +114,7 @@ impl Set {
             copy_connect: None,
             alarm: NativeAlarm::default(),
             closed: false,
+            pending_loss: None,
         })
     }
     pub(crate) fn retain_copy(&mut self, ticket: CopyTicket) {
@@ -435,6 +437,9 @@ impl Set {
         Ok(id)
     }
     fn lost(&mut self, cause: Cause, cleanup: Option<Error>) -> SetLoss {
+        if let Some(loss) = self.pending_loss.take() {
+            return loss;
+        }
         let transport = self.session.retire(true);
         self.alarm.clear();
         self.closed = true;
@@ -451,6 +456,9 @@ impl Set {
         }
     }
     fn failed(&mut self, error: Error, cleanup: Option<Error>) -> SetLoss {
+        if let Some(loss) = self.pending_loss.take() {
+            return loss;
+        }
         let (cause, deadline) = error.into_cause_parts();
         let mut loss = self.lost(cause, cleanup);
         loss.deadline = deadline;
@@ -470,6 +478,9 @@ impl Set {
     /// Conservative clock-free fence while a caller waits on unrelated output.
     /// Expired work retires the original MQ; it cannot move to a replacement.
     pub fn poll_native_guard(&mut self, cx: &mut Context<'_>) -> Option<SetLoss> {
+        if let Some(loss) = self.pending_loss.take() {
+            return Some(loss);
+        }
         if self.closed {
             return None;
         }
@@ -523,11 +534,11 @@ impl Set {
     }
     /// Poll only original retained owners; dropping a progress future preserves them.
     pub fn poll_progress(&mut self, cx: &mut Context<'_>) -> Poll<Result<SetProgress, Error>> {
-        if self.closed {
-            return Poll::Ready(Err(Fault::Closed.into()));
-        }
         if let Some(loss) = self.poll_native_guard(cx) {
             return Poll::Ready(Ok(SetProgress::Lost(loss)));
+        }
+        if self.closed {
+            return Poll::Ready(Err(Fault::Closed.into()));
         }
         if let Err(error) = self.session.check() {
             return Poll::Ready(Ok(SetProgress::Lost(self.failed(error, None))));
@@ -621,7 +632,8 @@ impl Set {
                 tag,
                 bytes,
                 complete,
-            } => self.written(epoch, tag, bytes, complete),
+                failure,
+            } => self.written(epoch, tag, bytes, complete, failure),
             Step::Frame { epoch, bytes } => self.frame(epoch, &bytes),
         };
         Poll::Ready(match result {
@@ -643,3 +655,7 @@ impl Drop for Set {
 #[cfg(test)]
 #[path = "set/timer_tests.rs"]
 mod timer_tests;
+
+#[cfg(test)]
+#[path = "set/write_tests.rs"]
+mod write_tests;

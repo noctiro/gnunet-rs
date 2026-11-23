@@ -6,29 +6,11 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
-getrandom.workspace = true
-gnunet-crypto.workspace = true
-gnunet-dht.workspace = true
-gnunet-dht-client-host.workspace = true
-gnunet-hello.workspace = true
-gnunet-core-client-host.workspace = true
-gnunet-cadet.workspace = true
-gnunet-cadet-host.workspace = true
-gnunet-client-host.workspace = true
-gnunet-ipc-unix.workspace = true
+gnunet-cadet-host = { workspace = true, features = ["startup"] }
 gnunet-config.workspace = true
+gnunet-ipc-unix.workspace = true
 gnunet-program-host = { workspace = true, features = ["service-runtime"] }
-gnunet-pils.workspace = true
-gnunet-pils-host = { workspace = true, features = ["client"] }
-gnunet-resolver-broker.workspace = true
 gnunet-service-runtime.workspace = true
-gnunet-service-startup.workspace = true
-gnunet-types.workspace = true
-gnunet-transport-application-host.workspace = true
-tokio = { workspace = true, features = ["rt", "signal"] }
-
-[dev-dependencies]
-gnunet-wire.workspace = true
 
 [lints]
 workspace = true

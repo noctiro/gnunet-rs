@@ -9,18 +9,20 @@ license.workspace = true
 default = []
 
 [dependencies]
-gnunet-arm-core = { path = "../../crates/gnunet-arm-core" }
-gnunet-types = { path = "../../crates/gnunet-types" }
-gnunet-wire = { path = "../../crates/gnunet-wire" }
-gnunet-client = { path = "../../crates/gnunet-client" }
-gnunet-config = { path = "../config-std" }
+gnunet-arm-core.workspace = true
+gnunet-types.workspace = true
+gnunet-wire.workspace = true
+gnunet-config.workspace = true
 gnunet-client-host.workspace = true
-gnunet-service-startup = { path = "../service-startup" }
 gnunet-service-runtime.workspace = true
 tokio = { workspace = true, features = ["rt", "net", "time", "io-util", "signal", "sync"] }
 gnunet-native.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+gnunet-service-startup.workspace = true
+
 [target.'cfg(unix)'.dev-dependencies]
+gnunet-service-startup.workspace = true
 nix = { workspace = true, features = ["process", "signal"] }
 libc.workspace = true
 

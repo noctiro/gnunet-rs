@@ -1,8 +1,47 @@
 //! Original-directory publication and empty-directory retirement.
 use super::{Directory, FileIdentity};
-use std::{ffi::OsStr, io};
+use std::{error::Error, ffi::OsStr, fmt, io};
+
+/// Failure to create and retain an exclusive child directory.
+#[derive(Debug)]
+pub enum CreateDirectoryError {
+    /// Name validation or the native creation request failed.
+    Create(io::Error),
+    /// Creation succeeded but the subsequent open failed. The caller has no
+    /// original child handle and the entry can remain in the parent.
+    OpenCreated(io::Error),
+}
+
+impl fmt::Display for CreateDirectoryError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Create(error) => write!(f, "create child directory: {error}"),
+            Self::OpenCreated(error) => write!(f, "open newly created child directory: {error}"),
+        }
+    }
+}
+
+impl Error for CreateDirectoryError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Create(error) | Self::OpenCreated(error) => Some(error),
+        }
+    }
+}
 
 impl Directory {
+    /// Check a single native child component without making any filesystem request.
+    pub fn validate_name(name: &OsStr) -> io::Result<()> {
+        #[cfg(unix)]
+        {
+            super::unix::leaf(name)
+        }
+        #[cfg(windows)]
+        {
+            crate::paths::relative::validate_name(name)
+        }
+    }
+
     /// Compare a named directory with its still-held original. Final symlinks
     /// and name-surrogate reparse points are refused before comparison.
     pub fn same_directory(&self, name: &OsStr, original: &Self) -> io::Result<bool> {
@@ -13,9 +52,11 @@ impl Directory {
     /// Publish an original prepared sibling directory at an absent destination.
     /// No existing entry is replaced and no copy fallback is used. The caller
     /// serializes administrative namespace changes. FreeBSD additionally locks
-    /// an independent original parent descriptor across its absence check and
-    /// rename; all cooperating publishers must use this boundary. Linux and
-    /// macOS request kernel no-replacement; Windows renames a captured handle.
+    /// an independent original parent descriptor from the source identity
+    /// check through the published identity check. Cooperating publishers
+    /// and removers use the same lock. Linux, macOS and FreeBSD with
+    /// `renameat2` request kernel no-replacement. Windows renames a captured
+    /// handle.
     /// No file or directory synchronization is performed here.
     ///
     /// # Errors
@@ -27,6 +68,8 @@ impl Directory {
         original: &Self,
         target_name: &OsStr,
     ) -> io::Result<()> {
+        #[cfg(target_os = "freebsd")]
+        let _namespace = unix::lock_namespace(self)?;
         if !self.same_directory(source_name, original)? {
             return Err(io::Error::other(
                 "original directory publication source changed",
@@ -51,8 +94,11 @@ impl Directory {
 
     /// Remove an empty directory still matching its held original. This never
     /// recursively removes contents. Callers exclude administrative namespace
-    /// changes; Windows deletes the captured original link handle.
+    /// changes. FreeBSD serializes cooperating directory publication and
+    /// removal. Windows deletes the captured original link handle.
     pub fn remove_directory(&self, name: &OsStr, original: &Self) -> io::Result<()> {
+        #[cfg(target_os = "freebsd")]
+        let _namespace = unix::lock_namespace(self)?;
         if !self.same_directory(name, original)? {
             return Err(io::Error::other("original directory removal entry changed"));
         }
@@ -111,15 +157,13 @@ mod unix {
     }
 
     #[cfg(target_os = "freebsd")]
-    pub(super) fn publish(parent: &Directory, from: &OsStr, to: &OsStr) -> io::Result<()> {
+    pub(super) fn lock_namespace(parent: &Directory) -> io::Result<File> {
         use nix::{
             fcntl::{OFlag, openat},
             sys::stat::Mode,
         };
-        component(from)?;
-        component(to)?;
         // A duplicate shares flock ownership. Open "." through the original
-        // parent instead, so concurrent publishers using one Directory serialize.
+        // parent instead, so concurrent callers using one Directory serialize.
         let lease = File::from(openat(
             parent.as_file(),
             ".",
@@ -127,6 +171,14 @@ mod unix {
             Mode::empty(),
         )?);
         lease.lock()?;
+        Ok(lease)
+    }
+
+    #[cfg(target_os = "freebsd")]
+    pub(super) fn publish(parent: &Directory, from: &OsStr, to: &OsStr) -> io::Result<()> {
+        if super::super::freebsd::rename_noreplace(parent, from, to)? {
+            return Ok(());
+        }
         match parent.entry_info(to) {
             Ok(_) => return Err(io::Error::from(io::ErrorKind::AlreadyExists)),
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
@@ -144,7 +196,7 @@ mod unix {
         ))
     }
 
-    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn component(name: &OsStr) -> io::Result<std::ffi::CString> {
         use std::os::unix::ffi::OsStrExt;
         let bytes = name.as_bytes();

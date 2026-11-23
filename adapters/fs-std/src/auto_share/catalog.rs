@@ -240,7 +240,7 @@ impl Catalog {
         this.image.recover_temp()?;
         Ok(this)
     }
-    pub fn check_root(&self) -> Result<(), Error> {
+    fn check_root(&self) -> Result<(), Error> {
         if self.fenced {
             return Err(Error::Binding("auto-share catalog is fenced"));
         }
@@ -253,6 +253,11 @@ impl Catalog {
             return Err(Error::Binding("auto-share original directory changed"));
         }
         Ok(())
+    }
+    pub(super) fn check_live(&mut self) -> Result<(), Error> {
+        self.check_root()
+            .and_then(|()| self.image.selected())
+            .inspect_err(|_| self.fenced = true)
     }
     pub fn directory_sync(&self) -> Option<gnunet_native::DirectorySync> {
         use gnunet_native::DirectorySync;
@@ -284,7 +289,7 @@ impl Catalog {
         self.directory.join(relative(id))
     }
     pub fn reserve(&mut self, entry: &Entry) -> Result<u64, Error> {
-        self.check_root()?;
+        self.check_live()?;
         if self.versions.len() == self.limits.versions {
             return Err(Error::Binding("auto-share version bound exhausted"));
         }
@@ -635,7 +640,7 @@ impl Catalog {
         Ok(())
     }
     fn commit(&mut self) -> Result<(), Error> {
-        self.check_root()?;
+        self.check_root().inspect_err(|_| self.fenced = true)?;
         let generation = self
             .generation
             .checked_add(1)

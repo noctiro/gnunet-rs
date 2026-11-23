@@ -4,9 +4,9 @@
     clippy::panic_in_result_fn,
     reason = "Native fixtures assert independent byte/lifetime properties while setup and cleanup errors remain fallible"
 )]
-use gnunet_service_runtime::BoundListeners;
-use gnunet_service_runtime::LocalListenerAccess;
 use gnunet_service_runtime::{
+    Activation, BoundListeners, LocalListenerAccess,
+    accepted::{AcceptError, SocketEvent},
     credentials::UnixAccess,
     local::{Listener, Stream},
     service::{Listener as ServiceListener, PeerAddress},
@@ -45,6 +45,174 @@ fn configuration(
     )?;
     config.set_number(b"local", b"PORT", 0)?;
     Ok(config)
+}
+
+#[test]
+fn restricted_activation_qualifies_the_whole_set_before_registration() -> io::Result<()> {
+    let owner = UnixAccess {
+        match_uid: true,
+        match_gid: false,
+    };
+    let fixture = Fixture::new()?;
+    let socket = fixture.bound()?;
+    let late_acl = gnunet_native::local_path::LocalPath::capture(fixture.socket.clone())?;
+    late_acl.set_access(gnunet_native::local_path::EndpointAccess::Owner)?;
+    let tcp = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
+    let activation = Activation::from_sockets(vec![tcp.into(), socket])?;
+    // No runtime exists yet. The missing evidence must be reported before
+    // trying to register even the first, independently admissible TCP socket.
+    let error = BoundListeners::from_activation_with_access(activation, owner)
+        .err()
+        .ok_or_else(|| io::Error::other("restricted activation accepted bare AF_UNIX"))?;
+    assert_eq!(error.kind(), io::ErrorKind::Unsupported);
+    assert!(gnunet_native::local_path::is_socket(&fixture.socket)?);
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let _entered = runtime.enter();
+    let tcp = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
+    let activation = Activation::from_sockets(vec![tcp.into()])?;
+    let bound = BoundListeners::from_activation_with_access(activation, owner)?;
+    assert!(matches!(
+        bound.listeners().as_slice(),
+        [ServiceListener::Tcp(_)]
+    ));
+    Ok(())
+}
+
+#[tokio::test]
+async fn configured_bind_checks_activation_access_without_reading_addresses()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = Fixture::new()?;
+    let mut config = configuration(&fixture.socket)?;
+    config.set_value(b"local", b"UNIX_MATCH_UID", Some(b"YES"))?;
+    config.set_number(b"local", b"PORT", 65_536)?;
+
+    let activation = Activation::from_sockets(vec![fixture.bound()?])?;
+    let error = BoundListeners::bind(&config, b"local", activation)
+        .await
+        .err()
+        .ok_or_else(|| io::Error::other("configured bind accepted bare restricted AF_UNIX"))?;
+    assert_eq!(
+        error.downcast_ref::<io::Error>().map(io::Error::kind),
+        Some(io::ErrorKind::Unsupported)
+    );
+    assert!(gnunet_native::local_path::is_socket(&fixture.socket)?);
+
+    let tcp = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
+    let addr = tcp.local_addr()?;
+    let activation = Activation::from_sockets(vec![tcp.into()])?;
+    let bound = BoundListeners::bind(&config, b"local", activation).await?;
+    let listeners = bound.listeners();
+    let [ServiceListener::Tcp(listener)] = listeners.as_slice() else {
+        return Err(io::Error::other("expected only the original activation listener").into());
+    };
+    assert_eq!(listener.local_addr()?, addr);
+    assert_eq!(bound.unix_paths().count(), 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn prepared_listener_supplies_original_access_to_activation_export() -> io::Result<()> {
+    use gnunet_native::{
+        local_path::{EndpointAccess, EndpointProtection},
+        local_socket,
+        socket_activation::ExportSection,
+    };
+    use gnunet_service_runtime::local_listener::prepare;
+
+    let fixture = Fixture::new()?;
+    let path = std::path::absolute(&fixture.socket)?;
+    let prepared = prepare(path.clone(), LocalListenerAccess::Owner, 16).await?;
+    {
+        let sources = [prepared.launch_source()];
+        let [source] = &sources;
+        assert_eq!(
+            source.protection().map(EndpointProtection::access),
+            Some(EndpointAccess::Owner)
+        );
+        assert_eq!(
+            local_socket::local_address(source.as_socket())?.as_pathname(),
+            Some(path.as_path())
+        );
+        let _section = ExportSection::for_listeners(&sources)?;
+    }
+    assert!(gnunet_native::local_path::is_socket(&fixture.socket)?);
+    drop(prepared);
+    assert!(missing(&fixture.socket)?);
+    Ok(())
+}
+
+#[tokio::test]
+async fn configured_local_admission_uses_original_listener_acl()
+-> Result<(), Box<dyn std::error::Error>> {
+    let owner = UnixAccess {
+        match_uid: true,
+        match_gid: true,
+    };
+    let group = UnixAccess {
+        match_uid: false,
+        match_gid: true,
+    };
+    for (access, owner_allowed, group_allowed) in [
+        (LocalListenerAccess::Owner, true, true),
+        (LocalListenerAccess::Group, false, true),
+        (LocalListenerAccess::Everyone, false, false),
+    ] {
+        let fixture = Fixture::new()?;
+        let config = configuration(&fixture.socket)?;
+        let bound = BoundListeners::bind_configured(&config, b"local", access).await?;
+        let listeners = bound.listeners();
+        let [listener] = listeners.as_slice() else {
+            return Err(io::Error::other("expected one configured AF_UNIX listener").into());
+        };
+        let (client, accepted) = tokio::time::timeout(Duration::from_secs(10), async {
+            tokio::join!(
+                Stream::connect(&fixture.socket),
+                poll_fn(|cx| listener.poll_canonical_connection(cx)),
+            )
+        })
+        .await?;
+        let client = gnunet_service_runtime::connection::Connection::from_unix(client?);
+        let (accepted, _, _) = accepted?.into_parts();
+        assert_eq!(owner.allows(&accepted)?, owner_allowed);
+        assert_eq!(group.allows(&accepted)?, group_allowed);
+        assert!(UnixAccess::default().allows(&accepted)?);
+        assert_eq!(
+            owner.allows(&client).err().map(|error| error.kind()),
+            Some(io::ErrorKind::Unsupported),
+        );
+    }
+
+    let fixture = Fixture::new()?;
+    let socket = fixture.bound()?;
+    // An external listener may have admitted connections before the same
+    // preexisting node received a restrictive DACL.
+    let late_acl = gnunet_native::local_path::LocalPath::capture(fixture.socket.clone())?;
+    late_acl.set_access(gnunet_native::local_path::EndpointAccess::Owner)?;
+    let inherited = Activation::from_sockets(vec![socket])?;
+    let bound = BoundListeners::from_activation(inherited)?;
+    let listeners = bound.listeners();
+    let [listener] = listeners.as_slice() else {
+        return Err(io::Error::other("expected one inherited AF_UNIX listener").into());
+    };
+    let (client, accepted) = tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::join!(
+            Stream::connect(&fixture.socket),
+            poll_fn(|cx| listener.poll_canonical_connection(cx)),
+        )
+    })
+    .await?;
+    let _client = client?;
+    assert_eq!(
+        group
+            .allows(accepted?.connection())
+            .err()
+            .map(|error| error.kind()),
+        Some(io::ErrorKind::Unsupported),
+    );
+    Ok(())
 }
 
 #[tokio::test]
@@ -213,14 +381,19 @@ async fn original_local_stream_rearms_accept_and_read_and_preserves_eof() -> io:
                 gnunet_native::local_socket::peer_process_id(client.as_socket())?,
                 std::process::id()
             );
+            let mut refusal = None;
             assert!(
-                UnixAccess {
+                !UnixAccess {
                     match_uid: true,
                     match_gid: false
                 }
-                .allows(&server)
-                .is_err()
+                .admits(&server, |event| refusal = Some(event))
             );
+            assert!(matches!(
+                refusal,
+                Some(SocketEvent::Failed(AcceptError::Credentials(error)))
+                    if error.kind() == io::ErrorKind::Unsupported
+            ));
             assert!(UnixAccess::default().allows(&server)?);
             let mut bytes = [0u8; 6];
             let mut read = std::pin::pin!(server.read_exact(&mut bytes));
@@ -278,6 +451,10 @@ async fn invalid_paths_and_ip_socket_adoption_are_explicit_errors() -> io::Resul
     for name in ["", "a\0b", &"x".repeat(108)] {
         assert_eq!(
             Stream::connect(name).await.err().map(|error| error.kind()),
+            Some(io::ErrorKind::InvalidInput)
+        );
+        assert_eq!(
+            Listener::bind(name).err().map(|error| error.kind()),
             Some(io::ErrorKind::InvalidInput)
         );
     }

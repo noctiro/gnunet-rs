@@ -49,4 +49,9 @@ without a clock sample or replacement IO. A present epoch settles its original
 one-shots as Lost; their terminal notices remain available through
 `take_completion`. A missing epoch returns None and does not assert that no
 native connection attempt existed. Later explicit driving can create a fresh MQ
-for safe retained reads or independent new operations; issued PUTs never replay. Permanent `close` remains separate and disables further operations.
+for safe retained reads or independent new operations; issued PUTs never replay.
+Deliberate retirement adds no failure delay and preserves any existing failure
+retry's original source-domain timer. Failure backoff resets only after a complete
+valid response addresses an original live query, monitor or HELLO request; an
+empty attachment followed by EOF retains failure pacing. Permanent `close`
+cancels pending retries and disables further operations.

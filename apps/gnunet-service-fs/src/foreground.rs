@@ -28,7 +28,7 @@ use gnunet_fs_host::{
             source::{self, Datastore as ServingSource},
         },
         dht::{Limits as DhtRouteLimits, Router as DhtRouter},
-        gap::{Router as GapRouter, storage as GapStorage},
+        gap::{Accounting, RespectInstance, Router as GapRouter, storage as GapStorage},
         peers::{Backend, Deferred, Pair},
         ports::{Datastore, PilsSigner},
     },
@@ -276,6 +276,9 @@ pub(super) async fn run<Ready: Future<Output = Result<(), crate::Cause>>>(
         None
     };
     let gap_endpoint = EndpointSource::live(live.clone(), b"core", context.resolution_context());
+    let mut respect_instance = RespectInstance::new();
+    let respect_endpoint =
+        EndpointSource::live(live.clone(), b"peerstore", context.resolution_context());
     let mut gap_ds_instance = ds::Instance::new();
     let mut gap_ds_buffer = filled(settings.gap.enabled_len(65535), 0_u8)?;
     let mut gap_ds_slots = [ds::Slot::new(&mut gap_ds_buffer)];
@@ -535,6 +538,7 @@ pub(super) async fn run<Ready: Future<Output = Result<(), crate::Cause>>>(
     let gap_settings = settings.gap;
     let query_capacity = settings.queries;
     let gap_core_instance = &mut gap_core_instance;
+    let respect_instance = &mut respect_instance;
     if let Err(error) = server.initialize_peers(move |resolver, server_clock| {
         let gap = match (gap_protocol, gap_datastore, gap_privacy) {
             (Some(protocol), Some(datastore), Some(privacy)) => {
@@ -547,6 +551,10 @@ pub(super) async fn run<Ready: Future<Output = Result<(), crate::Cause>>>(
                         gap_settings.core,
                         protocol,
                         privacy,
+                        Accounting::Peerstore {
+                            instance: respect_instance,
+                            endpoint: respect_endpoint,
+                        },
                         move |source_clock| {
                             if !Arc::ptr_eq(&source_clock, &server_clock) {
                                 return Err(source::Failure::service(ProtocolError::Conflict));

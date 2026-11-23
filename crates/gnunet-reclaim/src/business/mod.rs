@@ -7,9 +7,10 @@ mod plan;
 mod records;
 mod snapshot;
 mod types;
+pub use crate::fixed::{IDENTIFIER_LABEL_BYTES, identifier_label};
 pub use engine::{Factory, Job};
 pub use memory::Blob;
-pub use records::{IDENTIFIER_LABEL_BYTES, capability, identifier_label};
+pub use records::capability;
 pub use types::{
     Action, Completion, Effect, End, Exposure, Limits, LookupKind, Output, Prepared, Provider,
     ResponseView, Source, Status,

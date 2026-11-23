@@ -3,6 +3,13 @@
 mod unix;
 #[cfg(unix)]
 pub use unix::OwnedTun;
+#[cfg(target_os = "freebsd")]
+pub use unix::{
+    FreeBsdRecovery, FreeBsdRecreate, FreeBsdRecreateStartError, FreeBsdRecreated, FreeBsdReopen,
+    FreeBsdReopenError, FreeBsdReopenStage, FreeBsdReopenStartError, FreeBsdReopened,
+    FreeBsdRestartError, FreeBsdRestartStage, FreeBsdRouteKey, FreeBsdUnconfirmedClose,
+    FreeBsdVacancy,
+};
 #[cfg(windows)]
 mod windows;
 #[cfg(windows)]

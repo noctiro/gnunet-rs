@@ -503,6 +503,7 @@ pub struct ChannelOwner<'id, 'slots, 'bytes> {
     ack_revision: u64,
     ack_finished: u64,
     open_ack_due: bool,
+    reopening: bool,
     open_retry: MonoInstant,
     open_delay: u64,
     destroy_due: bool,
@@ -647,6 +648,7 @@ impl<'id, 'slots, 'bytes> ChannelOwner<'id, 'slots, 'bytes> {
             ack_revision: 0,
             ack_finished: 0,
             open_ack_due: listener,
+            reopening: false,
             open_retry: now,
             open_delay: limits.retry_micros,
             destroy_due: false,
@@ -672,6 +674,24 @@ impl<'id, 'slots, 'bytes> ChannelOwner<'id, 'slots, 'bytes> {
     #[must_use]
     pub const fn is_listener(&self) -> bool {
         self.listener
+    }
+    /// Reannounce an original outbound channel after its authenticated tunnel
+    /// confirms a new key generation. Route changes alone do not call this.
+    /// Keep application ownership, MID history, received bytes and send outcomes;
+    /// a new OPEN_ACK resumes output without replaying accepted payloads.
+    /// An original physical attempt must be settled before its next OPEN.
+    pub fn tunnel_up(&mut self, now: MonoInstant) -> Result<bool, Error> {
+        self.time(now)?;
+        if self.listener || matches!(self.phase, Phase::Closing | Phase::Closed) {
+            return Ok(false);
+        }
+        if self.pending.is_some() {
+            return Err(Error::WouldBlock);
+        }
+        self.reopening = self.phase == Phase::Ready;
+        self.open_retry = now;
+        self.open_delay = self.limits.retry_micros;
+        Ok(true)
     }
     /// Bind one real local application to a ready channel at most once. Early
     /// peer packets may already be buffered, but no prior application send or
@@ -760,7 +780,7 @@ impl<'id, 'slots, 'bytes> ChannelOwner<'id, 'slots, 'bytes> {
     /// Free local original send slots, capped by the actual reliable window.
     #[must_use]
     pub fn available_send(&self) -> usize {
-        if self.phase != Phase::Ready {
+        if self.phase != Phase::Ready || self.reopening {
             return 0;
         }
         let pending = self
@@ -782,6 +802,9 @@ impl<'id, 'slots, 'bytes> ChannelOwner<'id, 'slots, 'bytes> {
     /// No physical emission or peer acceptance is inferred by this admission.
     pub fn queue_send(&mut self, payload: &[u8], now: MonoInstant) -> Result<Send<'id>, Error> {
         self.time(now)?;
+        if self.reopening {
+            return Err(Error::WouldBlock);
+        }
         if self.phase != Phase::Ready {
             return Err(Error::NotReady);
         }
@@ -959,6 +982,14 @@ impl<'id, 'slots, 'bytes> ChannelOwner<'id, 'slots, 'bytes> {
                 }
             }
             ChannelMessage::OpenAck { port, .. } => {
+                if !self.listener
+                    && self.reopening
+                    && self.phase == Phase::Ready
+                    && port == self.address.port
+                {
+                    self.reopening = false;
+                    return Ok(Event::Opened);
+                }
                 if !self.listener && self.phase == Phase::Ready && port == self.address.port {
                     self.scope
                         .brand
@@ -1137,7 +1168,7 @@ impl<'id, 'slots, 'bytes> ChannelOwner<'id, 'slots, 'bytes> {
                     mid,
                 },
             )
-        } else if self.phase == Phase::Opening && now >= self.open_retry {
+        } else if (self.phase == Phase::Opening || self.reopening) && now >= self.open_retry {
             (
                 AttemptKind::Open,
                 ChannelMessage::Open {
@@ -1146,7 +1177,7 @@ impl<'id, 'slots, 'bytes> ChannelOwner<'id, 'slots, 'bytes> {
                     channel: self.scope.channel,
                 },
             )
-        } else if self.phase == Phase::Ready {
+        } else if self.phase == Phase::Ready && !self.reopening {
             let Some((slot, record)) = self
                 .sends
                 .iter()
@@ -1364,6 +1395,7 @@ impl<'id, 'slots, 'bytes> ChannelOwner<'id, 'slots, 'bytes> {
         self.phase = Phase::Closed;
         self.destroy_due = false;
         self.open_ack_due = false;
+        self.reopening = false;
         self.ack_finished = self.ack_revision;
         self.delivery = None;
         for slot in self.receives.iter_mut() {
@@ -1435,6 +1467,9 @@ impl<'id, 'slots, 'bytes> ChannelOwner<'id, 'slots, 'bytes> {
                 && matches!(self.phase, Phase::Opening | Phase::Ready))
         {
             return Some(self.last_now);
+        }
+        if self.reopening {
+            return Some(self.open_retry);
         }
         match self.phase {
             Phase::Opening => Some(self.open_retry),

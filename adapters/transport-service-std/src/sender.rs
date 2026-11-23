@@ -1,7 +1,7 @@
 //! Actual original FLOW range admission and receipt ownership. No stored value
 //! is a key or wire receipt. This module never polls the shared worker itself.
 use crate::{
-    generation::{self, Purpose, Reservations},
+    generation::{self, Purpose, Reservations, retirement},
     time::{Bounds, Clock},
 };
 use gnunet_pils::client::Identity;
@@ -10,18 +10,18 @@ use gnunet_transport_host::Server;
 use gnunet_types::Error;
 use std::{future::Future, pin::Pin, task::Context, time::Duration};
 use tokio::time::{Instant, Sleep};
-/// Opaque allocation identity of one actual Engine under its original PILS
-/// source. Returning to the same peer on the same MQ never reuses this brand.
+/// Opaque DV authority under one verified local PILS identity.
+/// Returning to the same peer on the same MQ creates a new brand.
 #[derive(Clone)]
 pub struct DvScope<'id> {
-    engine: std::sync::Arc<()>,
+    brand: std::sync::Arc<()>,
     identity: Identity<'id>,
     generation: u64,
 }
 impl<'id> DvScope<'id> {
     pub(crate) fn allocated(identity: Identity<'id>, generation: u64) -> Self {
         Self {
-            engine: std::sync::Arc::new(()),
+            brand: std::sync::Arc::new(()),
             identity,
             generation,
         }
@@ -37,7 +37,7 @@ impl<'id> DvScope<'id> {
 }
 impl PartialEq for DvScope<'_> {
     fn eq(&self, other: &Self) -> bool {
-        std::sync::Arc::ptr_eq(&self.engine, &other.engine)
+        std::sync::Arc::ptr_eq(&self.brand, &other.brand)
     }
 }
 impl Eq for DvScope<'_> {}
@@ -48,7 +48,7 @@ impl std::fmt::Debug for DvScope<'_> {
             .finish()
     }
 }
-/// Actual original DV reservation admission under one observed PILS/Engine.
+/// Actual original DV reservation admission under one verified authority.
 /// The constructor is private; a receipt matches its real original Request.
 pub struct DvReservation<'id> {
     scope: DvScope<'id>,
@@ -62,7 +62,7 @@ impl<'id> DvReservation<'id> {
     pub fn identity(&self) -> Identity<'id> {
         self.scope.identity()
     }
-    /// Original Engine brand; peer bytes or a local integer cannot replace it.
+    /// Original DV authority for this request.
     pub fn scope(&self) -> &DvScope<'id> {
         &self.scope
     }
@@ -272,12 +272,12 @@ impl<'id> Sender<'id> {
             actual,
         })
     }
-    /// Physical Engine/source retirement discards unadmitted metadata only;
-    /// actual jobs move to the mandatory original worker drain.
-    pub(crate) fn retire(&mut self) -> Option<crate::epoch::RetiredRange<'id>> {
+    /// Drop unadmitted intent and move any outstanding worker request to its
+    /// original retirement drain.
+    pub(crate) fn retire(&mut self) -> Option<retirement::RetiredRange<'id>> {
         self.alarm = None;
         let old = self.intent.take()?;
         old.request
-            .map(|request| crate::epoch::RetiredRange::flow(old.identity, old.demand, request))
+            .map(|request| retirement::RetiredRange::flow(old.identity, old.demand, request))
     }
 }

@@ -1,6 +1,7 @@
 //! Ordinary configured TRANSPORT observations over the real native CLIENT.
 //! Each record carries its actual source epoch. Only a real END plus complete
 //! output/flush is a completed snapshot; local stop never manufactures END.
+mod standalone;
 use crate::foreground::{Inherited, Signals, Stdout, capture};
 use gnunet::transport_observation::{self as native, Client, Query, Response};
 use gnunet_client_host::{EndpointSource, LiveConfiguration};
@@ -8,12 +9,13 @@ use gnunet_program_host::{
     getopt::Options,
     helpers::{self, Target},
     logging::Logger,
-    program::{self, Defaults, Invocation, NlsDisabled, Preparation},
+    program::{self, Defaults, Invocation, Preparation},
     reporting::Reporter,
     shared_clock::SharedClock,
 };
 use gnunet_service_runtime::clock::RuntimeClock;
 use gnunet_service_startup::ParentControl;
+pub(crate) use standalone::run as run_official;
 use std::{
     cell::{Cell, RefCell},
     error::Error,
@@ -38,6 +40,17 @@ struct Command {
     query: Query,
     continuous: bool,
     duration: Duration,
+    style: Style,
+}
+#[derive(Clone, Copy)]
+enum Style {
+    Json,
+    Links { verbose: bool },
+}
+impl Style {
+    fn json(self) -> bool {
+        matches!(self, Self::Json)
+    }
 }
 #[derive(Clone, Copy, Debug)]
 enum End {
@@ -221,7 +234,7 @@ impl Write for Limited<'_> {
             .is_none_or(|n| n > OUTPUT_BYTES)
         {
             return Err(io::Error::other(
-                "one TRANSPORT output record exceeds its finite JSON expansion bound",
+                "one TRANSPORT output record exceeds its byte bound",
             ));
         }
         let needed = self.0.len() + data.len();
@@ -255,14 +268,22 @@ impl Output {
         })
     }
     fn stage(&mut self, value: serde_json::Value) -> Result<(), Failure> {
+        self.stage_with(|output| {
+            serde_json::to_writer(&mut *output, &value)?;
+            output.write_all(b"\n")?;
+            Ok(())
+        })
+    }
+    fn stage_with(
+        &mut self,
+        write: impl FnOnce(&mut Limited<'_>) -> Result<(), Failure>,
+    ) -> Result<(), Failure> {
         if !self.bytes.is_empty() {
             return Err("previous actual TRANSPORT row still owns stdout".into());
         }
         self.used = 0;
         let mut output = Limited(&mut self.bytes);
-        serde_json::to_writer(&mut output, &value)?;
-        output.write_all(b"\n")?;
-        Ok(())
+        write(&mut output)
     }
     /// Only confirmed native progress advances this original row's cursor.
     fn step(&mut self) -> io::Result<Option<bool>> {
@@ -427,18 +448,46 @@ async fn run_command(inputs: Inputs) -> Result<(), Failure> {
                 }
                 Turn::Native(native::Progress::Attached(epoch)) => {
                     { let mut state=shared.borrow_mut();state.report.epochs=state.report.epochs.checked_add(1).ok_or("TRANSPORT epoch count overflow")?;state.report.current_epoch=Some(epoch.value());state.report.request_bytes_written=0; }
-                    if let Err(e)=output.stage(serde_json::json!({"event":"transport_epoch","epoch":epoch.value(),"continuous":command.continuous,"request_whole_written":false,"snapshot_complete":false})){shared.borrow_mut().output=Some(e);return Ok(())}
+                    if command.style.json() && let Err(e)=output.stage(serde_json::json!({"event":"transport_epoch","epoch":epoch.value(),"continuous":command.continuous,"request_whole_written":false,"snapshot_complete":false})){shared.borrow_mut().output=Some(e);return Ok(())}
                 }
                 Turn::Native(native::Progress::Written { epoch, bytes }) => { let mut state=shared.borrow_mut();state.report.current_epoch=Some(epoch.value());state.report.request_bytes_written=bytes; }
                 Turn::Native(native::Progress::Record(observation)) => {
-                    { let mut state=shared.borrow_mut();state.report.records_received=state.report.records_received.checked_add(1).ok_or("TRANSPORT record count overflow")?; }
-                    let value=record(&observation)?;if let Err(e)=output.stage(value){shared.borrow_mut().output=Some(e);return Ok(())}data_row=true;
+                    let first = {
+                        let mut state = shared.borrow_mut();
+                        state.report.records_received = state.report.records_received.checked_add(1).ok_or("TRANSPORT record count overflow")?;
+                        state.report.records_received == 1
+                    };
+                    let staged = match command.style {
+                        Style::Json => output.stage(record(&observation)?),
+                        Style::Links { verbose } => {
+                            let Response::Link(link) = observation.response()? else {
+                                return Err("unexpected native response to TRANSPORT link listing".into());
+                            };
+                            let now = if verbose { clock.sample()?.now.as_micros() } else { 0 };
+                            output.stage_with(|out| Ok(standalone::link(out, link, first, verbose, now)?))
+                        }
+                    };
+                    if let Err(e) = staged { shared.borrow_mut().output=Some(e);return Ok(()); }
+                    data_row = true;
                 }
                 Turn::Native(native::Progress::Complete { epoch, records }) => {
                     source_active = false;
                     if command.continuous { return Err("unexpected END for continuous TRANSPORT monitor".into()) }
                     { let mut state=shared.borrow_mut();state.report.service_end_received=true;state.report.current_epoch=Some(epoch.value());state.report.end=Some(End::Service); }
-                    if let Err(e)=output.stage(serde_json::json!({"event":"transport_end","epoch":epoch.value(),"records":records,"actual_service_end":true})){shared.borrow_mut().output=Some(e);return Ok(())}complete_output=true;
+                    let staged = match command.style {
+                        Style::Json => output.stage(serde_json::json!({"event":"transport_end","epoch":epoch.value(),"records":records,"actual_service_end":true})),
+                        Style::Links { .. } if records == 0 => output.stage_with(|out| Ok(out.write_all(b"No virtual links.\n")?)),
+                        Style::Links { .. } => {
+                            let mut state = shared.borrow_mut();
+                            if state.report.rows_written != records {
+                                return Err("TRANSPORT ended before all actual link rows were written".into());
+                            }
+                            state.report.complete_line_written = true;
+                            return Ok(());
+                        }
+                    };
+                    if let Err(e) = staged { shared.borrow_mut().output=Some(e);return Ok(()); }
+                    complete_output = true;
                 }
                 Turn::Native(native::Progress::Lost(loss)) => {
                     source_active = false;
@@ -517,13 +566,11 @@ struct Selection {
     duration: Option<Vec<u8>>,
     timeout: Option<Vec<u8>>,
 }
+struct Request {
+    command: Command,
+    unix: Option<Vec<u8>>,
+}
 pub(super) fn run(args: &[OsString]) -> Result<(), Failure> {
-    let inherited = capture()?;
-    let clock = SharedClock::native(64)?;
-    let config = gnunet_config::Configuration::create(
-        Arc::new(gnunet_config::ProjectData::default()),
-        Default::default(),
-    )?;
     let peer = Target::new(None::<Vec<u8>>);
     let continuous = Target::new(0i32);
     let one_shot = Target::new(0i32);
@@ -570,8 +617,54 @@ pub(super) fn run(args: &[OsString]) -> Result<(), Failure> {
         b"one-shot connect/END/output deadline (default30000)",
         timeout.clone(),
     ));
-    let mut logger = Logger::new(b"gnunet-cli.transport", std::process::id(), false)?;
-    let prepared=program::prepare(config,Invocation{binary_name:b"gnunet-cli transport",help:Some(b"Observe actual TRANSPORT queues or virtual links. Arguments: monitor|links <UNIXPATH|->. '-' selects standard configured TRANSPORT Unix/TCP endpoint; common -c/-L/-l apply. monitor is one-shot unless --continuous. Only actual END plus written/flushed output completes a snapshot. SIGINT/SIGTERM closes the original source. Continuous reconnect prints source boundaries and retains gap/failure; an interrupted stream exits nonzero. No route/delivery/publication authority is granted."),select_default_filename:true,defaults:Defaults::Native},options,std::iter::once(OsString::from("gnunet-cli transport")).chain(args.iter().cloned()),&program::Environment::capture(),&mut NlsDisabled,&mut logger,&clock,&mut io::stdout().lock(),&mut io::stderr().lock())?;
+    run_program(
+        b"gnunet-cli transport",
+        b"gnunet-cli.transport",
+        b"Observe TRANSPORT queues or virtual links. Arguments: monitor|links <UNIXPATH|->. '-' selects the configured transport endpoint. Monitor mode takes one snapshot unless --continuous is set.",
+        options,
+        std::iter::once(OsString::from("gnunet-cli transport")).chain(args.iter().cloned()),
+        |args| grouped_request(args, Selection {
+            peer: peer.get()?,
+            continuous: continuous.get()? != 0,
+            one_shot: one_shot.get()? != 0,
+            unconfirmed: unconfirmed.get()? != 0,
+            duration: duration.get()?,
+            timeout: timeout.get()?,
+        }),
+    )
+}
+
+fn run_program(
+    binary: &'static [u8],
+    logger_name: &'static [u8],
+    help: &'static [u8],
+    options: Options<'_>,
+    argv: impl IntoIterator<Item = OsString>,
+    select: impl FnOnce(&[Vec<u8>]) -> Result<Request, Failure>,
+) -> Result<(), Failure> {
+    let inherited = capture()?;
+    let clock = SharedClock::native(64)?;
+    let config = gnunet_config::Configuration::create(
+        Arc::new(gnunet_config::ProjectData::default()),
+        Default::default(),
+    )?;
+    let mut logger = Logger::new(logger_name, std::process::id(), false)?;
+    let prepared = program::prepare_installed(
+        config,
+        Invocation {
+            binary_name: binary,
+            help: Some(help),
+            select_default_filename: true,
+            defaults: Defaults::Native,
+        },
+        options,
+        argv,
+        &program::Environment::capture(),
+        &mut logger,
+        &clock,
+        &mut io::stdout().lock(),
+        &mut io::stderr().lock(),
+    )?;
     let prepared = match prepared {
         Preparation::Ready(p) => *p,
         Preparation::Stopped(s)
@@ -588,21 +681,14 @@ pub(super) fn run(args: &[OsString]) -> Result<(), Failure> {
     let reports = Reporter::new(logger, clock.clone());
     let shared = Rc::new(RefCell::new(State::default()));
     let result = (|| -> Result<(), Failure> {
-        let selection = Selection {
-            peer: peer.get()?,
-            continuous: continuous.get()? != 0,
-            one_shot: one_shot.get()? != 0,
-            unconfirmed: unconfirmed.get()? != 0,
-            duration: duration.get()?,
-            timeout: timeout.get()?,
-        };
+        let request = select(prepared.main().arguments)?;
         run_selected(
             prepared,
             inherited,
             clock,
             reports.clone(),
             shared.clone(),
-            selection,
+            request,
         )
     })();
     if let Err(error) = result {
@@ -652,14 +738,7 @@ pub(super) fn run(args: &[OsString]) -> Result<(), Failure> {
         Ok(())
     }
 }
-fn run_selected(
-    prepared: program::Prepared,
-    inherited: Inherited,
-    clock: SharedClock,
-    reports: Reporter,
-    shared: Shared,
-    selection: Selection,
-) -> Result<(), Failure> {
+fn grouped_request(args: &[Vec<u8>], selection: Selection) -> Result<Request, Failure> {
     let Selection {
         peer,
         continuous,
@@ -668,7 +747,6 @@ fn run_selected(
         duration,
         timeout,
     } = selection;
-    let args = prepared.main().arguments;
     if args.len() != 2 {
         return Err("expected transport monitor|links [common/options] <UNIXPATH|->".into());
     }
@@ -719,13 +797,31 @@ fn run_selected(
         } else {
             milliseconds(timeout, 30000)?
         },
+        style: Style::Json,
     };
-    let mut config = prepared.main().config.duplicate()?;
-    if args[1] != b"-" {
+    let unix = if args[1] == b"-" {
+        None
+    } else {
         if args[1].is_empty() || args[1].contains(&0) {
             return Err("invalid explicit TRANSPORT Unix path".into());
         }
-        config.set_value(b"transport", b"UNIXPATH", Some(&args[1]))?;
+        Some(args[1].clone())
+    };
+    Ok(Request { command, unix })
+}
+
+fn run_selected(
+    prepared: program::Prepared,
+    inherited: Inherited,
+    clock: SharedClock,
+    reports: Reporter,
+    shared: Shared,
+    request: Request,
+) -> Result<(), Failure> {
+    let Request { command, unix } = request;
+    let mut config = prepared.main().config.duplicate()?;
+    if let Some(path) = &unix {
+        config.set_value(b"transport", b"UNIXPATH", Some(path))?;
         config.set_value(b"transport", b"HOSTNAME", Some(b"localhost"))?;
         config.set_number(b"transport", b"PORT", 0)?;
     }

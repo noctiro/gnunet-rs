@@ -3,6 +3,8 @@
 #![no_std]
 #![forbid(unsafe_code)]
 
+/// Single-peer CORE driving over an already validated direct transport.
+pub mod direct_peer;
 pub mod record;
 pub mod session;
 pub mod wire;

@@ -1,5 +1,6 @@
 //! Windows identity, activation and parent readiness around the shared service.
-use super::{Cause, finish, foreground, lifecycle, settings};
+use super::{Cause, finish};
+use gnunet_dht_service_host::startup::{self, ProcessSettings, Settings};
 use gnunet_program_host::{
     logging::Logger,
     program::Environment,
@@ -96,7 +97,6 @@ pub(super) fn run() -> Result<(), Cause> {
         None => (None, None),
     };
     let reports = Reporter::new(logger, clock.clone());
-    let cleanup = lifecycle::Cleanup::default();
     let result = (|| -> Result<(), Cause> {
         if reports.failed() {
             return Err(io::Error::other("DHT logger failed before initialization").into());
@@ -106,17 +106,17 @@ pub(super) fn run() -> Result<(), Cause> {
             selected.configuration(),
         )?;
         clock.testing_skew(&config)?;
-        let settings = settings::Settings::read(&config)?;
+        let settings = Settings::read(&config)?;
         gnunet_service_startup::verify_configured_identity(&config, b"dht")?;
         let bound = if activation.is_empty() {
             runtime.block_on(BoundListeners::bind_configured(
                 &config,
                 b"dht",
-                settings.access.into(),
+                settings.unix_access().into(),
             ))?
         } else {
             let _entered = runtime.enter();
-            BoundListeners::from_activation(activation)?
+            BoundListeners::from_activation_with_access(activation, settings.unix_access())?
         };
         for error in bound.failures() {
             reports.warning(
@@ -124,15 +124,14 @@ pub(super) fn run() -> Result<(), Cause> {
                 format_args!("dht alternate listener: {error}"),
             );
         }
-        runtime.block_on(foreground::run(
-            foreground::Inputs {
+        runtime.block_on(startup::serve_process(
+            ProcessSettings {
                 config: &config,
                 settings: &settings,
                 bound: &bound,
                 parent,
                 clock: clock.clone(),
-                reports: reports.clone(),
-                cleanup: cleanup.clone(),
+                reports: &reports,
             },
             async {
                 if let Some(writer) = &mut ready {
@@ -143,7 +142,7 @@ pub(super) fn run() -> Result<(), Cause> {
             },
         ))
     })();
-    let result = service::retain_diagnostic(cleanup.finish(result), reports.take_error());
+    let result = service::retain_diagnostic(result, reports.take_error());
     let result = match result {
         Err(original) => {
             if let Some(writer) = ready.as_mut().filter(|writer| writer.intent().is_none()) {

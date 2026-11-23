@@ -53,21 +53,6 @@ def compile_source(entry, cwd, source):
         raise ValueError('compiler source path is not the validated upstream tree')
     return actual
 
-def rust_library(stdout, name, manifest=None, package_id=None):
-    rows = []
-    for line in stdout.splitlines():
-        event = json.loads(line)
-        if event.get('reason') == 'compiler-artifact' and event.get('target', {}).get('name') == name and (event['target'].get('kind') == ['lib']):
-            if manifest is not None and pathlib.Path(event.get('manifest_path','')).resolve()!=pathlib.Path(manifest).resolve():raise ValueError('foreign actual library manifest')
-            if package_id is not None and event.get('package_id')!=package_id:raise ValueError('foreign actual library package id')
-            files = [path for path in event.get('filenames', []) if path.endswith('.rlib')]
-            if len(files) != 1:
-                raise ValueError('library artifact has missing/ambiguous rlib')
-            rows.append(pathlib.Path(files[0]))
-    if len(rows) != 1:
-        raise ValueError('missing/duplicate actual Cargo library artifact')
-    return rows[0]
-
 # Whole-workspace snapshot contract. These helpers never synthesize Cargo input.
 def workspace_files(repo):
  import os

@@ -167,6 +167,41 @@ impl RetainedReply {
     }
 }
 impl Error {
+    /// Whether a settled read can wait for a new local sweep. Protocol faults
+    /// and explicit cancellation retain their terminal disposition.
+    pub(super) fn recoverable_get(&self) -> bool {
+        let Self::DatastoreOperation {
+            outcome,
+            interruption,
+            cause,
+            ..
+        } = self
+        else {
+            return false;
+        };
+        let cause = cause.as_deref();
+        match (outcome, interruption) {
+            (Outcome::Interrupted | Outcome::NotSent, None) => {
+                matches!(cause, Some(Self::DatastoreLost(DatastoreLoss::Io(_))))
+            }
+            (
+                Outcome::Interrupted
+                | Outcome::NotSent
+                | Outcome::TimedOut
+                | Outcome::Data { .. }
+                | Outcome::NotFound,
+                Some(Interruption::TimedOut),
+            ) => matches!(
+                cause,
+                None | Some(
+                    Self::Datastore(_)
+                        | Self::DatastoreLost(DatastoreLoss::Io(_) | DatastoreLoss::Deadline)
+                )
+            ),
+            _ => false,
+        }
+    }
+
     /// Actual original operation certainty, through independent cleanup errors.
     #[must_use]
     pub fn outcome(&self) -> Option<Outcome> {
@@ -440,9 +475,15 @@ impl StorePort for Datastore<'_, '_, '_> {
                     Err(error) => Poll::Ready(Err(self.fail_closed(error))),
                 }
             }
-            Poll::Ready(Ok(Step::Unavailable(error))) => {
-                Poll::Ready(Err(self.fail_closed(Error::Datastore(error))))
-            }
+            Poll::Ready(Ok(Step::Unavailable(error))) => match &mut self.active {
+                Some(active) if active.lookup.is_some() => {
+                    if active.cause.is_none() {
+                        active.cause = Some(Box::new(Error::Datastore(error)));
+                    }
+                    Poll::Ready(Ok(LookupProgress::Activity))
+                }
+                _ => Poll::Ready(Err(self.fail_closed(Error::Datastore(error)))),
+            },
             Poll::Ready(Ok(Step::Closed)) => match self.completed() {
                 Ok(Some(result)) => Poll::Ready(Ok(result)),
                 Ok(None) => Poll::Ready(Err(self.fail_closed(ProtocolError::Closed.into()))),

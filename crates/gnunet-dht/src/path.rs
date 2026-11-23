@@ -157,6 +157,30 @@ pub struct ReceivedPath<'a> {
     /// Number of original recorded elements removed; zero means unchanged.
     pub removed: usize,
 }
+
+impl<'a> ReceivedPath<'a> {
+    /// Retain up to `maximum` newest recorded elements and their actual boundary.
+    /// The separate sender signature is outside this limit. Retained signatures
+    /// and the PUT/GET partition continue to refer to the original bytes.
+    /// Obtain verified input with [`receive_incoming`].
+    ///
+    /// # Errors
+    /// Reports overflow of the number of removed original elements.
+    pub fn retain_newest(self, maximum: usize) -> Result<Self, Error> {
+        let removed = (self.put.len() + self.get.len()).saturating_sub(maximum);
+        if removed == 0 {
+            return Ok(self);
+        }
+        let suffix = strip_prefix(self.put, self.get, removed)?;
+        Ok(Self {
+            truncated: Some(suffix.truncated),
+            put: suffix.put,
+            get: suffix.get,
+            removed: self.removed.checked_add(removed).ok_or(Error::Overflow)?,
+        })
+    }
+}
+
 /// Receive a tracked PUT/RESULT path using the protocol's suffix recovery rule.
 /// The separate actual sender signature is verified first and is never salvaged.
 /// Only an earlier recorded Authentication failure can discard that element and
@@ -250,8 +274,11 @@ pub fn suffix<'a>(put: Path<'a>, get: Path<'a>, failure: Failure) -> Result<Suff
     if failure.index >= put.len() + get.len() {
         return Err(Error::InvalidInput);
     }
-    let truncated = entry(put, get, failure.index).1;
-    let removed = failure.index + 1;
+    strip_prefix(put, get, failure.index + 1)
+}
+
+fn strip_prefix<'a>(put: Path<'a>, get: Path<'a>, removed: usize) -> Result<Suffix<'a>, Error> {
+    let truncated = entry(put, get, removed - 1).1;
     let (put, get) = if removed <= put.len() {
         (
             Path::new(&put.as_bytes()[removed * PATH_ELEMENT_LEN..])?,

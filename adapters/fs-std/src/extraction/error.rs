@@ -21,6 +21,8 @@ pub enum Error {
     SourceChanged,
     /// Metadata or explicit selection does not match the required shape.
     Binding,
+    /// Restore selected PDF recipient authorization before extracting metadata.
+    PdfRecipientRequired,
     /// Original native provider/caller refusal and descriptor restore facts.
     Extractor(Box<gnunet_extractor_host::Failure<Error>>),
     /// Original invalid native provider selection.
@@ -45,6 +47,7 @@ impl fmt::Display for Error {
             Self::Cancelled => f.write_str("metadata extraction cancelled"),
             Self::SourceChanged => f.write_str("metadata input changed"),
             Self::Binding => f.write_str("metadata extraction binding mismatch"),
+            Self::PdfRecipientRequired => f.write_str("PDF recipient authorization is required"),
             Self::Extractor(error) => error.fmt(f),
             Self::MetadataSettings(error) => error.fmt(f),
             Self::ExtractorCleanup { original, cleanup } => {

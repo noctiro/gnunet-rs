@@ -10,6 +10,35 @@ pub const PRE_RESOLUTION: u32 = 2;
 pub const POST_RESOLUTION: u32 = 4;
 /// Monitor the final response.
 pub const RESPONSE_MONITOR: u32 = 8;
+
+const REPLY_HEADER_BYTES: usize = 16;
+
+/// Maximum answer payload within one official DNS client reply.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ReplyLimit(usize);
+
+impl ReplyLimit {
+    /// The largest answer representable in an official DNS client frame.
+    pub const MAXIMUM: Self = Self(u16::MAX as usize - REPLY_HEADER_BYTES);
+
+    /// Derive the payload limit from the allowed complete reply frame size.
+    ///
+    /// # Errors
+    /// Refuses a frame cap outside the wire range or a budget too small to send
+    /// a drop or forward decision.
+    pub fn from_frame_bytes(frame_bytes: usize) -> Result<Self, Error> {
+        if !(REPLY_HEADER_BYTES..=usize::from(u16::MAX)).contains(&frame_bytes) {
+            return Err(Error::InvalidInput);
+        }
+        Ok(Self(frame_bytes - REPLY_HEADER_BYTES))
+    }
+
+    /// Maximum DNS payload bytes without the fixed reply header.
+    #[must_use]
+    pub const fn answer_bytes(self) -> usize {
+        self.0
+    }
+}
 /// Official reply decision on one original service request.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Decision<'a> {
@@ -45,14 +74,14 @@ impl<'a> Request<'a> {
                 flags: u32::from_be_bytes(input[4..8].try_into().map_err(|_| Error::Truncated)?),
             }),
             mt::DNS_CLIENT_RESPONSE => {
-                let fixed = input.get(..16).ok_or(Error::Truncated)?;
-                let id = fixed[8..16].try_into().map_err(|_| Error::Truncated)?;
+                let fixed = input.get(..REPLY_HEADER_BYTES).ok_or(Error::Truncated)?;
+                let id = fixed[8..].try_into().map_err(|_| Error::Truncated)?;
                 let decision =
                     match u32::from_be_bytes(fixed[4..8].try_into().map_err(|_| Error::Truncated)?)
                     {
-                        0 if input.len() == 16 => Decision::Drop,
-                        1 if input.len() == 16 => Decision::Forward,
-                        2 => Decision::Answer(&input[16..]),
+                        0 if input.len() == REPLY_HEADER_BYTES => Decision::Drop,
+                        1 if input.len() == REPLY_HEADER_BYTES => Decision::Forward,
+                        2 => Decision::Answer(&input[REPLY_HEADER_BYTES..]),
                         _ => return Err(Error::Malformed),
                     };
                 Ok(Self::Reply { id, decision })
@@ -68,8 +97,10 @@ impl<'a> Request<'a> {
             Self::Reply {
                 decision: Decision::Answer(dns),
                 ..
-            } => 16usize.checked_add(dns.len()).ok_or(Error::Overflow)?,
-            Self::Reply { .. } => 16,
+            } => REPLY_HEADER_BYTES
+                .checked_add(dns.len())
+                .ok_or(Error::Overflow)?,
+            Self::Reply { .. } => REPLY_HEADER_BYTES,
         };
         MessageHeader::from_total_size(
             match self {
@@ -100,9 +131,9 @@ impl<'a> Request<'a> {
                     Decision::Answer(_) => 2,
                 };
                 out[4..8].copy_from_slice(&code.to_be_bytes());
-                out[8..16].copy_from_slice(&id);
+                out[8..REPLY_HEADER_BYTES].copy_from_slice(&id);
                 if let Decision::Answer(dns) = decision {
-                    out[16..n].copy_from_slice(dns)
+                    out[REPLY_HEADER_BYTES..n].copy_from_slice(dns)
                 }
             }
         }

@@ -536,6 +536,25 @@ impl Wal {
     pub const fn poisoned(&self) -> bool {
         self.poisoned
     }
+    /// Ingest one checked included HELLO without repeating a committed exact
+    /// public record on startup. Peer, subsystem, key, value and expiry must all
+    /// match. This does not change ordinary IPC MULTIPLE's append semantics.
+    /// Unknown storage still refuses work; equality never resolves uncertainty.
+    pub fn import_hello(
+        &mut self,
+        included: &crate::bootstrap::Included,
+    ) -> Result<crate::bootstrap::StoreOutcome, Error> {
+        use crate::bootstrap::StoreOutcome;
+        self.ready()?;
+        let record = included.record();
+        if self.rows.iter().any(|row| row.record() == record) {
+            self.verify()
+                .map_err(|error| self.fail("bootstrap-authority", error))?;
+            return Ok(StoreOutcome::AlreadyPresent);
+        }
+        self.store(record, false)?;
+        Ok(StoreOutcome::Stored)
+    }
 }
 impl Storage for Wal {
     fn store(&mut self, record: Record<'_>, replace: bool) -> Result<u64, Error> {

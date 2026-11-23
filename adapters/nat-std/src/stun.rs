@@ -21,6 +21,55 @@ use std::{
     task::{Context, Poll},
 };
 use tokio::net::UdpSocket;
+
+/// Nonempty list of endpoints explicitly selected by the deployment.
+#[derive(Clone, Debug)]
+pub struct Servers(Arc<[(Vec<u8>, u16)]>);
+
+impl Servers {
+    /// Read the bounded `[nat] STUN_SERVERS` list, without resolving any host.
+    ///
+    /// # Errors
+    ///
+    /// Rejects malformed endpoints and lists exceeding the byte or entry limit.
+    pub fn read(config: &gnunet_config::Configuration) -> Result<Option<Self>, Fault> {
+        const MAX_BYTES: usize = 8192;
+        const MAX_SERVERS: usize = 32;
+        let Some(raw) = config.get(b"nat", b"STUN_SERVERS") else {
+            return Ok(None);
+        };
+        if raw.len() > MAX_BYTES {
+            return Err(Fault::TooLarge);
+        }
+        let raw = core::str::from_utf8(raw).map_err(|_| Fault::Malformed)?;
+        let mut servers = Vec::new();
+        for token in raw.split_ascii_whitespace() {
+            if servers.len() == MAX_SERVERS {
+                return Err(Fault::Capacity);
+            }
+            let (host, port) = parse_server(token)?;
+            let mut bytes = Vec::new();
+            bytes
+                .try_reserve_exact(host.len())
+                .map_err(|_| Fault::Capacity)?;
+            bytes.extend_from_slice(host.as_bytes());
+            servers.try_reserve(1).map_err(|_| Fault::Capacity)?;
+            servers.push((bytes, port));
+        }
+        if servers.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(Self(servers.into())))
+    }
+
+    /// Iterate over the configured hosts and ports in deployment order.
+    pub fn iter(&self) -> impl Iterator<Item = (&[u8], u16)> + '_ {
+        self.0.iter().map(|(host, port)| (host.as_slice(), *port))
+    }
+}
+
+/// Five minutes between active probes when no interval is configured.
+pub const DEFAULT_FREQUENCY_MICROS: u64 = 300_000_000;
 /// Explicit bounded request policy; no socket is created by this type.
 #[derive(Clone, Copy, Debug)]
 pub struct Limits {

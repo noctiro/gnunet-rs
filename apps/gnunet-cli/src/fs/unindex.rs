@@ -8,6 +8,7 @@ use gnunet::{
     fs::{Limits as UriLimits, Uri},
     fs_host::{
         Buffers, Control,
+        extraction::MetadataSettings,
         ipc::EndpointSource,
         network::unindex::{self, Report},
     },
@@ -21,7 +22,6 @@ use std::{
     future::{Future, poll_fn},
     io::{self, Write},
     path::Path,
-    rc::Rc,
     time::Duration,
 };
 use tokio::time::Instant;
@@ -159,59 +159,165 @@ pub(super) fn run(
 ) -> Result<(), Box<dyn Error>> {
     let selection = arguments(args)?;
     let args = &selection.positional;
-    let interval = duration(args.get(3))?;
-    let hard = Instant::now()
+    let started = Instant::now();
+    let fs = EndpointSource::unix(Path::new(args[0]).to_path_buf());
+    let store = EndpointSource::unix_with_clock(Path::new(args[1]).to_path_buf(), fs.clock());
+    let job = Job {
+        filename: Path::new(args[2]),
+        metadata: selection.metadata.select()?,
+        keywords: &selection.keywords,
+        started,
+        interval: duration(args.get(3))?,
+        format: Format::Json,
+    };
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?
+        .block_on(execute([fs, store], job, out))
+}
+
+#[derive(Clone, Copy)]
+pub(super) enum Format {
+    Json,
+    Text { verbose: bool },
+}
+
+pub(super) struct Job<'a> {
+    pub(super) filename: &'a Path,
+    pub(super) metadata: MetadataSettings,
+    pub(super) keywords: &'a [Vec<u8>],
+    pub(super) started: Instant,
+    pub(super) interval: u64,
+    pub(super) format: Format,
+}
+
+pub(super) async fn execute(
+    [fs_source, store_source]: [EndpointSource; 2],
+    job: Job<'_>,
+    out: &mut super::Output<'_, impl Write>,
+) -> Result<(), Box<dyn Error>> {
+    let Job {
+        filename,
+        metadata,
+        keywords,
+        started,
+        interval,
+        format,
+    } = job;
+    let hard = started
         .checked_add(Duration::from_micros(interval))
         .ok_or("unindex native deadline is too large")?;
     out.deadline(hard);
-    let fs_source = EndpointSource::unix(Path::new(args[0]).to_path_buf());
-    let store_source =
-        EndpointSource::unix_with_clock(Path::new(args[1]).to_path_buf(), fs_source.clock());
-    let deadline = target(&fs_source, interval)?;
-    let metadata = selection.metadata.select()?;
-    let filename = Path::new(args[2]);
+    let remaining = hard
+        .checked_duration_since(Instant::now())
+        .ok_or_else(|| io::Error::from(io::ErrorKind::TimedOut))?;
+    let deadline = target(&fs_source, u64::try_from(remaining.as_micros())?)?;
     let mut input = gnunet::fs_host::open_input(filename)?;
+    let total = if matches!(format, Format::Text { verbose: true }) {
+        Some(input.metadata()?.len())
+    } else {
+        None
+    };
     let mut refs = Vec::new();
-    refs.try_reserve_exact(selection.keywords.len())?;
-    refs.extend(selection.keywords.iter().map(Vec::as_slice));
+    refs.try_reserve_exact(keywords.len())?;
+    refs.extend(keywords.iter().map(Vec::as_slice));
     let mut options = unindex::Options::new(deadline, hard);
     options.extra_keywords = &refs;
     options.metadata = metadata;
-    tokio::runtime::Builder::new_current_thread().enable_all().build()?.block_on(async{
-        let mut signals=super::stop::StopEvents::new()?;
-        let stop=Rc::new(Cell::new(false));let mut signal_error=None;
-        let mut identity=gnunet::datastore_host::Instance::new();
-        let mut wire=Vec::new();wire.try_reserve_exact(65535)?;wire.resize(65535,0);
-        let mut slots=[gnunet::datastore_host::Slot::new(&mut wire)];
-        let mut reservations=[gnunet::datastore_host::ReservationSlot::default();1];
-        let store=datastore_client(&mut identity,&mut slots,&mut reservations,store_source)?;
-        let mut buffers=Buffers::new();
-        let outcome={
-            let running=stop.clone();
-            let mut original=std::pin::pin!(buffers.unindex_file(&mut input,filename,fs_source,store,options,move|_|{
-                if running.get(){Control::Cancel}else{Control::Continue}
-            }));
-            poll_fn(|cx|{
-                if !stop.get() && signals.poll(cx) {
-                    stop.set(true);
-                    signal_error=signals.take_failure();
+    let mut signals = super::stop::StopEvents::new()?;
+    let stop = Cell::new(false);
+    let mut signal_error = None;
+    let mut identity = gnunet::datastore_host::Instance::new();
+    let mut wire = Vec::new();
+    wire.try_reserve_exact(65535)?;
+    wire.resize(65535, 0);
+    let mut slots = [gnunet::datastore_host::Slot::new(&mut wire)];
+    let mut reservations = [gnunet::datastore_host::ReservationSlot::default(); 1];
+    let store = datastore_client(&mut identity, &mut slots, &mut reservations, store_source)?;
+    let mut buffers = Buffers::new();
+    let mut output = None;
+    let mut last_report = started;
+    let outcome = {
+        let mut original = std::pin::pin!(buffers.unindex_file(
+            &mut input,
+            filename,
+            fs_source,
+            store,
+            options,
+            |observation| {
+                if stop.get() || output.is_some() {
+                    return Control::Cancel;
                 }
-                // Retain and drive the original future through its real cancel,
-                // operation settlement and physical closes. Never recreate it.
-                original.as_mut().poll(cx)
-            }).await
+                if let Some(total) = total {
+                    let now = Instant::now();
+                    let completed = observation.encoded.plaintext_bytes;
+                    if completed != 0 && now.duration_since(last_report) >= Duration::from_secs(1) {
+                        last_report = now;
+                        let remaining = now
+                            .duration_since(started)
+                            .as_secs()
+                            .saturating_mul(total.saturating_sub(completed))
+                            / completed;
+                        output = writeln!(
+                            out,
+                            "Unindexing at {completed}/{total} ({remaining}s remaining)"
+                        )
+                        .and_then(|()| out.flush())
+                        .err();
+                    }
+                }
+                if output.is_some() {
+                    Control::Cancel
+                } else {
+                    Control::Continue
+                }
+            }
+        ));
+        poll_fn(|cx| {
+            if !stop.get() && signals.poll(cx) {
+                stop.set(true);
+                signal_error = signals.take_failure();
+            }
+            // Retain and drive the original future through its real cancel,
+            // operation settlement and physical closes. Never recreate it.
+            original.as_mut().poll(cx)
+        })
+        .await
+    };
+    let report = match &outcome {
+        Ok(report) => report,
+        Err(failure) => &failure.report,
+    };
+    out.cleanup()?;
+    if output.is_none() {
+        output = match format {
+            Format::Json => (|| -> io::Result<()> {
+                let partial = report.observation.content_zero != 0 || report.observation.keyword_zero != 0;
+                let row = json!({"event":if outcome.is_err(){"fs_unindex_failed"}else if partial{"fs_unindex_partial"}else{"fs_unindex_complete"},
+                    "report":value(report),"cause":outcome.as_ref().err().map(ToString::to_string),
+                    "failure_facts":outcome.as_ref().err().map(|e|format!("{e:?}")),"stop_requested":stop.get(),
+                    "signal_error":signal_error.as_ref().map(ToString::to_string)});
+                serde_json::to_writer(&mut *out, &row).map_err(io::Error::other)?;
+                writeln!(out)?;
+                out.flush()
+            })()
+            .err(),
+            Format::Text { .. } if outcome.is_ok() && report.unindexed => {
+                writeln!(out, "Unindexing done.")
+                    .and_then(|()| out.flush())
+                    .err()
+            }
+            Format::Text { .. } => None,
         };
-        let report=match &outcome{Ok(report)=>report,Err(failure)=>&failure.report};
-        let partial=report.observation.content_zero!=0 || report.observation.keyword_zero!=0;
-        let row=json!({"event":if outcome.is_err(){"fs_unindex_failed"}else if partial{"fs_unindex_partial"}else{"fs_unindex_complete"},
-            "report":value(report),"cause":outcome.as_ref().err().map(ToString::to_string),
-            "failure_facts":outcome.as_ref().err().map(|e|format!("{e:?}")),"stop_requested":stop.get(),
-            "signal_error":signal_error.as_ref().map(ToString::to_string)});
-        out.cleanup()?;
-        let output=(||->io::Result<()>{serde_json::to_writer(&mut *out,&row).map_err(io::Error::other)?;writeln!(out)?;out.flush()})().err();
-        if outcome.is_err() || signal_error.is_some() || output.is_some(){return Err(Box::new(Failure{outcome,signal:signal_error,output}) as Box<dyn Error>);}
-        Ok(())
-    })
+    }
+    if outcome.is_err() || signal_error.is_some() || output.is_some() {
+        return Err(Box::new(Failure {
+            outcome,
+            signal: signal_error,
+            output,
+        }) as Box<dyn Error>);
+    }
+    Ok(())
 }
 
 #[cfg(test)]

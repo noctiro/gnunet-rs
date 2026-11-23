@@ -19,12 +19,13 @@ pub(crate) fn original_write_head(
 }
 impl<'a, E: crypto::Entropy, const N: usize> Api<'a, E, N> {
     fn live_job(&self, lease: &Lease<'a>) -> bool {
-        self.core.operation_phase(lease.operation).is_ok_and(|p| {
-            !matches!(
-                p,
-                OperationPhase::Complete | OperationPhase::Failed | OperationPhase::Cancelled
-            )
-        })
+        self.frontier_holds(lease.operation)
+            || self.core.operation_phase(lease.operation).is_ok_and(|p| {
+                !matches!(
+                    p,
+                    OperationPhase::Complete | OperationPhase::Failed | OperationPhase::Cancelled
+                )
+            })
     }
     fn hard_target(&self) -> Option<Instant> {
         self.leases
@@ -37,6 +38,16 @@ impl<'a, E: crypto::Entropy, const N: usize> Api<'a, E, N> {
                     .and_then(crate::records::Records::hard),
             )
             .chain(self.subscription_hard())
+            .chain(
+                self.history_requests
+                    .iter()
+                    .filter_map(|fetch| fetch.pending_span().map(|span| span.hard)),
+            )
+            .chain(
+                self.rooms
+                    .iter()
+                    .filter_map(|r| r.frontier.map(|f| f.span.hard)),
+            )
             .chain(self.control.as_ref().map(|c| c.span.hard))
             .chain((!self.ready).then_some(self.initial.hard))
             .chain(self.held_notification.as_ref().map(|n| n.span.hard))
@@ -61,6 +72,9 @@ impl<'a, E: crypto::Entropy, const N: usize> Api<'a, E, N> {
             .min()
     }
     fn expired(&self, logical: Option<u64>) -> Option<StopCause<'a>> {
+        if let Some(cause) = self.expired_frontier(logical) {
+            return Some(cause);
+        }
         if let Some(operation) = self.expired_subscription(logical) {
             return Some(StopCause::Deadline(operation));
         }
@@ -108,6 +122,16 @@ impl<'a, E: crypto::Entropy, const N: usize> Api<'a, E, N> {
                     .and_then(crate::records::Records::logical),
             )
             .chain(self.subscription_effect_target())
+            .chain(
+                self.history_requests
+                    .iter()
+                    .filter_map(|fetch| fetch.pending_span().map(|span| span.logical)),
+            )
+            .chain(
+                self.rooms
+                    .iter()
+                    .filter_map(|r| r.frontier.map(|f| f.span.logical)),
+            )
             .chain(self.control.as_ref().map(|c| c.span.logical))
             .chain((!self.ready).then_some(self.initial.logical))
             .chain(self.held_notification.as_ref().map(|n| n.span.logical))
@@ -146,6 +170,9 @@ impl<'a, E: crypto::Entropy, const N: usize> Api<'a, E, N> {
     fn progress_state(&mut self) -> Option<Progress<'a>> {
         let event = self.core.pop_event()?;
         self.wake_domain();
+        if let Event::OperationChanged(operation, phase) = event {
+            self.observe_frontier(operation, phase);
+        }
         // Admission initially records Ready, before Core classifies ciphertext
         // as AwaitingEpoch. Arm crypto from the actual transition, not an early
         // notification-time scan that can miss every later steady-state send.
@@ -162,11 +189,14 @@ impl<'a, E: crypto::Entropy, const N: usize> Api<'a, E, N> {
                 phase,
                 OperationPhase::Complete | OperationPhase::Failed | OperationPhase::Cancelled
             )
+            && !self.frontier_holds(operation)
             && self.leases.iter().any(|l| {
                 l.operation == operation
                     && matches!(
                         l.intent,
                         Intent::Initialization
+                            | Intent::Dependency
+                            | Intent::HistoryRequest { .. }
                             | Intent::Epoch
                             | Intent::Subscription
                             | Intent::Transcript
@@ -427,13 +457,26 @@ impl<'a, E: crypto::Entropy, const N: usize> Api<'a, E, N> {
             | wire::Response::Close(r)
             | wire::Response::Sync(r) => r.key,
         };
-        let index = self
+        let index = match self
             .rooms
             .iter()
             .position(|r| r.key == *key && r.epoch == Some(held.epoch) && r.source.is_some())
-            .ok_or(Fault::StaleGeneration)?;
+        {
+            Some(index) => index,
+            None if matches!(response, wire::Response::Missing { .. }) => return Ok(true),
+            None => return Err(Fault::StaleGeneration.into()),
+        };
         let source = self.rooms[index].source.ok_or(Fault::StaleGeneration)?;
         if !held.applied {
+            let history_get = if let wire::Response::Missing { hash, .. } = response {
+                let Some(get) = self.missing_history_get(source, held.epoch, hash) else {
+                    self.admit_history_hint(index, *hash, held.job_span, now)?;
+                    return Ok(true);
+                };
+                Some(get)
+            } else {
+                None
+            };
             let layout = match self.original_layout(index, source, response, held.layout)? {
                 crate::layouts::Selection::Ready(layout) => layout,
                 crate::layouts::Selection::Need {
@@ -468,6 +511,9 @@ impl<'a, E: crypto::Entropy, const N: usize> Api<'a, E, N> {
                 }
                 Err(e) => return Err(e.into()),
             }
+            if let Some(original) = history_get {
+                self.accept_history_absence(original)?;
+            }
             if let wire::Response::MemberId { id, reset, .. } = response {
                 let room = &mut self.rooms[index];
                 if room.join.is_none() {
@@ -488,8 +534,11 @@ impl<'a, E: crypto::Entropy, const N: usize> Api<'a, E, N> {
         match self.core.advance(self.rooms[index].room, now) {
             Ok(_) => {}
             Err(domain::Error::Protocol(Fault::WouldBlock | Fault::Capacity)) => {
-                self.held_notification = Some(held);
-                return Ok(false);
+                // on_notification already transferred this frame into Core.
+                // Keeping the native notification here would prevent the GET
+                // response that can release missing-dependency capacity.
+                self.domain_blocked = true;
+                return Ok(true);
             }
             Err(e) => return Err(e.into()),
         }
@@ -523,8 +572,16 @@ impl<'a, E: crypto::Entropy, const N: usize> Api<'a, E, N> {
         if let Some(cause) = self.expired(None) {
             self.capture_stop(cause, false, None);
         }
-        let target = self.hard_target();
-        self.clock.poll_native(cx, target);
+        self.expire_history_gets(None);
+        let mut target = self.hard_target();
+        if self.clock.poll_native(cx, target) {
+            self.expire_history_gets(None);
+            let next = self.hard_target();
+            if next != target {
+                target = next;
+                self.clock.poll_native(cx, target);
+            }
+        }
         if let Some(cause) = self.expired(None) {
             self.capture_stop(cause, false, None);
         }
@@ -603,12 +660,18 @@ impl<'a, E: crypto::Entropy, const N: usize> Api<'a, E, N> {
         if let Some(loss) = self.pending_loss.take() {
             return Poll::Ready(Ok(Progress::Lost(loss)));
         }
+        self.expire_history_gets(Some(now));
         let result = (|| {
             let logical = self.logical_target()?;
             if self.clock.poll_logical(cx, logical).map_err(Error::Clock)? {
                 self.wake_domain();
             }
-            self.process_notification(now)?;
+            if self.process_notification(now)? {
+                // A consumed notification may produce no Core event (for
+                // example, an ignored duplicate Missing). Poll the native
+                // owner again for frames already buffered behind it.
+                cx.waker().wake_by_ref();
+            }
             if let Some(need) = self.layout_progress() {
                 return Ok(Some(need));
             }

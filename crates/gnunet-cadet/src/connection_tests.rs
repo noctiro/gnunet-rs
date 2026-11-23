@@ -3,6 +3,7 @@
     reason = "Fallible bounded route models assert actual original wire effects, CORE-source direction and signature provenance"
 )]
 use super::*;
+
 fn create<'path>(path: &'path [[u8; 32]], cid: [u8; 32]) -> PeerMessage<'path> {
     PeerMessage::ConnectionCreate {
         options_bytes: [2, 0, 0, 0],
@@ -56,6 +57,60 @@ fn emit<'id, const P: usize>(
     // Explicit modeled original CORE availability callback, never settle itself.
     book.neighbor_ready(target, true)?;
     Ok((target, length))
+}
+
+#[test]
+fn local_create_retries_and_reverse_ack_share_the_original_deadline() -> Result<(), Error> {
+    let mut instance = Instance::new();
+    let mut neighbors = [NeighborSlot::new(); 1];
+    let mut routes = [RouteSlot::<3>::new(); 2];
+    let mut origins = [];
+    let mut buffers = [[0; 512]; 4];
+    let mut frames = buffers.each_mut().map(|bytes| FrameSlot::new(bytes));
+    let mut book = Book::new(
+        &mut instance,
+        [1; 32],
+        &mut neighbors,
+        &mut routes,
+        &mut origins,
+        &mut frames,
+        MonoInstant(0),
+        Limits {
+            retry_micros: 2,
+            ..Limits::default()
+        },
+    )?;
+    let relay = book.neighbor_up([2; 32])?;
+    book.neighbor_ready(relay, true)?;
+    let destination = [3; 32];
+    let path = [[1; 32], [2; 32], destination];
+    let cid = [4; 32];
+    let deadline = MonoInstant(8);
+    let opened = book.open_with_deadline(
+        PathPeers::new(&path),
+        cid,
+        Authentication::Unsigned,
+        MonoInstant(1),
+        Some(deadline),
+    )?;
+    let mut wire = [0; 512];
+    emit(&mut book, 1, &mut wire)?;
+    book.tick(MonoInstant(4))?;
+    let retry = book.next_frame().ok_or(Error::NotReady)?.frame;
+    assert_eq!(book.create_deadline(retry)?, Some(deadline));
+    assert!(book.has_endpoint_path(destination));
+    assert!(!book.has_ready_endpoint_path(destination));
+    assert!(matches!(
+        book.receive(
+            relay,
+            PeerMessage::ConnectionCreateAck { reserved: 0, connection: cid },
+            deadline,
+        )?,
+        Event::Retired(route) if route == opened.route
+    ));
+    assert_eq!(book.frame_completion(retry)?.outcome, Outcome::Unsent);
+    assert!(!book.has_endpoint_path(destination));
+    Ok(())
 }
 
 #[test]
@@ -208,6 +263,103 @@ fn whole_path_forwarding_requires_actual_adjacent_sources_and_checks_broken_dire
 }
 
 #[test]
+fn first_incoming_create_preview_preserves_the_original_book() -> Result<(), Error> {
+    let signer = gnunet_crypto::EddsaPrivateKey::from_seed([11; 32]);
+    let other_signer = gnunet_crypto::EddsaPrivateKey::from_seed([12; 32]);
+    let origin = *signer.public_key().as_bytes();
+    let other_origin = *other_signer.public_key().as_bytes();
+    let local = [4; 32];
+    let hop = [3; 32];
+    let cid = [9; 32];
+    let path = [origin, hop, local];
+    let forwarded = [origin, hop, local, [5; 32]];
+    let looped = [origin, hop, origin, local];
+    let other_path = [other_origin, hop, local];
+    let mut instance = Instance::new();
+    let mut neighbors = [NeighborSlot::new(); 2];
+    let mut routes = [RouteSlot::<4>::new(); 2];
+    let mut origins = [OriginSlot::restored(origin, 10)];
+    let mut bytes = [0; 512];
+    let mut frames = [FrameSlot::new(&mut bytes)];
+    let mut book = Book::new(
+        &mut instance,
+        local,
+        &mut neighbors,
+        &mut routes,
+        &mut origins,
+        &mut frames,
+        MonoInstant(0),
+        Limits::default(),
+    )?;
+    let previous = book.neighbor_up(hop)?;
+    let wrong = book.neighbor_up([5; 32])?;
+    let unsigned = create(&path, cid);
+    assert_eq!(
+        book.validate_incoming_create(wrong, unsigned),
+        Err(Error::Authentication)
+    );
+    assert_eq!(
+        book.validate_incoming_create(previous, create(&forwarded, cid)),
+        Err(Error::Authentication)
+    );
+    assert_eq!(
+        book.validate_incoming_create(previous, create(&looped, cid)),
+        Err(Error::Malformed)
+    );
+    // The inbound CORE generation is live even while its outbound side is busy.
+    assert!(!book.neighbor_is_ready(previous)?);
+    let inspected = book.validate_incoming_create(previous, unsigned)?;
+    assert_eq!(inspected.origin(), origin);
+    assert_eq!(inspected.connection(), cid);
+    assert_eq!(inspected.reset(), IncomingReset::Absent);
+
+    let valid = signed_create(&path, cid, 11, &signer)?;
+    let old = signed_create(&path, cid, 10, &signer)?;
+    let forged = signed_create(&path, cid, 10, &other_signer)?;
+    let unrecordable = signed_create(&other_path, cid, 11, &other_signer)?;
+    assert_eq!(
+        book.validate_incoming_create(previous, valid)?.reset(),
+        IncomingReset::Fresh(NonZeroU64::new(11).ok_or(Error::Conflict)?)
+    );
+    assert_eq!(
+        book.validate_incoming_create(previous, old)?.reset(),
+        IncomingReset::Replayed
+    );
+    assert_eq!(
+        book.validate_incoming_create(previous, forged),
+        Err(Error::Authentication)
+    );
+    assert_eq!(
+        book.validate_incoming_create(previous, unrecordable),
+        Err(Error::Capacity)
+    );
+    assert_eq!(book.observed_monotime(origin), Some(10));
+    assert!(!book.has_work());
+
+    assert!(matches!(
+        book.receive(previous, unsigned, MonoInstant(0))?,
+        Event::Created {
+            reset: Reset::Absent,
+            ..
+        }
+    ));
+    assert_eq!(
+        book.validate_incoming_create(previous, valid),
+        Err(Error::Conflict)
+    );
+    assert_eq!(
+        book.validate_incoming_create(previous, create(&path, [8; 32])),
+        Err(Error::Capacity)
+    );
+    book.neighbor_lost(wrong, MonoInstant(0))?;
+    assert_eq!(
+        book.validate_incoming_create(wrong, unsigned),
+        Err(Error::StaleGeneration)
+    );
+    Ok(())
+}
+
+#[test]
 fn monotime_signature_verification_precedes_origin_observation_and_replay_cannot_reset()
 -> Result<(), Error> {
     let key = gnunet_crypto::EddsaPrivateKey::from_seed([11; 32]);
@@ -248,7 +400,22 @@ fn monotime_signature_verification_precedes_origin_observation_and_replay_cannot
     assert_eq!(book.observed_monotime(origin), Some(10));
     assert!(book.next_frame().is_none());
     let valid = signed_create(&path, [9; 32], 11, &key)?;
-    let Event::Created { route, reset } = book.receive(previous, valid, MonoInstant(0))? else {
+    assert!(matches!(
+        book.receive_with_resets(previous, valid, MonoInstant(0), |_| Err(Error::Storage)),
+        Err(Error::Storage)
+    ));
+    assert_eq!(book.observed_monotime(origin), Some(10));
+    assert!(!book.has_endpoint_path(origin));
+    assert!(book.next_frame().is_none());
+    assert!(book.completion().is_none());
+    let Event::Created { route, reset } =
+        book.receive_with_resets(previous, valid, MonoInstant(0), |actual| {
+            assert_eq!(actual.local(), [4; 32]);
+            assert_eq!(actual.origin(), origin);
+            assert_eq!(actual.monotime().get(), 11);
+            Ok(())
+        })?
+    else {
         return Err(Error::Malformed);
     };
     let Reset::Fresh(proof) = reset else {
@@ -286,13 +453,30 @@ fn monotime_signature_verification_precedes_origin_observation_and_replay_cannot
     // A replayed timestamp is denied reset authority; normal route establishment
     // is separate, just as unsigned CREATE is legal in the current protocol.
     assert!(matches!(
-        book.receive(other_previous, old, MonoInstant(0))?,
+        book.receive_with_resets(other_previous, old, MonoInstant(0), |_| {
+            Err(Error::Conflict)
+        })?,
         Event::Created {
             reset: Reset::Replayed,
             ..
         }
     ));
     assert_eq!(book.observed_monotime(origin), Some(11));
+    let _ack = emit(&mut book, 0, &mut wire)?;
+    let newer = signed_create(&path, [9; 32], 12, &key)?;
+    assert!(matches!(
+        book.receive_with_resets(previous, newer, MonoInstant(0), |_| Err(
+            Error::OutcomeUnknown
+        )),
+        Err(Error::OutcomeUnknown)
+    ));
+    assert_eq!(book.observed_monotime(origin), Some(11));
+    assert!(book.next_frame().is_none());
+    assert!(book.completion().is_none());
+    assert!(matches!(
+        book.receive_with_resets(previous, newer, MonoInstant(0), |_| Err(Error::Conflict)),
+        Err(Error::OutcomeUnknown)
+    ));
     Ok(())
 }
 
@@ -567,5 +751,43 @@ fn multipath_selection_requires_current_core_eligibility_and_preserves_other_rou
     assert_eq!(book.route_info(route2)?.phase, Phase::Retired);
     assert_eq!(book.select([4; 32]), Some(route1));
     assert_eq!(book.keepalive_due(MonoInstant(10)), Some(route1));
+
+    let third = book.neighbor_up([5; 32])?;
+    book.neighbor_ready(third, true)?;
+    let other = book
+        .open(
+            PathPeers::new(&[[1; 32], [5; 32]]),
+            [13; 32],
+            Authentication::Unsigned,
+            MonoInstant(2),
+        )?
+        .route;
+    let (target, _) = emit(&mut book, 2, &mut wire)?;
+    assert_eq!(target, third);
+    book.receive(
+        third,
+        PeerMessage::ConnectionCreateAck {
+            reserved: 0,
+            connection: [13; 32],
+        },
+        MonoInstant(2),
+    )?;
+    assert_eq!(book.keepalive_due(MonoInstant(12)), Some(route1));
+    assert_eq!(
+        book.keepalive_due_for([5; 32], MonoInstant(12)),
+        Some(other)
+    );
+    assert!(book.keepalive_ready(other, MonoInstant(12)));
+    book.neighbor_ready(third, false)?;
+    assert!(book.has_endpoint_path([5; 32]));
+    assert!(book.has_ready_endpoint_path([5; 32]));
+    assert!(!book.keepalive_ready(other, MonoInstant(12)));
+    assert_eq!(
+        book.keepalive_due_for([4; 32], MonoInstant(12)),
+        Some(route1)
+    );
+    book.neighbor_lost(third, MonoInstant(12))?;
+    assert!(!book.has_endpoint_path([5; 32]));
+    assert!(book.has_endpoint_path([4; 32]));
     Ok(())
 }

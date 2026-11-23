@@ -1,6 +1,6 @@
 //! Packed native ABI fixtures only. No PF device or control command is opened.
 use super::*;
-use std::time::Duration;
+use std::{net::Ipv6Addr, time::Duration};
 
 fn row(id: u8, direction: u8) -> [u8; STATE_BYTES] {
     let mut bytes = [0; STATE_BYTES];
@@ -24,6 +24,14 @@ fn row(id: u8, direction: u8) -> [u8; STATE_BYTES] {
 }
 fn local() -> [IpAddr; 1] {
     [IpAddr::from([10, 0, 0, 1])]
+}
+fn ipv6_row(id: u8, source: Ipv6Addr, destination: Ipv6Addr) -> [u8; STATE_BYTES] {
+    let mut bytes = row(id, 2);
+    bytes[282] = 30;
+    bytes[283] = 30;
+    bytes[24..40].copy_from_slice(&source.octets());
+    bytes[72..88].copy_from_slice(&destination.octets());
+    bytes
 }
 
 #[test]
@@ -108,31 +116,31 @@ fn original_identity_readback_ignores_a_changed_flow_predicate() -> io::Result<(
 }
 
 #[test]
-fn ipv6_uses_full_endpoint_masks_and_excludes_link_local_sources() -> io::Result<()> {
+fn ipv6_uses_full_endpoint_masks_and_excludes_both_native_scoped_ranges() -> io::Result<()> {
     let source = "2001:db8::1"
         .parse::<std::net::Ipv6Addr>()
         .map_err(io::Error::other)?;
     let destination = "2001:db8::53"
         .parse::<std::net::Ipv6Addr>()
         .map_err(io::Error::other)?;
-    let link = "fe80::1"
-        .parse::<std::net::Ipv6Addr>()
-        .map_err(io::Error::other)?;
-    let mut good = row(1, 2);
-    good[282] = 30;
-    good[283] = 30;
-    good[24..40].copy_from_slice(&source.octets());
-    good[72..88].copy_from_slice(&destination.octets());
-    let mut excluded = good;
-    excluded[0] = 2;
-    excluded[24..40].copy_from_slice(&link.octets());
-    let selected = select(
-        &[good, excluded].concat(),
-        &[source.into(), link.into()],
-        Limits::default(),
-    )?;
+    let mut rows = vec![ipv6_row(1, source, destination)];
+    let mut local = vec![source.into()];
+    for prefix in [0xfe80, 0xfebf, 0xfec0, 0xfeff] {
+        let scoped = Ipv6Addr::new(prefix, 0, 0, 0, 0, 0, 0, 1);
+        local.push(scoped.into());
+        rows.push(ipv6_row(rows.len() as u8 + 1, scoped, destination));
+        let scoped_destination = ipv6_row(rows.len() as u8 + 1, source, scoped);
+        rows.push(scoped_destination);
+        let mut inbound = scoped_destination;
+        inbound[0] = rows.len() as u8 + 1;
+        inbound[285] = 1;
+        inbound[24..48].copy_from_slice(&scoped_destination[72..96]);
+        inbound[72..96].copy_from_slice(&scoped_destination[24..48]);
+        rows.push(inbound);
+    }
+    let selected = select(&rows.concat(), &local, Limits::default())?;
     if selected.ids.len() != 1 || selected.keys.len() != 1 {
-        return Err(io::Error::other("IPv6 PF DNS source scope changed"));
+        return Err(io::Error::other("IPv6 PF DNS endpoint scope changed"));
     }
     let command = selected.keys[0].command();
     let bytes = abi::command_bytes(&command);
@@ -145,6 +153,52 @@ fn ipv6_uses_full_endpoint_masks_and_excludes_link_local_sources() -> io::Result
         return Err(io::Error::other(
             "IPv6 PF DNS selector lost its full address masks",
         ));
+    }
+    Ok(())
+}
+
+#[test]
+fn invalid_raw_endpoints_leave_unrelated_pf_states_outside_retirement() -> io::Result<()> {
+    for invalid in [[0, 0, 0, 0], [224, 0, 0, 53], [255, 255, 255, 255]] {
+        for offset in [24, 72] {
+            let mut excluded = row(2, 2);
+            excluded[offset..offset + 4].copy_from_slice(&invalid);
+            let selected = select(
+                &[row(1, 2), excluded].concat(),
+                &[local()[0], invalid.into()],
+                Limits::default(),
+            )?;
+            if selected.ids.len() != 1 || selected.keys.len() != 1 {
+                return Err(io::Error::other(format!(
+                    "invalid raw IPv4 endpoint widened PF retirement: {invalid:?} at {offset}",
+                )));
+            }
+        }
+    }
+    let source = Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1);
+    let destination = Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 53);
+    for invalid in [
+        Ipv6Addr::UNSPECIFIED,
+        Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 0x53),
+        std::net::Ipv4Addr::new(192, 0, 2, 53).to_ipv6_mapped(),
+        std::net::Ipv4Addr::new(224, 0, 0, 53).to_ipv6_mapped(),
+        std::net::Ipv4Addr::UNSPECIFIED.to_ipv6_mapped(),
+        std::net::Ipv4Addr::BROADCAST.to_ipv6_mapped(),
+    ] {
+        for offset in [24, 72] {
+            let mut excluded = ipv6_row(2, source, destination);
+            excluded[offset..offset + 16].copy_from_slice(&invalid.octets());
+            let selected = select(
+                &[ipv6_row(1, source, destination), excluded].concat(),
+                &[source.into(), invalid.into()],
+                Limits::default(),
+            )?;
+            if selected.ids.len() != 1 || selected.keys.len() != 1 {
+                return Err(io::Error::other(format!(
+                    "invalid raw IPv6 endpoint widened PF retirement: {invalid} at {offset}",
+                )));
+            }
+        }
     }
     Ok(())
 }

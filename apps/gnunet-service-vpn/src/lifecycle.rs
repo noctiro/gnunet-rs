@@ -96,7 +96,7 @@ impl TunFact {
             LossCause::Capacity => ("Capacity", None),
             #[cfg(windows)]
             LossCause::SessionRestart => ("SessionRestart", None),
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "freebsd"))]
             LossCause::InterfaceMissing => ("InterfaceMissing", None),
         };
         Self {

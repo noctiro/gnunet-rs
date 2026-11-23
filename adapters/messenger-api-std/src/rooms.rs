@@ -42,6 +42,9 @@ impl<'a, E: crypto::Entropy, const N: usize> Api<'a, E, N> {
         let (index, room) = if let Some(i) = existing {
             let r = &self.rooms[i];
             if let Some(source) = r.source {
+                if r.frontier.is_some() {
+                    return Err(Fault::WouldBlock.into());
+                }
                 if r.closing_span.is_some() {
                     return Err(Fault::NotReady.into());
                 }
@@ -49,6 +52,9 @@ impl<'a, E: crypto::Entropy, const N: usize> Api<'a, E, N> {
                     return Err(Fault::StaleGeneration.into());
                 }
                 return Ok((i, r.room, source, epoch));
+            }
+            if r.frontier_required {
+                self.frontier_capacity()?;
             }
             (i, r.room)
         } else {
@@ -62,6 +68,8 @@ impl<'a, E: crypto::Entropy, const N: usize> Api<'a, E, N> {
                 room,
                 key,
                 source: None,
+                frontier: None,
+                frontier_required: false,
                 epoch: None,
                 signer: identity,
                 join: None,
@@ -148,10 +156,21 @@ impl<'a, E: crypto::Entropy, const N: usize> Api<'a, E, N> {
         room: Room<'a>,
         timeout: Duration,
     ) -> Result<Operation<'a>, Error> {
-        let (_, span) = self.admission(timeout)?;
+        self.frontier_clear(room)?;
         let (_, source, epoch) = self.live_source(room)?;
+        if !self.core.source_joined(source)? {
+            return Err(Fault::WouldBlock.into());
+        }
+        let (_, span) = self.protocol_admission(timeout, Intent::Synchronization)?;
         let operation = self.core.synchronize(source, span.logical)?;
-        self.record_job(room, source, epoch, operation, span, Intent::User)?;
+        self.record_job(
+            room,
+            source,
+            epoch,
+            operation,
+            span,
+            Intent::Synchronization,
+        )?;
         Ok(operation)
     }
     pub(crate) fn member(&self, room: Room<'a>) -> Result<MemberSession<'a>, Error> {
@@ -162,15 +181,34 @@ impl<'a, E: crypto::Entropy, const N: usize> Api<'a, E, N> {
         room: Room<'a>,
     ) -> Result<(usize, Source<'a>, native::Epoch<'a>, MemberSession<'a>), Error> {
         let (i, source, epoch) = self.live_source(room)?;
+        self.frontier_clear(room)?;
+        if !matches!(self.core.phase(room)?, RoomPhase::Open | RoomPhase::Entered) {
+            return Err(Fault::NotReady.into());
+        }
+        Ok((i, source, epoch, self.non_transitioning_member(i)?))
+    }
+    pub(crate) fn active_member_for_history(
+        &self,
+        index: usize,
+    ) -> Result<MemberSession<'a>, Error> {
+        if !matches!(
+            self.core.phase(self.rooms[index].room)?,
+            RoomPhase::Open | RoomPhase::Entered | RoomPhase::Synchronizing
+        ) {
+            return Err(Fault::NotReady.into());
+        }
+        self.non_transitioning_member(index)
+    }
+    fn non_transitioning_member(&self, index: usize) -> Result<MemberSession<'a>, Error> {
+        let row = &self.rooms[index];
         if self.changing.is_some()
-            || self.rooms[i].closing_span.is_some()
-            || self.rooms[i].close_after.is_some()
-            || self.rooms[i].join.is_some()
-            || !matches!(self.core.phase(room)?, RoomPhase::Open | RoomPhase::Entered)
+            || row.closing_span.is_some()
+            || row.close_after.is_some()
+            || row.join.is_some()
         {
             return Err(Fault::NotReady.into());
         }
-        Ok((i, source, epoch, self.member(room)?))
+        self.member(row.room)
     }
     /// Queue one actual typed public member message. Service/peer implicit
     /// kinds and raw encryption wrappers cannot bypass the real domain checks.
@@ -210,7 +248,9 @@ impl<'a, E: crypto::Entropy, const N: usize> Api<'a, E, N> {
                 span.logical,
             ) {
                 Ok(op) => op,
-                Err(domain::Error::Protocol(Fault::NotReady)) if self.core.room_flags(room)?.0 => {
+                Err(domain::Error::Protocol(Fault::NotReady))
+                    if self.core.room_capabilities(room)?.is_public() =>
+                {
                     self.core
                         .prepare_send(source, member, body, now, span.logical)?
                 }
@@ -340,14 +380,12 @@ impl<'a, E: crypto::Entropy, const N: usize> Api<'a, E, N> {
         let (_, source, epoch, member) = self.sending(room)?;
         let transcript = recipient != member;
         let needed = if transcript { 2 } else { 1 };
-        if self.free_jobs() < needed
-            || self
-                .core
-                .operations(room)?
-                .count()
-                .checked_add(needed)
-                .is_none_or(|n| n > self.limits.core.operations_per_room)
+        if needed > self.limits.operations.saturating_sub(2)
+            || needed > self.limits.core.operations_per_room.saturating_sub(2)
         {
+            return Err(Fault::Capacity.into());
+        }
+        if self.free_jobs() < needed || self.core.ordinary_operation_capacity(room)? < needed {
             return Err(Fault::WouldBlock.into());
         }
         self.next_job
@@ -606,8 +644,8 @@ impl<'a, E: crypto::Entropy, const N: usize> Api<'a, E, N> {
         self.record_job(room, source, epoch, operation, span, Intent::User)?;
         Ok(operation)
     }
-    /// Request the real original hash; an eventual Missing remains an actual
-    /// absence observation, never an arbitrary matching SEND completion.
+    /// Request the real original hash. A matching local absence can trigger a
+    /// separate signed network REQUEST by this room's original member.
     pub fn request_message(
         &mut self,
         room: Room<'a>,
@@ -624,11 +662,22 @@ impl<'a, E: crypto::Entropy, const N: usize> Api<'a, E, N> {
         hash: Hash,
         deadline: Deadline,
     ) -> Result<Operation<'a>, Error> {
-        let (now, span) = self.admission_bounded(deadline)?;
-        let (_, source, epoch) = self.live_source(room)?;
-        let operation = self.core.request_missing(source, hash, now, span.logical)?;
-        self.record_job(room, source, epoch, operation, span, Intent::User)?;
-        Ok(operation)
+        let (index, source, _) = self.live_source(room)?;
+        if !self.frontier_get_ready(index)? {
+            return Err(Fault::WouldBlock.into());
+        }
+        let required = self.core.is_required_dependency(source, &hash)?;
+        let (now, span) = if required {
+            self.protocol_admission_bounded(deadline, Intent::DependencyRequest)?
+        } else {
+            self.admission_bounded(deadline)?
+        };
+        let intent = if required {
+            Intent::DependencyRequest
+        } else {
+            Intent::User
+        };
+        self.admit_history_get(index, hash, span, now, intent)
     }
     /// Borrow actual cached content/tombstone. This schedules no retrieval.
     pub fn message(&self, room: Room<'a>, hash: &Hash) -> Result<MessageRef<'_, 'a>, Error> {
@@ -650,7 +699,7 @@ impl<'a, E: crypto::Entropy, const N: usize> Api<'a, E, N> {
         &'s self,
         member: MemberSession<'a>,
         hash: &Hash,
-        workspace: &'w mut HistoryWorkspace,
+        workspace: &'w mut HistoryWorkspace<'_>,
     ) -> Result<History<'s, 'w, 'a>, Error> {
         Ok(self.core.history(member, hash, workspace)?)
     }
@@ -690,6 +739,7 @@ impl<'a, E: crypto::Entropy, const N: usize> Api<'a, E, N> {
         }
         self.memberships.retain(|m| m.room != room);
         self.subscriptions.retain(|s| s.room != room);
+        self.retire_history_gets(room);
         Ok(())
     }
     /// Original LEAVE/CLOSE sequence under a single unchanged cleanup budget.
@@ -699,14 +749,14 @@ impl<'a, E: crypto::Entropy, const N: usize> Api<'a, E, N> {
         deadline: Deadline,
     ) -> Result<Closing<'a>, Error> {
         self.quiesce_room_bounded(room, deadline)?;
+        self.frontier_clear(room)?;
         let (now, span) = self.admission_bounded(deadline)?;
-        if self
-            .leases
-            .len()
-            .checked_add(self.reservations)
-            .and_then(|n| n.checked_add(2))
-            .is_none_or(|n| n > self.limits.operations)
+        if self.limits.operations.saturating_sub(2) < 2
+            || self.limits.core.operations_per_room.saturating_sub(2) < 2
         {
+            return Err(Fault::Capacity.into());
+        }
+        if self.free_jobs() < 2 || self.core.ordinary_operation_capacity(room)? < 2 {
             return Err(Fault::WouldBlock.into());
         }
         let (i, source, epoch) = self.live_source(room)?;
@@ -798,6 +848,9 @@ impl<'a, E: crypto::Entropy, const N: usize> Api<'a, E, N> {
                 continue;
             }
             self.sending(r.room)?;
+            if self.core.ordinary_operation_capacity(r.room)? == 0 {
+                return Err(Fault::WouldBlock.into());
+            }
             if self.leases.iter().any(|l| {
                 l.room == r.room
                     && self.core.operation_phase(l.operation).is_ok_and(|p| {

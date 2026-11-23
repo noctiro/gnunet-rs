@@ -263,6 +263,7 @@ impl Buffers {
             Err(cause) => return Err(report.fail(cause)),
         };
         let mut cache = cache;
+        let mut window = super::window::Window::default();
         let result = async {
             while let Some(request) = reader.next() {
                 lookup.during(std::future::ready(())).await?;
@@ -282,7 +283,16 @@ impl Buffers {
                 } else {
                     None
                 };
-                if cached.is_none() {
+                let buffered = cache.is_none()
+                    && window.select(&mut lookup, request, reader.ready_leaves())?;
+                if buffered {
+                    super::controlled(
+                        window.fetch(&mut lookup),
+                        report.authenticated,
+                        &mut control,
+                    )
+                    .await?;
+                } else if cached.is_none() {
                     lookup
                         .fetch_controlled(request, report.authenticated, &mut control)
                         .await?;
@@ -293,6 +303,7 @@ impl Buffers {
                 }
                 let bytes = match cached {
                     Some(length) => self.encoded.get(..length).ok_or(ProtocolError::Malformed)?,
+                    None if buffered => window.block()?,
                     None => lookup.block()?,
                 };
                 let length = bytes.len();
@@ -314,7 +325,11 @@ impl Buffers {
                     if let Some(store) = cache.as_deref_mut() {
                         store.cache(request.key().query, bytes)?;
                     }
-                    lookup.release();
+                    if buffered {
+                        window.release();
+                    } else {
+                        lookup.release();
+                    }
                 }
                 if let Some(chunk) = chunk {
                     let length = chunk.bytes().len() as u64;

@@ -139,7 +139,6 @@ struct Channel<'a> {
     channel: Option<cadet::Channel<'a>>,
     bounds: Bound,
     destroying: bool,
-    remote_closed: bool,
 }
 #[derive(Clone, Copy)]
 enum TxKind<'a> {
@@ -160,7 +159,6 @@ struct Received<'a> {
     peer: [u8; 32],
     cursor: usize,
     processed: bool,
-    needs_ack: bool,
     bounds: Bound,
 }
 /// Actual progress only. No event asserts NAT/TUN/route or Internet reachability.
@@ -256,7 +254,6 @@ pub struct Owner<'a, 'slots> {
     logical_at: Option<u64>,
     retry: Option<Pin<Box<Sleep>>>,
     cadet_input_hard: Option<Instant>,
-    vpn_input_hard: Option<Instant>,
     cadet_lost: bool,
     failures: Vec<Failure>,
     cursor: usize,
@@ -339,6 +336,9 @@ impl<'a, 'slots> Owner<'a, 'slots> {
         ] {
             Bound::after(now, d)?;
         }
+        // Validate business bounds before dependent arithmetic or reserving
+        // clock subscriptions and native DNS/VPN/CADET owners.
+        let core = Core::new(ids.core, pure, families)?;
         if limits.dns.requests < pure.requests
             || (sources.vpn.is_some() && limits.vpn.operations < pure.requests)
             || limits.dns.frame_bytes < pure.packet_bytes + 16
@@ -386,7 +386,7 @@ impl<'a, 'slots> Owner<'a, 'slots> {
             .map(|s| cadet::Client::new(ids.cadet, s, ids.ports, ids.channels, limits.cadet))
             .transpose()?;
         Ok(Self {
-            core: Core::new(ids.core, pure, families)?,
+            core,
             clock,
             subscription,
             revision: 0,
@@ -411,7 +411,6 @@ impl<'a, 'slots> Owner<'a, 'slots> {
             logical_at: None,
             retry: None,
             cadet_input_hard: None,
-            vpn_input_hard: None,
             cadet_lost: false,
             failures: reserve(pure.requests + 32)?,
             cursor: 0,
@@ -456,6 +455,11 @@ impl<'a, 'slots> Owner<'a, 'slots> {
     }
     fn source_lost(&mut self, stage: Stage) -> Result<(), Failure> {
         let source = self.source_mut(stage).take();
+        let transport = if stage == Stage::Pre {
+            self.retire_pre_source()
+        } else {
+            Ok(())
+        };
         let mut i = 0;
         while i < self.allocations.len() {
             let request = self.allocations[i].request;
@@ -470,10 +474,19 @@ impl<'a, 'slots> Owner<'a, 'slots> {
             }
         }
         self.callbacks.retain(|c| c.stage != stage);
-        if let Some((_, s)) = source {
-            self.core.source_stopped(s)?;
+        let stopped = if let Some((_, source)) = source {
+            self.core.source_stopped(source).map_err(Failure::from)
+        } else {
+            Ok(())
+        };
+        match (transport, stopped) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+            (Err(original), Err(cleanup)) => Err(Box::new(Failures {
+                original: Some(original),
+                cleanup: vec![cleanup],
+            })),
         }
-        Ok(())
     }
     fn delay(&mut self) -> Result<(), Failure> {
         if self.retry.is_none() {
@@ -519,25 +532,8 @@ impl<'a, 'slots> Owner<'a, 'slots> {
                         }
                     }
                 }
-                self.source_lost(stage)?;
-                self.dns(stage)?.reconnect()?;
-                return Ok(Some(Event::DnsLost { stage, cause }));
+                return self.recover_dns_source(stage, cause).map(Some);
             }
-        }
-        if self.vpn_input_hard.is_some_and(|at| native >= at) {
-            if let Some(client) = &mut self.vpn {
-                let _original = client.reconnect()?;
-            }
-            self.vpn_input_hard = None;
-            // Original VPN IO was physically retired before local interests.
-            // A prior allocation may still exist remotely; no revocation is claimed.
-            while let Some(row) = self.allocations.pop() {
-                match self.core.cancel(row.request) {
-                    Ok(()) | Err(Fault::Stale) => {}
-                    Err(error) => return Err(error.into()),
-                }
-            }
-            return Ok(Some(Event::Vpn));
         }
         if self.discovery_retry.is_some_and(|at| at <= native) {
             self.discovery_retry = None;
@@ -560,10 +556,8 @@ impl<'a, 'slots> Owner<'a, 'slots> {
                 }
             }
             let p = self.dns(stage)?.retire(dns::Cause::Deadline);
-            self.source_lost(stage)?;
-            self.dns(stage)?.reconnect()?;
             if let dns::Progress::Lost { cause, .. } = p {
-                return Ok(Some(Event::DnsLost { stage, cause }));
+                return self.recover_dns_source(stage, cause).map(Some);
             }
             return Err(Fault::Conflict.into());
         }
@@ -627,7 +621,6 @@ impl<'a, 'slots> Owner<'a, 'slots> {
             .chain(self.transmit.as_ref().map(|r| r.bounds.hard))
             .chain(self.received.as_ref().map(|r| r.bounds.hard))
             .chain(self.cadet_input_hard)
-            .chain(self.vpn_input_hard)
             .chain(self.discovery.map(|(_, b)| b.hard))
             .chain(self.leases.iter().map(|r| r.hard))
             .chain(self.discovery_retry)
@@ -662,7 +655,7 @@ impl<'a, 'slots> Owner<'a, 'slots> {
             Poll::Pending => Poll::Ready(Ok(sample.now.as_micros())),
         }
     }
-    fn maintain(&mut self, now: u64) -> Result<(), Failure> {
+    fn settle_cadet_loss(&mut self, now: u64) -> Result<(), Failure> {
         if self.cadet_lost {
             for c in self.channels.drain(..) {
                 match self.core.tunnel_stopped(c.tunnel, now) {
@@ -672,6 +665,10 @@ impl<'a, 'slots> Owner<'a, 'slots> {
             }
             self.cadet_lost = false;
         }
+        Ok(())
+    }
+    fn maintain(&mut self, now: u64) -> Result<(), Failure> {
+        self.settle_cadet_loss(now)?;
         self.leases
             .expire_canonical(now, |peer| self.core.withdraw_exit(peer))?;
         self.core.expire(now)?;
@@ -685,6 +682,9 @@ impl<'a, 'slots> Owner<'a, 'slots> {
             self.received = None;
             self.cadet_input_hard = None;
             self.cadet_lost = true;
+            // Physical retirement revokes the old tunnel authority before
+            // this same turn can select another PRE send or provider action.
+            self.settle_cadet_loss(now)?;
         }
         let mut i = 0;
         while i < self.allocations.len() {
@@ -720,6 +720,9 @@ impl<'a, 'slots> Owner<'a, 'slots> {
         Ok(())
     }
     fn providers(&mut self, now: u64) -> Result<Option<Event>, Failure> {
+        if let Some(event) = self.pre_receive(now)? {
+            return Ok(Some(event));
+        }
         if self.dht.is_some()
             && self.discovery.is_none()
             && self.discovery_retry.is_none_or(|at| Instant::now() >= at)
@@ -803,7 +806,7 @@ impl<'a, 'slots> Owner<'a, 'slots> {
                 }
             }
         }
-        self.pre_receive(now)
+        Ok(None)
     }
     fn work(&mut self, now: u64) -> Result<Option<Event>, Failure> {
         let Some(work) = self.core.next_work(now)? else {
@@ -842,7 +845,6 @@ impl<'a, 'slots> Owner<'a, 'slots> {
                         hard: lease.hard.min(control.hard),
                     },
                     destroying: false,
-                    remote_closed: false,
                 });
                 Ok(Some(Event::Admitted))
             }
@@ -853,7 +855,7 @@ impl<'a, 'slots> Owner<'a, 'slots> {
                 message,
                 expires,
             } => {
-                if self.transmit.is_some() {
+                if self.transmit.is_some() || self.received.is_some() {
                     return Ok(None);
                 }
                 let original = self
@@ -861,9 +863,7 @@ impl<'a, 'slots> Owner<'a, 'slots> {
                     .iter()
                     .find(|c| c.tunnel == tunnel)
                     .ok_or(Fault::Stale)?;
-                if original.remote_closed || original.destroying {
-                    // Retained input is the only authority left on a gone
-                    // channel; a pending Work cannot admit another send.
+                if original.destroying {
                     return Ok(None);
                 }
                 let request_hard = self
@@ -920,11 +920,6 @@ impl<'a, 'slots> Owner<'a, 'slots> {
                 };
                 if self.channels[i].destroying {
                     return Ok(None);
-                }
-                if self.channels[i].remote_closed {
-                    let row = self.channels.remove(i);
-                    self.core.tunnel_stopped(row.tunnel, now)?;
-                    return Ok(Some(Event::Cadet));
                 }
                 let Some(channel) = self.channels[i].channel else {
                     self.channels.remove(i);
@@ -1120,7 +1115,19 @@ impl<'a, 'slots> Owner<'a, 'slots> {
                 }
                 3 => {
                     if let Some(c) = &mut self.cadet {
-                        match c.poll(cx, None) {
+                        // Keep one original DATA delivery until classification and
+                        // its receive credit have settled on the same MQ.
+                        let progress = if self.received.is_some()
+                            || self
+                                .transmit
+                                .as_ref()
+                                .is_some_and(|tx| matches!(tx.kind, TxKind::ReceiveDone))
+                        {
+                            c.poll_output_guarded(cx, None, &mut || Ok(()))
+                        } else {
+                            c.poll(cx, None)
+                        };
+                        match progress {
                             Poll::Ready(r) => {
                                 Some(self.on_cadet(r?, self.clock.sample()?.now.as_micros())?)
                             }
@@ -1199,7 +1206,6 @@ impl<'a, 'slots> Owner<'a, 'slots> {
         self.channels.clear();
         self.transmit = None;
         self.received = None;
-        self.vpn_input_hard = None;
         self.native_alarm = None;
         self.logical_alarm = None;
         self.retry = None;

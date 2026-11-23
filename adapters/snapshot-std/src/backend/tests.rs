@@ -65,17 +65,17 @@ fn every_namespace_roundtrips_its_existing_envelope_and_actual_barrier_profile()
         assert!(loaded.created_directory());
         assert_eq!(loaded.generation(), 0);
         assert_eq!(loaded.namespace(), namespace);
-        let expected_barrier = if cfg!(windows) {
-            DirectorySync::Unavailable
-        } else {
-            DirectorySync::Synchronized
-        };
-        assert_eq!(loaded.directory_sync(), expected_barrier);
+        let root_barrier = Directory::open(&path)?.sync()?;
+        let parent_barrier = Directory::open(&scratch.0)?.sync()?;
+        assert_eq!(
+            loaded.directory_sync(),
+            root_barrier.combine(parent_barrier)
+        );
         assert!(loaded.into_body().is_empty());
         let first = store.commit(0, Zeroizing::new(b"public first body".to_vec()))?;
         assert_eq!(first.namespace(), namespace);
         assert_eq!(first.generation(), 1);
-        assert_eq!(first.directory_sync(), expected_barrier);
+        assert_eq!(first.directory_sync(), root_barrier);
         store.commit(1, Zeroizing::new(b"public replacement".to_vec()))?;
         let bytes = fs::read(path.join(namespace.image()))?;
         assert_eq!(&bytes[..8], namespace.magic());
@@ -92,18 +92,50 @@ fn every_namespace_roundtrips_its_existing_envelope_and_actual_barrier_profile()
 }
 
 #[test]
+fn snapshot_readback_uses_the_original_readonly_file_across_chunks() -> Result {
+    let scratch = Private::create()?;
+    let path = scratch.0.join("replay");
+    let namespace = Namespace::TransportTcp;
+    let limits = Limits::default();
+    let (mut store, _) = Store::open(namespace, &path, limits)?;
+    let mut body = Zeroizing::new(vec![42; 16_385]);
+    body[8192] = 17;
+    store.commit(0, body.clone())?;
+    let committed = store.image.as_ref().ok_or("missing committed file")?;
+    gnunet_native::filesystem::validate_readonly(&committed.file)?;
+    let identity = committed.identity;
+    drop(store);
+
+    let (mut reopened, loaded) = Store::open(namespace, &path, limits)?;
+    assert_eq!(loaded.into_body().as_slice(), body.as_slice());
+    let original = reopened.image.as_mut().ok_or("missing original file")?;
+    assert_eq!(original.identity, identity);
+    gnunet_native::filesystem::validate_readonly(&original.file)?;
+    use std::io::{Read, Seek, SeekFrom};
+    original.file.seek(SeekFrom::Start(0))?;
+    let mut header = [0; HEADER];
+    original.file.read_exact(&mut header)?;
+    body[16_384] ^= 1;
+    assert!(matches!(image::verify(&mut original.file, &header, &body),
+        Err(error) if error.stage == "readback-mismatch"));
+    Ok(())
+}
+
+#[test]
 fn complete_marker_never_grants_a_second_writer_the_creators_authority() -> Result {
     let scratch = Private::create()?;
     let path = scratch.0.join("identity");
     let (store, loaded) = Store::open(Namespace::Identity, &path, Limits::default())?;
     assert!(loaded.created_directory());
+    gnunet_native::filesystem::validate_readonly(&store.marker.file)?;
     match Store::open(Namespace::Identity, &path, Limits::default()) {
         Err(error) => assert_eq!(error.reason, Error::Conflict),
         Ok(_) => return Err("second writer admitted while original lease is held".into()),
     }
     drop(store);
-    let (_reopened, loaded) = Store::open(Namespace::Identity, &path, Limits::default())?;
+    let (reopened, loaded) = Store::open(Namespace::Identity, &path, Limits::default())?;
     assert!(!loaded.created_directory());
+    gnunet_native::filesystem::validate_readonly(&reopened.marker.file)?;
     Ok(())
 }
 

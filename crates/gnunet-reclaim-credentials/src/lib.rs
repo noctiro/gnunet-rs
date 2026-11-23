@@ -5,7 +5,7 @@
 #![forbid(unsafe_code)]
 use core::fmt;
 use gnunet_reclaim::{
-    AttributeList, AttributeType, Credential, CredentialType, Presentation, Sensitive,
+    AttributeType, Credential, CredentialType, Presentation, PresentationRequest, Sensitive,
 };
 use gnunet_types::Error as Fault;
 use gnunet_wire::official::AbsoluteTime;
@@ -307,10 +307,8 @@ impl fmt::Debug for Claims<'_> {
 /// Actual JWT plugin presentation: complete original bytes, without selective
 /// disclosure, parsing or verification. The library wrapper binds credential ID.
 /// This borrowed output can be copied once by the caller's bounded owned Pool.
-pub fn presentation<'a>(
-    credential: Credential<'a>,
-    _selected: AttributeList<'_>,
-) -> Result<Presentation<'a>, Failure> {
+pub fn presentation(request: PresentationRequest<'_>) -> Result<Presentation<'_>, Failure> {
+    let credential = request.credential();
     if credential.kind != CredentialType::JWT {
         return Err(Failure::credential(
             credential.kind,

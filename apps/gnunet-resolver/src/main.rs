@@ -50,7 +50,7 @@ fn main() -> ExitCode {
 fn execute(startup: gnunet_service_startup::ClientStartup) -> Result<(), Cause> {
     use gnunet_program_host::{
         logging::Logger,
-        program::{self, Defaults, Invocation, NlsDisabled, Preparation},
+        program::{self, Defaults, Invocation, Preparation},
         reporting::Reporter,
         shared_clock::SharedClock,
     };
@@ -62,11 +62,11 @@ fn execute(startup: gnunet_service_startup::ClientStartup) -> Result<(), Cause> 
     )?;
     let mut logger = Logger::new(b"gnunet-resolver", std::process::id(), false)?;
     let selection = options::Selection::new();
-    let preparation=program::prepare(config,Invocation {
+    let preparation=program::prepare_installed(config,Invocation {
         binary_name:b"gnunet-resolver",
         help: Some(b"Use the configured GNUnet Resolver for one hostname or -r/--reverse IP. Forward results include actual IPv4 and IPv6 addresses; reverse names are output as returned. Resolver construction and all query/queue/connection/callback/output work share one original five-second budget. Original output close has a separate one-second grace. Standard -c/-L/-l/-h/-v select actual configuration and diagnostics."),
         select_default_filename:true,defaults:Defaults::Native,
-    },selection.options(),std::env::args_os(),&program::Environment::capture(),&mut NlsDisabled,&mut logger,&clock,&mut io::stdout().lock(),&mut io::stderr().lock());
+    },selection.options(),std::env::args_os(),&program::Environment::capture(),&mut logger,&clock,&mut io::stdout().lock(),&mut io::stderr().lock());
     let reporter = Reporter::new(logger, clock.clone());
     #[cfg(unix)]
     if let Some(notice) = startup.notice {

@@ -281,10 +281,9 @@ impl Pump {
                                     self.wanted = size;
                                 }
                                 if self.read == self.wanted {
-                                    let raw = crate::core::helper_packet(&self.rx[..self.read])
-                                        .map_err(io::Error::other)?;
-                                    let packet = gnunet_vpn::packet::Packet::parse(raw)
-                                        .map_err(io::Error::other)?;
+                                    let packet =
+                                        crate::packet::decode_helper_packet(&self.rx[..self.read])
+                                            .map_err(io::Error::other)?;
                                     packet.validate_checksums().map_err(io::Error::other)?;
                                     if packet.protocol() != gnunet_vpn::packet::UDP
                                         || packet.ports().map_err(io::Error::other)?.0 != 53
@@ -295,7 +294,7 @@ impl Pump {
                                         )));
                                     }
                                     let id = tun.queue(
-                                        raw,
+                                        packet.bytes(),
                                         tokio::time::Instant::now() + Duration::from_secs(30),
                                     )?;
                                     self.write = Some(id);
@@ -333,7 +332,7 @@ impl Pump {
                                     return Poll::Ready(Ok(true));
                                 }
                                 let bytes = raw.len() + 8;
-                                crate::core::encode_helper(raw, &mut self.tx[..bytes])
+                                crate::packet::encode_checked_helper(packet, &mut self.tx[..bytes])
                                     .map_err(io::Error::other)?;
                                 self.out = Some(Output {
                                     bytes,
@@ -388,12 +387,14 @@ impl Pump {
         Poll::Pending
     }
     pub async fn run(self, tun: &mut AsyncTun) -> PumpReport {
-        self.run_guarded(tun, std::future::pending()).await
+        self.run_guarded(tun, std::future::pending(), |_| Poll::Ready(Ok(())))
+            .await
     }
     pub(super) async fn run_guarded(
         mut self,
         tun: &mut AsyncTun,
         guard: impl Future<Output = io::Result<()>>,
+        mut topology: impl FnMut(&mut Context<'_>) -> Poll<io::Result<()>>,
     ) -> PumpReport {
         let mut guard = std::pin::pin!(guard);
         loop {
@@ -406,6 +407,7 @@ impl Pump {
                 if let Poll::Ready(result) = guard.as_mut().poll(cx) {
                     return Poll::Ready(result.map(|()| false));
                 }
+                std::task::ready!(topology(cx))?;
                 self.step(cx, tun)
             })
             .await

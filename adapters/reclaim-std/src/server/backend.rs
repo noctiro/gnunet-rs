@@ -62,7 +62,7 @@ impl<'n, 'g> Server<'n, 'g> {
         let deadline = prepared.deadline;
         let now = self.last_now;
         match prepared.action {
-            Action::PublicKey { .. } | Action::Identifier | Action::Presentation { .. } => {
+            Action::PublicKey { .. } | Action::Identifier | Action::Presentation(_) => {
                 let source = match prepared.action {
                     Action::PublicKey { .. } => self.identity.clone(),
                     Action::Identifier => self.entropy.clone(),

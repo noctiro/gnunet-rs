@@ -17,13 +17,13 @@ const MAX_CONNECTIONS: usize = 4096;
 const MAX_NAME_UNITS: usize = 256;
 const IID_MANAGER: GUID = GUID::from_u128(0xc08956a2_1cd3_11d1_b1c5_00805fc1270e);
 
-// NetCon.h declares the class symbol in the SDK UUID library. The vtables below
-// follow its C interface order, including every unused slot before Rename.
+// NetCon.h declares this GUID as static data in the SDK UUID library, not a DLL
+// import. Resolve it from the final target's SDK instead of bundling it in the rlib.
 #[expect(
     unsafe_code,
     reason = "The Windows SDK declares this immutable class GUID in uuid.lib"
 )]
-#[link(name = "uuid")]
+#[link(name = "uuid", kind = "static", modifiers = "-bundle")]
 unsafe extern "C" {
     static CLSID_ConnectionManager: GUID;
 }

@@ -187,6 +187,8 @@ pub enum Diagnostic {
     /// Native accept failed; the listener remains owned. A raw EMFILE only
     /// changes the service suspension reason and is not logged as a warning.
     Accept(io::Error),
+    /// A Unix credential check refused only the original unadmitted stream.
+    Credentials(io::Error),
     /// Actual no-child refusal diagnostic.
     Spawn(Option<io::Error>),
     /// Actual finite host preparation refusal, before any child existed.
@@ -195,6 +197,14 @@ pub enum Diagnostic {
     Signal(LaunchError),
     /// Original native startup/bootstrap failure, distinct from process admission.
     Startup(LaunchError),
+    /// Native cleanup did not confirm unloading the original exited account profile.
+    #[cfg(windows)]
+    Profile {
+        /// Original child that held the loaded profile.
+        child: OriginalChild,
+        /// Cleanup failure or observation deadline, independent of the actual exit code.
+        outcome: gnunet_native::process::ProfileRetirement,
+    },
     /// A malformed/truncated/native-failed peer was logically retired. The
     /// self-stop requester's persisted descriptor remains in external State.
     Peer(framed::Error),
@@ -244,6 +254,8 @@ pub struct State<'scope, 'registry> {
     children: Vec<Child<'scope>>,
     services: Vec<ServiceId<'scope>>,
     pending_native: Option<Native<'scope>>,
+    #[cfg(windows)]
+    pending_account: Option<process::AccountPreparation>,
     spawn_outcome: Option<SpawnOutcome>,
     term_attempted: bool,
     native_waiting: bool,
@@ -309,6 +321,8 @@ impl<'scope, 'registry> State<'scope, 'registry> {
             children,
             services,
             pending_native: None,
+            #[cfg(windows)]
+            pending_account: None,
             spawn_outcome: None,
             term_attempted: false,
             native_waiting: false,
@@ -355,6 +369,10 @@ impl<'scope, 'registry> State<'scope, 'registry> {
         self.persisted.clear();
         self.timer = None;
         self.pending_timer = None;
+        #[cfg(windows)]
+        {
+            self.pending_account = None;
+        }
         report
     }
     /// One real consuming exit/resource observation retained independently from the

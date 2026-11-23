@@ -214,10 +214,17 @@ fn hello() -> gnunet_pils::HelloLimits {
     }
 }
 fn pils(path: &Path, value: u8) -> Result<gnunet_pils_host::Host<4096>, Failure> {
+    pils_with_profile(path, value, Profile::Reference029)
+}
+fn pils_with_profile(
+    path: &Path,
+    value: u8,
+    profile: Profile,
+) -> Result<gnunet_pils_host::Host<4096>, Failure> {
     let listener = pils_listener(path)?;
     let service = Service::new(
         MasterKey::from_seed([value; 32]),
-        Profile::Reference029,
+        profile,
         SystemClock.sample()?.now.as_micros(),
         hello(),
     )?;
@@ -1184,6 +1191,122 @@ fn comm_registration() -> Vec<u8> {
     b[12..].copy_from_slice(b"tcp\0");
     b
 }
+
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn original_communicator_keeps_addresses_across_derived_identities_and_final_feed()
+-> Result<(), Failure> {
+    let d = Directory::new()?;
+    let pp = d.0.join("pils");
+    let profile = Profile::configured(Some(b"reference-deterministic"), None)?;
+    let mut service = pils_with_profile(&pp, 17, profile)?;
+    let tr = UnixListener::bind(d.0.join("tr"))?;
+    let ps = UnixListener::bind(d.0.join("ps"))?;
+    let clock: Arc<dyn RuntimeClock> = Arc::new(Clock::new());
+    let mut instance = gnunet_pils::client::Instance::new();
+    let mut runtime = Runtime::new_service(
+        &mut instance,
+        ServicePorts {
+            pils: source(&pp, clock.clone())?,
+            clock,
+            journal: Journal::open_with_profiles(
+                d.0.join("journal"),
+                gnunet_transport_host::peerstore::HelloProfiles {
+                    managed: profile.hello(),
+                    discovery: profile.hello(),
+                },
+            )?,
+        },
+        Limits {
+            pils_profile: profile,
+            discovery_hello_profile: profile.hello(),
+            ..Limits::default()
+        },
+        Policies::default(),
+    )?;
+    let empty_peer = activated(&mut runtime, &mut service, &tr, &ps).await?;
+    let mut addresses = AddressObserver::default();
+    assert!(addresses.read(&service)?.is_empty());
+
+    let mut comm = UnixStream::connect(d.0.join("tr")).await?;
+    comm.write_all(&comm_registration()).await?;
+    let mut remove_a = frame(1201, 8);
+    remove_a[4..8].copy_from_slice(&1_u32.to_be_bytes());
+    let a = b"tcp://127.0.0.1:42".to_vec();
+    let b = b"tcp://127.0.0.1:43".to_vec();
+    let mut previous = empty_peer;
+    for (request, expected) in [
+        (local_address(1, b"tcp-127.0.0.1:42"), vec![a.clone()]),
+        (local_address(2, b"tcp-127.0.0.1:43"), vec![a, b.clone()]),
+        (remove_a, vec![b]),
+    ] {
+        // Every address mutation comes from the one registered connection.
+        comm.write_all(&request).await?;
+        let until = Instant::now() + Duration::from_secs(4);
+        loop {
+            tokio::time::advance(Duration::from_millis(25)).await;
+            let _event = step(&mut runtime, &mut service, &tr, &ps).await?;
+            assert!(
+                !communicator_eof(&comm)?,
+                "PILS address-derived identity change closed the original communicator"
+            );
+            let peer = *service.service().identity().public_key().as_bytes();
+            if peer != previous && runtime.identity() == Some(peer) {
+                let mut actual = addresses.read(&service)?;
+                actual.sort_unstable();
+                if actual == expected && runtime.report().pending_address_publications == 0 {
+                    previous = peer;
+                    break;
+                }
+            }
+            assert!(
+                Instant::now() < until,
+                "signed address transition stalled: expected {expected:?}, observed {:?}, report {:?}",
+                addresses.read(&service)?,
+                runtime.report()
+            );
+        }
+    }
+    assert_eq!(runtime.report().transport_connections, 1);
+    assert_eq!(runtime.report().pils_losses, 0);
+
+    // B still belongs to the original communicator. Observe the genuine empty
+    // update at the PILS provider as well as the TRANSPORT local-write milestone.
+    runtime.begin_shutdown(std::num::NonZeroU64::new(4_000_000).ok_or("drain budget")?)?;
+    let until = Instant::now() + Duration::from_secs(4);
+    let mut drained = false;
+    loop {
+        if drained {
+            service.poll_once(SystemClock.sample()?.now.as_micros())?;
+            tokio::task::yield_now().await;
+        } else if let Some(Progress::Drained {
+            local_empty_written,
+        }) = step(&mut runtime, &mut service, &tr, &ps).await?
+        {
+            assert!(local_empty_written);
+            drained = true;
+        }
+        if drained && communicator_eof(&comm)? && addresses.read(&service)?.is_empty() {
+            break;
+        }
+        assert!(Instant::now() < until, "final empty PILS FEED stalled");
+    }
+    assert_eq!(
+        *service.service().identity().public_key().as_bytes(),
+        empty_peer
+    );
+    assert_eq!(runtime.report().graceful_drains, 1);
+    runtime.close()?;
+    Ok(())
+}
+
+fn communicator_eof(stream: &UnixStream) -> io::Result<bool> {
+    match stream.try_read(&mut [0; 32]) {
+        Ok(bytes) => Ok(bytes == 0),
+        Err(error) if error.kind() == io::ErrorKind::WouldBlock => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn actual_partial_feed_keeps_original_revision_and_other_communicator_through_withdrawal()
 -> Result<(), Failure> {
@@ -1214,6 +1337,7 @@ async fn actual_partial_feed_keeps_original_revision_and_other_communicator_thro
     let peer = activated(&mut runtime, &mut service, &tr, &ps).await?;
     let mut a = UnixStream::connect(d.0.join("tr")).await?;
     a.write_all(&comm_registration()).await?;
+    let started = tokio::time::Instant::now();
     a.write_all(&local_address(0, b"tcp-127.0.0.1:42")).await?;
     let mut end = Instant::now() + Duration::from_secs(8);
     while runtime.report().address_publication_requests == 0 {
@@ -1225,6 +1349,7 @@ async fn actual_partial_feed_keeps_original_revision_and_other_communicator_thro
         );
         let _original = step(&mut runtime, &mut service, &tr, &ps).await?;
     }
+    assert!(started.elapsed() >= Duration::from_secs(3));
     for _ in 0..20 {
         let _original = step(&mut runtime, &mut service, &tr, &ps).await?;
     }
@@ -1235,6 +1360,7 @@ async fn actual_partial_feed_keeps_original_revision_and_other_communicator_thro
     b.write_all(&comm_registration()).await?;
     b.write_all(&local_address(0, b"tcp-127.0.0.1:43")).await?;
     drop(a);
+    end = Instant::now() + Duration::from_secs(8);
     let desired = vec![b"tcp://127.0.0.1:43".to_vec()];
     let mut observations = Vec::new();
     loop {
@@ -1560,7 +1686,8 @@ async fn graceful_shutdown_finishes_original_partial_then_empty_and_returns_orig
     let mut addresses = AddressObserver::default();
     let d = Directory::new()?;
     let pp = d.0.join("pils");
-    let mut service = pils(&pp, 17)?;
+    let profile = Profile::ReferenceDeterministic;
+    let mut service = pils_with_profile(&pp, 17, profile)?;
     let tr = UnixListener::bind(d.0.join("tr"))?;
     let ps = UnixListener::bind(d.0.join("ps"))?;
     let tracking = Clock::new();
@@ -1571,9 +1698,17 @@ async fn graceful_shutdown_finishes_original_partial_then_empty_and_returns_orig
         ServicePorts {
             pils: source(&pp, clock.clone())?,
             clock,
-            journal: Journal::open(d.0.join("journal"))?,
+            journal: Journal::open_with_profiles(
+                d.0.join("journal"),
+                gnunet_transport_host::peerstore::HelloProfiles {
+                    managed: profile.hello(),
+                    discovery: profile.hello(),
+                },
+            )?,
         },
         Limits {
+            pils_profile: profile,
+            discovery_hello_profile: profile.hello(),
             pils: gnunet_pils_host::client::Limits {
                 io_slice_bytes: 1,
                 ..Default::default()
@@ -1605,6 +1740,7 @@ async fn graceful_shutdown_finishes_original_partial_then_empty_and_returns_orig
     );
     let mut writes = Vec::new();
     let mut seen_original_set = false;
+    let mut seen_derived_peer = false;
     let until = Instant::now() + Duration::from_secs(8);
     loop {
         assert!(
@@ -1614,12 +1750,18 @@ async fn graceful_shutdown_finishes_original_partial_then_empty_and_returns_orig
         );
         let progress = step(&mut runtime, &mut service, &tr, &ps).await?;
         seen_original_set |= addresses.read(&service)? == vec![b"tcp://127.0.0.1:42".to_vec()];
+        seen_derived_peer |= *service.service().identity().public_key().as_bytes() != peer;
         match progress {
             Some(Progress::Pils(gnunet_pils_host::client::Progress::Written(w)))
                 if w.kind == gnunet_pils::client::OperationKind::Feed =>
             {
                 assert!(!w.canceled);
                 writes.push(w.operation);
+                if writes.len() == 2 {
+                    // Native completion and managed withdrawal are already
+                    // settled. A later clock error cannot replace the result.
+                    tracking.refuse(true);
+                }
             }
             Some(Progress::Drained {
                 local_empty_written,
@@ -1634,6 +1776,7 @@ async fn graceful_shutdown_finishes_original_partial_then_empty_and_returns_orig
         seen_original_set,
         "old immutable frame was not completed before FIFO empty"
     );
+    assert!(seen_derived_peer);
     assert_eq!(writes.len(), 2);
     assert_ne!(writes[0], writes[1]);
     assert_eq!(runtime.report().address_publication_requests, 2);

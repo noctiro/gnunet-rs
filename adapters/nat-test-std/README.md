@@ -53,8 +53,10 @@ Action owners are dropped before Resolver disconnect; cancellation, scheduling,
 disconnect and diagnostic failures remain independently reportable.
 
 - `gnunet-nat` accepts `--in/-i`, `--remote/-r`, `--section/-S`, `--stun/-s`,
-  `--tcp/-t`, `--udp/-u` and `--watch/-W`. STUN uses the same bound UDP socket and
-  forwards only matching current-epoch responses. Reversal intent is one-shot;
+  `--probe-stun/-P`, `--tcp/-t`, `--udp/-u` and `--watch/-W`. The STUN modes
+  use the bound UDP socket. `--stun` forwards incoming STUN packets, while
+  `--probe-stun` sends requests and forwards matching current-epoch responses.
+  Reversal intent is one-shot;
   reconnect does not replay it. Monitoring uses explicit fresh registration
   leases and preserves every queued write's original bounds.
 - `gnunet-nat-auto` accepts `--auto/-a`, `--section/-S`, `--tcp/-t`, `--udp/-u`
@@ -70,7 +72,7 @@ and [autoconfiguration](../../apps/gnunet-nat-auto/README.md) examples.
 
 `[nat-rust]` keys `TEST_TIMEOUT`, `SEND_TIMEOUT`, `SESSION_LIFETIME` and
 `STUN_REQUEST_TIMEOUT` bound work; durations must be finite and nonzero.
-`[nat] STUN_SERVERS` and `STUN_FREQUENCY` select STUN endpoints and refresh timing.
+`--probe-stun` requires `[nat] STUN_SERVERS`; `STUN_FREQUENCY` sets its interval.
 Native sockets use exclusive binding and suppress UDP connection-reset receives
 on Windows. Unix TCP listeners enable address reuse for restart.
 

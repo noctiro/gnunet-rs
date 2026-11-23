@@ -1,7 +1,7 @@
 //! Caller-driven original snapshot cursors and monitor credit/backpressure.
 //! These pure receipt methods must be called only by the actual native owner;
 //! queue/write completion grants no remote processing or persistence authority.
-use crate::inventory::{Budget, Lease, ReadPolicy};
+use crate::inventory::{Budget, Lease, ReadPolicy, ReadView};
 use crate::{Change, Core, Filter, Query, SecretKeyView, Snapshot, Zone};
 use alloc::{collections::VecDeque, rc::Rc};
 use core::{fmt, mem};
@@ -419,9 +419,8 @@ impl Driver {
                     row.label(),
                     Some(row),
                     ReadPolicy {
-                        filter: self.filter,
                         now,
-                        nickname: true,
+                        view: ReadView::Stream(self.filter),
                     },
                 )?;
                 if query.records()?.count() == 0 {
@@ -468,9 +467,8 @@ impl Driver {
                 changed.label,
                 changed.after,
                 ReadPolicy {
-                    filter: self.filter,
                     now,
-                    nickname: true,
+                    view: ReadView::Stream(self.filter),
                 },
             )?;
             if query.records()?.count() == 0 {
@@ -480,9 +478,8 @@ impl Driver {
                     changed.label,
                     changed.before,
                     ReadPolicy {
-                        filter: self.filter,
                         now,
-                        nickname: true,
+                        view: ReadView::Stream(self.filter),
                     },
                 )?;
                 if before.records()?.count() == 0 {

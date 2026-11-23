@@ -54,7 +54,7 @@ pub enum Action<'id> {
     ClientFrame {
         /// Original client/source generation.
         client: Client<'id>,
-        /// Original operation where applicable, absent for copy/iteration/offers.
+        /// Original operation, if established.
         operation: Option<Operation<'id>>,
         /// Complete original standard response bytes.
         bytes: Vec<u8>,
@@ -84,6 +84,8 @@ pub struct Effect<'id> {
     pub action: Action<'id>,
     pub(crate) admitted: bool,
     pub(crate) ordering: Ordering<'id>,
+    // Request ID reserved by a terminal reply for an accept that never attached.
+    pub(crate) standalone_request: Option<u32>,
 }
 /// Original native/local completion, independent of a remote semantic result.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

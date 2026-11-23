@@ -15,6 +15,11 @@ fixed body is72+data, ACCESS208, and AUTHORIZATION192. Exact decode rejects an
 unexplained fixed tail; decode_prefix preserves ignored fixed-body bytes. Text
 preserves original encoded bytes and first-NUL semantics separately.
 
+`carrier` derives the official CADET room port using the listener's byte order
+and frames messages in caller-provided storage. Relays keep the original
+signature and signed bytes and regenerate only unsigned outer padding under
+the channel's frame limit.
+
 ## Cryptographic operations
 
 Operations reuse `gnunet-crypto` and `gnunet-session-crypto`:
@@ -48,11 +53,11 @@ Operations reuse `gnunet-crypto` and `gnunet-session-crypto`:
   their sizeof(string) NUL. Actual MAC checks return a sealed MacChecked view.
 - ACCESS: actually transport key32 as an HPKE packet80 and verify the recovered
   key's original body HMAC before releasing the zeroizing key capability.
-- AUTHORIZATION outgoing: deterministic group-key nonce KDF, AEAD MAC and
-  HMAC using the transported new shared key, then the actual192-byte wire fields.
-  Received AUTHORIZATION cannot provide its omitted MAC and returns the explicit
-  AuthorizationMacOmitted failure. There is no fabricated zero MAC, extension,
-  receiver key-recovery guarantee or verified group transition.
+- AUTHORIZATION: deterministic group-key nonce KDF and exact192-byte producer
+  fields. Recovery reconstructs the omitted deterministic AEAD tag, checks the
+  carried HMAC under the recovered candidate key, and releases the zeroizing key
+  only after authentication. Room, member, group and event authority remain
+  with the consuming engine.
 - Epoch record236: derive key32 from handle-secret64 with ordered room64,
   epoch64, identifier32 and encrypt/decrypt shared key32 with nonce24/MAC16.
 - Encryption record624: derive from handle-secret64/room64, serialize the real
@@ -94,12 +99,19 @@ NAMESTORE storage outcomes remain outside the packed record cryptography.
 
 ## AUTHORIZATION constraint
 
-The AUTHORIZATION limitation is pinned to messenger_api_message.c:439-447
-(size),828-834 (encode),1187-1193 (decode),1439-1452 (HMAC),1945-1980 (decrypt)
-and messenger_api_message_kind.c:395-451 (producer). Size/encode/decode
-omit MAC16 while decrypt/HMAC require it. The outgoing producer computes
-that MAC for its local HMAC and then loses it on wire; matching that operation
-does not repair the upstream information loss.
+The selected C producer computes a detached AEAD tag, includes it in the
+shared-key-derived HMAC, and omits the tag from its192-byte transmission.
+The tag is deterministic from the wrapping group key, derived nonce and
+ciphertext. Rust reconstructs the original encryption/tag and verifies both
+ciphertext and carried HMAC in constant time before releasing a candidate key.
+No extra field, default tag or unauthenticated key is exposed.
+
+`open_authorization` requires the original wrapping group key.
+`verify_authorization` requires that key and the transported shared key;
+ordinary one-key `verify_mac` reports `GroupKeyRequired` for this body.
+These operations do not grant group/epoch membership or validate the sender's
+signature. The selected C receiver still passes its omitted tag to AEAD opening;
+Rust recovery does not repair that separate C receive path.
 
 ## Composition
 
@@ -107,8 +119,6 @@ The [Messenger core](../gnunet-messenger-core/README.md) owns room, membership,
 epoch and DAG transitions. The [native client API](../../adapters/messenger-api-std/README.md)
 composes these operations with service clients; the
 [service host](../../adapters/messenger-std/README.md) owns routing and persistence.
-
-Checked Message/Short fields are sealed behind getters so callers cannot replace padding and invalidate original hash bounds. This proves no signature, encryption, room/group state or C interoperability.
 
 ## Native layout profiles
 

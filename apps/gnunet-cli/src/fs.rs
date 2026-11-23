@@ -15,11 +15,14 @@ mod publication;
 mod publication_options;
 mod publication_task;
 mod publish;
+pub(crate) use publish::run_official as run_publish;
 mod search;
+pub(crate) use search::run_official as run_search;
 mod search_export;
 mod search_probe;
 mod search_task;
 mod service;
+pub(crate) mod standalone;
 mod stop;
 mod task;
 mod tree;
@@ -201,15 +204,15 @@ fn execute(
             )?;
             writeln!(
                 out,
-                "fs publish-keywords <datastore-socket> <KSK-URI> <target-URI> [timeout-seconds] [-m TYPE:VALUE]..."
+                "fs publish-keywords <datastore-socket> <KSK-URI> <target-URI> [timeout-seconds] [-m TYPE:VALUE]... [--metadata-compression never|adaptive|always]"
             )?;
             writeln!(
                 out,
-                "fs publish-namespace <datastore-socket> <raw32namespace-seed-file> <identifier> <update-or-empty> <target-URI> [timeout-seconds] [-m TYPE:VALUE]..."
+                "fs publish-namespace <datastore-socket> <raw32namespace-seed-file> <identifier> <update-or-empty> <target-URI> [timeout-seconds] [-m TYPE:VALUE]... [--metadata-compression never|adaptive|always]"
             )?;
             writeln!(
                 out,
-                "fs namespace-publish <datastore-socket> <key-file> <graphdir> <identifier> <target-URI> [--update label] [--timeout seconds] [-m TYPE:VALUE]..."
+                "fs namespace-publish <datastore-socket> <key-file> <graphdir> <identifier> <target-URI> [--update label] [--timeout seconds] [-m TYPE:VALUE]... [--metadata-compression never|adaptive|always]"
             )?;
             writeln!(
                 out,
@@ -270,15 +273,15 @@ fn execute(
             )?;
             writeln!(
                 out,
-                "fs publish-task-keywords <new-taskdir> <KSK-uri> <target-uri>"
+                "fs publish-task-keywords <new-taskdir> <KSK-uri> <target-uri> [-m TYPE:VALUE]... [--metadata-compression never|adaptive|always]"
             )?;
             writeln!(
                 out,
-                "fs publish-task-namespace <new-taskdir> <key-file> <identifier> <update-or-empty> <target-uri> [-m TYPE:VALUE]..."
+                "fs publish-task-namespace <new-taskdir> <key-file> <identifier> <update-or-empty> <target-uri> [-m TYPE:VALUE]... [--metadata-compression never|adaptive|always]"
             )?;
             writeln!(
                 out,
-                "fs publish-task-managed-namespace <new-taskdir> <key-file> <graphdir> <identifier> <target-uri> [--update label] [-m TYPE:VALUE]..."
+                "fs publish-task-managed-namespace <new-taskdir> <key-file> <graphdir> <identifier> <target-uri> [--update label] [-m TYPE:VALUE]... [--metadata-compression never|adaptive|always]"
             )?;
             writeln!(
                 out,

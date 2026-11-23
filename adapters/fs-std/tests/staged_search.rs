@@ -5,15 +5,18 @@
     clippy::panic_in_result_fn,
     reason = "Fallible search tests assert original native frames and immutable source bindings"
 )]
-use gnunet_crypto::{EddsaPublicKey, gns::EdkeySecret};
-use gnunet_fs::{Content, Namespace, Uri, client::Instance, ublock};
+use gnunet_crypto::{EddsaPublicKey, gns::EdkeySecret, hash512};
+use gnunet_fs::{Content, Keyword, Keywords, Namespace, Uri, client::Instance, ublock};
 use gnunet_fs_host::{
+    durable::store,
     ipc,
     search::{
         Error, Limits, Options, Session, Step,
         observation::{Observation, Staged},
+        task::{Control, Event, StopReason, Task},
     },
 };
+use gnunet_service_runtime::local::Stream;
 use gnunet_types::{AbsoluteTime, Error as ProtocolError};
 use gnunet_wire::official::fs::{BlockType, ClientPut, Request, Response};
 use std::{
@@ -23,10 +26,13 @@ use std::{
     time::Duration,
 };
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
+    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::{UnixListener, UnixStream},
     time::{Instant, sleep, timeout},
 };
+#[path = "support/local_peer.rs"]
+mod local_peer;
+use local_peer::{Listener, Temporary};
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 const WAIT: Duration = Duration::from_secs(5);
 struct Socket(PathBuf);
@@ -91,6 +97,13 @@ async fn send(
     assert!(
         matches!(Request::decode(&request)?,Request::Search(search) if search.query==query&&search.block_type==BlockType::UBLOCK&&search.options==1)
     );
+    reply(stream, body, expiry).await
+}
+async fn reply(
+    stream: &mut (impl AsyncWrite + Unpin),
+    body: &[u8],
+    expiry: AbsoluteTime,
+) -> TestResult {
     let response = Response::Put(ClientPut {
         block_type: BlockType::UBLOCK,
         expiration: expiry,
@@ -102,6 +115,46 @@ async fn send(
     let mut bytes = vec![0; response.encoded_len()?];
     response.encode(&mut bytes)?;
     stream.write_all(&bytes).await?;
+    Ok(())
+}
+async fn search_frame(stream: &mut (impl AsyncRead + Unpin)) -> TestResult<([u8; 64], Vec<u8>)> {
+    let mut header = [0; 4];
+    stream.read_exact(&mut header).await?;
+    let length = usize::from(u16::from_be_bytes([header[0], header[1]]));
+    if length < 112 {
+        return Err("short actual SEARCH".into());
+    }
+    let mut frame = vec![0; length];
+    frame[..4].copy_from_slice(&header);
+    stream.read_exact(&mut frame[4..]).await?;
+    let Request::Search(search) = Request::decode(&frame)? else {
+        return Err("expected actual SEARCH".into());
+    };
+    assert_eq!(search.block_type, BlockType::UBLOCK);
+    assert_eq!(search.options, 1);
+    assert_eq!(search.anonymity, 1);
+    assert_eq!(search.target, [0; 32]);
+    Ok((search.query, search.seen.to_vec()))
+}
+async fn search_pair(
+    listener: &Listener,
+    queries: [[u8; 64]; 2],
+) -> TestResult<[(Stream, Vec<u8>); 2]> {
+    let (mut first, _) = listener.accept().await?;
+    let a = search_frame(&mut first).await?;
+    let (mut second, _) = listener.accept().await?;
+    let b = search_frame(&mut second).await?;
+    if [a.0, b.0] == queries {
+        Ok([(first, a.1), (second, b.1)])
+    } else if [b.0, a.0] == queries {
+        Ok([(second, b.1), (first, a.1)])
+    } else {
+        Err("unexpected original query pair".into())
+    }
+}
+async fn closed(stream: &mut (impl AsyncRead + Unpin)) -> TestResult {
+    let mut end = [0];
+    assert_eq!(stream.read(&mut end).await?, 0);
     Ok(())
 }
 async fn stage<F, const N: usize>(session: &mut Session<'_, F, N>) -> Result<(), Error>
@@ -152,6 +205,260 @@ impl Stored {
             observed_at: self.observed_at,
         }
     }
+}
+
+#[test]
+fn mandatory_search_recovers_after_repeated_service_disconnects() -> TestResult {
+    runtime()?.block_on(async {
+        let temporary = Temporary::new()?;
+        let socket = temporary.0.join("fs.sock");
+        let listener = Listener::bind(&socket).await?;
+        let source = ipc::EndpointSource::unix(socket);
+        let policy = options(&source)?;
+        let labels: [&[u8]; 2] = [b"recovery-required-a", b"recovery-required-b"];
+        let terms = [
+            Keyword::new(labels[0], true)?,
+            Keyword::new(labels[1], true)?,
+        ];
+        let content = Content {
+            key: [0x31; 64],
+            query: [0x32; 64],
+            size: 45,
+        };
+        let mut queries = [[0; 64]; 2];
+        let mut blocks = Vec::new();
+        let mut buffer = vec![0; 4096];
+        for (index, label) in labels.into_iter().enumerate() {
+            let publisher = ublock::Publisher::keyword(label, policy.block)?;
+            queries[index] = *publisher.context().query();
+            let block = publisher.seal(b"", content.uri(), None, &mut buffer)?;
+            blocks.push(block.bytes().to_vec());
+        }
+        let peer = async {
+            let [(left, a), (right, b)] = search_pair(&listener, queries).await?;
+            assert!(a.is_empty() && b.is_empty());
+            drop((left, right));
+
+            let [(mut left, a), (right, b)] = search_pair(&listener, queries).await?;
+            assert!(a.is_empty() && b.is_empty());
+            reply(&mut left, &blocks[0], AbsoluteTime::NEVER).await?;
+            drop((left, right));
+
+            let [(mut left, a), (mut right, b)] = search_pair(&listener, queries).await?;
+            assert_eq!(a, hash512(&blocks[0]));
+            assert!(b.is_empty());
+            reply(&mut right, &blocks[1], AbsoluteTime::NEVER).await?;
+            closed(&mut left).await?;
+            closed(&mut right).await
+        };
+        let mut identities = [Instance::new(), Instance::new()];
+        let mut session = Session::<_, 4>::new(
+            Uri::Keywords(Keywords::new(&terms)?),
+            &mut identities,
+            || source.duplicate(),
+            policy,
+        )?;
+        let search = async {
+            let mut delays = [Vec::new(), Vec::new()];
+            let mut pending = None;
+            loop {
+                match session.drive(None).await? {
+                    Step::Native {
+                        query,
+                        step: ipc::Step::Retry { retry_after, .. },
+                    } => delays[query.index()].push(retry_after),
+                    Step::Pending { result } => {
+                        assert!(pending.replace(result).is_none());
+                        assert_eq!(session.result(result).ok_or("missing pending result")?.mandatory_missing(), 1);
+                    }
+                    Step::Result { result } => {
+                        assert_eq!(pending, Some(result));
+                        let record = session.result(result).ok_or("missing recovered result")?;
+                        assert_eq!(record.matched_queries().len(), 2);
+                        assert!(matches!(record.uri(policy.block.uri)?, Uri::Content(found) if found == content));
+                        break;
+                    }
+                    Step::Rejected { cause, .. } => return Err(cause.into()),
+                    Step::Failed { cause, .. } => return Err(cause.into()),
+                    _ => {}
+                }
+            }
+            assert_eq!(delays[0], [Duration::ZERO, Duration::ZERO]);
+            assert_eq!(delays[1], [Duration::ZERO, Duration::from_millis(1)]);
+            session.cancel()?;
+            Ok::<_, Box<dyn std::error::Error>>(())
+        };
+        timeout(WAIT, async { tokio::try_join!(search, peer) }).await??;
+        Ok(())
+    })
+}
+
+#[test]
+fn restored_journal_seeds_each_first_search_with_only_its_own_signed_block() -> TestResult {
+    runtime()?.block_on(async {
+        let temporary = Temporary::new()?;
+        let socket = temporary.0.join("fs.sock");
+        let listener = Listener::bind(&socket).await?;
+        let source = ipc::EndpointSource::unix(socket);
+        let policy = options(&source)?;
+        let labels: [&[u8]; 2] = [b"prior-required-a", b"prior-required-b"];
+        let terms = [
+            Keyword::new(labels[0], true)?,
+            Keyword::new(labels[1], true)?,
+        ];
+        let uri = Uri::Keywords(Keywords::new(&terms)?);
+        let content = Content {
+            key: [0x71; 64],
+            query: [0x72; 64],
+            size: 41,
+        };
+        let mut blocks = Vec::new();
+        let mut queries = [[0; 64]; 2];
+        for (index, label) in labels.into_iter().enumerate() {
+            let publisher = ublock::Publisher::keyword(label, policy.block)?;
+            queries[index] = *publisher.context().query();
+            let mut buffer = vec![0; 4096];
+            blocks.push(
+                publisher
+                    .seal(b"", content.uri(), None, &mut buffer)?
+                    .bytes()
+                    .to_vec(),
+            );
+        }
+        let hashes = [hash512(&blocks[0]), hash512(&blocks[1])];
+        assert_ne!(hashes[0], hashes[1]);
+        assert_ne!(hashes, queries);
+        let path = temporary.0.join("task");
+        let mut task = Task::create(&path, uri, policy, Default::default())?;
+        let first_peer = async {
+            let [(mut left, a), (mut right, b)] = search_pair(&listener, queries).await?;
+            assert!(a.is_empty() && b.is_empty());
+            reply(&mut left, &blocks[0], AbsoluteTime::NEVER).await?;
+            reply(&mut right, &blocks[1], AbsoluteTime::NEVER).await?;
+            closed(&mut left).await?;
+            closed(&mut right).await
+        };
+        let mut pending = false;
+        let first_run = task.run(
+            source.duplicate()?,
+            policy.deadline,
+            |progress, event| match event {
+                Event::Live {
+                    step: Step::Pending { .. },
+                    record: Some(record),
+                    ..
+                } => {
+                    assert_eq!(progress.new_observations, 1);
+                    assert_eq!(record.mandatory_missing(), 1);
+                    pending = true;
+                    Control::Continue
+                }
+                Event::Live {
+                    step: Step::Result { .. },
+                    record: Some(record),
+                    ..
+                } => {
+                    assert!(pending);
+                    assert_eq!(progress.new_observations, 2);
+                    assert_eq!(record.matched_queries().len(), 2);
+                    Control::Pause
+                }
+                _ => Control::Continue,
+            },
+        );
+        let (paused, ()) = timeout(WAIT, async {
+            tokio::try_join!(
+                async { first_run.await.map_err(|e| e as Box<dyn std::error::Error>) },
+                first_peer
+            )
+        })
+        .await??;
+        assert_eq!(paused.reason, StopReason::CallerPause);
+        assert_eq!(paused.progress.recorded_observations, 2);
+        assert!(paused.query_failures.is_empty());
+        drop(task);
+
+        // Reopen the real journal: the normal runner reauthenticates its records
+        // before it creates either original query's first ordinary SEARCH.
+        let mut task = Task::open(&path, store::Limits::default())?;
+        let second_peer = async {
+            let [(mut left, a), (mut right, b)] = search_pair(&listener, queries).await?;
+            assert_eq!(a.as_slice(), hashes[0].as_slice());
+            assert_eq!(b.as_slice(), hashes[1].as_slice());
+            reply(&mut left, &blocks[0], AbsoluteTime::NEVER).await?;
+            reply(&mut right, &blocks[1], AbsoluteTime::NEVER).await?;
+            closed(&mut left).await?;
+            closed(&mut right).await
+        };
+        let mut restored = false;
+        let mut ignored = [false; 2];
+        let mut aggregate_ignored = false;
+        let resumed_run = task.run(
+            source.duplicate()?,
+            options(&source)?.deadline,
+            |progress, event| {
+                assert_eq!(progress.new_observations, 0);
+                assert_eq!(progress.new_visible_results, 0);
+                match event {
+                    Event::Restored { record, .. } => {
+                        assert_eq!(progress.replayed_observations, 2);
+                        assert_eq!(record.matched_queries().len(), 2);
+                        restored = true;
+                    }
+                    Event::Live {
+                        step:
+                            Step::Native {
+                                query,
+                                step: ipc::Step::Ignored,
+                            },
+                        record: None,
+                        ..
+                    } => {
+                        assert!(restored);
+                        assert!(!ignored[query.index()]);
+                        ignored[query.index()] = true;
+                        if ignored == [true; 2] {
+                            return Control::Pause;
+                        }
+                    }
+                    Event::Live {
+                        step: Step::Ignored,
+                        ..
+                    } => {
+                        aggregate_ignored = true;
+                        return Control::Pause;
+                    }
+                    _ => {}
+                }
+                Control::Continue
+            },
+        );
+        let (resumed, ()) = timeout(WAIT, async {
+            tokio::try_join!(
+                async {
+                    resumed_run
+                        .await
+                        .map_err(|e| e as Box<dyn std::error::Error>)
+                },
+                second_peer
+            )
+        })
+        .await??;
+        assert!(
+            !aggregate_ignored,
+            "prior block reached aggregate dedup instead of native dedup"
+        );
+        assert!(restored && ignored == [true; 2]);
+        assert_eq!(resumed.reason, StopReason::CallerPause);
+        assert_eq!(resumed.progress.replayed_observations, 2);
+        assert_eq!(resumed.progress.recorded_observations, 2);
+        assert_eq!(resumed.progress.new_observations, 0);
+        assert!(resumed.query_failures.is_empty());
+        drop(task);
+        let reopened = Task::open(&path, store::Limits::default())?;
+        assert_eq!(reopened.status().recorded_observations, 2);
+        Ok(())
+    })
 }
 
 #[test]

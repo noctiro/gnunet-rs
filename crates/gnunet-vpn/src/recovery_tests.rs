@@ -68,6 +68,25 @@ fn retained_owned_routes_require_fresh_verification() -> Result<(), Error> {
     engine.route_reverified(verification.routing)?;
     assert!(engine.tun_ready(replacement)?);
     assert_eq!(engine.route_state(replacement)?, RouteState::Present);
+
+    engine.tun_lost(replacement, Error::Io)?;
+    let replacement = engine.rebind_tun_same_interface(replacement)?;
+    let restoration = engine.routing_restoration_request(replacement)?;
+    assert_eq!(restoration.action, RouteAction::Restore);
+    assert_eq!(
+        engine.route_restored(restoration.routing),
+        Err(Error::NotReady)
+    );
+    engine.routing_queued(restoration.routing)?;
+    assert_eq!(
+        engine.route_reverified(restoration.routing),
+        Err(Error::PermissionDenied)
+    );
+    assert!(!engine.tun_ready(replacement)?);
+    engine.route_restored(restoration.routing)?;
+    assert!(engine.tun_ready(replacement)?);
+    assert_eq!(engine.route_state(replacement)?, RouteState::Present);
+
     let cleanup = engine.route_cleanup_request(replacement)?;
     engine.routing_queued(cleanup.routing)?;
     engine.route_removed(cleanup.routing)?;

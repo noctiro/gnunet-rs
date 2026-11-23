@@ -54,6 +54,7 @@ pub(crate) struct Union {
     limits: Limits,
     mode: ResultMode,
     options: wire::Options,
+    minimum_shared: u8,
     role: Role,
     phase: Phase,
     active: bool,
@@ -78,6 +79,7 @@ pub(crate) struct Union {
     offers: Option<(u64, usize)>,
     peel_pending: Option<(u64, i8)>,
     full_cursor: usize,
+    full_shared: u8,
     full_request_sent: bool,
     full_peer_done: bool,
     full_local_done: bool,
@@ -113,8 +115,8 @@ impl Union {
         allowance: usize,
     ) -> Result<Self, Error> {
         mode.validate(crate::OperationType::Union)?;
-        if options.force_delta != 0 && options.force_full != 0 {
-            return Err(Error::InvalidInput);
+        if !Self::supports_local_options(options, snapshot.len())? {
+            return Err(Error::Unsupported);
         }
         let membership_bytes = snapshot.metadata_bytes()?;
         let mut growth = Growth::new(allowance);
@@ -147,6 +149,7 @@ impl Union {
             limits,
             mode,
             options,
+            minimum_shared: Self::configured_minimum_shared(options),
             role,
             phase: Phase::Starting,
             active: false,
@@ -171,6 +174,7 @@ impl Union {
             offers: None,
             peel_pending: None,
             full_cursor: 0,
+            full_shared: 0,
             full_request_sent: false,
             full_peer_done: false,
             full_local_done: false,
@@ -319,6 +323,24 @@ impl Union {
     fn lookup(&self, h: &[u8; 64]) -> Result<usize, usize> {
         self.entries.binary_search_by(|e| e.body.hash.cmp(h))
     }
+    pub(crate) fn supports_local_options(
+        options: wire::Options,
+        local_count: usize,
+    ) -> Result<bool, Error> {
+        if options.force_delta != 0 && options.force_full != 0 {
+            return Err(Error::InvalidInput);
+        }
+        let minimum_shared = Self::configured_minimum_shared(options);
+        Ok(minimum_shared == 0
+            || (options.force_delta == 0 && local_count >= usize::from(minimum_shared)))
+    }
+    fn configured_minimum_shared(options: wire::Options) -> u8 {
+        if options.byzantine != 0 {
+            options.byzantine_lower_bound
+        } else {
+            0
+        }
+    }
     fn new_ibf(&mut self, order: u8, salt: u32, decode: bool) -> Result<(), Error> {
         if self.rounds >= self.limits.rounds {
             return Err(Error::Capacity);
@@ -403,6 +425,11 @@ impl Union {
             return Err(Error::Capacity);
         }
         if let Ok(i) = known {
+            // Remote-only entries start with this bit set. A clear bit here
+            // means that this is the first peer receipt of an original member.
+            if full && !self.entries[i].remote {
+                self.full_shared = self.full_shared.saturating_add(1);
+            }
             self.entries[i].remote = true;
         } else {
             if !self.out.room() {
@@ -467,9 +494,7 @@ impl Union {
                 set_size,
                 data,
             } if self.phase == Phase::ExpectStrata => {
-                if self.options.byzantine != 0
-                    && set_size < u64::from(self.options.byzantine_lower_bound)
-                {
+                if set_size < u64::from(self.minimum_shared) {
                     return Err(Error::Malformed);
                 }
                 let remote = if compressed {
@@ -497,7 +522,7 @@ impl Union {
                 buckets,
                 ..
             } if matches!(self.phase, Phase::ExpectIbf | Phase::Passive) => {
-                if self.options.force_full != 0 {
+                if self.options.force_full != 0 || self.minimum_shared != 0 {
                     return Err(Error::Unsupported);
                 }
                 if self.build.is_some() || self.offers.is_some() {
@@ -657,7 +682,7 @@ impl Union {
                     // set instead of reinterpreting that response as missing-only.
                     self.phase = Phase::FullMutualFirst;
                     self.full_cursor = 0;
-                } else if self.mode == ResultMode::Symmetric {
+                } else if self.mode == ResultMode::Symmetric || self.minimum_shared != 0 {
                     // Exactly one reciprocal request while the evaluator is
                     // still EXPECT_IBF. Receive its full set before fulfilling
                     // the original requested set, so C cannot close on our DONE
@@ -675,53 +700,45 @@ impl Union {
                 }
                 Ok(true)
             }
-            PeerMessage::UnionFullDone if self.phase == Phase::ExpectIbf => {
+            PeerMessage::UnionFullDone
+                if matches!(
+                    self.phase,
+                    Phase::ExpectIbf
+                        | Phase::FullCounterReceive
+                        | Phase::FullMutualFirst
+                        | Phase::FullMutualWaiting
+                        | Phase::FullWaiting
+                ) =>
+            {
                 if self.options.force_delta != 0 {
                     return Err(Error::Unsupported);
                 }
-                if self.full_peer_done {
+                if self.full_peer_done || self.full_shared < self.minimum_shared {
                     return Err(Error::Malformed);
                 }
-                self.full_peer_done = true;
-                self.phase = Phase::FullReturn;
-                self.full_cursor = 0;
-                Ok(true)
-            }
-            PeerMessage::UnionFullDone if self.phase == Phase::FullCounterReceive => {
-                if self.full_peer_done {
-                    return Err(Error::Malformed);
+                match self.phase {
+                    Phase::ExpectIbf => {
+                        self.phase = Phase::FullReturn;
+                        self.full_cursor = 0;
+                    }
+                    Phase::FullCounterReceive => {
+                        self.phase = Phase::FullCounterReturn;
+                        self.full_cursor = 0;
+                    }
+                    // Our independent response may still be unsent or partial.
+                    Phase::FullMutualFirst => {}
+                    Phase::FullMutualWaiting => {
+                        self.phase = Phase::FullMutualResults;
+                        self.full_cursor = 0;
+                    }
+                    Phase::FullWaiting => {
+                        // Original output debt remains separate from peer DONE.
+                        self.phase = Phase::Done;
+                        self.protocol = true;
+                    }
+                    _ => return Err(Error::Stale),
                 }
                 self.full_peer_done = true;
-                self.phase = Phase::FullCounterReturn;
-                self.full_cursor = 0;
-                Ok(true)
-            }
-            PeerMessage::UnionFullDone if self.phase == Phase::FullMutualFirst => {
-                if self.full_peer_done {
-                    return Err(Error::Malformed);
-                }
-                // Record complete original peer data, but our independent full
-                // response may still be unsent/partial. No protocol success yet.
-                self.full_peer_done = true;
-                Ok(true)
-            }
-            PeerMessage::UnionFullDone if self.phase == Phase::FullMutualWaiting => {
-                if self.full_peer_done {
-                    return Err(Error::Malformed);
-                }
-                self.full_peer_done = true;
-                self.phase = Phase::FullMutualResults;
-                self.full_cursor = 0;
-                Ok(true)
-            }
-            PeerMessage::UnionFullDone if self.phase == Phase::FullWaiting => {
-                if self.full_peer_done {
-                    return Err(Error::Malformed);
-                }
-                self.full_peer_done = true;
-                // Actual original output debt remains separate from peer DONE.
-                self.phase = Phase::Done;
-                self.protocol = true;
                 Ok(true)
             }
             PeerMessage::UnionDone if self.phase == Phase::Passive => {
@@ -841,11 +858,13 @@ impl Union {
                 self.remote_strata = None;
                 self.strata = None;
                 let full = self.options.force_full != 0
+                    || self.minimum_shared != 0
                     || (self.options.force_delta == 0
                         && self.mode != ResultMode::Symmetric
                         && (n > self.snapshot.len() as u64 / 4 || self.remote_size == 0));
                 if full {
                     if self.mode == ResultMode::Symmetric
+                        || self.minimum_shared != 0
                         || (self.snapshot.len() as u64 > self.remote_size && self.remote_size != 0)
                     {
                         // The initiator may legally request the full set from

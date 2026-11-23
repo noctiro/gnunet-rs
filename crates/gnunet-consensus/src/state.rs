@@ -101,6 +101,9 @@ impl Pool {
         };
         Ok((hash, found))
     }
+    pub fn find(&self, raw: &[u8], abi: Abi) -> Result<Option<u32>, Error> {
+        Ok(self.location(raw, abi)?.1.ok())
+    }
     fn insert_owned(
         &mut self,
         data: Vec<u8>,

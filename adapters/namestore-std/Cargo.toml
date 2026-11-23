@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 [dependencies]
+gnunet-config.workspace = true
 gnunet-namestore = { workspace = true, features = ["alloc"] }
 gnunet-snapshot-host.workspace = true
 gnunet-service-runtime.workspace = true

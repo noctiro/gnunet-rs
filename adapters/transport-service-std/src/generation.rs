@@ -1,5 +1,7 @@
 //! Actual marked-store generation reservations. Only8B public highwater is
 //! stored. This neither reads a key nor claims an in-memory value is durable.
+pub mod retirement;
+
 use gnunet_snapshot_host::{
     backend::{self, Namespace},
     worker::{self, Worker},

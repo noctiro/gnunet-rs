@@ -1,4 +1,4 @@
-//! Original-link atomic replacement under one retained directory.
+//! Atomic renames of captured links under one retained directory.
 use super::{
     leaf::{Leaf, MAX_UNITS},
     open, status,
@@ -41,38 +41,67 @@ const _: () = {
     assert!(offset_of!(Request, name) == offset_of!(FILE_RENAME_INFORMATION, FileName));
 };
 
-pub(super) fn replace(
+pub(super) enum Mode {
+    Create,
+    Replace,
+}
+
+enum EntryKind {
+    File,
+    Directory,
+}
+
+/// The checked synchronous handle to the original captured link.
+struct RenameSource(File);
+
+impl RenameSource {
+    fn open(parent: &File, name: &OsStr, original: &File, kind: EntryKind) -> io::Result<Self> {
+        let mut source = Leaf::new(name)?;
+        let options = match kind {
+            EntryKind::File => FILE_NON_DIRECTORY_FILE,
+            EntryKind::Directory => FILE_DIRECTORY_FILE,
+        };
+        let (file, _) = open::child(
+            parent,
+            &mut source,
+            FILE_GENERIC_READ | DELETE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            FILE_OPEN,
+            options,
+            None,
+        )?;
+        if FileIdentity::of(&file)? != FileIdentity::of(original)? {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "original rename source changed",
+            ));
+        }
+        match kind {
+            EntryKind::File => {
+                if !metadata::is_regular_file(&file)? || crate::filesystem::file_links(&file)? != 1
+                {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "original single-link rename source required",
+                    ));
+                }
+            }
+            EntryKind::Directory => super::Directory::validate_handle(&file)?,
+        }
+        Ok(Self(file))
+    }
+}
+
+pub(super) fn regular_file(
     parent: &File,
     name: &OsStr,
     original: &File,
     target: &OsStr,
+    mode: Mode,
 ) -> io::Result<()> {
-    let mut source = Leaf::new(name)?;
     let target = Leaf::new(target)?;
-    let (file, _) = open::child(
-        parent,
-        &mut source,
-        FILE_GENERIC_READ | DELETE,
-        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-        FILE_OPEN,
-        FILE_NON_DIRECTORY_FILE,
-        None,
-    )?;
-    if !metadata::is_regular_file(&file)?
-        || FileIdentity::of(&file)? != FileIdentity::of(original)?
-        || crate::filesystem::file_links(&file)? != 1
-    {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "original single-link rename source changed",
-        ));
-    }
-    rename(
-        parent,
-        &file,
-        &target,
-        FILE_RENAME_REPLACE_IF_EXISTS | FILE_RENAME_POSIX_SEMANTICS,
-    )
+    let source = RenameSource::open(parent, name, original, EntryKind::File)?;
+    rename(parent, source, &target, mode)
 }
 
 pub(crate) fn publish_directory(
@@ -81,33 +110,20 @@ pub(crate) fn publish_directory(
     original: &File,
     target: &OsStr,
 ) -> io::Result<()> {
-    let mut source = Leaf::new(name)?;
     let target = Leaf::new(target)?;
-    let (file, _) = open::child(
-        parent,
-        &mut source,
-        FILE_GENERIC_READ | DELETE,
-        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-        FILE_OPEN,
-        FILE_DIRECTORY_FILE,
-        None,
-    )?;
-    // Directory's checked constructor refuses name-surrogate reparse points.
-    super::Directory::from_file(&file)?;
-    if FileIdentity::of(&file)? != FileIdentity::of(original)? {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "original directory rename source changed",
-        ));
-    }
-    rename(parent, &file, &target, 0)
+    let source = RenameSource::open(parent, name, original, EntryKind::Directory)?;
+    rename(parent, source, &target, Mode::Create)
 }
 
 #[expect(
     unsafe_code,
     reason = "NtSetInformationFile synchronously borrows a fully initialized, SDK-layout-checked bounded rename record and an identity-checked synchronous original link handle"
 )]
-fn rename(parent: &File, file: &File, target: &Leaf, flags: u32) -> io::Result<()> {
+fn rename(parent: &File, source: RenameSource, target: &Leaf, mode: Mode) -> io::Result<()> {
+    let flags = match mode {
+        Mode::Create => 0,
+        Mode::Replace => FILE_RENAME_REPLACE_IF_EXISTS | FILE_RENAME_POSIX_SEMANTICS,
+    };
     let mut request = MaybeUninit::<Request>::zeroed();
     let value = request.as_mut_ptr();
     // SAFETY: the entire record, including padding, is initialized; all field
@@ -129,7 +145,7 @@ fn rename(parent: &File, file: &File, target: &Leaf, flags: u32) -> io::Result<(
     // status output stay live through this synchronous metadata operation.
     let result = unsafe {
         NtSetInformationFile(
-            file.as_raw_handle(),
+            source.0.as_raw_handle(),
             &mut observed,
             value.cast(),
             length as u32,

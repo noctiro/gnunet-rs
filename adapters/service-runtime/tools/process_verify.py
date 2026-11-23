@@ -17,6 +17,8 @@ import subprocess
 import sys
 
 sys.dont_write_bytecode = True
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "tools"))
+from rust_toolchain import rust_channel
 
 
 def sha(path):
@@ -69,6 +71,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ("repository", "source", "reference", "output"):
         parser.add_argument("--" + name, required=True, type=Path)
+    parser.add_argument("--toolchain")
     args = parser.parse_args()
     repo, source, reference, out = [getattr(args, key).resolve()
                                     for key in ("repository", "source", "reference", "output")]
@@ -91,7 +94,7 @@ def main():
             raise RuntimeError(label + " failed; see " + str(out / (label + ".stderr")))
         return result
 
-    cargo = ["cargo", "+1.99.1"]
+    cargo = ["cargo", "+" + rust_channel(repo, args.toolchain)]
     try:
         before = inputs(repo)
         (out / "inputs-before.json").write_text(json.dumps(before, indent=2) + "\n")

@@ -1,11 +1,11 @@
 //! Private Windows process byte channels over actual overlapped named pipes.
 use gnunet_native::identity::PrivateSecurityDescriptor;
-use gnunet_native::pipe::Endpoint;
+use gnunet_native::pipe::{Endpoint, StartupPipe};
 use gnunet_native::process::ProcessIdentity;
 use std::{
     error::Error,
     fmt, io,
-    os::windows::io::{AsHandle, BorrowedHandle},
+    os::windows::io::{AsHandle, BorrowedHandle, IntoRawHandle},
     sync::Arc,
     task::{Context, Poll},
 };
@@ -56,14 +56,20 @@ impl PipeListener {
     /// Reserve one random local pipe name with a protected owner-only DACL,
     /// one instance and remote clients refused. Existing names are never reused.
     /// Caller excludes thread impersonation during security preparation.
+    pub fn bind() -> io::Result<Self> {
+        Self::bind_with(PrivateSecurityDescriptor::owner_only()?)
+    }
+    /// Reserve a private local pipe with access for the selected child account.
+    pub fn bind_for_user(user: &gnunet_native::identity::Sid) -> io::Result<Self> {
+        Self::bind_with(PrivateSecurityDescriptor::pipe_with_client(user)?)
+    }
     #[expect(
         unsafe_code,
         reason = "The private descriptor and borrowed initialized attributes stay live throughout the synchronous Tokio native constructor, which copies their security data"
     )]
-    pub fn bind() -> io::Result<Self> {
+    fn bind_with(descriptor: PrivateSecurityDescriptor) -> io::Result<Self> {
         tokio::runtime::Handle::try_current().map_err(io::Error::other)?;
         let endpoint = Endpoint::generate()?;
-        let descriptor = PrivateSecurityDescriptor::owner_only()?;
         let mut attributes = descriptor.attributes();
         let mut options = ServerOptions::new();
         options
@@ -179,6 +185,56 @@ impl PipeConnection {
             .pipe_mode(PipeMode::Byte)
             .open(endpoint.as_os_str())?;
         Ok(Self(Arc::new(Io::Client(client))))
+    }
+    /// Register the same physical client used to receive its startup prefix.
+    /// The native owner has settled all outstanding reads before transfer.
+    #[expect(
+        unsafe_code,
+        reason = "StartupPipe uniquely owns the original overlapped client with all early operations settled"
+    )]
+    pub fn register_startup_pipe(pipe: StartupPipe) -> io::Result<Self> {
+        tokio::runtime::Handle::try_current().map_err(io::Error::other)?;
+        let raw = pipe.into_handle()?.into_raw_handle();
+        // SAFETY: the exclusively owned overlapped client is transferred to
+        // Tokio, which owns the handle even if its reactor registration fails.
+        let client = unsafe { NamedPipeClient::from_raw_handle(raw) }?;
+        Ok(Self(Arc::new(Io::Client(client))))
+    }
+    /// Submit some of the bounded startup prefix before splitting the connection.
+    /// The caller owns the prefix and advances it only by the accepted count.
+    /// Peer receipt and later service readiness remain separate observations.
+    pub fn poll_startup_prefix(
+        &mut self,
+        cx: &mut Context<'_>,
+        bytes: &[u8],
+    ) -> Poll<Result<usize, PipeError>> {
+        if bytes.is_empty() || bytes.len() > 256 {
+            return Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "invalid startup prefix extent",
+            )
+            .into()));
+        }
+        match self.0.poll_write_ready(cx) {
+            Poll::Pending => return Poll::Pending,
+            Poll::Ready(Err(error)) => return Poll::Ready(Err(error.into())),
+            Poll::Ready(Ok(())) => {}
+        }
+        match self.0.write(bytes) {
+            Ok(accepted) if (1..=bytes.len()).contains(&accepted) => Poll::Ready(Ok(accepted)),
+            Ok(_) => Poll::Ready(Err(io::Error::from(io::ErrorKind::WriteZero).into())),
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                match self.0.poll_write_ready(cx) {
+                    Poll::Pending => Poll::Pending,
+                    Poll::Ready(Ok(())) => {
+                        cx.waker().wake_by_ref();
+                        Poll::Pending
+                    }
+                    Poll::Ready(Err(error)) => Poll::Ready(Err(error.into())),
+                }
+            }
+            Err(error) => Poll::Ready(Err(error.into())),
+        }
     }
     /// Move the original physical pipe into its unique logical direction owners.
     pub fn split(self) -> (ByteReader, ByteWriter) {

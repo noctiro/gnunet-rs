@@ -8,6 +8,8 @@ import unittest
 from unittest.mock import patch
 
 import release as gate
+import statistics_watch_initial as watch
+import statistics_watch_receipt as watch_receipt
 
 
 class ReleaseControls(unittest.TestCase):
@@ -155,8 +157,8 @@ class ReleaseControls(unittest.TestCase):
                 gate.read_requirements(root)
 
 
-class ReceiptControls(unittest.TestCase):
-    """Synthetic frozen-file fixtures only. No service, network or C proof."""
+class ReceiptFixture(unittest.TestCase):
+    """Synthetic frozen-file fixtures for receipt controls."""
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix="gnunet-external-receipt-")
         self.root = Path(self.tmp.name)
@@ -169,6 +171,9 @@ class ReceiptControls(unittest.TestCase):
         self.script.write_text('import sys,json,hashlib\np=sys.argv[sys.argv.index("--receipt")+1]\nprint(json.dumps({"receipt_sha256":hashlib.sha256(open(p,"rb").read()).hexdigest(),"semantic_verdict":"pass"}))\n')
         self.adapter = {"id": "synthetic-test-only", "script": "adapter.py", "sha256": gate.sha(self.script), "review": "synthetic control, no protocol credit"}
         self.receipt = {"schema": 1, "kind": "external-boundary-receipt", "requirement": "core.init-loopback:case:1", "profile": "core-host-selfloop", "direction": "C-to-Rust", "adapter": self.adapter["id"], "result": "pass", "implementation_inputs": self.inputs, "reference_revision": gate.REVISION, "reference_inputs": self.survey, "build": {"profile": "synthetic", "argv": ["test-only"], "toolchain": {"python": "test"}, "binaries": [self.ref("binary")], "inputs": [self.ref("build-config")], "receipt": self.ref("build-receipt")}, "processes": [], "artifacts": [self.ref("raw")], "observation": self.ref("observation"), "review": self.ref("review")}
+        self.case = next(x for x in self.req["case_obligations"] if x["id"] == self.receipt["requirement"])
+        self.case["profile_direction_review"] = "reviewed"
+        self.case["evidence_slots"] = [{key: self.receipt[key] for key in ("profile", "direction", "adapter")}]
         profile = next(x for x in self.req["reviewed_partial_profiles"] if x["id"] == "core-host-selfloop")
         for role in profile["required_components"]:
             self.receipt["processes"].append({"role": role, "argv": ["synthetic-test"], "binary": self.ref("binary"), "binary_before": gate.sha(self.root / "binary"), "binary_after": gate.sha(self.root / "binary"), "exit_code": 0, "termination": "exited", "loaded_files_before": {"loaded": gate.sha(self.root / "loaded")}, "loaded_files_after": {"loaded": gate.sha(self.root / "loaded")}})
@@ -180,10 +185,13 @@ class ReceiptControls(unittest.TestCase):
     def ref(self, name):
         return {"path": name, "sha256": gate.sha(self.root / name)}
 
+
+class ReceiptControls(ReceiptFixture):
     def verify(self, adapters=True):
-        self.path.write_text(json.dumps(self.receipt))
+        raw = json.dumps(self.receipt).encode()
+        self.path.write_bytes(raw)
         with patch.object(gate, "ROOT", self.root):
-            return gate.verify_receipt(self.receipt, self.path, self.req, self.inputs, self.survey, self.root, {self.adapter["id"]: self.adapter} if adapters else {})
+            return gate.verify_receipt(raw, self.path, self.req, self.inputs, self.survey, self.root, {self.adapter["id"]: self.adapter} if adapters else {})
 
     def rejected(self, mutate):
         mutate(self.receipt)
@@ -214,6 +222,13 @@ class ReceiptControls(unittest.TestCase):
 
     def test_actual_binary_drift_cannot_be_relabelled_as_same_actor(self):
         self.rejected(lambda x: x["processes"][0].update(binary_after="0" * 64))
+
+    def test_process_image_must_match_a_built_binary(self):
+        image = self.ref("observation")
+        self.receipt["processes"][0].update(binary=image, binary_before=image["sha256"],
+                                            binary_after=image["sha256"])
+        with self.assertRaisesRegex(gate.Invalid, "absent from the build provenance"):
+            self.verify()
 
     def test_loaded_file_drift_is_not_success(self):
         self.rejected(lambda x: x["processes"][0].update(loaded_files_after={}))
@@ -251,16 +266,33 @@ class ReceiptControls(unittest.TestCase):
         self.receipt["direction"] = "C-to-Rust"
         self.rejected(lambda x: x.update(requirement="new-private-capability"))
 
+    def test_pending_case_cannot_receive_evidence(self):
+        self.case["profile_direction_review"] = "pending"
+        with self.assertRaisesRegex(gate.Invalid, "no reviewed evidence slot"):
+            self.verify()
+
+    def test_reviewed_slot_does_not_allow_another_valid_direction_or_adapter(self):
+        self.receipt["direction"] = "Rust-to-C"
+        with self.assertRaisesRegex(gate.Invalid, "no reviewed evidence slot"):
+            self.verify()
+        self.receipt["direction"] = "C-to-Rust"
+        # Even a registered and pinned adapter can only verify its reviewed slot.
+        self.adapter["id"] = self.receipt["adapter"] = "another-adapter"
+        with self.assertRaisesRegex(gate.Invalid, "no reviewed evidence slot"):
+            self.verify()
+
     def test_boolean_schema_cannot_impersonate_numeric_version(self):
         self.rejected(lambda x: x.update(schema=True))
 
     def test_duplicate_case_direction_does_not_inflate_coverage(self):
+        self.survey = ReleaseControls.survey["paths"]
+        self.receipt["reference_inputs"] = self.survey
         self.verify()
         self.req["evidence_adapters"] = [self.adapter]
         index = {"schema": 1, "kind": "external-release-evidence-index", "requirements_sha256": "a" * 64,
                  "records": [self.ref("receipt.json"), self.ref("receipt.json")]}
         with patch.object(gate, "ROOT", self.root):
-            with self.assertRaises(gate.Invalid):
+            with self.assertRaisesRegex(gate.Invalid, "duplicate evidence receipt"):
                 gate.evaluate(self.req, index, "a" * 64, self.inputs, {"paths": self.survey}, self.root)
 
     def test_empty_build_provenance_does_not_pass(self):
@@ -291,6 +323,125 @@ class ReceiptControls(unittest.TestCase):
 
     def test_unknown_receipt_credit_fields_rejected(self):
         self.rejected(lambda x: x.update(full_GNUnet_conformance_verified=True))
+
+
+class ReviewedCatalogControls(ReceiptFixture):
+    """Synthetic catalog fixtures, isolated from canonical approval."""
+
+    def setUp(self):
+        super().setUp()
+        operation_id = "statistics.synthetic-observation"
+        profile_id = "synthetic-profile"
+        self.case_id = operation_id + ":case:1"
+        self.baseline = copy.deepcopy(ReleaseControls.req)
+        self.catalog_survey = copy.deepcopy(ReleaseControls.survey)
+        self.catalog_survey["paths"].update(self.survey)
+        self.catalog = {
+            "schema": 1, "kind": "external-release-review-catalog",
+            "stage2_lock_sha256": gate.RELEASE_LOCK_SHA256, "reference_revision": gate.REVISION,
+            "operations": [{
+                "id": operation_id, "owner": "statistics", "contract": "Synthetic operation",
+                "source_refs": [{"path": "ref.c", "sha256": self.survey["ref.c"]["sha256"],
+                                 "start_line": 1, "end_line": 1, "anchor": "fixture"}],
+            }],
+            "profiles": [{
+                "id": profile_id, "required_operations": [operation_id],
+                "required_components": [row["role"] for row in self.receipt["processes"]],
+                "forbidden_data_plane_substitutions": ["synthetic-forbidden-role"],
+            }],
+            "cases": [{
+                "id": self.case_id, "operation": operation_id, "contract": "Synthetic case",
+                "evidence_slots": [{"profile": profile_id, "direction": self.receipt["direction"],
+                                    "adapter": self.adapter["id"]}],
+            }],
+            "adapters": [self.adapter],
+        }
+        self.receipt.update(requirement=self.case_id, profile=profile_id,
+                            reference_inputs=self.catalog_survey["paths"])
+        for row in self.baseline["semantic_inventories"]:
+            destination = self.root / row["path"]
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes((gate.DATA / row["path"]).read_bytes())
+        self.catalog_path = self.root / gate.REVIEW_CATALOG_NAME
+
+    def evaluate_catalog(self, records=(), pinned=True, expected_digest=None):
+        self.catalog_path.write_text(json.dumps(self.catalog))
+        pin = (expected_digest or gate.sha(self.catalog_path)) if pinned else None
+        evidence = dict(ReleaseControls.index, records=list(records))
+        with patch.object(gate, "ROOT", self.root), patch.object(gate, "REVIEW_CATALOG_SHA256", pin):
+            return gate.evaluate(self.baseline, evidence, ReleaseControls.lock["requirements_sha256"],
+                                 self.inputs, self.catalog_survey, self.root, self.root)
+
+    def test_review_catalog_cannot_self_pin_even_if_its_evidence_is_provided(self):
+        report = self.evaluate_catalog(pinned=False)
+        self.assertNotIn("reviewed_additions", report)
+        self.assertNotIn(self.case_id, report["pending_cases"])
+        self.path.write_text(json.dumps(self.receipt))
+        with self.assertRaisesRegex(gate.Invalid, "unknown case/direction"):
+            self.evaluate_catalog([self.ref(self.path.name)], pinned=False)
+
+    def test_pinned_catalog_authorizes_exact_evidence_without_displacing_the_floor(self):
+        pending = self.evaluate_catalog()
+        self.assertIn(self.case_id, pending["pending_cases"])
+        self.assertEqual(pending["reviewed_additions"]["cases"], [self.case_id])
+        self.path.write_text(json.dumps(self.receipt))
+        report = self.evaluate_catalog([self.ref(self.path.name)])
+        self.assertEqual(report["integrity_checked_receipts"], 1)
+        self.assertEqual(report["pending_cases"], [x for x in pending["pending_cases"] if x != self.case_id])
+        self.assertEqual(report["unknown_contracts"], [x["id"] for x in self.baseline["unknowns"]])
+        self.assertEqual(report["retained_state_failure_cases"], len(self.baseline["case_obligations"]))
+        self.assertEqual(self.baseline, ReleaseControls.req)
+        self.assertFalse(report["release_ready"])
+        self.receipt["direction"] = "Rust-to-C"
+        self.path.write_text(json.dumps(self.receipt))
+        with self.assertRaisesRegex(gate.Invalid, "no reviewed evidence slot"):
+            self.evaluate_catalog([self.ref(self.path.name)])
+
+    def test_catalog_rejects_wrong_pin_wrong_baseline_and_waiver(self):
+        with self.assertRaisesRegex(gate.Invalid, "digest mismatch"):
+            self.evaluate_catalog(expected_digest="1" * 64)
+        self.catalog["stage2_lock_sha256"] = "1" * 64
+        with self.assertRaisesRegex(gate.Invalid, "different release baseline"):
+            self.evaluate_catalog()
+        self.catalog["stage2_lock_sha256"] = gate.RELEASE_LOCK_SHA256
+        self.catalog["unknowns"] = []
+        with self.assertRaisesRegex(gate.Invalid, "invalid fields: review catalog"):
+            self.evaluate_catalog()
+
+    def test_catalog_rejects_legacy_and_draft_identity_collisions(self):
+        operation = self.catalog["operations"][0]
+        operation["id"] = self.baseline["reviewed_partial_operations"][0]["id"]
+        with self.assertRaisesRegex(gate.Invalid, "reuses an existing identity"):
+            self.evaluate_catalog()
+        operation["id"] = gate.semantic_summaries(self.baseline, self.catalog_survey)[0]["draft_operations"][0]
+        with self.assertRaisesRegex(gate.Invalid, "reuses an existing identity"):
+            self.evaluate_catalog()
+
+    def test_catalog_requires_compatible_reachable_profiles_slots_and_adapters(self):
+        slot = self.catalog["cases"][0]["evidence_slots"][0]
+        profile = self.catalog["profiles"][0]
+        self.catalog["profiles"].append(dict(profile, id="unused-profile"))
+        with self.assertRaisesRegex(gate.Invalid, "unreachable authority"):
+            self.evaluate_catalog()
+        self.catalog["profiles"].pop()
+        self.catalog["cases"][0]["evidence_slots"].append(dict(slot))
+        with self.assertRaisesRegex(gate.Invalid, "duplicate reviewed evidence slot"):
+            self.evaluate_catalog()
+        self.catalog["cases"][0]["evidence_slots"].pop()
+        slot["adapter"] = "absent"
+        with self.assertRaisesRegex(gate.Invalid, "unrelated profile, direction or adapter"):
+            self.evaluate_catalog()
+
+    def test_catalog_checks_original_source_and_adapter_pins_before_any_receipt(self):
+        ref = self.catalog["operations"][0]["source_refs"][0]
+        original = ref["sha256"]
+        ref["sha256"] = "0" * 64
+        with self.assertRaisesRegex(gate.Invalid, "absent or hash differs"):
+            self.evaluate_catalog()
+        ref["sha256"] = original
+        self.script.write_text("print('changed adapter')")
+        with self.assertRaisesRegex(gate.Invalid, "digest mismatch"):
+            self.evaluate_catalog()
 
 
 
@@ -414,7 +565,10 @@ class SemanticDraftControls(unittest.TestCase):
         self.assertEqual(len(gate.validate_requirements(req, survey, schema, self.legacy, history)), 156)
         with self.assertRaises(gate.Invalid):
             gate.read_requirements(history)
-        report = gate.evaluate(req, gate.load_json(history / "release-evidence.json"), lock["requirements_sha256"], {}, survey, gate.ROOT, history)
+        with patch.object(gate, "REVIEW_CATALOG_SHA256", "a" * 64):
+            report = gate.evaluate(req, gate.load_json(history / "release-evidence.json"),
+                                   lock["requirements_sha256"], {}, survey, gate.ROOT, history)
+        self.assertNotIn("reviewed_additions", report)
         self.assertEqual((len(report["unknown_contracts"]), len(report["pending_cases"]), report["semantic_inventories"]), (734, 156, 0))
         with self.assertRaises(gate.Invalid):
             gate.require_release(report)
@@ -461,6 +615,217 @@ class SemanticDraftControls(unittest.TestCase):
 
     def test_boolean_inventory_schema_is_not_numeric_version(self):
         self.invalid_inventory(lambda x: x.update(schema=True))
+
+
+class StatisticsWatchControls(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.root = Path(directory.name)
+        self.directory = self.root / "run"
+        self.directory.mkdir()
+        self.artifacts = []
+        self.configuration = self.retain("watch-initial.conf", b"""[statistics]
+UNIXPATH = /private/run/watch.sock
+DATABASE = /private/run/watch.dat
+HOSTNAME = localhost
+PORT = 0
+START_ON_DEMAND = NO
+UNIX_MATCH_UID = YES
+DISABLE_SOCKET_FORWARDING = YES
+""")
+        self.fixture = self.retain("watch-initial-input.dat",
+                                   b"\x00\x27\x00\xa8\x00\x00\x00\x02" + (55).to_bytes(8, "big")
+                                   + b"rust-c-interop\x00counter\x00")
+        common = ["-c", "/private/run/watch.conf", "-L", "ERROR"]
+        self.rust = self.actor(watch.ROLES[0], "rust_service", common,
+                               b"READY statistics persistence=official-set-snapshot\n", [])
+        libs = [("libgnunetutil.so.1", "3" * 64), ("libgnunetstatistics.so.1", "4" * 64)]
+        watcher_argv = common + ["-q", "-w", "-s", "rust-c-interop", "-n", "counter"]
+        self.client = self.actor(watch.ROLES[1], "c_client", watcher_argv, b"55\r\n", libs)
+        rows, processes, participants = zip(self.rust, self.client)
+        participants = dict(zip(("rust_service", "c_client"), participants))
+        upstream = {"revision": gate.REVISION, "tracked_sources_clean": True}
+        c = {"kind": "unmodified-official-c-reference-build", "status": "passed", "source_unchanged": True,
+             "host": {"system": "Linux"}, "upstream": upstream, "artifacts": {"client": {
+                 "sha256": participants["c_client"]["sha256"], "path": participants["c_client"]["original"]}},
+             "commands": [{"name": "meson-build", "argv": ["meson", "compile", "gnunet-statistics"], "exit_code": 0}],
+             "generated_config": {"sha256": "5" * 64}, "libraries": [
+                 {"path": "/c/lib/" + path, "sha256": digest} for path, digest in libs]}
+        frozen_build = self.retain("reference-build.json", json.dumps(c).encode())
+        compiled = [
+            {"reason": "compiler-artifact", "fresh": False, "executable": "/original/rust_service",
+             "target": {"name": "gnunet-service-statistics", "kind": ["bin"],
+                        "src_path": "/repo/apps/gnunet-service-statistics/src/main.rs"}},
+            {"reason": "build-finished", "success": True},
+        ]
+        cargo = self.retain("cargo.jsonl", b"\n".join(json.dumps(row).encode() for row in compiled))
+        self.run = {"schema": 1, "kind": "official-c-statistics-daemon-ipc", "selected_profile": "watch-initial-only",
+                    "status": "passed", "cleanup_errors": [], "owned_processes_reaped": True, "owned_runtime_removed": True,
+                    "diagnostics": {"commands": []}, "owned_runtime": "/private/run", "upstream": upstream,
+                    "input_fingerprints": {"source_files": [{"path": "source.rs", "sha256": "1" * 64}], "spec_files": []},
+                    "commands": list(rows), "participants": participants, "persistent_dumps": [self.fixture],
+                    "retained_reference_receipt": frozen_build,
+                    "configurations": {"/private/run/watch.conf": self.configuration},
+                    "linux_image_capture": {"status": "matched-long-lived-actors",
+                                            "matched_long_lived": [row["stdout"] for row in rows],
+                                            "unobserved_one_shot": [], "excluded_diagnostic": [], "failures": []}}
+        self.run.update(dict.fromkeys(("source_unchanged", "reference_unchanged", "reference_receipt_unchanged",
+            "reference_runtime_inputs_unchanged", "configurations_unchanged", "participants_unchanged",
+            "persistent_dumps_unchanged"), True))
+        self.receipt = {"requirement": watch.CASE, "profile": watch.PROFILE, "adapter": watch.ADAPTER,
+                        "direction": "C-to-Rust", "reference_revision": gate.REVISION,
+                        "implementation_inputs": {"source.rs": "1" * 64},
+                        "artifacts": self.artifacts, "processes": processes,
+                        "build": {"argv": ["cargo", "build", "--locked", "-p", "gnunet-service-statistics"],
+                                  "inputs": [{"sha256": "5" * 64}], "receipt": self.prefixed(cargo)}}
+
+    def prefixed(self, ref):
+        return {**ref, "path": "run/" + ref["path"]}
+
+    def retain(self, name, data):
+        (self.directory / name).write_bytes(data)
+        reference = {"path": name, "sha256": watch.sha(data)}
+        self.artifacts.append(self.prefixed(reference))
+        return reference
+
+    def actor(self, role, key, argv, stdout, libraries):
+        start = "/snapshot/" + key
+        binary = {"path": key + ".image", "sha256": watch.sha(key.encode())}
+        maps = [{"device": [0, 1], "inode": i, "mapped_path": path, "artifact": ref}
+                for i, (path, ref) in enumerate([(start, binary)] + [
+                    ("/lib/" + path, {"path": path + ".image", "sha256": digest})
+                    for path, digest in libraries], 2)]
+        dependencies = {entry["artifact"]["path"]: entry["artifact"]["sha256"] for entry in maps[1:]}
+        phase = {"binary": binary, "mapped_files": maps, "loaded_files": dependencies}
+        out, err = self.retain(key + ".out", stdout), self.retain(key + ".err", b"")
+        row = {"name": role, "argv": [start, *argv], "pid": 1 + len(self.artifacts),
+               "configuration": self.configuration, "owned_process_group": True, "one_shot": False,
+               "diagnostic": False, "exit_code": 0, "ready_images": phase, "pre_stop_images": copy.deepcopy(phase),
+               "stdout": out["path"], "stderr": err["path"], "stdout_sha256": out["sha256"], "stderr_sha256": err["sha256"]}
+        receipt_deps = {"run/" + path: digest for path, digest in dependencies.items()}
+        process = {"role": role, "argv": row["argv"], "binary": self.prefixed(binary),
+                   "binary_before": binary["sha256"], "binary_after": binary["sha256"],
+                   "loaded_files_before": receipt_deps, "loaded_files_after": receipt_deps}
+        participant = {"original": "/original/" + key, "snapshot": start, "sha256": binary["sha256"]}
+        return row, process, participant
+
+    def evaluate(self):
+        run = self.retain("result.json", json.dumps(self.run).encode())
+        self.receipt["observation"] = self.prefixed(run)
+        watch.verify(self.root, self.receipt)
+
+    def test_synthetic_frozen_profile_validates_the_join(self):
+        self.evaluate()
+
+    def test_pass_labels_do_not_cover_missing_or_drifted_actor_images(self):
+        self.client[0]["pre_stop_images"] = {"unavailable": "owner exited early"}
+        with self.assertRaisesRegex(ValueError, "mappings changed"):
+            self.evaluate()
+
+    def test_pass_labels_do_not_cover_incorrect_watch_output(self):
+        different = self.retain("different-value.out", b"56\r\n")
+        self.client[0].update(stdout=different["path"], stdout_sha256=different["sha256"])
+        self.run["linux_image_capture"]["matched_long_lived"][1] = different["path"]
+        with self.assertRaisesRegex(ValueError, "expected one WATCH value"):
+            self.evaluate()
+
+    def assembly_inputs(self):
+        directory = self.root / "build"
+        directory.mkdir()
+
+        def bind(name, raw):
+            path = directory / name
+            path.write_bytes(raw)
+            return watch_receipt.regular_ref(path)
+
+        host = {"system": "Linux", "machine": "x86_64"}
+        input_map = {"source.rs": "1" * 64, "Cargo.lock": "6" * 64}
+        self.run["input_fingerprints"]["source_files"].append({"path": "Cargo.lock", "sha256": "6" * 64})
+        c = watch.decode((self.directory / self.run["retained_reference_receipt"]["path"]).read_bytes())
+        c["host"] = host
+        c["source"] = str(self.root / "official-source")
+        for row, _, participant in (self.rust, self.client):
+            tag = row["name"]
+            image = b"\x7fELF synthetic " + tag.encode()
+            artifact = bind(tag, image)
+            participant.update(original=artifact["path"], sha256=artifact["sha256"])
+            epoch = row["ready_images"]
+            binary = epoch["binary"]
+            binary.update(self.retain(binary["path"], image))
+            row["pre_stop_images"] = copy.deepcopy(epoch)
+        # Each frozen dependency must have a real retained file at its declared digest.
+        for epoch in (self.client[0]["ready_images"], self.client[0]["pre_stop_images"]):
+            for entry, library in zip(epoch["mapped_files"][1:], c["libraries"]):
+                path = entry["artifact"]["path"]
+                ref = self.retain(path, path.encode())
+                entry["artifact"] = ref
+                epoch["loaded_files"][path] = library["sha256"] = ref["sha256"]
+        c_bin = self.client[2]
+        c["artifacts"]["client"] = {
+            "path": c_bin["original"], "sha256": c_bin["sha256"],
+            "built_path": bind("meson-built-cli", Path(c_bin["original"]).read_bytes())["path"],
+        }
+        c["generated_config"] = bind("gnunet_private_config.h", b"synthetic generated header")
+        (command,) = c["commands"]
+        log = bind("meson.log", b"synthetic compiler log")
+        command.update(log=log["path"], log_sha256=log["sha256"])
+        c["commands"].append(dict(command, name="meson-setup"))
+        c["tool_versions"] = [dict(command, name=name) for name in ("meson-version", "compiler-version")]
+        c["default_configurations"] = []
+        for library in c["libraries"]:
+            library["symlink"] = True
+        self.run["retained_reference_receipt"] = self.retain("reference-build.json", json.dumps(c).encode())
+        target = "x86_64-unknown-linux-gnu"
+        rust_bin = self.rust[2]
+        cargo_log = bind("cargo.jsonl", b"\n".join(json.dumps(row).encode() for row in [
+            {"reason": "compiler-artifact", "fresh": False, "executable": rust_bin["original"],
+             "target": {"name": "gnunet-service-statistics", "kind": ["bin"],
+                        "src_path": "/repo/apps/gnunet-service-statistics/src/main.rs"}},
+            {"reason": "build-finished", "success": True},
+        ]))
+        rust = {
+            "schema": 1, "kind": watch_receipt.BUILD_KIND, "host": host, "exit_code": 0, "source_inputs": input_map,
+            "argv": ["cargo", "build", "--locked", "-p", "gnunet-service-statistics", "--target", target],
+            "binary": {"path": rust_bin["original"], "sha256": rust_bin["sha256"]},
+            "lockfile": {"path": str(gate.ROOT / "Cargo.lock"), "sha256": "6" * 64},
+            "cargo_log": cargo_log, "cargo_stderr": bind("cargo.err", b""),
+            "compiler": bind("rustc.txt", f"host: {target}\nrelease: synthetic\ncommit-hash: synthetic\n".encode()),
+        }
+        rust_path = Path(bind("rust-build.json", json.dumps(rust).encode())["path"])
+        review = Path(bind("review.txt", b"Review pending")["path"])
+        self.retain("result.json", json.dumps(self.run).encode())
+        return input_map, rust_path, review
+
+    def assemble_candidate(self, source, build, review, output):
+        reference = {"tracked.c": {"kind": "file", "sha256": "1" * 64}}
+        with patch.object(gate, "implementation_inputs", return_value=source), \
+                patch.object(gate, "tracked_inputs", return_value=reference), \
+                patch.object(gate, "read_requirements", return_value=(None, {"paths": reference}, None, None)):
+            watch_receipt.assemble(self.root, self.directory / "result.json", build, review,
+                                   self.root / "official-source", output)
+
+    def test_assembly_keeps_validated_bytes_under_a_pending_review_wrapper(self):
+        source, build, review = self.assembly_inputs()
+        output = self.root / "candidate.json"
+        self.assemble_candidate(source, build, review, output)
+        candidate = json.loads(output.read_bytes())
+        self.assertEqual((candidate["kind"], candidate["review_state"]),
+                         ("external-boundary-review-candidate", "pending"))
+        self.assertEqual(candidate["receipt"]["requirement"], watch.CASE)
+        self.assertEqual({row["role"] for row in candidate["receipt"]["processes"]}, set(watch.ROLES))
+        with self.assertRaises(FileExistsError):
+            self.assemble_candidate(source, build, review, output)
+
+    def test_assembly_refuses_a_changed_live_dependency_without_output(self):
+        source, build, review = self.assembly_inputs()
+        ready = self.client[0]["ready_images"]
+        path = next(iter(ready["loaded_files"]))
+        (self.directory / path).write_bytes(b"mutated mapped file")
+        output = self.root / "candidate.json"
+        with self.assertRaisesRegex(gate.Invalid, "digest mismatch"):
+            self.assemble_candidate(source, build, review, output)
+        self.assertFalse(output.exists())
 
 
 if __name__ == "__main__":

@@ -20,9 +20,13 @@ libexec layout.
 ## Configuration and output
 
 The CLI loads normal GNUnet configuration and preserves the `arm.CONFIG` fallback.
-`--help` lists ARM and PROGRAM options. PREFIX/OPTIONS are GNUnet command fragments;
-Windows executable and configuration filenames retain their native argument
-boundaries. No shell expansion is performed.
+`--help` lists ARM and PROGRAM options. ARM parses `PREFIX` and `OPTIONS` as
+GNUnet command fragments. Executable and configuration filenames each retain
+their native argument boundaries on every platform.
+
+ARM uses the target C ABI for IPC framing. Set `[arm-rust] ABI = align4` or
+`align8` when the peer uses a different layout. The layout is not negotiated;
+configure the daemon and client consistently.
 
 PROGRAM logging selects `-L/-l` and the existing forced/default log environment
 values. Control, monitor, Resolver and logging share the selected clock. Business

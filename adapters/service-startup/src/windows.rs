@@ -3,6 +3,7 @@ mod capture;
 mod control;
 /// Explicit native detached re-exec with original-child readiness ownership.
 pub mod daemon;
+mod grant;
 mod identity;
 /// Explicit supervised process creation and original-child bootstrap ownership.
 pub mod launch;

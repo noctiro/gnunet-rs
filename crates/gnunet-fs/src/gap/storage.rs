@@ -2,7 +2,7 @@
 //! Storage ACKs, native write completion and remote storage are distinct facts.
 use super::{Entropy, Neighbor, Path, SendRetired};
 use core::{cell::Cell, fmt, ptr};
-use gnunet_types::Error;
+use gnunet_types::{Error, MonoInstant};
 use gnunet_wire::official::{
     AbsoluteTime, RelativeTime,
     datastore::Data,
@@ -13,6 +13,15 @@ use gnunet_wire::official::{
 pub const YEAR_US: u64 = 365 * 24 * 60 * 60 * 1_000_000;
 /// Active C avoids pushing blocks with less than thirty minutes remaining.
 pub const MIN_PUSH_LIFETIME_US: u64 = 30 * 60 * 1_000_000;
+
+/// One observation of the clocks governing block expiry and local work.
+#[derive(Clone, Copy, Debug)]
+pub struct Time {
+    /// Qualified UTC used for official block and DATASTORE timestamps.
+    pub absolute: AbsoluteTime,
+    /// Local monotonic clock used for pacing, backoff and peer pauses.
+    pub elapsed: MonoInstant,
+}
 /// Stable external identity for original local storage/control operations.
 #[derive(Default)]
 pub struct Instance {
@@ -457,14 +466,14 @@ impl<'id, 'slots, 'bytes> Owner<'id, 'slots, 'bytes> {
         frame: &[u8],
         priority: u32,
         requested: bool,
-        now: u64,
+        time: Time,
     ) -> Result<CacheAdmission<'id>, Error> {
         self.receive_checked(
             n,
             super::CheckedPut::decode(frame)?,
             priority,
             requested,
-            now,
+            time,
         )
     }
     /// Copy a block already authenticated by the shared original input owner.
@@ -474,7 +483,7 @@ impl<'id, 'slots, 'bytes> Owner<'id, 'slots, 'bytes> {
         checked: super::CheckedPut<'_>,
         priority: u32,
         requested: bool,
-        now: u64,
+        time: Time,
     ) -> Result<CacheAdmission<'id>, Error> {
         let peer = self.peer(n)?;
         if !self.peers[peer].record.is_some_and(|p| p.live) {
@@ -487,7 +496,7 @@ impl<'id, 'slots, 'bytes> Owner<'id, 'slots, 'bytes> {
             Some(Declined::Disabled)
         } else if put.block.len() > gnunet_wire::official::datastore::MAX_VALUE_BYTES {
             Some(Declined::TooLarge)
-        } else if put.expiration.as_micros() <= now {
+        } else if put.expiration <= time.absolute {
             Some(Declined::Expired)
         } else if self.cache.iter().all(|p| p.record.is_some()) {
             Some(Declined::Capacity)
@@ -497,7 +506,10 @@ impl<'id, 'slots, 'bytes> Owner<'id, 'slots, 'bytes> {
         if let Some(reason) = declined {
             self.report.cache_declined = self.report.cache_declined.saturating_add(1);
             if !requested {
-                self.request_stop(n, Until::At(now.saturating_add(self.limits.busy_pause_us)))
+                self.request_stop(
+                    n,
+                    Until::At(time.elapsed.0.saturating_add(self.limits.busy_pause_us)),
+                );
             }
             return Ok(CacheAdmission::Declined(reason));
         }
@@ -510,8 +522,9 @@ impl<'id, 'slots, 'bytes> Owner<'id, 'slots, 'bytes> {
             return Err(Error::Capacity);
         }
         let token = self.token()?;
-        let expiration =
-            AbsoluteTime::from_micros(put.expiration.as_micros().min(now.saturating_add(YEAR_US)));
+        let expiration = put.expiration.min(AbsoluteTime::from_micros(
+            time.absolute.as_micros().saturating_add(YEAR_US),
+        ));
         self.cache[slot].bytes[..frame.len()].copy_from_slice(frame);
         self.cache[slot].record = Some(Cached {
             token,
@@ -528,10 +541,22 @@ impl<'id, 'slots, 'bytes> Owner<'id, 'slots, 'bytes> {
     }
     /// Admit at most one original storage request, with cache/selection alternation
     /// bounded by the real minimum selection interval and fixed block capacity.
-    pub fn next_command(&mut self, now: u64) -> Result<Option<Command<'_, 'id>>, Error> {
+    pub fn next_command(&mut self, time: Time) -> Result<Option<Command<'_, 'id>>, Error> {
         if self.stopping || self.fenced || self.active.is_some() {
             return Ok(None);
         }
+        for slot in &mut *self.cache {
+            if let Some(original) = slot
+                .record
+                .filter(|original| original.expiration <= time.absolute)
+            {
+                slot.bytes[..original.length].fill(0);
+                slot.record = None;
+                self.report.cache_declined = self.report.cache_declined.saturating_add(1);
+            }
+        }
+        let now = time.elapsed.0;
+        self.release_attempted_block(now);
         let selection_ready = self.limits.pushing
             && now >= self.next_selection
             && self.blocks.iter().any(|b| b.record.is_none())
@@ -555,21 +580,7 @@ impl<'id, 'slots, 'bytes> Owner<'id, 'slots, 'bytes> {
             let c = *c;
             self.active = Some(Active::Cache(c.token));
             self.after_cache = true;
-            let put = Put::decode(&self.cache[i].bytes[..c.length])?;
-            return Ok(Some(Command::Put(CacheWrite {
-                token: c.token,
-                data: Data {
-                    reservation: 0,
-                    kind: put.block_type.value(),
-                    priority: c.priority,
-                    anonymity: 1,
-                    replication: 0,
-                    uid: 0,
-                    expiration: c.expiration,
-                    key: &self.cache[i].record.as_ref().ok_or(Error::Conflict)?.key,
-                    value: put.block,
-                },
-            })));
+            return self.active_cache_write(c.token).map(Command::Put).map(Some);
         }
         if selection_ready {
             let token = self.token()?;
@@ -579,13 +590,89 @@ impl<'id, 'slots, 'bytes> Owner<'id, 'slots, 'bytes> {
         }
         Ok(None)
     }
+
+    fn release_attempted_block(&mut self, now: u64) {
+        let live = self
+            .peers
+            .iter()
+            .filter_map(|slot| slot.record.filter(|peer| peer.live));
+        if self.blocks.iter().any(|slot| slot.record.is_none())
+            || !live.clone().any(|peer| !peer.paused.active(now))
+        {
+            return;
+        }
+        if let Some(slot) = self.blocks.iter_mut().find(|slot| {
+            slot.record.is_some_and(|block| {
+                block.path.is_none()
+                    && live
+                        .clone()
+                        .all(|peer| block.targets[..block.used].contains(&peer.identity))
+            })
+        }) && let Some(block) = slot.record.take()
+        {
+            slot.bytes[..block.length].fill(0);
+        }
+    }
+
+    /// Lend the same validated bytes to the original admitted cache operation.
+    pub fn active_cache_write(&self, token: Token<'id>) -> Result<CacheWrite<'_, 'id>, Error> {
+        if !matches!(self.active, Some(Active::Cache(original)) if original == token) {
+            return Err(Error::StaleGeneration);
+        }
+        let (slot, original) = self
+            .cache
+            .iter()
+            .find_map(|slot| {
+                Some((
+                    slot,
+                    slot.record
+                        .as_ref()
+                        .filter(|row| row.token == token && row.running)?,
+                ))
+            })
+            .ok_or(Error::Conflict)?;
+        let put = Put::decode(&slot.bytes[..original.length])?;
+        Ok(CacheWrite {
+            token,
+            data: Data {
+                reservation: 0,
+                kind: put.block_type.value(),
+                priority: original.priority,
+                anonymity: 1,
+                replication: 0,
+                uid: 0,
+                expiration: original.expiration,
+                key: &original.key,
+                value: put.block,
+            },
+        })
+    }
+
+    /// Return a command refused by the backend before any physical admission.
+    /// The same staged cache bytes remain available for a later command.
+    pub fn defer(&mut self, token: Token<'id>) -> Result<(), Error> {
+        match self.active {
+            Some(Active::Cache(original)) if original == token => {
+                self.cache
+                    .iter_mut()
+                    .filter_map(|slot| slot.record.as_mut())
+                    .find(|row| row.token == token && row.running)
+                    .ok_or(Error::Conflict)?
+                    .running = false;
+            }
+            Some(Active::Replication(original)) if original == token => (),
+            _ => return Err(Error::StaleGeneration),
+        }
+        self.active = None;
+        Ok(())
+    }
     /// Observe only the actual original local STATUS. No replay follows refusal.
     pub fn cache_status(
         &mut self,
         token: Token<'id>,
         code: i32,
         min_expiration: AbsoluteTime,
-        now: u64,
+        time: Time,
         entropy: &mut impl Entropy,
     ) -> Result<(), Error> {
         if !matches!(self.active,Some(Active::Cache(t)) if t==token) {
@@ -597,12 +684,13 @@ impl<'id, 'slots, 'bytes> Owner<'id, 'slots, 'bytes> {
             .position(|p| p.record.is_some_and(|c| c.token == token && c.running))
             .ok_or(Error::StaleGeneration)?;
         let c = self.cache[i].record.ok_or(Error::Conflict)?;
-        let pause = if code == 1 || c.requested {
+        let pause = if self.stopping || code == 1 || c.requested {
             None
         } else if min_expiration.is_never() {
             Some(Until::Forever)
-        } else if min_expiration.as_micros() > now {
-            Some(Until::At(min_expiration.as_micros()))
+        } else if min_expiration > time.absolute {
+            let delta = min_expiration.as_micros() - time.absolute.as_micros();
+            Some(Until::At(time.elapsed.0.saturating_add(delta)))
         } else {
             let b = self
                 .peer(c.origin)
@@ -613,7 +701,7 @@ impl<'id, 'slots, 'bytes> Owner<'id, 'slots, 'bytes> {
             if draw >= b {
                 return Err(Error::InvalidInput);
             }
-            Some(Until::At(now.saturating_add(u64::from(draw))))
+            Some(Until::At(time.elapsed.0.saturating_add(u64::from(draw))))
         };
         self.cache[i].record = None;
         self.cache[i].bytes[..c.length].fill(0);
@@ -644,10 +732,10 @@ impl<'id, 'slots, 'bytes> Owner<'id, 'slots, 'bytes> {
         &mut self,
         token: Token<'id>,
         data: Option<Data<'_>>,
-        now: u64,
+        time: Time,
     ) -> Result<(), Error> {
         let original_kind = data.map_or(0, |d| d.kind);
-        self.selected_source(token, data, original_kind, now)
+        self.selected_source(token, data, original_kind, time)
     }
     /// Settle the original selected type6 row using the real shared resolver's
     /// output. Original UID/score/anonymity/type remain separate from wire type1.
@@ -656,7 +744,7 @@ impl<'id, 'slots, 'bytes> Owner<'id, 'slots, 'bytes> {
         token: Token<'id>,
         original: Data<'_>,
         value: &[u8],
-        now: u64,
+        time: Time,
     ) -> Result<(), Error> {
         if original.kind != 6 || original.value.len() != 72 {
             return Err(Error::Malformed);
@@ -669,7 +757,7 @@ impl<'id, 'slots, 'bytes> Owner<'id, 'slots, 'bytes> {
                 ..original
             }),
             6,
-            now,
+            time,
         )
     }
     fn selected_source(
@@ -677,7 +765,7 @@ impl<'id, 'slots, 'bytes> Owner<'id, 'slots, 'bytes> {
         token: Token<'id>,
         data: Option<Data<'_>>,
         original_kind: u32,
-        now: u64,
+        time: Time,
     ) -> Result<(), Error> {
         if !matches!(self.active,Some(Active::Replication(t)) if t==token) {
             return Err(Error::StaleGeneration);
@@ -687,7 +775,11 @@ impl<'id, 'slots, 'bytes> Owner<'id, 'slots, 'bytes> {
         } else {
             self.limits.selection_interval_us
         };
-        let next_selection = now.checked_add(interval).ok_or(Error::Overflow)?;
+        let next_selection = time
+            .elapsed
+            .0
+            .checked_add(interval)
+            .ok_or(Error::Overflow)?;
         if let Some(data) = data {
             let put = Put {
                 block_type: BlockType::new(data.kind),
@@ -709,7 +801,12 @@ impl<'id, 'slots, 'bytes> Owner<'id, 'slots, 'bytes> {
                 expiration: data.expiration,
             };
             self.report.last_selected = Some(meta);
-            if data.expiration.as_micros().saturating_sub(now) < MIN_PUSH_LIFETIME_US {
+            if data
+                .expiration
+                .as_micros()
+                .saturating_sub(time.absolute.as_micros())
+                < MIN_PUSH_LIFETIME_US
+            {
                 self.report.selected_rejected = self.report.selected_rejected.saturating_add(1)
             } else {
                 let i = self
@@ -761,7 +858,7 @@ impl<'id, 'slots, 'bytes> Owner<'id, 'slots, 'bytes> {
         Ok(())
     }
     /// Select a real unpaused connected target, never discovery or ownpeer.
-    pub fn next_push(&mut self, now: u64) -> Result<Option<Push<'_, 'id>>, Error> {
+    pub fn next_push(&mut self, time: Time) -> Result<Option<Push<'_, 'id>>, Error> {
         if self.stopping || self.fenced {
             return Ok(None);
         }
@@ -773,7 +870,11 @@ impl<'id, 'slots, 'bytes> Owner<'id, 'slots, 'bytes> {
                 continue;
             }
             if b.used >= 3
-                || b.meta.expiration.as_micros().saturating_sub(now) < MIN_PUSH_LIFETIME_US
+                || b.meta
+                    .expiration
+                    .as_micros()
+                    .saturating_sub(time.absolute.as_micros())
+                    < MIN_PUSH_LIFETIME_US
             {
                 self.blocks[i].record = None;
                 self.blocks[i].bytes[..b.length].fill(0);
@@ -784,7 +885,10 @@ impl<'id, 'slots, 'bytes> Owner<'id, 'slots, 'bytes> {
                 let Some(p) = self.peers[j].record else {
                     continue;
                 };
-                if !p.live || p.paused.active(now) || b.targets[..b.used].contains(&p.identity) {
+                if !p.live
+                    || p.paused.active(time.elapsed.0)
+                    || b.targets[..b.used].contains(&p.identity)
+                {
                     continue;
                 }
                 self.peer_cursor = (j + 1) % self.peers.len();
@@ -888,6 +992,23 @@ impl<'id, 'slots, 'bytes> Owner<'id, 'slots, 'bytes> {
     /// Prepare one actual official pressure control; pending originals cannot be
     /// replaced by newer durations or rebound to a new peer allocation.
     pub fn next_stop(&mut self, now: u64) -> Result<Option<StopOffer<'id>>, Error> {
+        self.next_stop_matching(now, |_| true)
+    }
+
+    /// Offer a pressure control only to the original neighbor currently polled by CORE.
+    pub fn next_stop_for(
+        &mut self,
+        neighbor: Neighbor<'id>,
+        now: u64,
+    ) -> Result<Option<StopOffer<'id>>, Error> {
+        self.next_stop_matching(now, |candidate| candidate == neighbor)
+    }
+
+    fn next_stop_matching(
+        &mut self,
+        now: u64,
+        accepts: impl Fn(Neighbor<'id>) -> bool,
+    ) -> Result<Option<StopOffer<'id>>, Error> {
         if self.stopping {
             return Ok(None);
         }
@@ -895,7 +1016,7 @@ impl<'id, 'slots, 'bytes> Owner<'id, 'slots, 'bytes> {
             let Some(p) = self.peers[i].record else {
                 continue;
             };
-            if !p.live {
+            if !p.live || !accepts(p.neighbor) {
                 continue;
             }
             let Some(until) = p.wanted.filter(|t| t.active(now)) else {
@@ -1015,5 +1136,29 @@ impl<'id, 'slots, 'bytes> Owner<'id, 'slots, 'bytes> {
                 .peers
                 .iter()
                 .all(|p| p.record.is_none_or(|p| p.pending.is_none()))
+    }
+
+    /// Reopen after retiring each original operation and GAP neighbor. A
+    /// storage outcome fence survives shutdown and prevents restart.
+    pub fn restart(&mut self) -> Result<(), Error> {
+        if self.fenced {
+            return Err(Error::OutcomeUnknown);
+        }
+        if !self.stopping {
+            return Err(Error::Conflict);
+        }
+        if !self.quiesced()
+            || self.peers.iter().any(|slot| slot.record.is_some())
+            || self.cache.iter().any(|slot| slot.record.is_some())
+            || self.blocks.iter().any(|slot| slot.record.is_some())
+        {
+            return Err(Error::WouldBlock);
+        }
+        self.next_selection = 0;
+        self.peer_cursor = 0;
+        self.after_cache = false;
+        self.report = Report::default();
+        self.stopping = false;
+        Ok(())
     }
 }

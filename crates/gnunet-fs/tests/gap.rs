@@ -5,7 +5,9 @@
 )]
 use gnunet_fs::{
     content::encode_data,
-    gap::{self, Entropy, NeighborSlot, PathSlot, ResultState, RouteSlot, Router, Selection},
+    gap::{
+        self, Entropy, NeighborSlot, PathSlot, ResultState, RouteSlot, Router, Selection, privacy,
+    },
 };
 use gnunet_types::Error;
 use gnunet_wire::official::{
@@ -22,6 +24,106 @@ impl Entropy for Zero {
             Ok(0)
         }
     }
+}
+
+#[test]
+fn complete_query_write_retries_on_the_original_neighbor_within_distinct_fanout()
+-> Result<(), Error> {
+    let mut instance = gap::Instance::new();
+    let mut neighbors = [NeighborSlot::default(); 2];
+    let mut bytes = [0; 512];
+    let mut routes = [RouteSlot::new(&mut bytes)];
+    let mut paths = [PathSlot::default(); 2];
+    let mut output = [0; 512];
+    let mut router = Router::new(
+        &mut instance,
+        &mut neighbors,
+        &mut routes,
+        &mut paths,
+        &mut output,
+        gap::Limits {
+            fanout: 2,
+            ..gap::Limits::default()
+        },
+    )?;
+    let peer = router.attach([1; 32])?;
+    let other = router.attach([2; 32])?;
+    let selection = Selection::new(BlockType::DBLOCK, [3; 64])?;
+    let admitted = router.start(selection, 1, 1, 0, 30, 0)?;
+    let job = router.next_lookup().ok_or(Error::NotFound)?;
+    assert_eq!(
+        router.source_finished(job.route, None)?,
+        ResultState::NoBlock
+    );
+    let fresh = router.query_requirement(admitted.route, peer)?;
+    let first = router.prepare_query(admitted.route, peer, 0, &mut Zero)?;
+    router.admitted(first)?;
+    assert!(matches!(
+        router.written_for_forwarding(first),
+        Err(Error::NotReady)
+    ));
+    router.exposed(first)?;
+    let (fact, seed) = router.written_for_forwarding(first)?;
+    assert!(fact.written);
+    assert!(!router.requirement_current(fresh));
+    let retry = router
+        .schedule_retry(seed.ok_or(Error::NotFound)?, 1_000_000, &mut Zero)?
+        .ok_or(Error::NotReady)?;
+    let ready_at = retry.ready_at();
+    assert_eq!(ready_at, 6_000_000);
+    assert_eq!(retry.neighbor(), peer);
+    assert_eq!(retry.route(), admitted.route);
+    let requirement = router.retry_requirement(&retry)?;
+    assert_ne!(requirement, fresh);
+    assert!(router.requirement_current(requirement));
+
+    let mut privacy_instance = privacy::Instance::new();
+    let mut credits = [privacy::CreditSlot::new()];
+    let mut intents = [privacy::IntentSlot::new(); 2];
+    let mut privacy = privacy::Policy::new(
+        &mut privacy_instance,
+        &mut credits,
+        &mut intents,
+        privacy::Limits::default(),
+    )?;
+    let privacy::Admission::Ready(permit) = privacy.admit(requirement, ready_at, &mut Zero)? else {
+        return Err(Error::NotReady);
+    };
+    let tx = router.prepare_retry_with_permit(retry, ready_at, &mut Zero, permit)?;
+    let (target, wire) = router.send_bytes(tx)?;
+    assert_eq!(target, peer);
+    assert_eq!(Get::decode(wire)?.ttl_seconds, 24);
+    privacy.bind(permit, tx)?;
+    router.admitted(tx)?;
+    router.exposed(tx)?;
+    privacy.exposed(permit)?;
+    let (fact, seed) = router.written_for_forwarding(tx)?;
+    privacy.settle(permit, fact, ready_at, true, true)?;
+    let second = router
+        .schedule_retry(seed.ok_or(Error::NotFound)?, ready_at, &mut Zero)?
+        .ok_or(Error::NotReady)?;
+
+    let other_tx = router.prepare_query(admitted.route, other, ready_at, &mut Zero)?;
+    assert!(!router.send_failed(other_tx)?.written);
+    assert!(matches!(
+        router.written_for_forwarding(other_tx),
+        Err(Error::StaleGeneration)
+    ));
+    assert!(router.forwarding().next().is_none());
+    let next_requirement = router.retry_requirement(&second)?;
+    assert_ne!(next_requirement, requirement);
+    assert!(router.retry_current(&second, ready_at));
+
+    let _original_loss = router.disconnect(peer)?;
+    let replacement = router.attach([1; 32])?;
+    assert_ne!(replacement, peer);
+    assert!(!router.retry_current(&second, ready_at));
+    assert_eq!(
+        router.retry_requirement(&second),
+        Err(Error::StaleGeneration)
+    );
+    assert!(!router.requirement_current(next_requirement));
+    Ok(())
 }
 
 #[test]
@@ -130,15 +232,12 @@ fn routed_content_return_path_elapsed_ttl_and_original_loss_are_bounded() -> Res
     let onward = router.attach([3; 32])?;
     let mut ciphertext = [0; 128];
     let encoded = encode_data(b"real encrypted GAP block", &mut ciphertext)?;
-    let selection = Selection {
-        kind: BlockType::DBLOCK,
-        query: encoded.key().query,
-    };
+    let selection = Selection::new(BlockType::DBLOCK, encoded.key().query)?;
     let mut ids = [0; 64];
     ids[..32].fill(2);
     ids[32..].fill(3);
     let get = Get {
-        block_type: selection.kind,
+        block_type: selection.kind(),
         priority: 15000,
         ttl_seconds: 60000,
         reserved: 0,
@@ -176,8 +275,8 @@ fn routed_content_return_path_elapsed_ttl_and_original_loss_are_bounded() -> Res
     let forwarded = Get::decode(wire)?;
     assert_eq!(forwarded.ttl_seconds, 49997); // 60000 - C10000 decrement - actual elapsed2.5s, truncation.
     assert_eq!(forwarded.query, &selection.query);
-    assert_eq!(forwarded.bitmap, 0);
-    assert!(forwarded.identities.is_empty());
+    assert_eq!(forwarded.bitmap, TRANSMIT_TO);
+    assert_eq!(forwarded.identity(TRANSMIT_TO)?, Some(&[3; 32]));
     assert_eq!(router.written(tx), Err(Error::NotReady));
     router.admitted(tx)?;
     router.exposed(tx)?;
@@ -198,7 +297,7 @@ fn routed_content_return_path_elapsed_ttl_and_original_loss_are_bounded() -> Res
     let stopped = router.send_failed(rolled)?;
     assert!(!stopped.admitted && !stopped.exposed && !stopped.written);
     let put = Put {
-        block_type: selection.kind,
+        block_type: selection.kind(),
         expiration: AbsoluteTime::from_micros(987654321),
         block: encoded.bytes(),
     };
@@ -238,10 +337,7 @@ fn routed_content_return_path_elapsed_ttl_and_original_loss_are_bounded() -> Res
     // Negative signed TTL is still forwardable. A real source failure is
     // explicitly distinct from an original no-transferable-block terminal.
     let negative = router.start(
-        Selection {
-            kind: BlockType::DBLOCK,
-            query: [9; 64],
-        },
+        Selection::new(BlockType::DBLOCK, [9; 64])?,
         90,
         1,
         1,
@@ -261,10 +357,7 @@ fn routed_content_return_path_elapsed_ttl_and_original_loss_are_bounded() -> Res
     router.cancel(negative.path)?;
 
     let local = router.start(
-        Selection {
-            kind: BlockType::IBLOCK,
-            ..selection
-        },
+        Selection::new(BlockType::IBLOCK, selection.query)?,
         77,
         1,
         1,
@@ -319,10 +412,7 @@ fn repeated_content_get_uses_a_fresh_local_owner_before_old_residence_ends() -> 
     let peer = router.attach([1; 32])?;
     let mut ciphertext = [0; 128];
     let encoded = encode_data(b"the same file block at two positions", &mut ciphertext)?;
-    let selection = Selection {
-        kind: BlockType::DBLOCK,
-        query: encoded.key().query,
-    };
+    let selection = Selection::new(BlockType::DBLOCK, encoded.key().query)?;
     let first = router.start_with_seen(selection, 1, 0, 1, 0, 0, &[], &mut Zero)?;
     let source = router.next_lookup().ok_or(Error::NotFound)?;
     assert_eq!(source.route, first.route);
@@ -339,7 +429,7 @@ fn repeated_content_get_uses_a_fresh_local_owner_before_old_residence_ends() -> 
     router.exposed(old_send)?;
     let mut reply = [0; 256];
     let size = Put {
-        block_type: selection.kind,
+        block_type: selection.kind(),
         expiration: AbsoluteTime::from_micros(987654321),
         block: encoded.bytes(),
     }
@@ -361,7 +451,7 @@ fn repeated_content_get_uses_a_fresh_local_owner_before_old_residence_ends() -> 
     ));
     let mut request = [0; 128];
     let qsize = Get {
-        block_type: selection.kind,
+        block_type: selection.kind(),
         priority: 1,
         ttl_seconds: 0,
         reserved: 0,

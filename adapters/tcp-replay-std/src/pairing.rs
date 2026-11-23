@@ -6,9 +6,13 @@ use gnunet_native::{
     filesystem::{Directory, EntryInfo, FileIdentity, file_info, private_single_file_identity},
 };
 use std::{
-    io::{self, Read, Seek, SeekFrom},
+    ffi::OsStr,
+    fs::File,
+    io::{self, Read},
     path::Path,
 };
+#[cfg(test)]
+mod tests;
 /// Exact bounded V2 public image, including replay identity and min generation.
 /// These fields are format metadata, not a successful persistence receipt.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -61,6 +65,76 @@ pub(crate) struct Inspection {
     pub image: FrontierImage,
     pub directory_sync: DirectorySync,
 }
+struct Prepared {
+    file: File,
+    identity: FileIdentity,
+    bytes: [u8; FRONTIER_BYTES],
+    image: FrontierImage,
+    directory_sync: DirectorySync,
+}
+#[derive(Debug)]
+struct PreparationFailure {
+    original: io::Error,
+    close: io::Error,
+}
+impl std::fmt::Display for PreparationFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}; independent original frontier sync-handle close: {}",
+            self.original, self.close
+        )
+    }
+}
+impl std::error::Error for PreparationFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.original)
+    }
+}
+fn prepare(directory: &Directory, name: &OsStr, mut file: File) -> io::Result<Prepared> {
+    let prepared = (|| {
+        let identity = private_single_file_identity(&file)?;
+        let EntryInfo::File(info) = file_info(&file)? else {
+            return Err(io::Error::other("ordinary TCP frontier required"));
+        };
+        if info.bytes != FRONTIER_BYTES as u64 || !directory.same_file(name, &file)? {
+            return Err(io::Error::other("exact original V2 TCP frontier required"));
+        }
+        let mut bytes = [0; FRONTIER_BYTES];
+        file.read_exact(&mut bytes)?;
+        let image = FrontierImage::decode(bytes)?;
+        file.sync_all()?;
+        let directory_sync = directory.sync()?;
+        if directory_sync == DirectorySync::Unavailable {
+            file.sync_all()?;
+        }
+        // Select and qualify the reader while the original sync handle still
+        // pins its identity. Canonical state is never removed on a refusal.
+        let readonly = directory.open_file(name)?;
+        let observed = private_single_file_identity(&readonly)?;
+        if observed != identity {
+            return Err(io::Error::other(format!(
+                "original TCP frontier read lease changed: expected={identity:?}, observed={observed:?}"
+            )));
+        }
+        Ok(Prepared {
+            file: readonly,
+            identity,
+            bytes,
+            image,
+            directory_sync,
+        })
+    })();
+    let closed = gnunet_native::filesystem::close(file);
+    match (prepared, closed) {
+        (Ok(prepared), Ok(())) => Ok(prepared),
+        (Err(original), Ok(())) | (Ok(_), Err(original)) => Err(original),
+        (Err(original), Err(close)) => Err(io::Error::new(
+            original.kind(),
+            PreparationFailure { original, close },
+        )),
+    }
+}
 /// Read only the original exact selected object and report its actual native
 /// barriers. An equal-byte replacement never supplies this observation.
 pub(crate) fn inspect(path: &Path) -> io::Result<Inspection> {
@@ -78,39 +152,67 @@ pub(crate) fn inspect(path: &Path) -> io::Result<Inspection> {
     let directory = Directory::open(parent)?;
     directory.validate_namespace()?;
     let parent_id = FileIdentity::of(directory.as_file())?;
-    let mut file = directory.open_file_for_sync(name)?;
-    let file_id = private_single_file_identity(&file)?;
+    let Prepared {
+        mut file,
+        identity: file_id,
+        bytes,
+        image,
+        directory_sync,
+    } = prepare(&directory, name, directory.open_file_for_sync(name)?)?;
+    // File synchronization and the actual sync-handle close finish before the
+    // immutable read fence begins. Full fences still guard the original reader.
     let EntryInfo::File(info) = file_info(&file)? else {
         return Err(io::Error::other("ordinary TCP frontier required"));
     };
-    if info.bytes != FRONTIER_BYTES as u64 || !directory.same_file(name, &file)? {
-        return Err(io::Error::other("exact original V2 TCP frontier required"));
+    if info.identity != file_id || info.bytes != FRONTIER_BYTES as u64 {
+        return Err(io::Error::other(format!(
+            "original TCP frontier changed while preparing read lease: original_identity={file_id:?}, after_close={info:?}"
+        )));
     }
-    let mut bytes = [0; FRONTIER_BYTES];
-    file.read_exact(&mut bytes)?;
-    let image = FrontierImage::decode(bytes)?;
-    file.sync_all()?;
-    let directory_sync = directory.sync()?;
-    if directory_sync == DirectorySync::Unavailable {
-        file.sync_all()?;
-    }
-    file.seek(SeekFrom::Start(0))?;
     let mut actual = [0; FRONTIER_BYTES];
     file.read_exact(&mut actual)?;
     let mut extra = [0];
     let selected = Directory::open(parent)?;
     selected.validate_namespace()?;
-    if actual != bytes
-        || file.read(&mut extra)? != 0
-        || file_info(&file)? != EntryInfo::File(info)
-        || private_single_file_identity(&file)? != file_id
-        || !directory.same_file(name, &file)?
-        || FileIdentity::of(selected.as_file())? != parent_id
-        || FileIdentity::of(directory.as_file())? != parent_id
-    {
-        return Err(io::Error::other(
-            "original frontier or directory changed during pairing",
-        ));
+    if actual != bytes {
+        return Err(io::Error::other(format!(
+            "original frontier or directory changed during pairing: content_mismatch=true, before={info:?}"
+        )));
+    }
+    let trailing_bytes = file.read(&mut extra)?;
+    if trailing_bytes != 0 {
+        return Err(io::Error::other(format!(
+            "original frontier or directory changed during pairing: unexpected_tail={trailing_bytes}, before={info:?}"
+        )));
+    }
+    let after = file_info(&file)?;
+    if after != EntryInfo::File(info) {
+        return Err(io::Error::other(format!(
+            "original frontier or directory changed during pairing: before={info:?}, after={after:?}"
+        )));
+    }
+    let private = private_single_file_identity(&file)?;
+    if private != file_id {
+        return Err(io::Error::other(format!(
+            "original frontier or directory changed during pairing: before_identity={file_id:?}, private_identity={private:?}"
+        )));
+    }
+    if !directory.same_file(name, &file)? {
+        return Err(io::Error::other(format!(
+            "original frontier or directory changed during pairing: named_match=false, held={info:?}"
+        )));
+    }
+    let selected_id = FileIdentity::of(selected.as_file())?;
+    if selected_id != parent_id {
+        return Err(io::Error::other(format!(
+            "original frontier or directory changed during pairing: before_directory={parent_id:?}, named_directory={selected_id:?}"
+        )));
+    }
+    let held_id = FileIdentity::of(directory.as_file())?;
+    if held_id != parent_id {
+        return Err(io::Error::other(format!(
+            "original frontier or directory changed during pairing: before_directory={parent_id:?}, held_directory={held_id:?}"
+        )));
     }
     Ok(Inspection {
         image,

@@ -15,9 +15,9 @@ use std::{
 pub enum Address {
     /// Filesystem socket; guards may own this newly created pathname only.
     Unix(PathBuf),
-    /// Linux abstract sun_path bytes, including its leading and trailing zeros.
-    /// The pinned C profile passes the full sockaddr_un, so padding is part of
-    /// the Linux abstract socket name; it is not shortened to strlen(name).
+    /// Exact Linux abstract sun_path, including its leading NUL and any
+    /// trailing zeros. Configured names have the full C sockaddr_un extent;
+    /// inherited listeners retain the extent reported by the kernel.
     Abstract(Vec<u8>),
     /// TCP endpoint with configured nonzero port and native IPv6 flow/scope.
     Tcp(SocketAddr),

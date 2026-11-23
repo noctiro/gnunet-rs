@@ -48,7 +48,7 @@ async fn impossible_empty_effect_budget_discards_original_large_receipt_then_acc
     eprintln!("ACTUAL_RAW_SEND_BUFFER_SET {buffer:?}");
     buffer?;
     raw.bind(&"127.0.0.1:0".parse::<std::net::SocketAddr>()?.into())?;
-    let mut socket = DatagramSocket::bind("127.0.0.1:0".parse()?)?;
+    let mut socket = DatagramSocket::bind("127.0.0.1:0".parse()?, Default::default())?;
     let local_address = socket.local_address();
     let huge = vec![0; 65495];
     let sent = raw.send_to(&huge, &local_address.into());
@@ -141,7 +141,7 @@ async fn transient_effect_pressure_retains_original_signed_receipt_until_registr
     let scratch = Scratch(path);
     let raw = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
     raw.bind(&"127.0.0.1:0".parse::<std::net::SocketAddr>()?.into())?;
-    let mut socket = DatagramSocket::bind("127.0.0.1:0".parse()?)?;
+    let mut socket = DatagramSocket::bind("127.0.0.1:0".parse()?, Default::default())?;
     let mut sender = Sender::new(
         remote.peer(),
         local.peer(),

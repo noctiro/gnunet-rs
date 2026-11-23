@@ -15,8 +15,10 @@ gnunet-nat -c gnunet.conf --section transport-udp --in 127.0.0.1:2086 --udp --st
 ```
 
 Use `--remote` for one reversal request and `--watch` to print reversal callbacks.
-`--tcp` and `--udp` are mutually exclusive; `--stun` requires UDP. Shared PROGRAM
-options select configuration, logging, help and version output. See the linked
+`--tcp` and `--udp` are mutually exclusive. With UDP, `--stun` only receives
+and forwards STUN packets; `--probe-stun` sends probes to the endpoints in
+`[nat] STUN_SERVERS` and forwards only matching responses. Shared PROGRAM options
+select configuration, logging, help and version output. See the linked
 [NAT command reference](../../adapters/nat-test-std/README.md#commands-and-configuration)
 for lifetime and STUN configuration.
 

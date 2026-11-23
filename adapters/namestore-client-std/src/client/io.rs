@@ -14,8 +14,11 @@ use gnunet_wire::official::identity::SecretKeyView;
 use std::{
     future::{Future, poll_fn},
     task::{Context, Poll},
+    time::Duration,
 };
 use tokio::time::Instant;
+
+const FOLLOW_FRAME_TIMEOUT: Duration = Duration::from_secs(30);
 impl<'id> Client<'id> {
     fn zone(expected: Option<&SecretKey>, actual: SecretKeyView<'_>) -> Result<(), Fault> {
         if let Some(expected) = expected {
@@ -119,7 +122,11 @@ impl<'id> Client<'id> {
                         return Err(Fault::Malformed.into());
                     }
                     self.release()?;
-                    self.stream.as_mut().ok_or(Fault::Conflict)?.synced = true;
+                    let stream = self.stream.as_mut().ok_or(Fault::Conflict)?;
+                    stream.synced = true;
+                    if stream.follow {
+                        self.slots[row].as_mut().ok_or(Fault::Conflict)?.deadline = None;
+                    }
                     return Ok(Progress::Synchronized { epoch, operation });
                 }
                 ipc::Response::End { rid } if self.mode == Mode::Iterator && rid == state.rid => {}
@@ -365,9 +372,25 @@ impl<'id> Client<'id> {
             Poll::Ready(Ok(ReadStep::Eof)) => Poll::Ready(Ok(self.lost(LossCause::Eof))),
             Poll::Ready(Ok(ReadStep::Progress { bytes, complete })) => {
                 self.read_first = false;
+                let now = Instant::now();
+                if self.input_hard.is_some_and(|deadline| now >= deadline) {
+                    return Poll::Ready(Ok(self.lost(LossCause::RetirementDeadline)));
+                }
                 if complete {
+                    self.input_hard = None;
                     Poll::Ready(self.dispatch(epoch))
                 } else {
+                    if self.input_hard.is_none()
+                        && self
+                            .stream
+                            .as_ref()
+                            .is_some_and(|stream| stream.follow && stream.synced)
+                    {
+                        self.input_hard = Some(
+                            now.checked_add(FOLLOW_FRAME_TIMEOUT)
+                                .ok_or(Fault::Overflow)?,
+                        );
+                    }
                     Poll::Ready(Ok(Progress::Activity {
                         read_bytes: bytes,
                         written_bytes: 0,
@@ -380,6 +403,9 @@ impl<'id> Client<'id> {
     // only after the actual shared clock is ready and sampled successfully.
     fn expire(&mut self, now: Option<u64>) -> Result<Option<Progress<'id>>, Error> {
         let native = Instant::now();
+        if self.input_hard.is_some_and(|deadline| native >= deadline) {
+            return Ok(Some(self.lost(LossCause::RetirementDeadline)));
+        }
         if self
             .control
             .as_ref()
@@ -396,7 +422,9 @@ impl<'id> Client<'id> {
             if self.slots[row].as_ref().is_some_and(|state| {
                 state.outcome.is_none()
                     && state.reason.is_none()
-                    && (now.is_some_and(|now| now >= state.expires) || native >= state.hard)
+                    && state.deadline.is_some_and(|deadline| {
+                        now.is_some_and(|now| now >= deadline.expires) || native >= deadline.hard
+                    })
             }) {
                 self.retire_request(row, LocalReason::Deadline)?;
             }
@@ -419,7 +447,7 @@ impl<'id> Client<'id> {
             .iter()
             .flatten()
             .filter(|state| state.outcome.is_none() && state.reason.is_none())
-            .map(|state| state.expires)
+            .filter_map(|state| state.deadline.map(|deadline| deadline.expires))
             .chain(self.control.as_ref().map(|c| c.expires))
             .min()
     }
@@ -435,8 +463,13 @@ impl<'id> Client<'id> {
             .iter()
             .flatten()
             .filter(|state| state.outcome.is_none())
-            .map(|state| state.retirement.unwrap_or(state.hard))
+            .filter_map(|state| {
+                state
+                    .retirement
+                    .or_else(|| state.deadline.map(|deadline| deadline.hard))
+            })
             .chain(self.control.as_ref().map(|c| c.hard))
+            .chain(self.input_hard)
             .chain(until)
             .min();
         if let Some(target) = native {

@@ -1,27 +1,91 @@
 //! Structural/resource validation plus actual retained raw signature rechecks.
 //! Deleted payload metadata relies on the explicit trusted owned-store contract;
 //! checksum and an ArchivedFact are never described as new network signatures.
-use super::*;
-impl<'id> Core<'id> {
-    pub(super) fn validate_archive(&self, historical_peer: Option<[u8; 32]>) -> Result<(), Error> {
-        if self.own_signers.len() > self.limits.own_signers
-            || self.own_signers.windows(2).any(|p| p[0] >= p[1])
+mod dag;
+mod pages;
+
+use super::{MessageRecord, has_client_message_state};
+use crate::{
+    Core, Error, Hash, MessagePhase, OriginalLayout, SessionPhase, Slot, SourceObservation,
+    SourceRole, crypto,
+    epoch::EpochMutation,
+    state::{Authentication, PeerRow, RoomRow},
+    wire,
+};
+use gnunet_types::Error as Fault;
+
+pub use dag::ArchiveGraphCell;
+pub(super) use dag::DagWorkspace;
+pub use pages::CommittedGraphPages;
+use pages::RoomGraph;
+
+struct SignedFacts<'row> {
+    hash: &'row Hash,
+    kind: wire::envelope::Kind,
+    timestamp: u64,
+    parents: &'row [Hash; 2],
+    references: &'row [Hash; 3],
+}
+
+fn check_original(
+    message: wire::message::Message<'_>,
+    facts: SignedFacts<'_>,
+    auth: Authentication,
+) -> Result<(), Error> {
+    let header = message.header();
+    if &crypto::signature::message_hash(message) != facts.hash
+        || header.kind != facts.kind
+        || header.timestamp.as_micros() != facts.timestamp
+        || header.previous != &facts.parents[0]
+    {
+        return Err(Fault::Authentication.into());
+    }
+    let second = if let wire::body::Body::Merge { previous, .. } = message.body() {
+        *previous
+    } else {
+        [0; 64]
+    };
+    if facts.parents[1] != second || facts.references != &crate::ingest::references(message.body())
+    {
+        return Err(Fault::Malformed.into());
+    }
+    if let Some(peer) = auth.peer {
+        crypto::signature::verify_peer(message, &peer)?;
+    } else {
+        crypto::signature::verify_member(message, wire::PublicKey::new(&auth.public)?)?;
+    }
+    Ok(())
+}
+
+impl<'id, const ROOMS: usize> Core<'id, ROOMS> {
+    pub(super) fn validate_archive_using(
+        &self,
+        historical_peer: Option<[u8; 32]>,
+        mut graph: DagWorkspace<'_>,
+        archive: &[u8],
+        pages: CommittedGraphPages<'_, '_>,
+    ) -> Result<(), Error> {
+        let own_signers = self.own_signers.peers();
+        if own_signers.len() > self.limits.own_signers
             || historical_peer.is_some_and(|peer| !self.is_own_signer(&peer))
-            || (historical_peer.is_none() && !self.own_signers.is_empty())
+            || (historical_peer.is_none() && !own_signers.is_empty())
         {
             return Err(Fault::Authentication.into());
         }
+        pages.check_directory(historical_peer, &self.rooms)?;
         for (room_slot, room) in self.rooms.iter() {
             if room.sources.len() != 0
                 || room.operations.len() != 0
-                || !room.hpke_keys.is_empty()
+                || room.queues.has_recipient_keys()
                 || room.joined
                 || room.local_public.is_some()
             {
                 return Err(Fault::Malformed.into());
             }
+            let history = RoomGraph::new(room, pages)?;
+            graph.check_unique_sequences(history.sequences())?;
             for (slot, s) in room.sessions.iter() {
-                self.contacts.get(s.contact.slot)?;
+                self.contacts.get(s.contact)?;
                 if !s.archived || s.phase != SessionPhase::Completed {
                     return Err(Fault::Malformed.into());
                 }
@@ -34,6 +98,11 @@ impl<'id> Core<'id> {
                             || o.lineage != s.lineage
                             || o.generation > s.generation
                     }) || first.kind != wire::envelope::Kind::JOIN
+                        || !first.semantic_applied
+                        || !room
+                            .find_epoch(&first.hash)
+                            .and_then(|slot| room.epochs.get(slot).ok())
+                            .is_some_and(|epoch| epoch.complete)
                     {
                         return Err(Fault::Authentication.into());
                     }
@@ -78,46 +147,24 @@ impl<'id> Core<'id> {
                     return Err(Fault::Malformed.into());
                 }
             }
-            if room.nodes.iter().any(|(_, node)| node.recipient.is_some()) {
-                return Err(Fault::Malformed.into());
-            }
             for (_, n) in room.nodes.iter() {
+                if has_client_message_state(n) {
+                    return Err(Fault::Malformed.into());
+                }
                 let Some(auth) = n.auth else {
                     return Err(Fault::Authentication.into());
                 };
-                if !matches!(n.origin, MessageOrigin::Archived(_))
-                    || !n.epoch_indexed
-                    || n.plaintext.is_some()
-                    || n.parents.contains(&n.hash)
-                {
+                if !n.origin.is_archived() || !n.epoch_indexed || n.parents.contains(&n.hash) {
                     return Err(Fault::Malformed.into());
                 }
-                if let Some(o) = auth.owner {
-                    self.contacts.get(o.contact.slot)?;
-                    if o.lineage == 0 || o.generation == 0 {
-                        return Err(Fault::Malformed.into());
-                    }
-                }
-                if let Some(at) = auth.session {
-                    let s = room.sessions.get(at)?;
-                    let owner = auth.owner.ok_or(Fault::Malformed)?;
-                    if owner.contact != s.contact
-                        || owner.lineage != s.lineage
-                        || owner.generation != s.generation
-                        || auth.public != s.public
-                    {
-                        return Err(Fault::Authentication.into());
-                    }
-                }
-                if let Some(peer) = auth.peer
-                    && (auth.owner.is_some()
-                        || auth.session.is_some()
-                        || auth.public[..4] != wire::KeyType::Eddsa.value().to_be_bytes()
-                        || auth.public[4..] != peer)
-                {
-                    return Err(Fault::Authentication.into());
-                }
-                n.layout.check_signer(auth.public, auth.peer)?;
+                self.check_archive_attribution(
+                    room_slot,
+                    room,
+                    auth,
+                    n.layout,
+                    n.origin.provenance(),
+                    n.meta.sender_hash.as_ref(),
+                )?;
                 if let Some(layout) = n.cipher_layout {
                     layout.validate()?;
                 }
@@ -127,61 +174,31 @@ impl<'id> Core<'id> {
                 if let Some(layout) = n.transcript_layout {
                     layout.validate()?;
                 }
-                if n.provenance.room != room_slot {
-                    return Err(Fault::Malformed.into());
-                }
-                if let SourceRole::ServiceSigner(peer) = n.provenance.role
-                    && (!self.is_own_signer(&peer) || auth.peer != Some(peer))
-                {
-                    return Err(Fault::Authentication.into());
-                }
-                if let Some(raw) = &n.frame {
+                let original = if let Some(range) = n.archived_original() {
+                    if !n.can_archive_original() {
+                        return Err(Fault::Malformed.into());
+                    }
+                    Some(range.in_image(archive)?)
+                } else {
+                    n.original(&self.frames)?
+                };
+                if let Some(raw) = original {
                     if n.phase == MessagePhase::Deleted {
                         return Err(Fault::Malformed.into());
                     }
-                    let message = wire::message::Message::decode_with_profiles(
-                        raw.expose(),
-                        n.layout.body_profile(n.kind)?,
-                        n.layout.padding,
-                        n.padding,
+                    check_original(
+                        n.decode_original(raw)?,
+                        SignedFacts {
+                            hash: &n.hash,
+                            kind: n.kind,
+                            timestamp: n.timestamp,
+                            parents: &n.parents,
+                            references: &n.references,
+                        },
+                        auth,
                     )?;
-                    if crypto::signature::message_hash(message) != n.hash
-                        || message.header().kind != n.kind
-                        || message.header().timestamp.as_micros() != n.timestamp
-                        || *message.header().previous != n.parents[0]
-                    {
-                        return Err(Fault::Authentication.into());
-                    }
-                    let second = if let wire::body::Body::Merge { previous, .. } = message.body() {
-                        *previous
-                    } else {
-                        [0; 64]
-                    };
-                    if n.parents[1] != second
-                        || n.references != crate::ingest::references(message.body())
-                    {
-                        return Err(Fault::Malformed.into());
-                    }
-                    if let Some(peer) = auth.peer {
-                        crypto::signature::verify_peer(message, &peer)?;
-                    } else {
-                        crypto::signature::verify_member(
-                            message,
-                            wire::PublicKey::new(&auth.public)?,
-                        )?;
-                    }
                 } else if n.phase != MessagePhase::Deleted {
                     return Err(Fault::Malformed.into());
-                }
-                if let Some(sender) = n.meta.sender_hash {
-                    let expected = if let Some(peer) = auth.peer {
-                        gnunet_crypto::hash512(&peer)
-                    } else {
-                        gnunet_crypto::hash512(&auth.public)
-                    };
-                    if sender != expected {
-                        return Err(Fault::Authentication.into());
-                    }
                 }
                 if crate::graph::discourse_kind(n.kind) {
                     if n.frame.is_some()
@@ -215,38 +232,26 @@ impl<'id> Core<'id> {
                 } else if room.alias(&n.hash) != Some(n.epoch) {
                     return Err(Fault::Malformed.into());
                 }
-                if n.complete
-                    && n.parents
-                        .iter()
-                        .any(|h| *h != [0; 64] && room.find_node(h).is_none())
-                {
-                    return Err(Fault::Malformed.into());
-                }
+            }
+            for record in history.detached_rows() {
+                let (_, row) = record?;
+                self.check_detached_record(room_slot, room, &row)?;
             }
             // Linear bounded adjacency/Kahn walk. Missing ancestors remain
             // lookup targets; known-node and epoch cycles are refused independently.
-            check_dag(
-                room.nodes.limit(),
-                room.nodes.iter().map(|(slot, node)| {
-                    (
-                        slot.index,
-                        node.parents
-                            .map(|hash| room.find_node(&hash).map(|at| at.index)),
-                    )
-                }),
-            )?;
-            check_dag(
+            graph.check(history.width(), history.edges())?;
+            graph.check(
                 room.epochs.limit(),
                 room.epochs.iter().map(|(slot, epoch)| {
-                    (
+                    Ok((
                         slot.index,
                         epoch
                             .parents
                             .map(|hash| room.find_epoch(&hash).map(|at| at.index)),
-                    )
+                    ))
                 }),
             )?;
-            for hash in &room.frontier {
+            for hash in &room.queues.frontier {
                 if *hash == [0; 64]
                     || room.find_node(hash).is_none()
                     || room
@@ -265,12 +270,19 @@ impl<'id> Core<'id> {
                     return Err(Fault::Malformed.into());
                 }
                 if node.frame.is_some() {
-                    let body = node.body(self.profile)?;
+                    let body = node.body(&self.frames)?;
                     match (e.mutation, body) {
-                        (
-                            crate::epoch::EpochMutation::Join(c),
-                            wire::body::Body::Join { epoch, .. },
-                        ) => {
+                        (EpochMutation::Join(c), wire::body::Body::Join { epoch, .. }) => {
+                            if e.parents != [*epoch, [0; 64]]
+                                || node
+                                    .auth
+                                    .and_then(|a| a.owner)
+                                    .is_none_or(|o| o.contact != c)
+                            {
+                                return Err(Fault::Authentication.into());
+                            }
+                        }
+                        (EpochMutation::Leave(c), wire::body::Body::Leave { epoch }) => {
                             if e.parents != [*epoch, [0; 64]]
                                 || node
                                     .auth
@@ -281,20 +293,7 @@ impl<'id> Core<'id> {
                             }
                         }
                         (
-                            crate::epoch::EpochMutation::Leave(c),
-                            wire::body::Body::Leave { epoch },
-                        ) => {
-                            if e.parents != [*epoch, [0; 64]]
-                                || node
-                                    .auth
-                                    .and_then(|a| a.owner)
-                                    .is_none_or(|o| o.contact != c)
-                            {
-                                return Err(Fault::Authentication.into());
-                            }
-                        }
-                        (
-                            crate::epoch::EpochMutation::Merge,
+                            EpochMutation::Merge,
                             wire::body::Body::Merge {
                                 first_epoch,
                                 second_epoch,
@@ -309,9 +308,7 @@ impl<'id> Core<'id> {
                     }
                 } else {
                     match e.mutation {
-                        crate::epoch::EpochMutation::Join(c)
-                            if node.kind == wire::envelope::Kind::JOIN =>
-                        {
+                        EpochMutation::Join(c) if node.kind == wire::envelope::Kind::JOIN => {
                             if node
                                 .auth
                                 .and_then(|a| a.owner)
@@ -320,9 +317,7 @@ impl<'id> Core<'id> {
                                 return Err(Fault::Authentication.into());
                             }
                         }
-                        crate::epoch::EpochMutation::Leave(c)
-                            if node.kind == wire::envelope::Kind::LEAVE =>
-                        {
+                        EpochMutation::Leave(c) if node.kind == wire::envelope::Kind::LEAVE => {
                             if node
                                 .auth
                                 .and_then(|a| a.owner)
@@ -331,153 +326,130 @@ impl<'id> Core<'id> {
                                 return Err(Fault::Authentication.into());
                             }
                         }
-                        crate::epoch::EpochMutation::Merge
-                            if node.kind == wire::envelope::Kind::MERGE => {}
+                        EpochMutation::Merge if node.kind == wire::envelope::Kind::MERGE => {}
                         _ => return Err(Fault::Malformed.into()),
                     }
                 }
                 if e.complete {
-                    let mut expected = Vec::new();
-                    expected
-                        .try_reserve_exact(self.limits.sessions_per_room)
-                        .map_err(|_| Fault::Capacity)?;
-                    for parent in e.parents {
-                        if parent == [0; 64] {
-                            continue;
-                        }
-                        let previous = room
-                            .epochs
-                            .get(room.find_epoch(&parent).ok_or(Fault::Malformed)?)?;
-                        if !previous.complete {
-                            return Err(Fault::Malformed.into());
-                        }
-                        for contact in &previous.members {
-                            if !expected.contains(contact) {
-                                if expected.len() == self.limits.sessions_per_room {
-                                    return Err(Fault::Capacity.into());
-                                }
-                                expected.push(*contact)
-                            }
-                        }
-                    }
-                    match e.mutation {
-                        crate::epoch::EpochMutation::Join(c) => {
-                            if !expected.contains(&c) {
-                                if expected.len() == self.limits.sessions_per_room {
-                                    return Err(Fault::Capacity.into());
-                                }
-                                expected.push(c)
-                            }
-                        }
-                        crate::epoch::EpochMutation::Leave(c) => expected.retain(|m| *m != c),
-                        crate::epoch::EpochMutation::Merge => {}
-                    }
-                    if expected.len() != e.members.len()
-                        || expected.iter().any(|m| !e.members.contains(m))
-                    {
-                        return Err(Fault::Authentication.into());
-                    }
-                }
-                for nonce in &e.nonces {
-                    if room.find_node(&nonce.message).is_none() {
-                        return Err(Fault::Malformed.into());
-                    }
-                }
-                for (_, g) in e.groups.iter() {
-                    if g.key.is_some()
-                        || !matches!(g.phase, KeyPhase::Missing | KeyPhase::Revoked)
-                        || g.phase == KeyPhase::Revoked && g.valid
-                        || g.target == 0
-                        || g.target > e.members.len()
-                    {
-                        return Err(Fault::Malformed.into());
-                    }
-                    let (is_group, level) =
-                        crate::epoch::identifier_order(g.identifier_order, &g.identifier);
-                    let target = if is_group {
-                        1usize.checked_shl(level).ok_or(Fault::Overflow)?
-                    } else {
-                        e.members.len()
-                    };
-                    if target != g.target {
-                        return Err(Fault::Malformed.into());
-                    }
-                    for c in &g.confirmations {
-                        if !e.members.contains(&c.contact) || room.find_node(&c.message).is_none() {
-                            return Err(Fault::Malformed.into());
-                        }
-                    }
+                    room.validate_epoch_members(e, self.limits.sessions_per_room)?;
                 }
             }
             if room.subscriptions.len() != 0 {
                 return Err(Fault::Malformed.into());
             }
-            if room.peers.iter().any(|p| p.announced) {
+            if room.queues.peers.iter().any(PeerRow::is_announced) {
                 return Err(Fault::Malformed.into());
             }
         }
         Ok(())
     }
-}
 
-// Temporary recovery workspace is <= limit heads/degrees/queue and 2*limit edges.
-// It is fallibly allocated and released before the recovered owner is returned.
-fn check_dag(
-    limit: usize,
-    rows: impl Iterator<Item = (usize, [Option<usize>; 2])>,
-) -> Result<(), Error> {
-    let mut heads: Vec<Option<usize>> = Vec::new();
-    let mut degrees: Vec<u8> = Vec::new();
-    let mut queue: Vec<usize> = Vec::new();
-    let mut edges: Vec<(usize, Option<usize>)> = Vec::new();
-    heads
-        .try_reserve_exact(limit)
-        .map_err(|_| Fault::Capacity)?;
-    degrees
-        .try_reserve_exact(limit)
-        .map_err(|_| Fault::Capacity)?;
-    queue
-        .try_reserve_exact(limit)
-        .map_err(|_| Fault::Capacity)?;
-    edges
-        .try_reserve_exact(limit.checked_mul(2).ok_or(Fault::Overflow)?)
-        .map_err(|_| Fault::Capacity)?;
-    heads.resize(limit, None);
-    degrees.resize(limit, 0);
-    let mut count = 0usize;
-    for (child, parents) in rows {
-        if child >= limit || count == limit {
-            return Err(Fault::Malformed.into());
-        }
-        count += 1;
-        for parent in parents.into_iter().flatten() {
-            if parent >= limit {
+    fn check_archive_attribution(
+        &self,
+        room_slot: Slot,
+        room: &RoomRow<'_>,
+        auth: Authentication,
+        layout: OriginalLayout,
+        provenance: SourceObservation,
+        sender: Option<&Hash>,
+    ) -> Result<(), Error> {
+        if let Some(o) = auth.owner {
+            self.contacts.get(o.contact)?;
+            if o.lineage == 0 || o.generation == 0 {
                 return Err(Fault::Malformed.into());
             }
-            degrees[child] = degrees[child].checked_add(1).ok_or(Fault::Overflow)?;
-            let next = heads[parent];
-            heads[parent] = Some(edges.len());
-            edges.push((child, next));
         }
-        if degrees[child] == 0 {
-            queue.push(child);
-        }
-    }
-    let mut visited = 0usize;
-    while let Some(parent) = queue.pop() {
-        visited += 1;
-        let mut cursor = heads[parent];
-        while let Some(at) = cursor {
-            let (child, next) = edges[at];
-            degrees[child] = degrees[child].checked_sub(1).ok_or(Fault::Malformed)?;
-            if degrees[child] == 0 {
-                queue.push(child);
+        if let Some(at) = auth.session {
+            let s = room.sessions.get(at)?;
+            let owner = auth.owner.ok_or(Fault::Malformed)?;
+            if owner.contact != s.contact
+                || owner.lineage != s.lineage
+                || owner.generation != s.generation
+                || auth.public != s.public
+            {
+                return Err(Fault::Authentication.into());
             }
-            cursor = next;
         }
+        if let Some(peer) = auth.peer
+            && (auth.owner.is_some()
+                || auth.session.is_some()
+                || auth.public[..4] != wire::KeyType::Eddsa.value().to_be_bytes()
+                || auth.public[4..] != peer)
+        {
+            return Err(Fault::Authentication.into());
+        }
+        layout.check_signer(auth.public, auth.peer)?;
+        if provenance.room != room_slot {
+            return Err(Fault::Malformed.into());
+        }
+        if let SourceRole::ServiceSigner(peer) = provenance.role
+            && (!self.is_own_signer(&peer) || auth.peer != Some(peer))
+        {
+            return Err(Fault::Authentication.into());
+        }
+        if let Some(sender) = sender {
+            let expected = if let Some(peer) = auth.peer {
+                gnunet_crypto::hash512(&peer)
+            } else {
+                gnunet_crypto::hash512(&auth.public)
+            };
+            if sender != &expected {
+                return Err(Fault::Authentication.into());
+            }
+        }
+        Ok(())
     }
-    if visited != count {
-        return Err(Fault::Malformed.into());
+
+    fn check_detached_record(
+        &self,
+        room_slot: Slot,
+        room: &RoomRow<'_>,
+        row: &MessageRecord<'_>,
+    ) -> Result<(), Error> {
+        if room
+            .alias(&row.hash)
+            .is_some_and(|epoch| epoch != row.epoch)
+        {
+            return Err(Fault::Malformed.into());
+        }
+        let auth = Authentication {
+            owner: row.owner,
+            session: row.session,
+            public: row.public,
+            peer: row.peer,
+        };
+        self.check_archive_attribution(
+            room_slot,
+            room,
+            auth,
+            row.layout,
+            row.provenance,
+            row.meta.sender_hash.as_ref(),
+        )?;
+        if let Some((_, raw)) = row.frame {
+            let message = wire::message::Message::decode_with_profiles(
+                raw,
+                row.layout.body_profile(row.kind)?,
+                row.layout.padding,
+                row.padding,
+            )?;
+            if let wire::body::Body::Peer { peer } = message.body()
+                && auth.peer.as_ref() != Some(peer)
+            {
+                return Err(Fault::Authentication.into());
+            }
+            check_original(
+                message,
+                SignedFacts {
+                    hash: &row.hash,
+                    kind: row.kind,
+                    timestamp: row.timestamp,
+                    parents: &row.parents,
+                    references: &row.references,
+                },
+                auth,
+            )?;
+        }
+        Ok(())
     }
-    Ok(())
 }

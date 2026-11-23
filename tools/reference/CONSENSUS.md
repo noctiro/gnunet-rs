@@ -4,7 +4,8 @@
 TRANSPORT application and util libraries. It uses `GNUNET_PROGRAM_run`
 configuration and starts no service.
 With four separately supervised normal participants ready, launch one actual
-compiled caller per participant:
+compiled caller per participant. Launch the topology and callers under the same
+[multi-node process budget](README.md#multi-node-process-budgets).
 
 ```
 /ABS/consensus_client -c /ABS/node.conf -L ERROR ROLE PID0_52 PID1_52 PID2_52 PID3_52 SID_HEX128 START_US DEADLINE_US

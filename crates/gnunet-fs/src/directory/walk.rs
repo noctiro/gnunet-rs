@@ -227,6 +227,14 @@ pub struct Work<'a> {
     /// Actual content read or unresolved namespace request.
     pub request: Request,
 }
+/// A resolved file attempt with a completed parent directory, ready for retrieval.
+#[derive(Clone, Copy, Debug)]
+pub struct FileWork<'a> {
+    /// The exact attempt to settle with this file's authenticated receipt.
+    pub id: AttemptId<'a>,
+    /// The original resolved content, including its expected size.
+    pub content: Content,
+}
 /// Entry/resolution disposition, including decisions that start no new I/O.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Admission<'a> {
@@ -391,18 +399,76 @@ impl<'a> Walk<'a> {
     /// Admit at most one task using round-robin queued order. A failed original
     /// must be explicitly retried; a namespace is a request, never a fake file.
     pub fn begin(&mut self) -> Result<Option<Work<'a>>, Error> {
+        self.begin_matching(|_| true)
+    }
+    /// Discover directory structure and resolve namespace references before
+    /// starting independent content-file transfers.
+    pub fn begin_directory_or_namespace(&mut self) -> Result<Option<Work<'a>>, Error> {
+        self.begin_matching(|slot| {
+            slot.kind == Kind::Directory || matches!(slot.target, Target::Namespace { .. })
+        })
+    }
+    fn begin_matching(
+        &mut self,
+        eligible: impl Fn(&Slot) -> bool,
+    ) -> Result<Option<Work<'a>>, Error> {
+        let Some((index, slot)) = self.queued_index(|slot| eligible(slot).then_some(*slot))? else {
+            return Ok(None);
+        };
+        Ok(Some(Work {
+            id: self.start(index)?,
+            kind: slot.kind,
+            depth: slot.depth,
+            request: match slot.target {
+                Target::Content(content) => Request::Content(content),
+                Target::Namespace { key, .. } => Request::Namespace(key),
+            },
+        }))
+    }
+    /// Admit the next resolved file whose parent has a complete directory receipt.
+    /// This leaves directory and namespace work queued for the ordinary driver.
+    pub fn begin_file(&mut self) -> Result<Option<FileWork<'a>>, Error> {
+        let Some((index, content)) = self.queued_index(|slot| {
+            if slot.kind == Kind::File
+                && let Target::Content(content) = slot.target
+                && slot
+                    .origin
+                    .is_none_or(|origin| self.slots[origin.parent].state == State::Done)
+            {
+                Some(content)
+            } else {
+                None
+            }
+        })?
+        else {
+            return Ok(None);
+        };
+        Ok(Some(FileWork {
+            id: self.start(index)?,
+            content,
+        }))
+    }
+    fn queued_index<T>(
+        &self,
+        mut eligible: impl FnMut(&Slot) -> Option<T>,
+    ) -> Result<Option<(usize, T)>, Error> {
         if self.cancelled {
             return Err(Error::Cancelled);
         }
         if self.ready == 0 {
             return Ok(None);
         }
-        let Some(index) = (self.next_start..self.used)
+        Ok((self.next_start..self.used)
             .chain(0..self.next_start)
-            .find(|&i| self.slots[i].state == State::Queued)
-        else {
-            return Ok(None);
-        };
+            .find_map(|index| {
+                let slot = &self.slots[index];
+                if slot.state != State::Queued {
+                    return None;
+                }
+                eligible(slot).map(|item| (index, item))
+            }))
+    }
+    fn start(&mut self, index: usize) -> Result<AttemptId<'a>, Error> {
         let generation = self.slots[index]
             .generation
             .checked_add(1)
@@ -412,25 +478,12 @@ impl<'a> Walk<'a> {
         slot.state = State::Active;
         slot.observed = 0;
         slot.observed_end = 0;
-        let (kind, depth, request) = (
-            slot.kind,
-            slot.depth,
-            match slot.target {
-                Target::Content(c) => Request::Content(c),
-                Target::Namespace { key, .. } => Request::Namespace(key),
-            },
-        );
         self.next_start = index + 1;
         self.ready -= 1;
-        Ok(Some(Work {
-            id: AttemptId {
-                task: self.id(index),
-                generation,
-            },
-            kind,
-            depth,
-            request,
-        }))
+        Ok(AttemptId {
+            task: self.id(index),
+            generation,
+        })
     }
     /// Exact namespace bytes retained before the source parser reuses its carry.
     pub fn namespace_identifier(&self, id: AttemptId<'_>) -> Result<&[u8], Error> {

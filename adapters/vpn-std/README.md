@@ -29,6 +29,37 @@ a larger coordinator. Unadmitted/rejected streams are physically dropped before
 any pure attach_client. No raw RID or caller-created socket can manufacture an
 old Client token. Unix/TCP owners are never replaced beneath Framed.
 
+## Application entry
+
+`startup::ApplicationSettings::read(config)` validates an immutable application
+policy before the enclosing node selects its local services. `uses_regex()`
+reports the required discovery dependency. Automatic REGEX discovery is the
+default, shared with the standalone service; `[vpn-rust] EXIT_DISCOVERY=configured`
+explicitly selects the configured exit policies.
+Nonempty `CONFIGURED_EXITS` requires that explicit configured mode; automatic
+discovery neither ignores the fixed list nor falls back to it.
+
+Pass the prepared settings to `serve_embedded` with `LocalEndpoints`, the original
+application provider and the shared clock. The endpoint bundle contains distinct
+literal VPN and CADET paths in one private directory, plus
+`DiscoveryEndpoint::Regex(path)` for automatic discovery or
+`DiscoveryEndpoint::Configured` for the explicit opt-out. A mismatched endpoint
+choice fails before native admission. The settings are consumed without reparsing
+configuration. The local REGEX service owns its DHT dependency.
+
+The shared `discovery::Provider` is also the standalone service's discovery owner.
+It retains each original VPN discovery capability and native REGEX search through
+whole local request writes, gateway selection and physical search retirement.
+Search exhaustion is inconclusive rather than proof that no gateway exists.
+`REGEX_SEARCHES`, `REGEX_SEND_TIMEOUT`, `REGEX_FIRST_RESULT_TIMEOUT`,
+`REGEX_SEARCH_TIMEOUT` and `REGEX_IO_SLICE_BYTES` set finite bounds in `[vpn-rust]`.
+After a stop, new offers are refused and every original search is canceled before
+the coordinator closes its resources. Cleanup errors and remaining route or
+discovery debt remain explicit in the embedded result. When startup exits before
+the coordinator adopts the provider, an unconfirmed route close and any native
+close error are reported separately. Readiness requires the actual native
+settings receipt and a live CADET source.
+
 ## Original input, response and source ownership
 
 Each admitted MQ owns one `Framed<Effect>`, a bounded request count, at most one
@@ -110,6 +141,10 @@ physically close; expiry or Immediate forces all physical closes. `Stopped` and
 TUN/routing jobs, CADET channels and discovery work remain coordinator-owned.
 
 ## Composition and limits
+
+Use `Device::from_provider` when an application owns the system packet source
+and route settings. The [application provider contract](COORDINATOR.md#application-providers)
+defines the original install, removal and packet write receipts.
 
 On Windows, `Device::from_wintun` consumes an actual explicitly provisioned
 session. The first session of a Created adapter permits configuration; restarted

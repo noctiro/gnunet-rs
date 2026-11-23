@@ -1,4 +1,4 @@
-use crate::Failure;
+use crate::{Failure, media_paths};
 use gnunet_config::Configuration;
 use gnunet_program_host::{
     getopt::Options,
@@ -120,7 +120,7 @@ pub(super) struct Settings {
 }
 impl Settings {
     pub fn read(c: &Configuration) -> Result<Self, Failure> {
-        let section = b"conversation-command-rust";
+        let section = media_paths::SECTION;
         let number = |key: &[u8], default: u64| -> Result<u64, Failure> {
             Ok(c.get(section, key)
                 .map(|_| c.get_number(section, key))
@@ -143,40 +143,7 @@ impl Settings {
                     .unwrap_or(default),
             )
         };
-        let exe = std::env::current_exe()?;
-        let dir = exe
-            .parent()
-            .ok_or("current Rust command has no installation directory")?;
-        let defaults = if dir.file_name().is_some_and(|n| n == "bin") {
-            dir.parent()
-                .ok_or("Rust installation has no prefix")?
-                .join("lib/gnunet/libexec")
-        } else {
-            dir.to_path_buf()
-        };
-        let path = |key: &[u8], name: &str| -> Result<PathBuf, Failure> {
-            let p = match c.get(section, key) {
-                Some(v) => {
-                    if v.is_empty() || v.len() > 4096 || v.contains(&0) {
-                        return Err("invalid or over-bound native helper path".into());
-                    }
-                    PathBuf::from(gnunet_native::os_bytes::decode(v)?.into_owned())
-                }
-                None => {
-                    let mut path = defaults.join(name);
-                    if cfg!(windows) {
-                        path.set_extension("exe");
-                    }
-                    path
-                }
-            };
-            if !p.is_absolute() {
-                return Err(
-                    "explicit media/helper paths must be absolute; no PATH fallback is used".into(),
-                );
-            }
-            Ok(p)
-        };
+        let paths = media_paths::Paths::installed(c)?;
         let calls = usize::try_from(number(b"MAX_CALLS", 32)?)?;
         let command_bytes = bytes(b"COMMAND_BYTES", 4096)?;
         let output_bytes = bytes(b"OUTPUT_BYTES", 1048576)?;
@@ -220,10 +187,10 @@ impl Settings {
             output_bytes,
             calls,
             playback_frames,
-            record: path(b"HELPER_RECORD", "gnunet-helper-audio-record")?,
-            playback: path(b"HELPER_PLAYBACK", "gnunet-helper-audio-playback")?,
+            record: paths.program(media_paths::RECORD)?,
+            playback: paths.program(media_paths::PLAYBACK)?,
             #[cfg(unix)]
-            launcher: path(b"HELPER_LAUNCHER", "gnunet-arm-spawn-helper")?,
+            launcher: paths.program((b"HELPER_LAUNCHER", "gnunet-arm-spawn-helper"))?,
             native,
             identity,
             resolver: Default::default(),

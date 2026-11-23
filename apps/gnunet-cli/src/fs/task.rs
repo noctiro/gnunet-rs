@@ -250,7 +250,7 @@ pub(super) fn create_file(
     )?;
     Ok(())
 }
-fn destination(path: &Path) -> Result<(&Path, &OsStr), Box<dyn Error>> {
+pub(super) fn destination(path: &Path) -> Result<(&Path, &OsStr), Box<dyn Error>> {
     let parent = path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())

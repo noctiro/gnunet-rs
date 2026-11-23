@@ -2,6 +2,15 @@
 #[cfg(target_os = "freebsd")]
 use crate::recovery;
 use crate::{DeviceHandle, Epoch, Info, Limits, Stamp, platform, routes};
+#[cfg(target_os = "freebsd")]
+mod freebsd;
+#[cfg(target_os = "freebsd")]
+pub use freebsd::{
+    FreeBsdRecovery, FreeBsdRecreate, FreeBsdRecreateStartError, FreeBsdRecreated, FreeBsdReopen,
+    FreeBsdReopenError, FreeBsdReopenStage, FreeBsdReopenStartError, FreeBsdReopened,
+    FreeBsdRestartError, FreeBsdRestartStage, FreeBsdRouteKey, FreeBsdUnconfirmedClose,
+    FreeBsdVacancy,
+};
 use std::{
     cell::Cell,
     io,
@@ -125,7 +134,8 @@ impl OwnedTun {
         limits.validate()?;
         Self::from_handle(platform::open_exclusive(name)?, limits)
     }
-    /// FreeBSD: provision through an original private recovery checkpoint.
+    /// FreeBSD: provision a manual-lifetime TUN with a private recovery checkpoint.
+    /// Packet descriptor closure leaves the interface owned by the checkpoint.
     /// Saved native ownership is retired before another allocation. Outstanding
     /// allocation intents fence recreation. The checkpoint parent must already
     /// be private and device/interface administration must be serialized.
@@ -140,9 +150,10 @@ impl OwnedTun {
     ) -> Result<Self, recovery::OpenError> {
         recovery::managed::open(name, checkpoint, limits)
     }
-    /// FreeBSD: open an existing named TUN and enable its native family header.
-    /// The interface must already exist. The caller must serialize interface
-    /// creation/destruction across this open; observed replacement is refused.
+    /// Open an existing FreeBSD TUN. Observe the listed character node before
+    /// lookup, and check the opened descriptor and interface name/index before
+    /// enabling its native family header. The caller serializes interface
+    /// administration and device access across the open.
     /// Close retires packet ownership and lets the kernel clear link/address
     /// state, but does not destroy the persistent FreeBSD interface. Interface
     /// creation/destruction remains with the caller's administrative owner.

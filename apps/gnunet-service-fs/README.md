@@ -25,7 +25,8 @@ misses and source failures produce no negative peer reply; invalid records remai
 diagnostic before bounded UID fallback.
 
 Configure `[core]` to route D/I/UBLOCK/ANY queries
-and serve incoming official137/138 queries over a CORE client. GAP and direct
+and serve incoming official137/138 queries over a CORE client. Local ANY queries
+use GAP at every anonymity level and retain their original seen hashes. GAP and direct
 CADET can coexist under one canonical local route. GAP uses the
 same sole index worker for type6 reads. A provider's local write completion is
 not peer receipt. UBLOCK requests retain multiple verified results and independent
@@ -197,6 +198,32 @@ cover window cannot exceed that maximum delay. Only completed foreign
 payload writes earn credit; this is a CORE handoff observation, not peer storage
 or processing. Incoming PUT138 has no numeric anonymity metadata. Explicit
 source, query and send bounds remain independent of the cover/release policy.
+
+Incoming nonlocal GETs use the original CORE sender's respect balance and
+measured DATASTORE GET latency. Low load admits a free request; higher load
+requires the achievable charge to meet the same estimate. An explicit
+`RETURN_TO` selects only the reply path. A verified, newly accepted UBLOCK
+can settle the original request's credit once. Additional remote-only
+DATASTORE rows are bounded by load and the request's remaining priority.
+
+The router samples time from enqueue to a complete local CORE handoff, per
+connected peer generation. A slow reply path triggers relay-only forwarding.
+The outgoing GET offers zero priority, names the authenticated ingress in
+`RETURN_TO` and preserves any `TRANSMIT_TO` hint. Local lookup and the
+original reply destination remain available. CORE uses its default envelope
+options for GAP traffic.
+
+Completed query writes can schedule one pending retry per original route and
+peer. The retry uses bounded jitter, the original route deadline and the same
+peer generation. Historical achievable charges and planned delays rank eligible
+retries in the local FS queue. Replies take precedence, and fresh queries
+receive a turn after a bounded retry burst. Partial or uncertain writes grant
+no retry authority.
+
+The standard `[peerstore]` endpoint restores and replaces each peer's native
+`fs` / `respect` `u32` record. The ledger flushes changed balances every five
+minutes and on disconnect or graceful shutdown. An unacknowledged write
+fences further writes for that peer and is reported at shutdown.
 
 With GAP enabled, official `[fs] CONTENT_CACHING=YES` and
 `CONTENT_PUSHING=YES` select local cache PUTs and native GET_REPLICATION

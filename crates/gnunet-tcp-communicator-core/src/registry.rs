@@ -111,6 +111,19 @@ impl Address {
     /// Undefined C malformed-string paths are rejected without being executed.
     pub fn parse(bytes: &[u8]) -> Result<Self, Error> {
         let raw = bytes.strip_prefix(b"tcp-").ok_or(Error::InvalidInput)?;
+        Self::parse_numeric(raw)
+    }
+
+    /// Parse the official TCP communicator address as published in a HELLO URI.
+    ///
+    /// # Errors
+    /// Rejects an unsupported scheme or malformed numeric address.
+    pub fn parse_hello(uri: &[u8]) -> Result<Self, Error> {
+        let raw = uri.strip_prefix(b"tcp://").ok_or(Error::InvalidInput)?;
+        Self::parse_numeric(raw)
+    }
+
+    fn parse_numeric(raw: &[u8]) -> Result<Self, Error> {
         let text = core::str::from_utf8(raw).map_err(|_| Error::InvalidInput)?;
         let (ip, port) = if let Some(rest) = text.strip_prefix('[') {
             let close = rest.find(']').ok_or(Error::InvalidInput)?;

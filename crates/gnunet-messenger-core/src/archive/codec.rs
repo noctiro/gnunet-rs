@@ -1,16 +1,46 @@
 use super::*;
-pub(super) struct Encoder {
-    pub data: Zeroizing<Vec<u8>>,
-    pub maximum: usize,
+use zeroize::Zeroize;
+
+pub(super) trait ArchiveSink {
+    fn append(&mut self, value: &[u8]) -> Result<(), Error>;
+
+    fn original(&mut self, _room: &Hash, _hash: &Hash, value: &[u8]) -> Result<(), Error> {
+        self.append(value)
+    }
+
+    fn archived_original(
+        &mut self,
+        _room: &Hash,
+        _hash: &Hash,
+        _range: ArchiveOriginalRange,
+    ) -> Result<(), Error> {
+        Err(Fault::NotReady.into())
+    }
 }
-impl Encoder {
+
+#[cfg(feature = "alloc")]
+pub(super) struct OwnedSink {
+    data: Zeroizing<Vec<u8>>,
+    maximum: usize,
+}
+
+#[cfg(feature = "alloc")]
+impl OwnedSink {
     pub fn new(maximum: usize) -> Self {
         Self {
             data: Zeroizing::new(Vec::new()),
             maximum,
         }
     }
-    pub fn raw(&mut self, value: &[u8]) -> Result<(), Error> {
+
+    pub fn into_body(self) -> Zeroizing<Vec<u8>> {
+        self.data
+    }
+}
+
+#[cfg(feature = "alloc")]
+impl ArchiveSink for OwnedSink {
+    fn append(&mut self, value: &[u8]) -> Result<(), Error> {
         let n = self
             .data
             .len()
@@ -37,6 +67,77 @@ impl Encoder {
         self.data.extend_from_slice(value);
         Ok(())
     }
+}
+
+pub(super) struct SliceSink<'output> {
+    data: &'output mut [u8],
+    written: usize,
+}
+
+impl<'output> SliceSink<'output> {
+    pub fn new(data: &'output mut [u8]) -> Self {
+        Self { data, written: 0 }
+    }
+
+    pub fn expose(&self) -> &[u8] {
+        &self.data[..self.written]
+    }
+
+    pub fn position(&self) -> usize {
+        self.written
+    }
+
+    pub fn into_len_for_storage(mut self) -> usize {
+        core::mem::take(&mut self.written)
+    }
+
+    pub fn append_from(
+        &mut self,
+        size: usize,
+        write: impl FnOnce(&mut [u8]) -> Result<(), Error>,
+    ) -> Result<(), Error> {
+        let end = self.written.checked_add(size).ok_or(Fault::Overflow)?;
+        let output = self
+            .data
+            .get_mut(self.written..end)
+            .ok_or(Fault::Capacity)?;
+        // A reader may modify the destination before failing. Include that
+        // entire range in the prefix erased when this encoder is dropped.
+        self.written = end;
+        write(output)
+    }
+}
+
+impl ArchiveSink for SliceSink<'_> {
+    fn append(&mut self, value: &[u8]) -> Result<(), Error> {
+        self.append_from(value.len(), |output| {
+            output.copy_from_slice(value);
+            Ok(())
+        })
+    }
+}
+
+impl Drop for SliceSink<'_> {
+    fn drop(&mut self) {
+        self.data[..self.written].zeroize();
+    }
+}
+
+pub(super) struct Encoder<S>(S);
+
+impl<S: ArchiveSink> Encoder<S> {
+    pub fn new(output: S) -> Self {
+        Self(output)
+    }
+
+    pub fn finish(self) -> S {
+        self.0
+    }
+
+    pub fn raw(&mut self, value: &[u8]) -> Result<(), Error> {
+        self.0.append(value)
+    }
+
     pub fn u8(&mut self, v: u8) -> Result<(), Error> {
         self.raw(&[v])
     }
@@ -78,12 +179,30 @@ impl Encoder {
         }
         Ok(())
     }
-    pub fn owned(&mut self, v: Option<&OwnedBytes>) -> Result<(), Error> {
+    pub fn opt_bytes(&mut self, v: Option<&[u8]>) -> Result<(), Error> {
         self.bool(v.is_some())?;
         if let Some(v) = v {
-            self.bytes(v.expose())?
+            self.bytes(v)?
         }
         Ok(())
+    }
+    pub fn original(&mut self, room: &Hash, hash: &Hash, v: Option<&[u8]>) -> Result<(), Error> {
+        self.bool(v.is_some())?;
+        if let Some(v) = v {
+            self.size(v.len())?;
+            self.0.original(room, hash, v)?;
+        }
+        Ok(())
+    }
+    pub fn archived_original(
+        &mut self,
+        room: &Hash,
+        hash: &Hash,
+        range: ArchiveOriginalRange,
+    ) -> Result<(), Error> {
+        self.bool(true)?;
+        self.size(range.length())?;
+        self.0.archived_original(room, hash, range)
     }
     pub fn profile(&mut self, p: wire::profile::Profile) -> Result<(), Error> {
         self.u8(match p.endian {
@@ -139,6 +258,12 @@ pub(super) struct Decoder<'a> {
 impl<'a> Decoder<'a> {
     pub fn new(input: &'a [u8]) -> Self {
         Self { input, at: 0 }
+    }
+    pub(super) fn at(input: &'a [u8], at: usize) -> Self {
+        Self { input, at }
+    }
+    pub(super) const fn position(&self) -> usize {
+        self.at
     }
     pub fn raw(&mut self, n: usize) -> Result<&'a [u8], Error> {
         let end = self.at.checked_add(n).ok_or(Fault::Overflow)?;
@@ -202,12 +327,20 @@ impl<'a> Decoder<'a> {
             Ok(None)
         }
     }
-    pub fn owned(&mut self, max: usize) -> Result<Option<OwnedBytes>, Error> {
+    pub fn opt_bytes(&mut self, max: usize) -> Result<Option<&'a [u8]>, Error> {
         if self.bool()? {
-            Ok(Some(OwnedBytes::copy_from(self.bytes(max)?)?))
+            Ok(Some(self.bytes(max)?))
         } else {
             Ok(None)
         }
+    }
+    pub fn opt_range(&mut self, max: usize) -> Result<Option<(usize, &'a [u8])>, Error> {
+        if !self.bool()? {
+            return Ok(None);
+        }
+        let length = self.size(max)?;
+        let offset = self.at;
+        Ok(Some((offset, self.raw(length)?)))
     }
     pub fn profile(&mut self) -> Result<wire::profile::Profile, Error> {
         let endian = match self.u8()? {

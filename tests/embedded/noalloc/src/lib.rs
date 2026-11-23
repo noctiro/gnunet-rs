@@ -7,10 +7,64 @@
 
 use gnunet::{
     clients::{resolver, resolver_handle, statistics},
-    crypto, gnscrypto, gnsrecord, hello,
+    crypto, gnscrypto, gnsrecord, hello, messenger_core,
     types::{AbsoluteTime, Duration, Error, MonoInstant},
     wire,
 };
+
+/// Compile signed timestamp issuance with a caller-owned durable reservation.
+pub fn issue_monotime<E>(
+    window: &mut gnunet::types::monotime::Window,
+    observed: AbsoluteTime,
+    commit: impl FnOnce(core::num::NonZeroU64) -> Result<(u64, u64), E>,
+) -> Result<u64, gnunet::types::monotime::IssueError<E>> {
+    window
+        .issue(observed, commit)
+        .map(core::num::NonZeroU64::get)
+}
+
+/// Build the direct firmware TCP, TRANSPORT and CORE composition.
+pub fn drive_firmware_tcp<S, B, C, A, const F: usize>(
+    driver: &mut gnunet::tcp::firmware::Driver<
+        '_,
+        S,
+        B,
+        C,
+        gnunet::direct_peer::Peer<'_, '_, A, F>,
+    >,
+    ready: gnunet::tcp::stream::Ready,
+) -> Result<gnunet::tcp::firmware::Turn, gnunet::tcp::firmware::Fault<S::Error, B::Error>>
+where
+    S: gnunet::tcp::stream::Stream,
+    B: gnunet::tcp::replay_store::Backend,
+    C: gnunet::tcp::firmware::Clock,
+    A: gnunet::direct_peer::Application,
+{
+    driver.turn(ready)
+}
+
+/// Build official direct address validation without an allocator or socket.
+pub fn poll_direct_validation(
+    link: &mut gnunet::transport::direct_validation::DirectValidation,
+    now: MonoInstant,
+    entropy: &mut impl crypto::Entropy,
+) -> Result<Option<[u8; 48]>, Error> {
+    Ok(link
+        .poll_challenge(now, entropy)?
+        .map(gnunet::transport::p2p::Challenge::encode))
+}
+
+/// Compile receipt-bound accounting for one complete direct TRANSPORT frame.
+pub fn release_direct_payload(
+    flow: &mut gnunet::transport::direct_flow::DirectFlow<'_>,
+    input: &[u8],
+    consume: impl FnOnce(&[u8]) -> Result<(), Error>,
+) -> Result<(), Error> {
+    let delivery = flow.admit_inbound(input)?;
+    consume(input)?;
+    flow.release_inbound(delivery)
+        .map_err(|failure| failure.reason)
+}
 
 /// Compile actual shared packet parsing/checksums without alloc or platform IO.
 pub fn exercise_vpn_packet(raw: &[u8]) -> Result<u16, Error> {
@@ -522,7 +576,7 @@ pub fn exercise_resolver_service() -> Result<(), Error> {
         clients: [ClientSlot; 1],
         lookups: [LookupSlot; 1],
         effects: [EffectSlot; 1],
-        cleanups: [Option<gnunet::dnsstub::RequestId>; 1],
+        cleanups: [Option<gnunet::resolver_service::owner::QueryCancellation>; 1],
         blobs: [BlobSlot; 8],
         bytes: [u8; 256],
     }
@@ -858,11 +912,89 @@ pub fn exercise_messenger_body(kind: u32, input: &[u8], output: &mut [u8]) -> Re
     Body::decode(Kind::new(kind), input, Profile::LITTLE_255)?.encode(Profile::LITTLE_255, output)
 }
 
-/// Compile state limits without enabling allocated rooms or runtime owners.
-pub fn exercise_messenger_state_limits(
-    limits: gnunet::messenger_core::Limits,
-) -> Result<(), gnunet::messenger_core::Error> {
-    limits.validate()
+/// Host one MESSENGER room, admit a signed JOIN, and prepare its checkpoint.
+pub fn exercise_messenger_state<'id, 'output>(
+    instance: &'id mut messenger_core::Instance,
+    buffers: messenger_core::ServiceBuffers<'id, 1>,
+    limits: messenger_core::Limits,
+    local_peer: [u8; 32],
+    remote_peer: [u8; 32],
+    member: &gnunet::identity::SecretKey,
+    output: &'output mut [u8],
+) -> Result<messenger_core::archive::PreparedArchiveRef<'output>, messenger_core::Error> {
+    use messenger_core::{
+        Core, OriginalLayout, ReceiveMeta, SensitiveBuffer, SourceRole,
+        crypto::signature::SigningHeader,
+        wire::{PublicKey, body::Body, keys::HpkePublicKey, padding, profile::Profile},
+    };
+
+    let profile = Profile::LITTLE_255;
+    let mut core = Core::with_service_buffers(instance, limits, profile, buffers)?;
+    core.configure_local_peer(local_peer)?;
+    let room = core.room([7; 64], None)?;
+    let source = core.attach_source(
+        room,
+        SourceRole::Peer(remote_peer),
+        padding::Decode::Absent,
+        None,
+    )?;
+    let public = member.public_key()?;
+    let root = [0; 64];
+    let timestamp = 10;
+    let mut frame = SensitiveBuffer::<512>::new();
+    frame.encode_signed(
+        member,
+        SigningHeader {
+            timestamp: AbsoluteTime::from_micros(timestamp),
+            sender_id: &[2; 32],
+            previous: &root,
+        },
+        Body::Join {
+            epoch: &root,
+            public_key: PublicKey::new(&public)?,
+            hpke_key: HpkePublicKey::new(&[0; 36])?,
+        },
+        profile,
+        padding::Encode::Absent,
+    )?;
+    let hash = core.receive_borrowed(
+        source,
+        ReceiveMeta {
+            epoch: root,
+            flags: 8,
+            requested: false,
+            sender_hash: None,
+            context: None,
+        },
+        OriginalLayout::same(profile),
+        frame.expose(),
+    )?;
+    while core.pop_event().is_some() {}
+    core.advance(room, timestamp)?;
+    if !core.message(room, &hash)?.semantic_applied() {
+        return Err(Error::NotReady.into());
+    }
+    core.prepare_archive_into(output)
+}
+
+/// Recover a committed MESSENGER checkpoint into another fixed service owner.
+pub fn recover_messenger_state<'id>(
+    instance: &'id mut messenger_core::Instance,
+    buffers: messenger_core::ServiceBuffers<'id, 1>,
+    limits: messenger_core::Limits,
+    store: &impl messenger_core::CommittedArchive,
+    maximum: usize,
+    graph: &mut [messenger_core::archive::ArchiveGraphCell],
+) -> Result<messenger_core::archive::Recovered<'id, 1>, messenger_core::Error> {
+    messenger_core::Core::recover_archive_with_service_buffers(
+        instance,
+        store,
+        limits,
+        messenger_core::wire::profile::Profile::LITTLE_255,
+        maximum,
+        buffers,
+        graph,
+    )
 }
 
 /// Compile credential text conversion with caller memory and no trust assertion.
@@ -955,9 +1087,9 @@ pub fn exercise_hostlist(uri: &[u8], output: &mut [u8]) -> Result<usize, Error> 
     gnunet::hostlist::Advertisement::new(uri)?.encode(output)
 }
 
-/// Compile official helper framing using borrowed IP packets and caller output.
-pub fn exercise_dns_helper(ip: &[u8], output: &mut [u8]) -> Result<usize, Error> {
-    gnunet::dns_interception::encode_helper(ip, output)
+/// Compile DNS interception query admission without native packet framing.
+pub fn exercise_dns_query(dns: &[u8]) -> Result<(), Error> {
+    gnunet::dns_interception::Query::decode(dns).map(|_| ())
 }
 
 /// Compile exact DV learn parsing without allocation, signatures or native IO.

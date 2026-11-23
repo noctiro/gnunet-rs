@@ -107,26 +107,7 @@ impl Settings {
         {
             return Err("invalid finite ARM resource profile".into());
         }
-        let abi = match c.get(b"arm-rust", b"ABI") {
-            Some(b"align8") => ArmAbi::U64Align8,
-            Some(b"align4") => ArmAbi::U64Align4,
-            Some(_) => return Err("ARM ABI must be align8 or align4".into()),
-            None if cfg!(all(
-                target_pointer_width = "64",
-                any(
-                    target_os = "linux",
-                    target_os = "macos",
-                    target_os = "freebsd",
-                    target_os = "openbsd",
-                    target_os = "netbsd",
-                    target_os = "windows"
-                )
-            )) =>
-            {
-                ArmAbi::U64Align8
-            }
-            None => return Err("select explicit validated [arm-rust] ABI for this platform".into()),
-        };
+        let abi = ArmAbi::configured(c.get(b"arm-rust", b"ABI"))?;
         #[cfg(unix)]
         let helper = platform::helper(c)?;
         let shutdown_grace = duration(c, b"SHUTDOWN_GRACE", Duration::from_secs(5))?;

@@ -1,4 +1,4 @@
-//! Unexecuted source cases for local opaque forwarding and validation boundaries.
+//! Local validation, cache placement and original forwarding boundaries.
 #![cfg(feature = "alloc")]
 #![expect(
     clippy::panic_in_result_fn,
@@ -162,6 +162,44 @@ fn absent_initial_put_transits_without_cache_or_send_receipt() -> Result<(), Err
     assert_eq!(owner.put_stats().retained, 0);
     owner.tick(5_000_020, &mut blocks, &mut NoEntropy)?;
     assert!(owner.work().next().is_none());
+    Ok(())
+}
+
+#[test]
+fn over_quota_validated_put_retains_original_forwarding() -> Result<(), Error> {
+    let mut instance = Instance::new();
+    let mut owner = NetworkOwner::new(
+        LocalOwner::new(
+            &mut instance,
+            Limits {
+                cache_bytes: 4,
+                ..Limits::default()
+            },
+        )?,
+        [1; 32],
+        gnunet_dht::network::Limits::default(),
+        Policy {
+            estimate: Estimate::new(1.0)?,
+        },
+    )?;
+    let client = owner.connect_client()?;
+    let peer = owner.connect_peer([2; 32])?;
+    let mut blocks = Registry {
+        capability: Ok(TypeCapability::Installed),
+        validity: Validity::Valid,
+        validations: 0,
+    };
+    assert_eq!(
+        owner.ingest_client(client, &frame(KIND)?, 10, &mut blocks, &mut NoEntropy)?,
+        Outcome::UncachedPut
+    );
+    assert_eq!(blocks.validations, 1);
+    assert_eq!(owner.local_snapshot().cache_records, 0);
+    assert_eq!(owner.put_stats().retained, 1);
+    let (job, target) = outgoing(&owner)?;
+    assert_eq!(target, peer);
+    owner.admitted(job, target)?;
+    assert_eq!(owner.put_stats().submitted, 1);
     Ok(())
 }
 #[test]

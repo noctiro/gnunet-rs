@@ -14,20 +14,26 @@ gnunet-types.workspace = true
 gnunet-wire.workspace = true
 gnunet-client.workspace = true
 gnunet-dns.workspace = true
+gnunet-native.workspace = true
 gnunet-idna.workspace = true
 gnunet-dnsstub-host.workspace = true
 gnunet-service-runtime.workspace = true
 gnunet-service-startup.workspace = true
 gnunet-config.workspace = true
-tokio = { workspace = true, features = ["rt", "net", "time", "io-util"] }
+tokio = { workspace = true, features = ["rt", "net", "time", "io-util", "macros", "sync"] }
 getrandom.workspace = true
 
+[target.'cfg(any(all(target_os = "linux", not(target_env = "ohos")), target_os = "freebsd"))'.dependencies]
+libc.workspace = true
+socket2.workspace = true
+tokio = { workspace = true, features = ["process"] }
+
 [target.'cfg(windows)'.dependencies]
-gnunet-native.workspace = true
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_NetworkManagement_Dns"] }
 
 [dev-dependencies]
 socket2.workspace = true
-tokio = { workspace = true, features = ["test-util", "sync"] }
+tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true

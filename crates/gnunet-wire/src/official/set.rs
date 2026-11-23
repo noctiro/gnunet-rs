@@ -1191,9 +1191,9 @@ mod tests {
                 let value = ClientResponse::Result {
                     current_size: 0x0102_0304_0506_0708,
                     request_id: 0xaabb_ccdd,
-                    status: status::HALF_DONE,
+                    status: status::OK,
                     element: Element {
-                        element_type: 17,
+                        element_type: 0x1234,
                         data: &data,
                     },
                 };
@@ -1203,6 +1203,7 @@ mod tests {
                 check(
                     output[abi.wide()..abi.wide() + 8] == 0x0102_0304_0506_0708_u64.to_be_bytes(),
                 )?;
+                check(output[abi.wide() + 14..abi.wide() + 16] == 0x1234_u16.to_be_bytes())?;
                 check(ClientResponse::decode(&output[..n], abi)? == value)?;
                 let mut short = [0x55; 8];
                 check(value.encode(&mut short, abi) == Err(Error::Capacity))?;

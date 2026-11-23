@@ -131,10 +131,10 @@ pub(super) fn run() -> Result<ExitCode, Failure> {
                 config,
                 settings,
                 bound,
-                parent,
                 clock,
                 reports: reports.clone(),
             },
+            parent,
             async {
                 child.ready()?;
                 Ok(())

@@ -7,7 +7,7 @@ use std::{
 };
 type Failure = Box<dyn Error>;
 mod device;
-mod discovery;
+use gnunet_vpn_host::discovery;
 #[cfg(unix)]
 mod early;
 mod foreground;

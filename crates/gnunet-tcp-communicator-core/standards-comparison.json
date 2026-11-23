@@ -77,7 +77,7 @@
   ],
   "peerstore_contract_chain": [
     {
-      "path": "/private/tmp/gnunet-upstream-audit-20261026/src/include/gnunet_peerstore_service.h",
+      "path": "src/include/gnunet_peerstore_service.h",
       "sha256": "217f44dac06c7c9ad1c6723fa7cf70a7dcf86b76f85fef5bed2c4b0f2d6a9005",
       "ranges": [
         "179..197 NULL callback ends iteration",
@@ -85,7 +85,7 @@
       ]
     },
     {
-      "path": "/private/tmp/gnunet-upstream-audit-20261026/src/service/peerstore/peerstore_api.c",
+      "path": "src/service/peerstore/peerstore_api.c",
       "sha256": "cdfb04838383c27e8d2e8b6e4148527c82c08c0449fe42e307e612528ea36610",
       "ranges": [
         "715..733 handle_iterate_end callbackNULL then destroy",
@@ -95,7 +95,7 @@
       ]
     },
     {
-      "path": "/private/tmp/gnunet-upstream-audit-20261026/src/service/peerstore/gnunet-service-peerstore.c",
+      "path": "src/service/peerstore/gnunet-service-peerstore.c",
       "sha256": "12fb4b6f6f608f19bf3f05b43a91439ca37cfb7d5c472fed950848e08589c493",
       "ranges": [
         "498..626 iterate_proc/run_iteration_round read-only DB scan and termination"

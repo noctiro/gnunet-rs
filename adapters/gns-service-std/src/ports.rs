@@ -1,5 +1,5 @@
 //! Explicit owned native work. These contracts do not manufacture a provider.
-use gnunet_gns::{EffectKind, Record};
+use gnunet_gns::{BoxSelector, EffectKind, Record};
 use gnunet_types::{AbsoluteTime, Error};
 use std::{
     fmt::Debug,
@@ -62,8 +62,8 @@ pub enum Value {
     /// Actual NAMECACHE reply. GNUNET_OK is 1.
     Stored(i32),
     /// Actual symbolic registry result; None is genuinely absent.
-    Service(Option<(u16, u16)>),
-    /// Actual DNS-only nameserver resolution and work consumed.
+    Service(Option<BoxSelector>),
+    /// Actual nameserver address resolution and work consumed.
     Addresses {
         /// Actual addresses from the original nameserver operation.
         addresses: Vec<IpAddr>,

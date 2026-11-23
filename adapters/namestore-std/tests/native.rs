@@ -3,7 +3,7 @@
 #![forbid(unsafe_code)]
 use gnunet_namestore::{Code, Filter, SecretKeyView};
 use gnunet_namestore_host::{
-    backend,
+    database,
     server::{Limits, Ports, Progress, Server},
     worker::Worker,
 };
@@ -344,27 +344,19 @@ fn actual_mock_batch_monitor_editor_worker_and_restart() -> Result<(), Failure> 
             let directory = temporary.0.join("store");
             let listener = listen(&path)?;
             let listeners = [Listener::Unix(&listener)];
-            let (mut store, loaded) = backend::Store::open(
-                Namespace::Namestore,
-                &directory,
-                backend::Limits { body_bytes: 4096 },
-            )?;
             let pure = gnunet_namestore::Limits {
                 rows: 8,
                 zones: 2,
-                image_bytes: 65536,
+                image_bytes: 4096,
                 retained_bytes: 262144,
                 records_per_set: 8,
                 record_bytes: 128,
                 batch: 4,
                 ..gnunet_namestore::Limits::default()
             };
-            let (core, generation) = Server::recover(
-                &mut store,
-                loaded,
-                pure,
-                gnunet_namestore_host::critical_type,
-            )?;
+            let options = database::Options::new(directory, pure, 4096)?;
+            let (core, store) = options.open()?.recover()?.into_parts();
+            let generation = store.generation();
             let mut worker = Worker::start(store)?;
             let mut server = Server::new(
                 core,
@@ -421,18 +413,8 @@ fn actual_mock_batch_monitor_editor_worker_and_restart() -> Result<(), Failure> 
             drop(server);
             // Only production Store/recovery interpret the newly created public-mock
             // body. No helper opens, hashes, prints, or peeks its persisted bytes.
-            let (mut reopened, loaded) = backend::Store::open(
-                Namespace::Namestore,
-                &directory,
-                backend::Limits { body_bytes: 4096 },
-            )?;
-            let (core, generation) = Server::recover(
-                &mut reopened,
-                loaded,
-                pure,
-                gnunet_namestore_host::critical_type,
-            )?;
-            assert_eq!(generation, 5);
+            let (core, reopened) = options.open()?.recover()?.into_parts();
+            assert_eq!(reopened.generation(), 5);
             assert_eq!(core.snapshot()?.rows().len(), 2);
             let mut mock = Zeroizing::new([0x42; 36]);
             mock[..4].copy_from_slice(&KeyType::Eddsa.value().to_be_bytes());

@@ -780,7 +780,7 @@ async fn partial_original_dv_source_closes_before_a_new_source_can_attach() -> R
     let remote = Key(EddsaPrivateKey::from_seed([0x37; 32]));
     let mut server = Server::new(Engine::new(key.identity(), Limits::default())?, 1, 262140)?;
     let (socket, mut comm) = support::pair().await?;
-    server.admit(Connection::from_tcp(socket))?;
+    let client = server.admit(Connection::from_tcp(socket))?;
     let mut random = Random(0);
     let mut observer = Observer::default();
     validated(
@@ -805,13 +805,38 @@ async fn partial_original_dv_source_closes_before_a_new_source_can_attach() -> R
     assert!(server.dv_inbox().is_none());
     server.dv_begin_retire_source(&source)?;
     server.dv_retire_source(&source)?;
+    assert_eq!(server.engine().snapshot().clients, 1);
+    assert!(!server.dv_source_attach_ready());
+    assert!(matches!(
+        server.dv_attach_source(key.identity()),
+        Err(Error::NotReady)
+    ));
+    assert!(server.take_native_retirement().is_none());
+
+    // Classification still uses the original first byte and deadline. The
+    // old-source DV suffix cannot enter the ordinary parser or a new actor.
+    comm.write_all(&original[1..]).await?;
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while server.engine().snapshot().clients != 0 {
+            step(&mut server, &mut key, &mut random, &mut observer).await?;
+        }
+        Ok::<(), Failure>(())
+    })
+    .await??;
+    let retired = server
+        .take_native_retirement()
+        .ok_or("old DV input did not retire")?;
+    assert_eq!(retired.client, client);
+    assert!(matches!(retired.cause, RetirementCause::DvSourceRetired));
+    assert_eq!(retired.input_frame_bytes, Some(original.len()));
+    assert!(retired.input.is_some());
     assert_eq!(server.engine().snapshot().clients, 0);
-    assert_eq!(comm.read(&mut [0; 1]).await?, 0);
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(2), comm.read(&mut [0; 1])).await??,
+        0
+    );
     let replacement = server.dv_attach_source(key.identity())?;
     assert_ne!(source, replacement);
-    // TCP may locally accept a write after received EOF. That is no receipt
-    // from the retired server socket and cannot attach bytes to a new source.
-    let _late_local_write = comm.write_all(&original[1..]).await;
     assert!(server.dv_inbox().is_none());
     assert_eq!(server.dv_source_debts(&replacement), 0);
     server.dv_begin_retire_source(&replacement)?;

@@ -35,7 +35,7 @@ impl<Visit> DownloadSink for DirectorySink<'_, Visit>
 where
     Visit: FnMut(VerifiedEntry<'_>) -> crate::Result<()>,
 {
-    async fn chunk(&mut self, chunk: VerifiedChunk<'_>) -> Result<(), Error> {
+    async fn chunk(&mut self, chunk: VerifiedChunk<'_>, _reused: bool) -> Result<(), Error> {
         let mut local = 0;
         loop {
             let progress = self

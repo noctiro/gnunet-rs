@@ -2,7 +2,8 @@
 use crate::Cause;
 use gnunet_config::Configuration;
 use gnunet_gns_service_host::{
-    auxiliary::{dns, registry, system},
+    DnsPolicy,
+    auxiliary::{NameserverLookup, dns, registry, system},
     native, refresh, server,
 };
 use gnunet_service_runtime::{
@@ -58,8 +59,8 @@ pub(super) struct Settings {
     pub dns: dns::DnsLimits,
     pub registry: registry::Limits,
     pub resolver: gnunet_resolver_broker::Limits,
-    pub resolv_conf: Option<PathBuf>,
-    pub resolv_conf_bytes: usize,
+    resolv_conf: Option<PathBuf>,
+    resolv_conf_bytes: usize,
     pub protocols: Option<PathBuf>,
     pub services: Option<PathBuf>,
     pub shutdown_grace: Duration,
@@ -77,6 +78,7 @@ impl Settings {
             .get(b"gns-rust", b"DNS")
             .map(|_| c.get_yesno(b"gns-rust", b"DNS"))
             .transpose()?
+            .map(gnunet_gns_service_host::DnsPolicy::from)
             .unwrap_or(core.dns);
         core.cache = !c
             .get(b"namecache", b"DISABLE")
@@ -262,27 +264,33 @@ impl Settings {
     pub(super) fn dns(
         &self,
         clock: std::sync::Arc<dyn gnunet_service_runtime::clock::RuntimeClock>,
-    ) -> Result<dns::RecursiveDns, dns::Error> {
-        if let Some(path) = &self.resolv_conf {
-            return dns::RecursiveDns::from_resolv_conf(
-                clock,
-                path,
-                self.resolv_conf_bytes,
-                self.dns,
-            );
+    ) -> Result<(dns::RecursiveDns, NameserverLookup), dns::Error> {
+        if self.core.dns != DnsPolicy::Allow {
+            return Ok((
+                dns::RecursiveDns::new(clock, &[], self.dns)?,
+                NameserverLookup::Resolver,
+            ));
         }
-        #[cfg(unix)]
-        {
-            dns::RecursiveDns::from_resolv_conf(
+        let (factory, nameservers) = if let Some(path) = &self.resolv_conf {
+            (
+                dns::RecursiveDns::from_resolv_conf(clock, path, self.resolv_conf_bytes, self.dns)?,
+                NameserverLookup::WireDns,
+            )
+        } else {
+            #[cfg(unix)]
+            let factory = dns::RecursiveDns::from_resolv_conf(
                 clock,
                 std::path::Path::new("/etc/resolv.conf"),
                 self.resolv_conf_bytes,
                 self.dns,
-            )
-        }
-        #[cfg(windows)]
-        {
-            dns::RecursiveDns::from_native(clock, self.dns)
-        }
+            )?;
+            #[cfg(windows)]
+            let factory = dns::RecursiveDns::from_native(clock, self.dns)?;
+            (factory, NameserverLookup::Resolver)
+        };
+        Ok((
+            factory.with_dnssec(dns::dnssec::Limits::default())?,
+            nameservers,
+        ))
     }
 }

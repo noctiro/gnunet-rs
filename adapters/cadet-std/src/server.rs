@@ -380,8 +380,8 @@ impl<'id, 'slots, 'bytes> Server<'id, 'slots, 'bytes> {
     pub fn message_bytes(&self, message: core::Message<'id>) -> Result<&[u8], ProtocolError> {
         self.core.message_bytes(message)
     }
-    /// Enable an explicit actual snapshot provider. Node invokes this only
-    /// when it owns the Book/controller/channel directory. No END is produced.
+    /// Enable the composition's explicit provider of bounded management snapshots.
+    /// No END is produced until the original query receives its capture.
     pub fn enable_management(
         &mut self,
         mut limits: management::Limits,

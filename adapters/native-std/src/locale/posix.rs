@@ -1,4 +1,4 @@
-//! POSIX locale ownership, exact readers and retained source failure effects.
+//! POSIX locale ownership, exact readers and scoped numeric conversion.
 #[cfg(any(
     target_os = "macos",
     target_os = "freebsd",
@@ -50,10 +50,10 @@ unsafe extern "C" {
 struct Handle(NonNull<libc::c_void>);
 #[expect(
     unsafe_code,
-    reason = "The private locale is immutable, never passed as a mutable newlocale base, and remains Arc/TLS-owned throughout every native read or installation"
+    reason = "The private locale is immutable, never passed as a mutable newlocale base, and remains owned throughout every native read or scoped installation"
 )]
 // SAFETY: POSIX *_l readers may share an immutable locale. No raw handle escapes,
-// so no thread can mutate/free it; final Arc alone invokes Drop after TLS detaches any private installation.
+// so no thread can mutate/free it; final Arc alone invokes Drop after scoped installation ends.
 unsafe impl Send for Handle {}
 #[expect(
     unsafe_code,
@@ -74,7 +74,7 @@ impl Drop for Handle {
             reason = "One successful newlocale/duplocale result is uniquely owned by the final Arc; no pointer/function use remains live"
         )]
         // SAFETY: this is the exact private allocation returned by libc, never a
-        // global/C sentinel; private TLS installation is detached before its owner releases the final Arc.
+        // global/C sentinel; scoped installation ends before the final Arc drops.
         unsafe {
             libc::freelocale(self.0.as_ptr());
         }
@@ -407,15 +407,15 @@ impl Drop for Errno {
         set_errno(self.0);
     }
 }
-/// Explicit native current-thread locale capability. It is a reader/effect port,
+/// Explicit native current-thread locale capability. It is a scoped reader port,
 /// not an immutable snapshot and not an automatic process-global lock.
 #[derive(Clone)]
 pub struct ThreadLocale {
     _private: (),
 }
 impl ThreadLocale {
-    /// Enable actual native current-thread reads and the source CONFIG float
-    /// failure effect. Construction does not change any native locale.
+    /// Enable native current-thread reads and scoped numeric-C conversions.
+    /// Construction does not change any native locale.
     ///
     /// # Safety
     /// Until every clone and containing CaseContext is dropped, the caller must
@@ -632,10 +632,9 @@ impl ThreadLocale {
     }
     /// Actual source CONFIG `%f%1s` operation using its native numeric-C locale.
     /// A defined strtof_l ERANGE preflight rejects out-of-range inputs before
-    /// scanf; those inputs receive no native scanf-equivalence claim. A lexical
-    /// or trailing-item failure retains the source's private mixed locale in this
-    /// thread until a later explicit change or thread exit. Success restores the
-    /// original locale. Neither path changes other threads' selected locale.
+    /// scanf; those inputs receive no native scanf-equivalence claim. The
+    /// temporary locale is restored and freed on success and failure. Other
+    /// threads' selected locales are unchanged.
     pub fn configuration_float(&self, input: &[u8]) -> io::Result<ConfigurationFloat> {
         #[cfg(any(
             target_os = "macos",
@@ -661,7 +660,7 @@ impl ThreadLocale {
                 });
             }
             let text = c_string(input)?;
-            let mut installed = InstalledLocale::new(locale)?;
+            let _installed = InstalledLocale::new(locale)?;
             let mut value = 0.0f32;
             let mut dummy = [0 as libc::c_char; 2];
             #[expect(
@@ -678,9 +677,6 @@ impl ThreadLocale {
                     dummy.as_mut_ptr(),
                 )
             } == 1;
-            if !matched {
-                installed.retain_failure()?;
-            }
             Ok(ConfigurationFloat {
                 value,
                 matched,
@@ -706,49 +702,9 @@ impl ThreadLocale {
     target_os = "freebsd",
     all(target_os = "linux", target_env = "gnu")
 ))]
-struct RetainedThreadLocale {
-    locale: LocaleSnapshot,
-}
-#[cfg(any(
-    target_os = "macos",
-    target_os = "freebsd",
-    all(target_os = "linux", target_env = "gnu")
-))]
-impl Drop for RetainedThreadLocale {
-    fn drop(&mut self) {
-        #[expect(
-            unsafe_code,
-            reason = "The TLS owner retains its private immutable locale; query current first, and detach only if that exact private locale remains installed before final Arc can free it"
-        )]
-        // SAFETY: NULL queries. Global sentinel is a valid uselocale selector,
-        // The reviewed Darwin/POSIX SDK defines it as (locale_t)-1; it is
-        // never dereferenced, passed to a *_l reader or freed. Foreign retained pointers are
-        // excluded by the explicit ThreadLocale capability contract.
-        unsafe {
-            if libc::uselocale(std::ptr::null_mut()) == self.locale.handle.0.as_ptr() {
-                let _previous =
-                    libc::uselocale(std::ptr::without_provenance_mut::<libc::c_void>(usize::MAX));
-            }
-        }
-    }
-}
-#[cfg(any(
-    target_os = "macos",
-    target_os = "freebsd",
-    all(target_os = "linux", target_env = "gnu")
-))]
-std::thread_local! {
-    static RETAINED_THREAD_LOCALE:std::cell::RefCell<Option<RetainedThreadLocale>>=const{std::cell::RefCell::new(None)};
-}
-#[cfg(any(
-    target_os = "macos",
-    target_os = "freebsd",
-    all(target_os = "linux", target_env = "gnu")
-))]
 struct InstalledLocale {
-    locale: LocaleSnapshot,
+    _locale: LocaleSnapshot,
     previous: libc::locale_t,
-    restore: bool,
 }
 #[cfg(any(
     target_os = "macos",
@@ -768,28 +724,9 @@ impl InstalledLocale {
             return Err(io::Error::last_os_error());
         }
         Ok(Self {
-            locale,
+            _locale: locale,
             previous,
-            restore: true,
         })
-    }
-    fn retain_failure(&mut self) -> io::Result<()> {
-        // Create ownership before disabling restoration. On TLS access/borrow
-        // failure the guard still restores the original selection before Drop.
-        let next = RetainedThreadLocale {
-            locale: self.locale.clone(),
-        };
-        let old = RETAINED_THREAD_LOCALE
-            .try_with(|slot| {
-                let mut slot = slot
-                    .try_borrow_mut()
-                    .map_err(|_| io::Error::other("native locale effect reentered TLS owner"))?;
-                Ok::<_, io::Error>(slot.replace(next))
-            })
-            .map_err(|_| io::Error::other("native locale owner is being destroyed"))??;
-        self.restore = false;
-        drop(old);
-        Ok(())
     }
 }
 #[cfg(any(
@@ -799,16 +736,14 @@ impl InstalledLocale {
 ))]
 impl Drop for InstalledLocale {
     fn drop(&mut self) {
-        if self.restore {
-            #[expect(
-                unsafe_code,
-                reason = "Original selection is retained by the native capability contract; restoration happens before this guard's private locale Arc is dropped"
-            )]
-            // SAFETY: previous is exactly the successful uselocale return value;
-            // no object is freed or raw pointer exposed by restoration.
-            unsafe {
-                let _replaced = libc::uselocale(self.previous);
-            }
+        #[expect(
+            unsafe_code,
+            reason = "Original selection is retained by the native capability contract; restoration happens before this guard's private locale Arc is dropped"
+        )]
+        // SAFETY: previous is exactly the successful uselocale return value;
+        // no object is freed or raw pointer exposed by restoration.
+        unsafe {
+            let _replaced = libc::uselocale(self.previous);
         }
     }
 }

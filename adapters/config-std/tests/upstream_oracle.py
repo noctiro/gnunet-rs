@@ -14,7 +14,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 
-PIN = "346358e26d4dcc2dc4f51bef5d52dca29c7d8165"
+PIN = "7e0f9c3640310fd406fcf32c271ab583ef83d6c9"
 PARSER = {
     "basic": b"# comment\n[First]\na = 1\nb=\"two\"\n[SECOND]\nkey=x\n[first]\nA = changed\n",
     "opaque": b"[s]\nbytes=\xff\xfe\nempty =\nquote=\"\nslashes=one\\ntwo\n",
@@ -31,9 +31,22 @@ PARSER = {
     "inline_no_source": b"@INLINE@ absent\n",
 }
 NUMBERS = {"zero": b"0", "negative": b"-1", "signed": b" +42 \t", "suffix": b"1x", "hex": b"0x10", "empty": b"", "maximum": b"18446744073709551615"}
-SIZES = {"mixed": b"1KiB 2 kB 3B", "legacy_tb": b"1TB", "empty": b"", "multiply_units": b"2kB MiB", "negative": b"-1B", "overflow_wrap": b"18446744073709551615 KiB", "invalid": b"1 xb"}
+SIZES = {"mixed": b"1KiB 2 kB 3B", "decimal_tb": b"1TB", "decimal_pb": b"1PB", "decimal_eb": b"1EB", "empty": b"", "multiply_units": b"2kB MiB", "negative": b"-1B", "overflow_wrap": b"18446744073709551615 KiB", "invalid": b"1 xb"}
 TIMES = {"mixed": b"1h 2min 3s 4ms 5us", "forever": b"FoReVeR", "week_year": b"1w 1y", "quotes": b"1' 2\"", "unit_only": b"s", "empty": b"", "invalid": b"1fortnight"}
 EXPAND = {"paths_precedence": b"$ROOT/a", "braced": b"x${ROOT}/z", "nested": b"${UNSET:-${ROOT}}/z", "unknown": b"$GNUNET_CONFIG_ORACLE_MISSING/x", "unmatched": b"${ROOT/x", "inside": b"a/$ORACLE_ENV/z", "empty_set": b"${EMPTY:-default}/z", "separators": b"$ROOT\\file", "punctuation": b"$ROOT!", "doubled": b"$$ROOT"}
+EXPAND.update({
+    "empty_end": b"abc${EMPTY}",
+    "empty_alone": b"$EMPTY",
+    "empty_adjacent": b"${EMPTY}$ROOT",
+    "empty_repeated": b"x${EMPTY}${EMPTY}y$ROOT/z",
+    "unknown_then_known": b"$GNUNET_CONFIG_ORACLE_MISSING/$ROOT",
+    "recursive_self": b"$SELF",
+    "recursive_pair": b"$A",
+    "recursive_default": b"$D",
+    "recursive_twice": b"$TWICE",
+    "recursive_environment": b"$ORACLE_SELF_ENV",
+})
+EXPANSION_PATHS = {"ROOT": b"/config", "EMPTY": b"", "SELF": b"$SELF/x", "A": b"$B/a", "B": b"$A/b", "D": b"${D:-dflt}/d", "TWICE": b"${TWICE}:${TWICE}"}
 
 
 def body(source, prefix, structure=False):
@@ -94,12 +107,13 @@ static int GNUNET_asprintf(char **out,const char *fmt,...) {
   if(n<0)abort();*out=calloc(1,(size_t)n+1);vsnprintf(*out,(size_t)n+1,fmt,b);va_end(b);return n;
 }
 '''
-    types = "\n".join(body(config, "struct " + name + "\n", True) for name in ("ConfigSource", "ConfigEntry", "ConfigSection"))
+    types = "\n".join(body(config, "struct " + name + "\n", True) for name in ("ConfigSource", "ConfigEntry", "ConfigSection", "ExpansionFrame"))
     handle = r'''
 struct GNUNET_CONFIGURATION_Handle { struct ConfigSection *sections; bool diagnostics; const char *restrict_section; };
 static int handle_inline(struct GNUNET_CONFIGURATION_Handle *cfg,const char*p,bool glob,const char*r,const char*s,unsigned n){(void)cfg;(void)p;(void)glob;(void)r;(void)s;(void)n;return GNUNET_SYSERR;}
 void GNUNET_CONFIGURATION_set_value_string(struct GNUNET_CONFIGURATION_Handle*,const char*,const char*,const char*);
 char *GNUNET_CONFIGURATION_expand_dollar(const struct GNUNET_CONFIGURATION_Handle*,char*);
+static char *expand_all(const struct GNUNET_CONFIGURATION_Handle*,char*,const struct ExpansionFrame*);
 '''
     functions = [
         body(config, "static struct ConfigSection *\nfind_section"),
@@ -112,6 +126,7 @@ char *GNUNET_CONFIGURATION_expand_dollar(const struct GNUNET_CONFIGURATION_Handl
         body(config, "enum GNUNET_GenericReturnValue\nGNUNET_CONFIGURATION_get_value_number"),
         body(config, "enum GNUNET_GenericReturnValue\nGNUNET_CONFIGURATION_get_value_string"),
         body(config, "static char *\nexpand_dollar"),
+        body(config, "static char *\nexpand_all (const struct GNUNET_CONFIGURATION_Handle *cfg,\n            char *orig,\n            const struct ExpansionFrame *frame)\n{"),
         body(config, "char *\nGNUNET_CONFIGURATION_expand_dollar"),
         body(strings, "struct ConversionTable\n", True),
         body(strings, "static enum GNUNET_GenericReturnValue\nconvert_with_table"),
@@ -120,7 +135,7 @@ char *GNUNET_CONFIGURATION_expand_dollar(const struct GNUNET_CONFIGURATION_Handl
     ]
     harness = r'''
 static void hex(const unsigned char *data,size_t size){for(size_t i=0;i<size;i++)printf("%02x",data[i]);}
-int main(void){setenv("ORACLE_ENV","/env",1);unsetenv("GNUNET_CONFIG_ORACLE_MISSING");unsetenv("UNSET");
+int main(void){setenv("ORACLE_ENV","/env",1);setenv("ORACLE_SELF_ENV","$ORACLE_SELF_ENV/e",1);unsetenv("GNUNET_CONFIG_ORACLE_MISSING");unsetenv("UNSET");
 '''
     for name, data in PARSER.items():
         harness += '{struct GNUNET_CONFIGURATION_Handle cfg={0};const char*input=' + literal(data) + ';int ret=GNUNET_CONFIGURATION_deserialize(&cfg,input,strlen(input),NULL);size_t size;char*out=GNUNET_CONFIGURATION_serialize(&cfg,&size);printf("parser|' + name + '|%d|",ret);hex((const unsigned char*)out,size);puts("");}\n'
@@ -133,7 +148,9 @@ int main(void){setenv("ORACLE_ENV","/env",1);unsetenv("GNUNET_CONFIG_ORACLE_MISS
             else:
                 expression = 'struct GNUNET_TIME_Relative rel={0};int ret=GNUNET_STRINGS_fancy_time_to_relative(input,&rel);number=rel.rel_value_us;'
             harness += '{const char*input=' + literal(data) + ';unsigned long long number=0;' + expression + 'printf("' + kind + '|' + name + '|%d|%llu\\n",ret,ret==GNUNET_OK?number:0);}\n'
-    harness += '{struct GNUNET_CONFIGURATION_Handle cfg={0};GNUNET_CONFIGURATION_set_value_string(&cfg,"PATHS","ROOT","/config");GNUNET_CONFIGURATION_set_value_string(&cfg,"PATHS","EMPTY","");\n'
+    harness += '{struct GNUNET_CONFIGURATION_Handle cfg={0};\n'
+    for name, value in EXPANSION_PATHS.items():
+        harness += 'GNUNET_CONFIGURATION_set_value_string(&cfg,"PATHS",' + literal(name.encode()) + ',' + literal(value) + ');\n'
     for name, data in EXPAND.items():
         harness += '{char*out=GNUNET_CONFIGURATION_expand_dollar(&cfg,strdup(' + literal(data) + '));printf("expand|' + name + '|1|");hex((const unsigned char*)out,strlen(out));puts("");free(out);}\n'
     harness += '}return 0;}\n'
@@ -141,7 +158,7 @@ int main(void){setenv("ORACLE_ENV","/env",1);unsetenv("GNUNET_CONFIG_ORACLE_MISS
 
 
 ROOT = Path(__file__).resolve().parents[3]
-TRACE_TEST = "original_c_parser_scalars_and_expansion_match_all_44_observations"
+TRACE_TEST = "original_c_parser_scalars_and_expansion_match_reference"
 
 
 def source_snapshot(source):

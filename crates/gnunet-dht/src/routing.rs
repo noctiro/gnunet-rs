@@ -220,10 +220,26 @@ pub fn am_closest<T>(
     visited: Option<&PeerBloom>,
     bucket_size: usize,
 ) -> bool {
+    closest_among(
+        local,
+        target,
+        candidates.iter().map(|candidate| &candidate.identity),
+        visited,
+        bucket_size,
+    )
+}
+
+pub(crate) fn closest_among<'a>(
+    local: &[u8; 32],
+    target: &[u8; 64],
+    identities: impl IntoIterator<Item = &'a [u8; 32]>,
+    visited: Option<&PeerBloom>,
+    bucket_size: usize,
+) -> bool {
     let local = peer_key(local);
     let mut counts = [0usize; 512];
-    for peer in candidates {
-        let key = peer_key(&peer.identity);
+    for identity in identities {
+        let key = peer_key(identity);
         let Some(index) = bucket(&local, &key) else {
             continue;
         };

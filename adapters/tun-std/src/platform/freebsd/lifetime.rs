@@ -12,7 +12,7 @@ const SET_TRANSIENT: libc::c_ulong = nix::request_code_write!(b't', 98, size_of:
 pub(super) const GET_TRANSIENT: libc::c_ulong =
     nix::request_code_read!(b't', 99, size_of::<libc::c_int>());
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Lifetime {
     Manual,
     Transient,
@@ -112,26 +112,24 @@ impl InterfaceLease {
                         }
                         None => true,
                     }
-                } else if let Some(expected) = self.index {
-                    match index(self.name()?) {
-                        Ok(current) if current == expected => false,
-                        Ok(_) => {
-                            return Err(invalid(
-                                "created interface name changed its original index",
-                            ));
-                        }
-                        Err(error)
-                            if matches!(
-                                error.raw_os_error(),
-                                Some(libc::ENXIO | libc::ENODEV | libc::ENOENT)
-                            ) =>
-                        {
-                            true
-                        }
-                        Err(error) => return Err(error),
-                    }
                 } else {
-                    false
+                    let expected = self.index.ok_or_else(|| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "created FreeBSD TUN has no verified interface index",
+                        )
+                    })?;
+                    match super::recovery::name_at_index(expected)? {
+                        None => true,
+                        Some(current) => {
+                            if crate::recovery::read_name(&current)? != self.name()? {
+                                return Err(invalid(
+                                    "unmarked FreeBSD TUN changed its original name",
+                                ));
+                            }
+                            false
+                        }
+                    }
                 };
                 let name = self.name()?.to_owned();
                 if absent {
@@ -240,21 +238,41 @@ fn canonical_unit(name: &str) -> bool {
 }
 
 pub(crate) fn open_exclusive(desired: Option<&str>) -> io::Result<DeviceHandle> {
-    attempt(desired, None).map_err(|cause| cause.into_parts().0)
+    attempt(desired, None, process_fib()?).map_err(|cause| cause.into_parts().0)
 }
 pub(crate) fn open_recorded(
     desired: Option<&str>,
     birth: [u8; 32],
+    fib: Option<u32>,
 ) -> Result<DeviceHandle, CreationFailure> {
-    attempt(desired, Some(birth))
+    let fib = match fib {
+        Some(fib) => fib,
+        None => process_fib()?,
+    };
+    attempt(desired, Some(birth), fib)
 }
+
+fn confirm_transient(device: &mut DeviceHandle) -> io::Result<()> {
+    let (fd, lease) = device.recovery_parts()?;
+    // TUNSTRANSIENT has already transferred removal to the driver's final
+    // close. Preserve that authority even if verification refuses publication.
+    lease.lifetime = Lifetime::Transient;
+    if read_int(fd, GET_TRANSIENT)? != 1 {
+        return Err(invalid("kernel did not enable transient TUN lifetime"));
+    }
+    if lease.recovery.is_none() {
+        device.interface = None;
+    }
+    Ok(())
+}
+
 fn attempt(
     desired: Option<&str>,
     birth: Option<[u8; 32]>,
+    fib: u32,
 ) -> Result<DeviceHandle, CreationFailure> {
     // Validate and reserve every caller-supplied native name before mutation.
     let desired_c = desired.map(name).transpose()?;
-    let fib = process_fib()?;
     let clone = desired.filter(|name| canonical_unit(name)).unwrap_or("tun");
     let mut req = request(clone)?;
     let socket: OwnedFd = control_socket()?.into();
@@ -339,27 +357,24 @@ fn attempt(
         if get_fib(&lease.socket, &info.name)? != fib {
             return Err(invalid("created TUN FIB differs from the selected table"));
         }
+        if birth.is_some() {
+            // The active checkpoint owns destruction. Keep the interface
+            // across a packet descriptor close, including on FreeBSD 15.
+            let (fd, lease) = device.recovery_parts()?;
+            lease.lifetime = super::recovery::observed_lifetime(fd)?;
+            return if lease.lifetime == Lifetime::Manual {
+                Ok(())
+            } else {
+                Err(invalid("checkpointed TUN did not retain manual lifetime"))
+            };
+        }
         match set_int(device.fd()?, SET_TRANSIENT, 1) {
-            Ok(()) => {
-                if read_int(device.fd()?, GET_TRANSIENT)? != 1 {
-                    return Err(invalid("kernel did not enable transient TUN lifetime"));
-                }
-                // The driver now owns deletion at final FD close. Keep that
-                // responsibility with the FD, including any external duplicates.
-                if birth.is_some() {
-                    let (_, lease) = device.recovery_parts()?;
-                    lease.lifetime = Lifetime::Transient;
-                } else {
-                    device.interface = None;
-                }
-            }
+            Ok(()) => confirm_transient(&mut device)?,
             Err(error) if error.raw_os_error() == Some(libc::ENOTTY) => {
                 // FreeBSD 14 has no transient ioctl. This same fresh interface
                 // remains owned by the explicit close-then-destroy lease.
-                if birth.is_none() {
-                    let (fd, lease) = device.recovery_parts()?;
-                    super::recovery::install(fd, lease, &created, None)?;
-                }
+                let (fd, lease) = device.recovery_parts()?;
+                super::recovery::install(fd, lease, &created, None)?;
             }
             Err(error) => return Err(error),
         }
@@ -410,5 +425,67 @@ mod tests {
         ] {
             assert!(!canonical_unit(name));
         }
+    }
+
+    #[test]
+    fn a_failed_transient_readback_keeps_kernel_owned_removal() -> io::Result<()> {
+        // An ordinary descriptor rejects the verification ioctl. No TUN is
+        // needed to exercise the Rust transition after an admitted setter.
+        let fd = || std::fs::File::open("/dev/null").map(OwnedFd::from);
+        let mut device = DeviceHandle::persistent(InterfaceLease {
+            socket: fd()?,
+            name: [0; libc::IFNAMSIZ],
+            index: None,
+            recovery: None,
+            checkpoint: None,
+            lifetime: Lifetime::Manual,
+            retired: None,
+        });
+        device.install_fd(fd()?);
+        let expected = read_int(device.fd()?, GET_TRANSIENT)
+            .err()
+            .ok_or_else(|| io::Error::other("non-TUN descriptor accepted TUNGTRANSIENT"))?;
+        let error = confirm_transient(&mut device)
+            .err()
+            .ok_or_else(|| io::Error::other("failed transient readback permitted publication"))?;
+        if !matches!(
+            device.interface.as_ref().map(|lease| lease.lifetime),
+            Some(Lifetime::Transient)
+        ) || error.raw_os_error() != expected.raw_os_error()
+        {
+            return Err(io::Error::other(
+                "failed readback lost the transient retirement owner or native error",
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn unqualified_creation_retains_cleanup_without_destroy_by_name() -> io::Result<()> {
+        let mut name = [0; libc::IFNAMSIZ];
+        name[..5].copy_from_slice(b"tun42");
+        let lease = InterfaceLease {
+            socket: std::fs::File::open("/dev/null")?.into(),
+            name,
+            index: None,
+            recovery: None,
+            checkpoint: None,
+            lifetime: Lifetime::Manual,
+            retired: None,
+        };
+        let error = lease
+            .destroy()
+            .err()
+            .ok_or_else(|| io::Error::other("unqualified TUN was treated as destroyed"))?;
+        if error.error().kind() != io::ErrorKind::InvalidData
+            || error.error().raw_os_error().is_some()
+            || error.interface_name()? != "tun42"
+            || error.interface_index().is_some()
+        {
+            return Err(io::Error::other(
+                "cleanup did not retain the unqualified interface without a destroy ioctl",
+            ));
+        }
+        Ok(())
     }
 }

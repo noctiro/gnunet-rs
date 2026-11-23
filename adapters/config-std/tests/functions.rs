@@ -12,6 +12,8 @@ impl Environment for Env {
     fn variable(&self, name: &[u8]) -> Option<Vec<u8>> {
         if name == b"ORACLE_ENV" {
             Some(b"/env".to_vec())
+        } else if name == b"ORACLE_SELF_ENV" {
+            Some(b"$ORACLE_SELF_ENV/e".to_vec())
         } else {
             None
         }
@@ -28,7 +30,7 @@ fn hex(input: &[u8]) -> String {
     result
 }
 #[test]
-fn original_c_parser_scalars_and_expansion_match_all_44_observations()
+fn original_c_parser_scalars_and_expansion_match_reference()
 -> Result<(), Box<dyn std::error::Error>> {
     let mut actual = String::new();
     {
@@ -251,7 +253,14 @@ fn original_c_parser_scalars_and_expansion_match_all_44_observations()
             Ok(number) => (1, number),
             Err(_) => (-1, 0),
         };
-        writeln!(actual, "size|legacy_tb|{ret}|{number}")?;
+        writeln!(actual, "size|decimal_tb|{ret}|{number}")?;
+    }
+    for (name, input) in [("decimal_pb", b"1PB"), ("decimal_eb", b"1EB")] {
+        let (ret, number) = match parse_size(input) {
+            Ok(number) => (1, number),
+            Err(_) => (-1, 0),
+        };
+        writeln!(actual, "size|{name}|{ret}|{number}")?;
     }
     {
         let result = parse_size(b"");
@@ -354,6 +363,15 @@ fn original_c_parser_scalars_and_expansion_match_all_44_observations()
     let mut cfg = Configuration::default();
     cfg.set_value(b"PATHS", b"ROOT", Some(b"/config"))?;
     cfg.set_value(b"PATHS", b"EMPTY", Some(b""))?;
+    for (name, value) in [
+        (b"SELF".as_slice(), b"$SELF/x".as_slice()),
+        (b"A", b"$B/a"),
+        (b"B", b"$A/b"),
+        (b"D", b"${D:-dflt}/d"),
+        (b"TWICE", b"${TWICE}:${TWICE}"),
+    ] {
+        cfg.set_value(b"PATHS", name, Some(value))?;
+    }
     writeln!(
         actual,
         "expand|paths_precedence|1|{}",
@@ -409,6 +427,24 @@ fn original_c_parser_scalars_and_expansion_match_all_44_observations()
         "expand|doubled|1|{}",
         hex(&cfg.expand_dollar(b"\x24\x24\x52\x4f\x4f\x54", &Env)?)
     )?;
+    for (name, input) in [
+        ("empty_end", b"abc${EMPTY}".as_slice()),
+        ("empty_alone", b"$EMPTY"),
+        ("empty_adjacent", b"${EMPTY}$ROOT"),
+        ("empty_repeated", b"x${EMPTY}${EMPTY}y$ROOT/z"),
+        ("unknown_then_known", b"$GNUNET_CONFIG_ORACLE_MISSING/$ROOT"),
+        ("recursive_self", b"$SELF"),
+        ("recursive_pair", b"$A"),
+        ("recursive_default", b"$D"),
+        ("recursive_twice", b"$TWICE"),
+        ("recursive_environment", b"$ORACLE_SELF_ENV"),
+    ] {
+        writeln!(
+            actual,
+            "expand|{name}|1|{}",
+            hex(&cfg.expand_dollar(input, &Env)?)
+        )?;
+    }
     assert_eq!(actual, include_str!("fixtures/functions.txt"));
     if let Some(path) = std::env::var_os("GNUNET_CONFIG_TRACE") {
         std::fs::write(path, actual)?;
@@ -447,10 +483,7 @@ fn additional_typed_values_and_defined_rejections() -> Result<(), Error> {
     cfg.get_data(b"s", b"data", &mut data)?;
     assert_eq!(data, [1, 2]);
     cfg.set_value(b"PATHS", b"LOOP", Some(b"$LOOP"))?;
-    assert!(matches!(
-        cfg.expand_dollar(b"$LOOP", &Env),
-        Err(Error::Cycle)
-    ));
+    assert_eq!(cfg.expand_dollar(b"$LOOP", &Env)?, b"$LOOP");
     assert!(matches!(
         cfg.deserialize(b"[s]\nx=before\0after", None),
         Err(Error::InvalidInput)

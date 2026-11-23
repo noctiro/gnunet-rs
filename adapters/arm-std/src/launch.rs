@@ -24,8 +24,8 @@ pub use windows::{
 pub struct CommandPlan {
     /// Original command description before platform argument encoding.
     pub command: Vec<u8>,
-    /// Actual arguments, argv0 included. Windows native paths remain literal;
-    /// only configured prefix/options fragments use the GNUnet text grammar.
+    /// Actual arguments, including argv0. Executable and configuration paths
+    /// remain literal. Configured prefix/options use the GNUnet text grammar.
     pub argv: Vec<OsString>,
     /// Actual source WEAKRANDOM/HOSTFILE daemon rule.
     pub daemonize: bool,

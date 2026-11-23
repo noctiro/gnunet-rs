@@ -1,5 +1,5 @@
 //! Bounded standard record-line IO over the actual original native clients.
-use super::{KEY_BYTES, Result, bytes, row, text};
+use super::{DirectEndpoints, KEY_BYTES, Result, bytes, row, text};
 use crate::control::Control;
 use gnunet::{
     clients::{identity, namestore as ns},
@@ -17,18 +17,22 @@ use std::{
     fmt,
     fs::File,
     io::{self, Read, Write},
+    num::NonZeroUsize,
     path::PathBuf,
     time::Duration,
 };
 use tokio::time::Instant;
 use zeroize::{Zeroize, Zeroizing};
+mod batch;
+use batch::{Batch, Sender};
+
 const FRAME: usize = u16::MAX as usize;
 const TEXT: usize = 262140;
 const LINE: usize = TEXT + 512;
 const RECORDS: usize = FRAME / gnsrecord::RECORD_HEADER_LEN;
+// Keep each frame within the native service's default admission limit.
+const MAX_BATCH_SETS: usize = 256;
 struct Settings {
-    socket: PathBuf,
-    identity: PathBuf,
     input: Option<PathBuf>,
     ego: Option<Vec<u8>>,
     timeout: Duration,
@@ -37,11 +41,28 @@ struct Settings {
     records_per_set: usize,
     filter: u16,
     sets: u64,
+    batch_sets: NonZeroUsize,
     egos: usize,
     profile: Profile,
 }
 impl Settings {
-    fn read(args: &[OsString], import: bool) -> Result<Self> {
+    fn configured_input(batch_sets: NonZeroUsize) -> Self {
+        Self {
+            input: None,
+            ego: None,
+            timeout: Duration::from_secs(30),
+            bytes: 16 * 1024 * 1024,
+            records: 65536,
+            records_per_set: RECORDS,
+            filter: 0,
+            sets: 65536,
+            batch_sets,
+            egos: 128,
+            profile: Profile::NATIVE_255,
+        }
+    }
+
+    fn read(args: &[OsString], import: bool) -> Result<(Self, DirectEndpoints)> {
         let socket = PathBuf::from(args.first().ok_or("missing NAMESTORE UNIXPATH")?);
         let (mut identity, mut input, mut ego) = (None, None, None);
         let (mut timeout, mut maximum, mut records, mut sets, mut egos) = (
@@ -96,20 +117,26 @@ impl Settings {
         if !import && ego.is_none() {
             return Err("export-recordline requires --ego NAME".into());
         }
-        Ok(Self {
-            socket,
+        let endpoints = DirectEndpoints {
+            namestore: socket,
             identity: identity.ok_or("required --identity-socket UNIXPATH")?,
-            input,
-            ego,
-            timeout: Duration::from_millis(timeout),
-            bytes: maximum,
-            records,
-            records_per_set,
-            filter,
-            sets,
-            egos,
-            profile,
-        })
+        };
+        Ok((
+            Self {
+                input,
+                ego,
+                timeout: Duration::from_millis(timeout),
+                bytes: maximum,
+                records,
+                records_per_set,
+                filter,
+                sets,
+                batch_sets: NonZeroUsize::MIN,
+                egos,
+                profile,
+            },
+            endpoints,
+        ))
     }
 }
 fn storage(size: usize) -> Result<Zeroizing<Vec<u8>>> {
@@ -230,7 +257,7 @@ fn summary(out: &mut impl Write, failure: &mut Failure, import: bool) {
         failure.diagnostic.get_or_insert(error);
     }
 }
-struct Buffers {
+pub(super) struct Buffers {
     stage: Zeroizing<Vec<u8>>,
     names: Zeroizing<Vec<u8>>,
     work: Zeroizing<Vec<u8>>,
@@ -242,7 +269,7 @@ struct Buffers {
     idna: idna::Workspace,
 }
 impl Buffers {
-    fn new() -> Result<Self> {
+    pub(super) fn new() -> Result<Self> {
         Ok(Self {
             stage: storage(TEXT)?,
             names: storage(1024)?,
@@ -273,7 +300,32 @@ impl Buffers {
         )?;
         Ok(codec.string_to_value(kind, value, &mut self.value)?)
     }
+
+    pub(super) fn parse_value(&mut self, kind: RecordType, value: &str) -> Result<&[u8]> {
+        let len = self.convert(kind, value, Profile::NATIVE_255)?;
+        Ok(&self.value[..len])
+    }
+
+    pub(super) fn display_value(&mut self, record: RecordData<'_>) -> Result<&str> {
+        let len = self.render_with(record, Profile::NATIVE_255, false)?;
+        Ok(std::str::from_utf8(&self.text[..len])?)
+    }
+
+    pub(super) fn recordline_value(&mut self, record: RecordData<'_>) -> Result<&str> {
+        let len = self.render(record, Profile::NATIVE_255)?;
+        Ok(std::str::from_utf8(&self.text[..len])?)
+    }
+
     fn render(&mut self, record: RecordData<'_>, profile: Profile) -> Result<usize> {
+        self.render_with(record, profile, true)
+    }
+
+    fn render_with(
+        &mut self,
+        record: RecordData<'_>,
+        profile: Profile,
+        lossless: bool,
+    ) -> Result<usize> {
         let backend = idna::Backend::new(
             &mut self.idna,
             idna::Limits::GNUNET,
@@ -290,6 +342,9 @@ impl Buffers {
             },
         )?;
         let n = codec.value_to_string(record.record_type, record.data, &mut self.text)?;
+        if !lossless {
+            return Ok(n);
+        }
         // Some official string schemas stop at NUL. Such a producer value can
         // be displayed, but must not silently lose its tail during a backup.
         let text = std::str::from_utf8(&self.text[..n])?;
@@ -624,134 +679,53 @@ async fn owner(
     });
     Ok(zones.len() - 1)
 }
-fn store_completion(
-    completion: ns::Completion<'_>,
-    group: &Group,
-    failure: &mut Failure,
-) -> Result<()> {
-    if !failure.report.pending_store {
-        return Err("duplicate original record-line STORE result".into());
-    }
-    match completion.outcome {
-        ns::Outcome::Reply(reply) => {
-            let ns::ipc::Response::Generic { code, .. } = reply.view()? else {
-                return Err("unexpected original record-line STORE reply".into());
-            };
-            failure.report.pending_store = false;
-            failure.report.local = Some(format!("service_code={code}"));
-            if code == 0 {
-                failure.report.stored_sets += 1;
-                failure.report.stored_records += group.records.len() as u64;
-                failure.report.staged_records = 0;
-                Ok(())
-            } else {
-                failure.report.failed_sets += 1;
-                Err(format!("record-line STORE returned actual code {code}").into())
-            }
-        }
-        ns::Outcome::Local { reason, submission } => {
-            failure.report.pending_store = false;
-            failure.report.local = Some(format!("{reason:?}, {submission:?}"));
-            if matches!(submission, ns::Submission::Unsent) {
-                failure.report.unapplied_sets += 1;
-            } else {
-                failure.report.unknown_sets += 1;
-            }
-            Err("record-line STORE retired locally; exposed outcome is not replayed".into())
-        }
-    }
-}
-// One complete mutation, bound to its selected existing authority and original
-// canonical target. Submission never renews the target between header groups.
-struct StoreRequest<'a> {
-    group: &'a Group,
-    key: &'a ns::SecretKey,
-    until: u64,
-}
-async fn store(
-    request: StoreRequest<'_>,
+async fn stage_group(
+    group: Group,
+    settings: &Settings,
+    identity: &ns::EndpointSource,
+    zones: &mut Vec<Zone>,
     buffers: &mut Buffers,
-    client: &mut ns::Client<'_>,
-    control: &mut Control,
-    failure: &mut Failure,
-    out: &mut impl Write,
+    batch: &mut Batch,
+    sender: &mut Sender<'_, '_, impl Write>,
 ) -> Result<()> {
-    let StoreRequest { group, key, until } = request;
-    let n = group.encode(buffers)?;
-    control.gate().await?;
-    let operation = client.store(
-        key,
-        ns::ipc::RecordSets::new(&buffers.sets[..n], 1)?,
-        true,
-        until,
-    )?;
-    failure.report.admitted_sets += 1;
-    failure.report.pending_store = true;
-    failure.report.local = None;
-    let result=async {
-        loop {
-            match control.drive(client.drive(Some(control.hard()))).await? {
-                ns::Progress::Completed(completion) if completion.operation==operation=>{
-                    let result=store_completion(completion,group,failure);
-                    // Actual receipt facts precede fallible output.
-                    if let Err(error) = row(out,json!({"event":"namestore_recordline_store_result","first_line":group.start_line,
-                        "last_line":group.end_line,"label":group.label,"owner":group.owner,"result":failure.report.local,
-                        "stored_sets":failure.report.stored_sets,"stored_records":failure.report.stored_records,
-                        "failed_sets":failure.report.failed_sets,"unknown_sets":failure.report.unknown_sets})) {
-                        failure.diagnostic.get_or_insert(error);
-                        if result.is_ok() { return Err("record-line receipt output failed after actual STORE result".into()); }
-                    }
-                    return result;
-                }
-                ns::Progress::Completed(_)=>return Err("foreign record-line STORE completion".into()),
-                ns::Progress::Lost{report,cause}=>{failure.report.close_exposed=failure.report.close_exposed.max(report.exposed);failure.store_loss.get_or_insert(cause);return Err("original record-line NAMESTORE source lost; no mutation replay".into());}
-                ns::Progress::Unavailable(error)=>return Err(error.into()),
-                ns::Progress::WaitDeadline=>return Err("original record-line STORE observation deadline".into()),
-                ns::Progress::Closed=>return Err("record-line STORE closed before original outcome".into()),
-                _=>{}
-            }
-        }
-    }.await;
-    if result.is_err() && failure.report.pending_store {
-        if let Some(report) = client.close() {
-            failure.report.close_exposed = failure.report.close_exposed.max(report.exposed);
-        }
-        // Exactly one live operation. Closing retains its original queued result
-        // (including known success) before local Closed; no more IO or admission.
-        for _ in 0..4 {
-            match client.drive(Some(Instant::now())).await {
-                Ok(ns::Progress::Completed(completion)) if completion.operation == operation => {
-                    let _terminal = store_completion(completion, group, failure);
-                    break;
-                }
-                Ok(ns::Progress::Lost { cause, .. }) => {
-                    failure.store_loss.get_or_insert(cause);
-                }
-                Ok(ns::Progress::Closed | ns::Progress::WaitDeadline) => break,
-                Err(error) => {
-                    failure.cleanup.get_or_insert(Box::new(error));
-                    break;
-                }
-                _ => {}
-            }
-        }
-        if failure.report.pending_store {
-            failure.report.unknown_sets += 1;
-        }
+    if group.records.is_empty() {
+        return Ok(());
     }
-    result
+    let count = sender.failure.report.admitted_sets + u64::try_from(batch.groups())?;
+    if count >= settings.sets {
+        return Err("record-line set bound exceeded".into());
+    }
+    let zone = owner(
+        &group.owner,
+        identity,
+        settings,
+        zones,
+        sender.until,
+        sender.control,
+        sender.failure,
+    )
+    .await?;
+    let length = group.encode(buffers)?;
+    if !batch.accepts(zone, zones, length) {
+        sender.flush(batch, zones).await?;
+    }
+    batch.stage(zone, group, &buffers.sets[..length])?;
+    sender.failure.report.staged_records = batch.records();
+    if batch.full() {
+        sender.flush(batch, zones).await?;
+    }
+    Ok(())
 }
+
 async fn import(
     settings: &Settings,
+    [source, identity_source]: [ns::EndpointSource; 2],
     reader: &mut Input<impl Read>,
     out: &mut impl Write,
     failure: &mut Failure,
     control: &mut Control,
 ) -> Result<()> {
     control.gate().await?;
-    let source = ns::EndpointSource::unix(settings.socket.clone());
-    let identity_source =
-        ns::EndpointSource::unix_with_clock(settings.identity.clone(), source.clock());
     let until = source
         .clock()
         .sample()?
@@ -761,103 +735,97 @@ async fn import(
         .filter(|n| *n != u64::MAX)
         .ok_or("record-line canonical deadline overflow")?;
     let instance = ns::Instance::new();
-    let mut client = ns::Client::new(
-        &instance,
-        source,
-        ns::Limits {
-            reconnect: false,
-            operations: 1,
-            ..Default::default()
-        },
-    )?;
+    let limits = ns::Limits {
+        reconnect: false,
+        operations: 1,
+        ..Default::default()
+    };
+    let mut client = ns::Client::new(&instance, source, limits)?;
     let result = async {
+        let mut sender = Sender {
+            client: &mut client,
+            control,
+            failure,
+            out,
+            until,
+        };
+        let max_sets = settings
+            .batch_sets
+            .get()
+            .min(MAX_BATCH_SETS)
+            .min(limits.record_sets);
+        let max_bytes =
+            limits.frame_bytes.min(limits.source_bytes) - ns::ipc::STORE_PREFIX - KEY_BYTES;
+        let mut batch = Batch::new(max_sets, max_bytes);
         let mut buffers = Buffers::new()?;
         let mut line = Zeroizing::new(Vec::new());
         let mut zones = Vec::new();
         let mut group: Option<Group> = None;
         loop {
-            control.gate().await?;
-            let present =
-                reader.line(&mut line, &mut failure.report.input_bytes, settings.bytes)?;
-            control.gate().await?;
+            sender.control.gate().await?;
+            let present = reader.line(
+                &mut line,
+                &mut sender.failure.report.input_bytes,
+                settings.bytes,
+            )?;
+            sender.control.gate().await?;
             if !present {
-                failure.report.legal_eof = true;
-                if let Some(group) = &group
-                    && !group.records.is_empty()
-                {
-                    if failure.report.admitted_sets == settings.sets {
-                        return Err("record-line set bound exceeded".into());
-                    }
-                    let index = owner(
-                        &group.owner,
-                        &identity_source,
+                sender.failure.report.legal_eof = true;
+                if let Some(group) = group.take() {
+                    stage_group(
+                        group,
                         settings,
+                        &identity_source,
                         &mut zones,
-                        until,
-                        control,
-                        failure,
-                    )
-                    .await?;
-                    store(
-                        StoreRequest {
-                            group,
-                            key: &zones[index].key,
-                            until,
-                        },
                         &mut buffers,
-                        &mut client,
-                        control,
-                        failure,
-                        out,
+                        &mut batch,
+                        &mut sender,
                     )
                     .await?;
                 }
-                return Ok(());
+                return sender.flush(&mut batch, &zones).await;
             }
-            failure.report.line += 1;
+            sender.failure.report.line += 1;
             match recordline::parse(std::str::from_utf8(&line)?)? {
                 Line::Empty => {}
                 Line::Header {
                     label,
                     owner: next_owner,
                 } => {
-                    if let Some(previous) = &group
-                        && !previous.records.is_empty()
-                    {
-                        if failure.report.admitted_sets == settings.sets {
-                            return Err("record-line set bound exceeded".into());
-                        }
-                        let index = owner(
-                            &previous.owner,
+                    if let Some(previous) = group.take() {
+                        stage_group(
+                            previous,
+                            settings,
+                            &identity_source,
+                            &mut zones,
+                            &mut buffers,
+                            &mut batch,
+                            &mut sender,
+                        )
+                        .await?;
+                    }
+                    if batch.groups() != 0 {
+                        let next = owner(
+                            next_owner,
                             &identity_source,
                             settings,
                             &mut zones,
-                            until,
-                            control,
-                            failure,
+                            sender.until,
+                            sender.control,
+                            sender.failure,
                         )
                         .await?;
-                        store(
-                            StoreRequest {
-                                group: previous,
-                                key: &zones[index].key,
-                                until,
-                            },
-                            &mut buffers,
-                            &mut client,
-                            control,
-                            failure,
-                            out,
-                        )
-                        .await?;
+                        if !batch.accepts(next, &zones, 0) {
+                            sender.flush(&mut batch, &zones).await?;
+                        }
                     }
                     group = Some(Group::new(
                         label,
                         next_owner,
-                        failure.report.line,
+                        sender.failure.report.line,
                         settings.records_per_set,
                     )?);
-                    failure.report.staged_records = 0;
+                    sender.failure.report.staged_records = batch.records();
                 }
                 Line::Record {
                     record_type,
@@ -868,16 +836,16 @@ async fn import(
                     let group = group
                         .as_mut()
                         .ok_or("record-line record precedes its owner header")?;
-                    if failure.report.converted_records == settings.records {
+                    if sender.failure.report.converted_records == settings.records {
                         return Err("record-line record bound exceeded".into());
                     }
                     let n = buffers.convert(record_type, value, settings.profile)?;
-                    failure.report.converted_records += 1;
-                    failure.report.converted_unstaged = true;
+                    sender.failure.report.converted_records += 1;
+                    sender.failure.report.converted_unstaged = true;
                     group.push(record_type, expiration_time, flags, &buffers.value[..n])?;
-                    failure.report.converted_unstaged = false;
-                    group.end_line = failure.report.line;
-                    failure.report.staged_records = group.records.len();
+                    sender.failure.report.converted_unstaged = false;
+                    group.end_line = sender.failure.report.line;
+                    sender.failure.report.staged_records = batch.records() + group.records.len();
                 }
             }
         }
@@ -1001,14 +969,12 @@ fn export_completion(completion: ns::Completion<'_>, failure: &mut Failure) -> R
 }
 async fn export(
     settings: &Settings,
+    [source, identity_source]: [ns::EndpointSource; 2],
     out: &mut impl Write,
     failure: &mut Failure,
     control: &mut Control,
 ) -> Result<()> {
     control.gate().await?;
-    let source = ns::EndpointSource::unix(settings.socket.clone());
-    let identity_source =
-        ns::EndpointSource::unix_with_clock(settings.identity.clone(), source.clock());
     let until = source
         .clock()
         .sample()?
@@ -1151,13 +1117,16 @@ pub(super) fn help(out: &mut impl Write) -> Result<()> {
     Ok(())
 }
 pub(super) fn run(args: &[OsString], import_mode: bool, out: &mut impl Write) -> Result<()> {
-    let settings = Settings::read(args, import_mode)?;
+    let (settings, paths) = Settings::read(args, import_mode)?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
     let mut failure = Failure::default();
     let mut original_hard = None;
     let result = runtime.block_on(async {
+        let source = ns::EndpointSource::unix(paths.namestore);
+        let identity = ns::EndpointSource::unix_with_clock(paths.identity, source.clock());
+        let endpoints = [source, identity];
         let mut control = Control::new(settings.timeout, "record-line")?;
         original_hard = Some(control.hard());
         control.gate().await?;
@@ -1167,9 +1136,17 @@ pub(super) fn run(args: &[OsString], import_mode: bool, out: &mut impl Write) ->
                 None => Box::new(io::stdin()),
             };
             let mut reader = Input::new(reader);
-            import(&settings, &mut reader, out, &mut failure, &mut control).await
+            import(
+                &settings,
+                endpoints,
+                &mut reader,
+                out,
+                &mut failure,
+                &mut control,
+            )
+            .await
         } else {
-            export(&settings, out, &mut failure, &mut control).await
+            export(&settings, endpoints, out, &mut failure, &mut control).await
         };
         let final_gate = control.gate().await;
         result.and(final_gate)
@@ -1210,6 +1187,31 @@ pub(super) fn run(args: &[OsString], import_mode: bool, out: &mut impl Write) ->
             .into(),
         );
     }
+    finish(failure)
+}
+
+pub(super) async fn import_configured(
+    endpoints: [ns::EndpointSource; 2],
+    batch_sets: NonZeroUsize,
+) -> Result<()> {
+    let settings = Settings::configured_input(batch_sets);
+    let mut control = Control::new(settings.timeout, "NAMESTORE stdin")?;
+    let mut input = Input::new(io::stdin());
+    let mut failure = Failure::default();
+    let result = import(
+        &settings,
+        endpoints,
+        &mut input,
+        &mut io::sink(),
+        &mut failure,
+        &mut control,
+    )
+    .await;
+    failure.original = result.and(control.gate().await).err();
+    finish(failure)
+}
+
+fn finish(failure: Failure) -> Result<()> {
     if failure.original.is_some()
         || failure.cleanup.is_some()
         || failure.identity_loss.is_some()

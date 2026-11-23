@@ -154,7 +154,9 @@ mod windows {
                 ],
                 console: Console::Inherit,
                 role: ParentRole::Supervisor,
-                listeners: &[listener.as_socket()],
+                listeners: &[gnunet_native::socket_activation::Source::new(
+                    listener.as_socket(),
+                )],
             },
             LaunchLimits::default(),
         ) {

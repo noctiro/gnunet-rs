@@ -173,7 +173,8 @@ pub(super) fn publish(
         target(&source, interval)?,
         parsed.publication.select(source.clock().as_ref())?,
     );
-    let mut metadata = super::publish::settings::RecordMetadata::new(parsed.manual)?;
+    let mut metadata =
+        super::publish::settings::RecordMetadata::new(parsed.manual, parsed.compression)?;
     let metadata = metadata.plan()?;
     let result = tokio::runtime::Builder::new_current_thread()
         .enable_all()

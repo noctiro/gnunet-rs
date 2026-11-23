@@ -15,7 +15,6 @@ pub mod dv_schedule;
 pub mod dv_settings;
 /// Actual common Job to Actor submission using the one durable DV allocator.
 pub mod dv_transmit;
-pub mod epoch;
 #[cfg(feature = "program")]
 pub mod foreground;
 pub mod generation;
@@ -36,6 +35,29 @@ pub mod validated;
 pub mod writer;
 /// Original independent host or cleanup boundary failure.
 pub type Failure = Box<dyn std::error::Error>;
+
+/// One real error shared by the original observer and terminal failure.
+#[derive(Clone, Debug)]
+pub struct SharedFailure(std::rc::Rc<dyn std::error::Error>);
+impl SharedFailure {
+    pub(crate) fn new(error: crate::Failure) -> Self {
+        Self(std::rc::Rc::from(error))
+    }
+    /// Share the same original cause without manufacturing another result.
+    pub fn boxed(&self) -> crate::Failure {
+        Box::new(self.clone())
+    }
+}
+impl std::fmt::Display for SharedFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self.0.as_ref(), f)
+    }
+}
+impl std::error::Error for SharedFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.0.as_ref())
+    }
+}
 /// Original failure and independently retained physical cleanup failures.
 #[derive(Debug)]
 pub struct Failures {

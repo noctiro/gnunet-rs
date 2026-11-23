@@ -15,6 +15,6 @@ mod runtime;
 /// Official configuration and foreground lifecycle composition.
 pub mod startup;
 pub use runtime::{
-    Error, Limits, LocalKeyCapability, LocalPorts, Policies, Progress, Report, Runtime,
-    ServicePorts,
+    EndpointPolicy, Error, Limits, LocalKeyCapability, LocalPorts, Policies, Progress, Report,
+    Runtime, ServicePorts,
 };

@@ -2,47 +2,89 @@
 use super::*;
 use crate::packet::{ICMP, ICMPV6, Packet, TCP, UDP};
 use gnunet_wire::official::cadet::MAX_APPLICATION_MESSAGE_SIZE;
+
+impl FlowRoute {
+    fn from_lease(target: Target, tuple: &Tuple) -> Result<Self, Error> {
+        Ok(match target {
+            Target::Service { peer, descriptor } => Self::Service { peer, descriptor },
+            Target::Internet(destination) => Self::Internet(InternetRoute {
+                destination,
+                transport: match tuple.protocol {
+                    TCP => InternetTransport::Tcp(tuple.destination_port),
+                    UDP => InternetTransport::Udp(tuple.destination_port),
+                    ICMP | ICMPV6 => InternetTransport::Icmp,
+                    _ => return Err(Error::Unsupported),
+                },
+            }),
+        })
+    }
+}
+
+impl InternetRoute {
+    fn discovery_transport(self) -> (u8, u16) {
+        match self.transport {
+            InternetTransport::Tcp(port) => (TCP, port),
+            InternetTransport::Udp(port) => (UDP, port),
+            InternetTransport::Icmp => (
+                match self.destination.family() {
+                    Family::V4 => ICMP,
+                    Family::V6 => ICMPV6,
+                },
+                0,
+            ),
+        }
+    }
+}
+
 fn outgoing<'a>(
     p: Packet<'a>,
-    target: Target,
+    tuple: &Tuple,
+    route: FlowRoute,
     first: bool,
-    af: AfProfile,
 ) -> Result<PeerMessage<'a>, Error> {
     let b = p.segment();
-    let (source, destination) = p.ports()?;
     Ok(match p.protocol() {
         UDP => {
+            let source = tuple.source_port;
             let source = if source < 32000 { source } else { 0 };
             let payload = &b[8..];
-            match target {
-                Target::Service { .. } => PeerMessage::UdpService {
+            match route {
+                FlowRoute::Service { .. } => PeerMessage::UdpService {
                     source,
-                    destination,
+                    destination: tuple.destination_port,
                     payload,
                 },
-                Target::Internet(address) => PeerMessage::UdpInternet {
+                FlowRoute::Internet(InternetRoute {
+                    destination: address,
+                    transport: InternetTransport::Udp(destination),
+                }) => PeerMessage::UdpInternet {
                     address,
                     source,
                     destination,
                     payload,
                 },
+                FlowRoute::Internet(_) => return Err(Error::Conflict),
             }
         }
         TCP => {
             let header = b[..20].try_into().map_err(|_| Error::Truncated)?;
             let tail = &b[20..];
             if first {
-                match target {
-                    Target::Service { .. } => PeerMessage::TcpService {
+                match route {
+                    FlowRoute::Service { .. } => PeerMessage::TcpService {
                         reserved: 0,
                         header,
                         tail,
                     },
-                    Target::Internet(destination) => PeerMessage::TcpInternet {
+                    FlowRoute::Internet(InternetRoute {
+                        destination,
+                        transport: InternetTransport::Tcp(_),
+                    }) => PeerMessage::TcpInternet {
                         destination,
                         header,
                         tail,
                     },
+                    FlowRoute::Internet(_) => return Err(Error::Conflict),
                 }
             } else {
                 PeerMessage::Tcp {
@@ -55,9 +97,13 @@ fn outgoing<'a>(
         }
         ICMP | ICMPV6 => {
             let from = p.source().family();
-            let to = match target {
-                Target::Service { .. } => from,
-                Target::Internet(a) => a.family(),
+            let to = match route {
+                FlowRoute::Service { .. } => from,
+                FlowRoute::Internet(InternetRoute {
+                    destination,
+                    transport: InternetTransport::Icmp,
+                }) => destination.family(),
+                FlowRoute::Internet(_) => return Err(Error::Conflict),
             };
             let header = packet::translate_icmp_header(
                 from,
@@ -69,14 +115,14 @@ fn outgoing<'a>(
             } else {
                 &b[8..]
             };
-            match target {
-                Target::Service { .. } => PeerMessage::IcmpService {
-                    af: af.value(from),
+            match route {
+                FlowRoute::Service { .. } => PeerMessage::IcmpService {
+                    af: AfProfile::LINUX.value(from),
                     header,
                     payload,
                 },
-                Target::Internet(destination) => PeerMessage::IcmpInternet {
-                    destination,
+                FlowRoute::Internet(route) => PeerMessage::IcmpInternet {
+                    destination: route.destination,
                     header,
                     payload,
                 },
@@ -97,6 +143,22 @@ impl<'id, 'store, 'bytes> Engine<'id, 'store, 'bytes> {
         absolute: AbsoluteTime,
         activity: MonoInstant,
     ) -> Result<Ingress<'id>, Error> {
+        self.forward_tun_with_policy(tun, bytes, absolute, activity, |_, _, _| Ok(()))
+    }
+
+    /// Retain a raw TUN packet only if the caller admits its checked packet,
+    /// tuple and original target. The target comes from the existing flow, even after
+    /// lease expiry, or from the unexpired lease for a new tuple.
+    /// A policy error leaves flow activity, leases and packet storage unchanged;
+    /// the owner still observes the supplied native clock sample.
+    pub fn forward_tun_with_policy(
+        &mut self,
+        tun: Tun<'id>,
+        bytes: &[u8],
+        absolute: AbsoluteTime,
+        activity: MonoInstant,
+        admit: impl FnOnce(Packet<'_>, &Tuple, Target) -> Result<(), Error>,
+    ) -> Result<Ingress<'id>, Error> {
         self.tun_ref(tun, true)?;
         if self.current_tun()? != tun {
             return Err(Error::StaleGeneration);
@@ -115,69 +177,74 @@ impl<'id, 'store, 'bytes> Engine<'id, 'store, 'bytes> {
             source_port,
             destination_port,
         };
-        let found = self.store.flows.iter().enumerate().find_map(|(row, f)| {
-            f.state.filter(|f| f.tuple == tuple).map(|f| Reference {
-                row,
-                serial: f.serial,
-            })
+        let existing = self.store.flows.iter().enumerate().find_map(|(row, slot)| {
+            slot.state
+                .as_ref()
+                .filter(|f| f.tuple == tuple)
+                .map(|f| (row, f))
         });
-        let (new_flow, row, target, first, profile) = if let Some(r) = found {
-            let f = self.store.flows[r.row]
-                .state
-                .ok_or(Error::StaleGeneration)?;
+        let (route, first) = if let Some((_, f)) = existing {
             if f.peer_ended {
                 return Err(Error::Closed);
             }
             if f.phase == Phase::Closing {
                 return Err(Error::WouldBlock);
             }
-            (false, r.row, f.target, !f.start_encoded, f.af)
+            (f.route, !f.start_encoded)
         } else {
             let lease = self
                 .store
                 .leases
                 .iter()
                 .filter_map(|l| l.state)
-                .find(|l| l.address == p.destination() && l.expires > absolute)
+                .find(|l| l.address == tuple.destination && l.routable(absolute))
                 .ok_or(Error::NotFound)?;
-            let row = self
+            (FlowRoute::from_lease(lease.target, &tuple)?, true)
+        };
+        admit(p, &tuple, route.target())?;
+        let row = match existing {
+            Some((row, _)) => row,
+            None => self
                 .store
                 .flows
                 .iter()
                 .position(|f| f.state.is_none())
-                .ok_or(Error::Capacity)?;
-            (true, row, lease.target, true, self.limits.peer_af)
+                .ok_or(Error::Capacity)?,
         };
-        let message = outgoing(p, target, first, profile)?;
+        let message = outgoing(p, &tuple, route, first)?;
+        let wire_family = match message {
+            PeerMessage::TcpInternet { destination, .. }
+            | PeerMessage::IcmpInternet { destination, .. } => Some(destination.family()),
+            PeerMessage::UdpInternet { address, .. } => Some(address.family()),
+            PeerMessage::IcmpService { af, .. } => Some(AfProfile::LINUX.family(af)?),
+            _ => None,
+        };
         let len = message.encoded_len()?;
         if len > MAX_APPLICATION_MESSAGE_SIZE {
             return Err(Error::TooLarge);
         }
         let slot = self.packet_slot(len)?;
+        let new_flow = existing.is_none();
         self.preflight(if new_flow { 2 } else { 1 })?;
-        // All final immutable storage exists before accepting a new flow/packet.
-        message.encode_with_profile(self.store.packets[slot].bytes, profile)?;
-        let serial = if new_flow {
-            self.serial()?
-        } else {
-            self.store.flows[row]
-                .state
-                .ok_or(Error::StaleGeneration)?
-                .serial
+        // The provisional AF word is private. Preparation writes the bound
+        // endpoint's representation before any caller can read these bytes.
+        message.encode_with_profile(self.store.packets[slot].bytes, AfProfile::LINUX)?;
+        let serial = match existing {
+            Some((_, f)) => f.serial,
+            None => self.serial()?,
         };
         let flow = Reference { row, serial };
         if new_flow {
-            let (peer, phase) = match target {
-                Target::Service { peer, .. } => (Some(peer), Phase::NeedOpen),
-                Target::Internet(_) => (None, Phase::Discovering),
+            let (peer, phase) = match route {
+                FlowRoute::Service { peer, .. } => (FlowPeer::Selected(peer), Phase::NeedOpen),
+                FlowRoute::Internet(_) => (FlowPeer::Unselected, Phase::Discovering),
             };
             self.store.flows[row].state = Some(FlowState {
                 serial,
                 tuple,
-                target,
+                route,
                 phase,
                 peer,
-                source: None,
                 peer_ended: false,
                 discovery: None,
                 open: None,
@@ -186,7 +253,6 @@ impl<'id, 'store, 'bytes> Engine<'id, 'store, 'bytes> {
                 receive: None,
                 used: activity,
                 failure: None,
-                af: profile,
             });
         } else {
             let f = self.store.flows[row]
@@ -207,7 +273,7 @@ impl<'id, 'store, 'bytes> Engine<'id, 'store, 'bytes> {
         self.store.packets[slot].state = Some(PacketState {
             serial,
             flow,
-            kind: PacketKind::Peer,
+            kind: PacketKind::Peer { wire_family },
             len,
             status: Outcome::Buffered,
             attempt: None,
@@ -229,7 +295,7 @@ impl<'id, 'store, 'bytes> Engine<'id, 'store, 'bytes> {
         if f.phase != Phase::Discovering {
             return Err(Error::Conflict);
         }
-        let Target::Internet(destination) = f.target else {
+        let FlowRoute::Internet(route) = f.route else {
             return Err(Error::Conflict);
         };
         let w = if let Some(w) = f.discovery {
@@ -250,14 +316,15 @@ impl<'id, 'store, 'bytes> Engine<'id, 'store, 'bytes> {
                 .discovery = Some(w);
             w
         };
+        let (protocol, port) = route.discovery_transport();
         Ok(DiscoveryRequest {
             discovery: Discovery {
                 flow,
                 serial: w.serial,
             },
-            destination,
-            protocol: f.tuple.protocol,
-            port: f.tuple.destination_port,
+            destination: route.destination,
+            protocol,
+            port,
         })
     }
     fn discovery_ref(&self, d: Discovery<'id>) -> Result<Reference, Error> {
@@ -310,7 +377,7 @@ impl<'id, 'store, 'bytes> Engine<'id, 'store, 'bytes> {
         if !w.queued || w.revoked || f.phase != Phase::Discovering {
             return Err(Error::StaleGeneration);
         }
-        f.peer = Some(peer);
+        f.peer = FlowPeer::Selected(peer);
         f.phase = Phase::NeedOpen;
         Ok(())
     }
@@ -343,6 +410,9 @@ impl<'id, 'store, 'bytes> Engine<'id, 'store, 'bytes> {
         if !matches!(f.phase, Phase::NeedOpen | Phase::Opening) {
             return Err(Error::Conflict);
         }
+        let FlowPeer::Selected(peer) = f.peer else {
+            return Err(Error::NotReady);
+        };
         let w = if let Some(w) = f.open {
             if w.queued || w.revoked {
                 return Err(Error::WouldBlock);
@@ -362,18 +432,18 @@ impl<'id, 'store, 'bytes> Engine<'id, 'store, 'bytes> {
             f.phase = Phase::Opening;
             w
         };
-        let port = match f.target {
-            Target::Service { descriptor, .. } => {
+        let port = match f.route {
+            FlowRoute::Service { descriptor, .. } => {
                 service_port(descriptor, f.tuple.destination_port)
             }
-            Target::Internet(a) => gateway_port(a.family()),
+            FlowRoute::Internet(route) => gateway_port(route.destination.family()),
         };
         Ok(OpenRequest {
             open: Open {
                 flow,
                 serial: w.serial,
             },
-            peer: f.peer.ok_or(Error::NotReady)?,
+            peer,
             port,
         })
     }
@@ -444,14 +514,14 @@ impl<'id, 'store, 'bytes> Engine<'id, 'store, 'bytes> {
     }
     /// Bind only the actual expected end-to-end CADET source and its explicit AF
     /// profile. Neither a queued create nor a plaintext source field may call it.
-    /// Buffered pre-attempt AF metadata is normalized once before any peer effect.
+    /// The transmit profile belongs to this peer source for its entire lifetime.
     pub fn bind_peer(
         &mut self,
         open: Open<'id>,
         actual_peer: [u8; 32],
-        af: AfProfile,
+        transmit_af: AfProfile,
     ) -> Result<Peer<'id>, Error> {
-        af.validate()?;
+        transmit_af.validate()?;
         let r = self.open_ref(open)?;
         let f = self.store.flows[r.row]
             .state
@@ -460,54 +530,24 @@ impl<'id, 'store, 'bytes> Engine<'id, 'store, 'bytes> {
         if f.peer_ended || f.phase != Phase::Opening || w.revoked || !w.queued {
             return Err(Error::Closed);
         }
-        if f.peer != Some(actual_peer) {
+        if !matches!(f.peer, FlowPeer::Selected(expected) if expected == actual_peer) {
             return Err(Error::Authentication);
         }
-        // Only buffered, never-prepared bodies exist before first source binding.
-        // Preflight all original metadata before changing any AF header bytes.
-        for p in &*self.store.packets {
-            if let Some(s) = p.state
-                && s.flow == r
-                && matches!(s.kind, PacketKind::Peer)
-            {
-                if s.status != Outcome::Buffered {
-                    return Err(Error::Conflict);
-                }
-                PeerMessage::decode_with_profile(&p.bytes[..s.len], f.af)?;
-            }
-        }
         let serial = self.serial()?;
-        for p in &mut *self.store.packets {
-            if let Some(s) = p.state
-                && s.flow == r
-                && matches!(s.kind, PacketKind::Peer)
-            {
-                let family = match PeerMessage::decode_with_profile(&p.bytes[..s.len], f.af)? {
-                    PeerMessage::TcpInternet { destination, .. }
-                    | PeerMessage::IcmpInternet { destination, .. } => Some(destination.family()),
-                    PeerMessage::UdpInternet { address, .. } => Some(address.family()),
-                    PeerMessage::IcmpService { af, .. } => Some(f.af.family(af)?),
-                    _ => None,
-                };
-                if let Some(family) = family {
-                    p.bytes[4..8].copy_from_slice(&af.value(family).to_be_bytes())
-                }
-            }
-        }
         let f = self.store.flows[r.row]
             .state
             .as_mut()
             .ok_or(Error::StaleGeneration)?;
-        f.af = af;
         f.open = None;
-        f.source = Some(serial);
+        let source = PeerSource {
+            identity: actual_peer,
+            serial,
+            transmit_af,
+        };
+        f.peer = FlowPeer::Bound(source);
         f.phase = Phase::Ready;
         f.failure = None;
-        Ok(Peer {
-            flow: self.flow(r),
-            serial,
-            identity: actual_peer,
-        })
+        Ok(self.peer(r, &source))
     }
 }
 
@@ -518,6 +558,7 @@ impl<'id, 'store, 'bytes> Engine<'id, 'store, 'bytes> {
         r: Reference,
         bytes: &[u8],
         activity: MonoInstant,
+        admit: impl FnOnce(PeerMessage<'_>, &Tuple) -> Result<(), Error>,
     ) -> Result<Delivery<'id>, Error> {
         let f = self.store.flows[r.row]
             .state
@@ -532,7 +573,9 @@ impl<'id, 'store, 'bytes> Engine<'id, 'store, 'bytes> {
         if bytes.len() > MAX_APPLICATION_MESSAGE_SIZE {
             return Err(Error::TooLarge);
         }
-        let message = PeerMessage::decode_with_profile(bytes, f.af)?;
+        // The accepted reply frames have no variable-length IP address field.
+        let message = PeerMessage::decode_with_profile(bytes, AfProfile::LINUX)?;
+        admit(message, &f.tuple)?;
         let ip = if f.tuple.source.family() == Family::V4 {
             20
         } else {
@@ -586,7 +629,15 @@ impl<'id, 'store, 'bytes> Engine<'id, 'store, 'bytes> {
                 header: icmp,
                 payload,
             } => {
-                let family = f.af.family(af)?;
+                let family = if let Some(family) = Family::from_official_af(af) {
+                    family
+                } else {
+                    f.peer
+                        .bound()
+                        .ok_or(Error::NotReady)?
+                        .transmit_af
+                        .family(af)?
+                };
                 let error = packet::icmp_error(family, icmp[0]);
                 if error && !payload.is_empty() {
                     return Err(Error::Malformed);
@@ -674,9 +725,22 @@ impl<'id, 'store, 'bytes> Engine<'id, 'store, 'bytes> {
         bytes: &[u8],
         activity: MonoInstant,
     ) -> Result<Delivery<'id>, Error> {
+        self.receive_peer_with_policy(peer, bytes, activity, |_, _| Ok(()))
+    }
+
+    /// Apply a native receive policy to the decoded message and the original
+    /// bound tuple before allocating or writing a reply. Policy errors follow
+    /// the same retirement and retry rules as other receive failures.
+    pub fn receive_peer_with_policy(
+        &mut self,
+        peer: Peer<'id>,
+        bytes: &[u8],
+        activity: MonoInstant,
+        admit: impl FnOnce(PeerMessage<'_>, &Tuple) -> Result<(), Error>,
+    ) -> Result<Delivery<'id>, Error> {
         let r = self.peer_ref(peer)?;
         self.observe_activity(activity)?;
-        match self.receive_inner(peer, r, bytes, activity) {
+        match self.receive_inner(peer, r, bytes, activity, admit) {
             Ok(d) => Ok(d),
             Err(e) => {
                 if !matches!(e, Error::Capacity | Error::WouldBlock | Error::Closed) {
@@ -761,13 +825,15 @@ impl<'id, 'store, 'bytes> Engine<'id, 'store, 'bytes> {
     /// Retained actual end-to-end sources, including original close/drain debt.
     pub fn peers(&self) -> impl Iterator<Item = Peer<'id>> + '_ {
         self.store.flows.iter().enumerate().filter_map(|(row, f)| {
-            f.state.filter(|f| f.source.is_some()).and_then(|f| {
-                self.peer(Reference {
+            let f = f.state.as_ref()?;
+            let source = f.peer.bound()?;
+            Some(self.peer(
+                Reference {
                     row,
                     serial: f.serial,
-                })
-                .ok()
-            })
+                },
+                source,
+            ))
         })
     }
 }

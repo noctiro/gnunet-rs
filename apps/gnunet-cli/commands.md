@@ -2,6 +2,36 @@
 
 ## Statistics
 
+`gnunet-statistics` uses the configured Unix or TCP service and prints text
+rows. Use `-s` and `-n` to filter, `-w` to watch a selected statistic, `-q`
+for values only, and `-S` to set the field separator. A positional value sets
+the named statistic. Add `-p` to make the update persistent.
+
+```sh
+gnunet-statistics -s core -n peers -q
+gnunet-statistics -s core -n peers -w
+gnunet-statistics -s app -n counter -p 42
+gnunet-statistics -r 127.0.0.1 -o 22224 -s core -n peers
+```
+
+When `-o` is omitted, `-r` uses `[statistics] PORT`. SET waits for service
+processing confirmation and exits silently on success. GET streams rows and
+requires the service END before successful exit.
+
+`-t/--testbed DIRECTORY` selects numbered subdirectories and the first `config*`
+file by name in each. GET groups by subsystem and statistic name. Columns follow
+numeric node order and show zero for a statistic absent from a completed node.
+SET applies the value to each node in order and stops on the first failure.
+Earlier confirmed updates remain applied. Each node uses its own configured
+endpoint. WATCH requires a single node.
+
+TESTBED processes one node at a time with a 60-second operation deadline. The
+limits are 256 nodes, 16,384 directory entries, 65,536 distinct statistics,
+8 MiB of label bytes and 524,288 retained node values.
+
+`gnunet-cli statistics` provides JSON output, explicit Unix sockets and
+relative updates.
+
 ```sh
 gnunet-cli --help
 gnunet-cli --version
@@ -28,7 +58,7 @@ retains its existing PROGRAM option/environment ordering. Native endpoint and
 selector bytes are preserved. Empty or omitted GET subsystem/name are wildcards. SET accepts trailing `--relative`/`--persistent`; a relative value is a signed64-bit
 integer, including `-7`, and an absolute value is an unsigned64-bit integer.
 
-STATISTICS stdout is newline-delimited JSON. Each GET row contains numeric `uid`,
+Grouped CLI stdout is newline-delimited JSON. Each GET row contains numeric `uid`,
 boolean `persistent`, numeric `value`, display `subsystem`/`name` and exact byte
 arrays `subsystem_bytes`/`name_bytes`. Only the original GET's END produces
 `statistics_end` with the count of fully written rows. There is no aggregate row
@@ -54,6 +84,69 @@ worker or second request owner is created. Borrowed stdout flags are unchanged;
 a synchronous filesystem/TTY write or flush cannot be preempted, and a late
 return is reported. Already written rows may precede failure, so consumers must
 require exit zero as well as the terminal event.
+
+## Installed file-sharing commands
+
+```sh
+gnunet-fs -c gnunet.conf --list-indexed
+gnunet-publish -c gnunet.conf -n input-file
+gnunet-publish -c gnunet.conf -k '+guide' -u 'gnunet://fs/chk/…'
+gnunet-search -c gnunet.conf -N 5 -t '30 s' one two
+gnunet-unindex -c gnunet.conf -V published.txt
+gnunet-download -c gnunet.conf -n -o download.bin 'gnunet://fs/chk/…'
+```
+
+The installed commands discover FS and DATASTORE from GNUnet configuration.
+`gnunet-fs -i` prints the original filename bytes and adds the eight-character
+hash prefix with `-V`. `gnunet-unindex` uses the configured FS extraction
+settings and reports completion after the matching FS acknowledgement.
+
+`gnunet-publish` publishes a regular file or directory through the configured
+services. Files are indexed by default. `-n` fully inserts encrypted content.
+Directory entries carry verified inline data for small files and subdirectories
+when it fits within the entry's existing block count.
+The command accepts anonymity, priority and replication levels, repeated
+top-level metadata and creation-time metadata. Repeated `-k TERM` adds literal
+keywords to the root object, and a leading `+` marks a mandatory term. The
+command prints the URI after publication confirms it. `-u URI` with `-k`
+publishes keywords for the supplied URI without inserting its content and
+completes silently after DATASTORE acknowledges the records.
+With `-a 0`, the configured FS service signs the file and directory locations.
+The command uses those signed LOCs in directory entries, keyword and namespace
+records, and the final report. If the signer is unavailable, remaining objects
+use their CHKs.
+The publisher embeds verified bytes for eligible small directory members in the
+official `FULL_DATA` field when the entry uses the same number of blocks.
+`-e` previews metadata and keywords without opening the publication services.
+For directories, it moves majority keywords upward and copies metadata shared
+by a majority of direct children. Root annotations apply after trimming.
+`-s` computes file and directory CHKs without storing blocks or creating a
+publication task. `-V` reports plaintext encoding progress and directory
+totals. Repeated `-V` also reports scanning and metadata extraction.
+
+`-P EGO -t LABEL` publishes the root in the selected EdDSA IDENTITY namespace.
+`-N LABEL` signs a continuation and records the acknowledged update under
+`[fs] UPDATE_DIR/rust`. `-P` can be combined with `-u`, `-e` or `-s`.
+
+`gnunet-search` accepts keyword operands or a KSK or SKS URI. `-b` prints the
+search URI without connecting to FS. `-N` stops after the selected number of
+distinct results. `-o FILE` writes a GNUnet directory and permits `-s` to
+suppress result text. Omit `-t` or select zero to wait for a stop signal or
+result limit. `-f`, `-F` and `-i` select result, directory and metadata formats.
+
+`gnunet-download` accepts a CHK or signed LOC URI with `-o/--output`, anonymity
+with `-a`, local-only retrieval with `-n`, and authenticated directory
+extraction with `-R`. Incomplete files stay at their selected names by default.
+Run the same command to authenticate and reuse retained data and index blocks.
+`-D` removes incomplete outputs when the transfer stops. Completed siblings
+remain available. A nonempty existing file needs matching authenticated data
+before it is updated. On success, the file contains exactly the verified
+plaintext.
+
+`-r` bounds outstanding block requests. With `-R`, `-p` bounds simultaneous
+files and the directory structure is verified before concurrent file transfers.
+`gnunet-cli fs --help` lists the grouped commands for separately managed
+download state.
 
 ## FS local repository
 
@@ -298,6 +391,15 @@ same original namespace key, identifier, update and target URI. A managed graph
 stores the identical selected metadata after the PUT acknowledgement;
 a persistent task seals and retains it in its original signed artifact. Running or recording an existing task does not reconstruct new metadata.
 
+These six direct KSK/SKS record frontdoors accept
+`--metadata-compression never|adaptive|always` for their manual annotations.
+The default is `never`; `adaptive` uses standard zlib only when smaller, and
+`always` requires it even for a larger result. For example, append
+`-m 'title:Public title' --metadata-compression always` to `fs publish-keywords`.
+Compression keeps the same metadata values and bounded full selection. With no
+`-m`, metadata stays absent. This option does not apply to file/tree publication
+or content-only task creation; it introduces no new GNUnet record format.
+
 The shared argument parser consumes each original `--update LABEL` or
 `--timeout VALUE` before interpreting another option: a label literally `-m`
 is not stolen as a metadata flag. `--` ends all option recognition, including
@@ -306,9 +408,59 @@ empty update versus untracked graph, original publication deadlines, native
 receipts, Unknown outcomes and independent cleanup/output errors remain. No extractor/provider or content copy is needed for these direct URI records. This names those four namespace entrypoints; it does not qualify every possible
 publication tool or claim executed native/C interoperability.
 
+## NAMESTORE administration
+
+```sh
+gnunet-namestore -c gnunet.conf -z local-zone -a -n host -t A -V 192.0.2.10 -e 1d -p
+gnunet-namestore -c gnunet.conf -z local-zone -D -n host
+gnunet-namestore -c gnunet.conf -z local-zone -D -r
+gnunet-namestore -c gnunet.conf -z local-zone -m
+```
+
+`-a` adds a record and `-d` deletes matching records. `-i` sets the zone
+nickname, and `-Z KEY` looks up a
+delegation by its public key. `-D` displays records, `-r` selects record-line
+output, and `-m` follows changes. `-S` imports
+record-line groups from standard input. The command resolves local zone names
+through IDENTITY and applies updates through NAMESTORE.
+`-B COUNT` sets the maximum label groups per atomic STORE during import. Group
+count, zone changes and frame size can all end a batch. The default target is
+1000 with up to 256 groups in a single request.
+
+Record edits, URI import, nickname changes, display and reverse lookup may be
+combined with monitoring. Mutations settle against the service before output
+queries run. `-m` begins with the resulting state and then follows changes.
+All-zone monitoring also follows IDENTITY name changes. Native maintenance
+lookup includes the apex nickname when its visibility filters allow it.
+
+`-O` lists records without a current IDENTITY owner and prints their recovery
+keys. `-P` purges orphaned labels across all zones. `-X -z EGO` purges records
+in the selected zone.
+
 ## NAMESTORE delegation import
 
-NAMESTORE can import a public delegation URI into an explicitly selected ego:
+`gnunet-namestore` imports public delegations through configured NAMESTORE and
+IDENTITY Unix or TCP endpoints. Select the local ego with `-z/--zone`.
+
+```text
+gnunet-namestore -z local-zone -e 1a -u 'gnunet://gns/<58-character-typed-public-key>/<label>'
+```
+
+The default URI handler passes `-e 1a -u URI`. Set the local ego for this
+invocation in the handler's normal configuration.
+
+```ini
+[namestore]
+URI_IMPORT_EGO = local-zone
+
+[uri]
+gns = gnunet-namestore -e 1a -u
+```
+
+The standalone command supports URI import, `-s/--shadow`,
+`-M/--maintenance` and common PROGRAM options such as `-c`. It accepts
+GNUnet time text such as `1a` and `never`. See `gnunet-cli namestore --help`
+for the grouped commands. The grouped URI import uses explicit sockets.
 
 ```text
 gnunet-cli namestore import-uri /path/to/namestore.sock 'gnunet://gns/<58-character-typed-public-key>/<label>' --identity-socket /path/to/identity.sock --ego local-zone --expiration-us 31536000000000 --relative 1
@@ -326,14 +478,23 @@ The record contains the 32-byte public key, with its type in the record header,
 as required by the public `GNUNET_GNSRECORD_data_from_identity` conversion. The
 pinned C NAMESTORE URI branch instead passes the entire 36-byte typed structure;
 this command uses the valid delegation representation and leaves the shared
-record schema unchanged. Decoding public text does not authenticate the key. Success requires the NAMESTORE result; exposed writes with an unknown
-outcome are reported and never replayed. A URI dispatcher needs an explicitly
-configured wrapper to supply the socket, ego and expiry; the historical C
-`[uri]` handler string alone supplies no ego and is not claimed to work here.
+record schema unchanged. Decoding public text does not authenticate the key.
+Success requires the NAMESTORE result. Exposed writes with an unknown outcome
+are reported and never replayed.
 
 ## NAMESTORE zone files
 
-NAMESTORE also imports the public zonefile text format through the clients:
+`gnunet-namestore-zonefile` reads a public zonefile from stdin and uses the
+configured NAMESTORE and IDENTITY endpoints. Use `-z/--zone` to start in an
+existing ego. A missing initial ego exits with status 2. The command prints a
+summary of confirmed record sets and records after a successful import.
+
+```sh
+gnunet-namestore-zonefile -c gnunet.conf -z example < public-zone.txt
+```
+
+The same importer is available with explicit sockets, input files and resource
+options through the grouped CLI.
 
 ```text
 gnunet-cli namestore import-zonefile /path/to/namestore.sock --identity-socket /path/to/identity.sock --input public-zone.txt --timeout-ms 60000
@@ -447,6 +608,12 @@ been removed. Unsupported official services are still pending implementation.
 
 ## VPN
 
+`gnunet-vpn -c gnunet.conf -4 -i 192.0.2.1` prints the matching allocated
+address from the configured VPN service. Use `-p PEER -s SERVICE` with `-t`
+for TCP or `-u` for UDP. `-d` sets the lease duration. The installed command
+uses the official 300 ms default lease and retains the independent ten-second
+response bound.
+
 VPN allocation uses one explicit official VPN service socket:
 
 ```sh
@@ -471,6 +638,12 @@ request is replayed after loss. Ctrl-C suppresses the callback, drains only an
 original partial IPC frame under a finite bound and closes the original MQ. The command creates no TUN device and does not change addresses or routes.
 
 ## REGEX
+
+`gnunet-regex EXPRESSION` emits canonical peer identities and GET and PUT
+paths until stopped. `-a` announces a regex, `-r` sets its refresh interval,
+and `-c` sets compression. Zero refresh sends once. The installed command
+uses normal GNUnet default configuration. The official `-c` compression
+option takes the place of PROGRAM's short configuration option.
 
 REGEX uses an official service socket and one retained registration per command:
 The official byte grammar uses grouping, alternation and postfix `*`, `+`, `?`;
@@ -530,7 +703,86 @@ Resolver, private key, C implementation, device or host route is used.
 This does not
 establish interoperability with an official REGEX service or DHT publication.
 
+## Revocation
+
+```sh
+gnunet-revocation -c gnunet.conf -t PUBLIC_KEY
+gnunet-revocation -c gnunet.conf -R local-ego -e 1 -f ./local-ego.proof
+gnunet-revocation -c gnunet.conf -p -f ./local-ego.proof
+```
+
+`-t` queries the configured REVOCATION service. `-R` resolves the named local
+IDENTITY ego and prepares a signed public revocation certificate. `-f` saves
+or resumes proof work, and `-p` submits a verified certificate. `-e` selects the
+requested epoch count. Checkpoint updates require a private single-link proof
+file in a directory owned by the caller and protected against foreign writes.
+The proof file contains the official public certificate. Private key bytes
+remain in the original process during signing.
+
+## RECLAIM
+
+```sh
+gnunet-reclaim -c gnunet.conf -e example -D
+gnunet-reclaim -c gnunet.conf -e example -i name,email -U https://rp.example/ -T
+```
+
+The installed command uses configured RECLAIM and IDENTITY endpoints.
+It handles attribute changes and listings, credential storage and listings,
+and ticket issue, listing, consumption and revocation. Ticket issue selects
+the relying party URI with `--rpuri`. Revocation accepts the issued GNS ticket
+name or the fixed binary ticket in GNUnet Base32. A combined invocation resolves
+the ego once, applies stores, deletion and revocation, then issues or consumes
+tickets before listing. Each action waits for its original service reply or
+END. A failed action stops the sequence.
+
+## Process watchdog
+
+`gnunet-timeout SECONDS EXECUTABLE [ARG ...]` runs a command under an isolated
+Unix process group or Windows job. A zero timeout selects 600 seconds. The
+watchdog returns the child's original exit status when it finishes in time.
+On timeout it terminates the owned processes, prints the timeout diagnostic
+and exits with status 3. On Unix, a shell-managed terminal stop suspends the
+owned command group with the watchdog. Resume uses the original deadline.
+With piped streams, the shell pipeline keeps the foreground until the owned
+command needs terminal access. After a private foreground handoff, an observed
+job-control suspend restores the terminal and propagates the stop to the
+watchdog's original shell job when its parent, process group and terminal
+session still match. Background terminal read and write stops use the same
+shell job. An explicit `/dev/tty` read can request the handoff with all standard
+streams redirected when the controlling terminal can be verified. A directly
+targeted `SIGSTOP` on the wrapped command suspends the watchdog and its isolated
+command group.
+
+## DID
+
+`gnunet-did -c gnunet.conf -C -e example` creates a document for the named
+local identity. Use `-g -d DID` to resolve it or `-A` to list identities.
+`-R -e EGO -D JSON` validates and replaces the DID document for the selected
+identity. `-r -e EGO` removes the corresponding DID record while preserving
+the zone's other records.
+
 ## IDENTITY keys
+
+`gnunet-identity` uses the configured Unix or TCP service. It accepts common
+PROGRAM options such as `-c` and prints GNUnet text key output.
+
+```sh
+gnunet-identity -C example
+gnunet-identity -d -e example -q
+gnunet-identity -m -e example
+gnunet-identity -D example
+```
+
+Use `-Y` to generate ECDSA or `-P PRIVATE_KEY` to import a typed key. CREATE
+and DELETE are silent on success. With `-V`, CREATE prints the new public key.
+`-p` includes the private key in display output or verbose CREATE output.
+An invocation can combine both mutations, listing, monitoring and message
+operations. DELETE enters the original service queue before CREATE. A listing
+ends at the initial inventory boundary. A monitor continues until interrupted
+or a terminal failure occurs. After a transient source loss, it opens a new
+connection and prints its fresh inventory within one 30-second recovery bound.
+Original mutation requests retire with their observed outcomes before the next
+connection is admitted.
 
 Explicit IDENTITY private-key backup and restore use the existing official key
 format, not a repository/export envelope:
@@ -583,6 +835,13 @@ copied: malformed imported material is refused before any native CREATE.
 
 ## IDENTITY message envelopes
 
+The standalone command accepts the official message options.
+
+```sh
+gnunet-identity -W 'message' -k RECIPIENT_PUBLIC_KEY
+gnunet-identity -R BASE32_ENVELOPE -e example
+```
+
 IDENTITY also exposes the official one-shot message envelope through actual
 normal commands:
 
@@ -624,6 +883,10 @@ these are documented synchronous boundaries, not claimed cancelable workers. Act
 writer can fail.
 
 ## TRANSPORT monitoring
+
+`gnunet-transport -c gnunet.conf -a -V` prints the configured service's
+virtual-link snapshot. `-a` includes unconfirmed links and `-p PEER` filters
+for one exact peer. The snapshot terminates on the actual service END.
 
 TRANSPORT queue monitoring and virtual-link enumeration use the native
 CLIENT owner and standard PROGRAM/configuration/Resolver/clock path:

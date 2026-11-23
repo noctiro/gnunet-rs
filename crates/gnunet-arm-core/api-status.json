@@ -341,8 +341,8 @@
     }
   ],
   "compiler_inventory_sha256": {
-    "data/compiler-arm.json": "1ff11e36a45bc5a276ba3c8bb9a0ab501a189433c67bf47b114c4a5356bbca69",
-    "data/compiler-testing-arm.json": "d91c5fc8e6b06616455af74d90875fd4d62625eb0a448035a4862dd1f317d718"
+    "data/compiler-arm.json": "4eb4b64a213cc22dd2061b4313737e2950521361982409756176afa00fb79520",
+    "data/compiler-testing-arm.json": "e9f9f17d271138bf0616b6db23ed70510243f64b2252d582025aa5f25a7b175d"
   },
   "macro_version": 3,
   "verification": null

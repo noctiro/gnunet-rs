@@ -7,8 +7,8 @@ Package `gnunet-helper-audio-command` installs two Rust binaries:
 - `gnunet-helper-audio-playback`: no arguments, reads type-730 stdin frames and
   plays decoded audio; stdout carries no control or data messages.
 
-Both use `gnunet-conversation-audio-host`, libopus and either Unix PulseAudio
-simple or Windows WASAPI. They do not invoke the official GNUnet helpers, search a
+Both use `gnunet-conversation-audio-host`, libopus and a native PCM provider.
+They do not invoke the official GNUnet helpers, search a
 replacement producer or accept private control messages. No argument is a device
 name, private key or codec command. Extra arguments exit 2; provider,
 framing, checksum, codec or I/O failure exits 1 with an audio-byte-free stderr
@@ -22,9 +22,9 @@ is opaque Ogg stream bytes. Helper-frame boundaries do not define Ogg-page or
 Opus-packet boundaries. Parent termination need not produce EOS; blocking
 provider calls require bounded termination and reaping through the native process owner.
 
-Unix requires available Opus/PulseAudio libraries and an authorized audio session.
+Unix requires libopus, the selected PCM provider and an authorized audio session.
+Set `GNUNET_CONVERSATION_AUDIO_PROVIDER=gstreamer` to use the optional GStreamer
+provider on Linux, macOS or FreeBSD. The default uses PulseAudio.
 Windows requires `libopus-0.dll` or `opus.dll` beside both helpers and permission
 to use its default communications audio endpoints. See the
 [media provider contract](../../adapters/conversation-audio-std/README.md#native-providers).
-The Windows interactive Conversation command and remaining runtime qualification
-are tracked in [implementation status](../../IMPLEMENTATION_STATUS.md).

@@ -6,7 +6,8 @@ use super::{
 };
 use crate::{
     Attribute, AttributeList, Credential, Identifier, ListLimits, Presentation, PresentationList,
-    Ticket, Uri,
+    PresentationRequest, Ticket,
+    fixed::{Store, iteration_end, iteration_row},
     ipc::{Iteration, Request, Response},
 };
 use gnunet_gnsrecord::{RecordFlags, RecordType};
@@ -21,24 +22,12 @@ enum Rewrite {
 impl Job {
     pub(super) fn initialize(&mut self) -> Result<(), Error> {
         match self.mode {
-            Mode::StoreAttribute => {
-                let Request::StoreAttribute { attribute, .. } = self.request()? else {
-                    return Err(Error::Conflict);
-                };
-                if attribute.id.is_zero() {
+            Mode::StoreAttribute | Mode::StoreCredential => {
+                let request = Store::from_request(self.request()?).ok_or(Error::Conflict)?;
+                if request.requested_id().is_zero() {
                     self.transition(Phase::Scan)
                 } else {
-                    self.prepare_object(attribute.id)
-                }
-            }
-            Mode::StoreCredential => {
-                let Request::StoreCredential { credential, .. } = self.request()? else {
-                    return Err(Error::Conflict);
-                };
-                if credential.id.is_zero() {
-                    self.transition(Phase::Scan)
-                } else {
-                    self.prepare_object(credential.id)
+                    self.prepare_object(None)
                 }
             }
             Mode::DeleteAttribute | Mode::DeleteCredential => self.transition(Phase::Scan),
@@ -70,13 +59,10 @@ impl Job {
             Phase::Present(index) => {
                 let row = self.rows.get(index).ok_or(Error::Stale)?;
                 let credential = row.credential()?.ok_or(Error::NotFound)?;
-                let Request::IssueTicket { attributes, .. } = self.request()? else {
-                    return Err(Error::Conflict);
-                };
-                Action::Presentation {
+                Action::Presentation(PresentationRequest::new(
                     credential,
-                    selected: attributes,
-                }
+                    self.attributes_requested()?,
+                ))
             }
             Phase::ConsumeAuth => {
                 let Request::ConsumeTicket { ticket, .. } = self.request()? else {
@@ -132,7 +118,7 @@ impl Job {
             Completion::Identifier(id) => {
                 self.fresh_identifier(id)?;
                 match self.phase {
-                    Phase::GenerateStore => self.prepare_object(id),
+                    Phase::GenerateStore => self.prepare_object(Some(id)),
                     Phase::GenerateTicket => {
                         self.ticket = Some(new_ticket(
                             &self.quota,
@@ -263,46 +249,16 @@ impl Job {
         }
         Ok(())
     }
-    fn prepare_object(&mut self, id: Identifier) -> Result<(), Error> {
+    fn prepare_object(&mut self, generated: Option<Identifier>) -> Result<(), Error> {
+        let assigned = Store::from_request(self.request()?)
+            .ok_or(Error::Conflict)?
+            .assign_id(generated)?;
         let mut label = [0; IDENTIFIER_LABEL_BYTES];
-        identifier_label(id, &mut label)?;
-        let row = match self.request()? {
-            Request::StoreAttribute {
-                mut attribute,
-                expiration,
-                ..
-            } => {
-                attribute.id = id;
-                let data = attribute_blob(&self.quota, attribute)?;
-                Row::build(
-                    &self.quota,
-                    &label,
-                    &[object_record(
-                        RecordType::RECLAIM_ATTRIBUTE,
-                        expiration.as_micros(),
-                        data.expose(),
-                    )],
-                )?
-            }
-            Request::StoreCredential {
-                mut credential,
-                expiration,
-                ..
-            } => {
-                credential.id = id;
-                let data = credential_blob(&self.quota, credential)?;
-                Row::build(
-                    &self.quota,
-                    &label,
-                    &[object_record(
-                        RecordType::RECLAIM_CREDENTIAL,
-                        expiration.as_micros(),
-                        data.expose(),
-                    )],
-                )?
-            }
-            _ => return Err(Error::Conflict),
-        };
+        assigned.label(&mut label)?;
+        let data = Blob::encode(&self.quota, assigned.encoded_len()?, |out| {
+            Ok(assigned.encode_record(out)?.data.len())
+        })?;
+        let row = Row::build(&self.quota, &label, &[assigned.record(data.expose())])?;
         self.changes.push(row)?;
         self.transition(Phase::Writing(0))
     }
@@ -1176,94 +1132,24 @@ impl Job {
             return Ok(());
         }
         let rid = self.request_id()?;
-        while self.cursor.0 < self.rows.len() {
-            let row = &self.rows[self.cursor.0];
-            let mut found = None;
-            if kind == Iteration::Tickets {
-                if self.cursor.1 == 0 {
-                    let (mut ticket, mut uri) = (None, None);
-                    for r in self.row_records(row)?.records().iter() {
-                        self.work(1)?;
-                        let r = r?;
-                        if r.record_type == RecordType::RECLAIM_TICKET {
-                            ticket = Some(Ticket::decode(r.data)?)
-                        } else if r.record_type == RecordType::TXT {
-                            uri = Some(Uri::new(r.data)?);
-                        }
-                    }
-                    if let (Some(ticket), Some(uri)) = (ticket, uri) {
-                        found = Some(Response::Ticket {
-                            rid,
-                            ticket: Some(ticket),
-                            uri: Some(uri),
-                            presentations: PresentationList::empty(),
-                        });
-                    }
-                }
-                self.cursor.1 = usize::from(row.count);
+        let issuer = self.issuer.ok_or(Error::NotReady)?;
+        while let Some(row) = self.rows.get(self.cursor) {
+            let records = self.row_records(row)?;
+            self.work(if kind == Iteration::Tickets {
+                usize::from(records.count()).max(1)
             } else {
-                self.work(self.cursor.1.checked_add(1).ok_or(Error::Overflow)?)?;
-                let record = self
-                    .row_records(row)?
-                    .records()
-                    .iter()
-                    .nth(self.cursor.1)
-                    .transpose()?;
-                if let Some(record) = record {
-                    self.cursor.1 += 1;
-                    match (kind, record.record_type) {
-                        (Iteration::Attributes, RecordType::RECLAIM_ATTRIBUTE) => {
-                            found = Some(Response::Attribute {
-                                rid,
-                                reserved: 0,
-                                credential_len: 0,
-                                identity: self.issuer,
-                                attribute: Some(Attribute::decode(record.data)?),
-                            })
-                        }
-                        (Iteration::Credentials, RecordType::RECLAIM_CREDENTIAL) => {
-                            found = Some(Response::Credential {
-                                rid,
-                                identity: self.issuer,
-                                credential: Some(Credential::decode(record.data)?),
-                            })
-                        }
-                        _ => {}
-                    }
-                } else {
-                    self.cursor.1 = usize::from(row.count);
-                }
-            }
-            let output = found.map(|r| self.encode_response(r)).transpose()?;
-            if self.cursor.1 >= usize::from(row.count) {
-                self.cursor = (self.cursor.0 + 1, 0);
-            }
+                1
+            })?;
+            let output = iteration_row(kind, rid, issuer, row.label.expose(), records)?
+                .map(|response| self.encode_response(response))
+                .transpose()?;
+            self.cursor += 1;
             if let Some(bytes) = output {
                 self.credit -= 1;
                 return self.install_output(bytes, false);
             }
         }
-        let response = match kind {
-            Iteration::Attributes => Response::Attribute {
-                rid,
-                reserved: 0,
-                credential_len: 0,
-                identity: None,
-                attribute: None,
-            },
-            Iteration::Credentials => Response::Credential {
-                rid,
-                identity: None,
-                credential: None,
-            },
-            Iteration::Tickets => Response::Ticket {
-                rid,
-                ticket: None,
-                uri: None,
-                presentations: PresentationList::empty(),
-            },
-        };
-        let bytes = self.encode_response(response)?;
+        let bytes = self.encode_response(iteration_end(kind, rid))?;
         self.install_output(bytes, true)
     }
 }

@@ -11,7 +11,7 @@ use gnunet_client_host::{EndpointSource, LiveConfiguration};
 use gnunet_config::Configuration;
 use gnunet_gns_service_host::{
     self as host, Manager,
-    auxiliary::{self, dns, registry, system},
+    auxiliary::{self, registry, system},
     native,
     server::{self, Event, Server},
 };
@@ -85,45 +85,18 @@ pub(super) async fn run(
     if pre_stopped {
         return Ok(());
     }
-    // Bounded synchronous public configuration files, before live MQ work.
-    // OS file reads cannot be forcibly canceled; no contrary guarantee is made.
+    // Prepare any explicit registry files before starting live MQ work.
     let mut observations = Observations::default();
-    let registry = registry::Files::from_paths(
-        settings.protocols.as_deref(),
-        settings.services.as_deref(),
-        settings.registry,
-    )
-    .map_err(Arc::new);
-    if let Err(error) = &registry {
-        observations.initial_registry = Some(error.clone());
-        reports.warning(
-            "gns.registry.unavailable",
-            format_args!("GNS optional files registry unavailable: {error}"),
-        );
-    }
+    let files_registry = (settings.protocols.is_some() || settings.services.is_some()).then(|| {
+        registry::Files::from_paths(
+            settings.protocols.as_deref(),
+            settings.services.as_deref(),
+            settings.registry,
+        )
+        .map_err(Arc::new)
+    });
     let source_clock: Arc<dyn RuntimeClock> = Arc::new(clock);
-    let dns = if settings.core.dns {
-        let dns = match settings.dns(source_clock.clone()) {
-            Ok(dns) => dns,
-            Err(error) => {
-                reports.warning(
-                    "gns.dns.bootstrap.unavailable",
-                    format_args!("GNS optional DNS bootstrap unavailable: {error}"),
-                );
-                let dns = dns::RecursiveDns::without_bootstrap(
-                    source_clock.clone(),
-                    error,
-                    settings.dns,
-                )?;
-                observations.initial_dns_bootstrap = dns.bootstrap_error().cloned();
-                dns
-            }
-        };
-        dns.with_dnssec(dns::dnssec::Limits::default())?
-    } else {
-        // Disabled DNS cannot issue its effects; do not read unused OS data.
-        dns::RecursiveDns::new(source_clock.clone(), &[], settings.dns)?
-    };
+    let (dns, nameserver_lookup) = settings.dns(source_clock.clone())?;
     let stopped = poll_fn(|cx| {
         reports.register(cx);
         if reports.failed() {
@@ -156,7 +129,18 @@ pub(super) async fn run(
         dht: EndpointSource::live(live, b"dht", resolution),
     };
     let system = system::Factory::new(context, source_clock.clone(), settings.system)?;
-    let auxiliary = auxiliary::Auxiliary::with_registry(system, dns, registry)?;
+    let auxiliary = match files_registry {
+        Some(files) => auxiliary::Auxiliary::with_registry(system, dns, files)?,
+        None => auxiliary::Auxiliary::with_system_registry(system, dns)?,
+    }
+    .with_nameserver_lookup(nameserver_lookup);
+    if let Some(error) = auxiliary.registry_preparation_error() {
+        observations.initial_registry = Some(Arc::clone(error));
+        reports.warning(
+            "gns.registry.unavailable",
+            format_args!("GNS protocol and service registry unavailable ({error})"),
+        );
+    }
     let mut domains = native::Domains::new();
     let provider = native::NativeProvider::new(
         &mut domains,

@@ -2,8 +2,11 @@
 use super::inline::{InlineBlocks, inline_blocks};
 use super::namespace::checkpoint;
 use super::paths::{Job, Paths, root_id};
-use super::{DownloadedTree, TreeDownloadOptions, TreeDownloadProgress};
-use crate::{Buffers, Control, Error, ReadFile, Repository};
+use super::{DownloadedTree, TreeDownloadOptions, TreeDownloadProgress, TreeFileFailure, parallel};
+use crate::{
+    Buffers, Control, Error, IncompleteOutput, OutputDir, ReadFile, Repository,
+    output::TemporaryNames,
+};
 use gnunet_client_host::EndpointSource;
 use gnunet_fs::{
     Content, Namespace,
@@ -11,9 +14,8 @@ use gnunet_fs::{
 };
 use gnunet_types::{AbsoluteTime, Error as ProtocolError};
 use std::{
-    collections::BTreeSet,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, atomic::AtomicU64},
 };
 
 pub(crate) struct Failure<E> {
@@ -23,6 +25,7 @@ pub(crate) struct Failure<E> {
     pub cause: E,
     pub interruption: Option<Error>,
     pub namespace_cleanup: Option<crate::search::Error>,
+    pub file_failures: Vec<TreeFileFailure>,
 }
 #[expect(
     clippy::too_many_arguments,
@@ -39,6 +42,12 @@ pub(crate) trait Target {
     ) -> Result<(), Self::Failure> {
         Ok(())
     }
+    fn independent_output(&self) -> Option<(&OutputDir, &OutputDir)> {
+        None
+    }
+    fn incomplete_output(&self) -> Option<IncompleteOutput> {
+        None
+    }
     async fn file(
         &mut self,
         job: &Job,
@@ -48,6 +57,7 @@ pub(crate) trait Target {
         cache: Option<&mut Repository>,
         options: super::super::DownloadOptions,
         inline: Option<&mut InlineBlocks>,
+        temporary: TemporaryNames<'_>,
         control: &mut impl FnMut(crate::Progress) -> Control,
     ) -> Result<ReadFile, Self::Failure>;
     async fn namespace(
@@ -94,6 +104,7 @@ pub(crate) async fn run<T: Target>(
     let mut summary = None;
     let mut cleanup = None;
     let mut interruption = None;
+    let mut file_failures = Vec::new();
     let result: std::result::Result<walk::Summary, T::Failure> = async {
         if options.transfer.deadline.as_micros() == u64::MAX
             || options.namespace.queries == 0
@@ -132,12 +143,7 @@ pub(crate) async fn run<T: Target>(
             },
         )
         .map_err(Error::from)?;
-        let mut paths = Paths {
-            jobs: Vec::new(),
-            names: BTreeSet::new(),
-            path_bytes: 0,
-            inline_bytes: 0,
-        };
+        let mut paths = Paths::default();
         paths.jobs.try_reserve(1).map_err(|_| Error::Limit)?;
         paths.jobs.push(Job {
             path: Arc::new(PathBuf::new()),
@@ -156,8 +162,23 @@ pub(crate) async fn run<T: Target>(
         )?;
         progress.root_created = target.begin()?;
         progress.directories_created = usize::from(progress.root_created);
+        let slots = options
+            .file_parallelism
+            .min(options.transfer.request_parallelism);
+        let concurrent =
+            slots.get() > 1 && cache.is_none() && target.independent_output().is_some();
+        let next_temporary = AtomicU64::new(0);
         let job_result: std::result::Result<(), T::Failure> = async {
-            while let Some(work) = owner.begin().map_err(Error::from)? {
+            loop {
+                let work = if concurrent {
+                    owner.begin_directory_or_namespace()
+                } else {
+                    owner.begin()
+                }
+                .map_err(Error::from)?;
+                let Some(work) = work else {
+                    break;
+                };
                 let index = owner.ordinal(work.id.task()).map_err(Error::from)?;
                 let path = paths.jobs.get(index).ok_or(Error::Corrupt)?.path.clone();
                 failed_path = relative.join(path.as_ref());
@@ -295,6 +316,7 @@ pub(crate) async fn run<T: Target>(
                             cache.as_deref_mut(),
                             transfer,
                             inline.as_mut(),
+                            TemporaryNames::in_parent(&paths.reserved_temporaries, &next_temporary),
                             &mut guarded,
                         )
                         .await;
@@ -311,6 +333,32 @@ pub(crate) async fn run<T: Target>(
                         )
                         .map_err(Error::from)?;
                 }
+            }
+            if concurrent {
+                let (output, parent) = target.independent_output().ok_or(Error::Corrupt)?;
+                parallel::Files {
+                    output,
+                    parent,
+                    source: &source,
+                    relative,
+                    transfer: options.transfer,
+                    slots,
+                    next_temporary: &next_temporary,
+                    incomplete: target.incomplete_output(),
+                }
+                .run(
+                    &mut owner,
+                    &mut paths,
+                    parallel::Status {
+                        progress: &mut progress,
+                        last: &mut last,
+                        path: &mut failed_path,
+                        interruption: &mut interruption,
+                        file_failures: &mut file_failures,
+                    },
+                    &mut control,
+                )
+                .await?;
             }
             checkpoint(
                 &source,
@@ -337,6 +385,7 @@ pub(crate) async fn run<T: Target>(
             cause,
             interruption,
             namespace_cleanup: cleanup,
+            file_failures,
         })),
     }
 }

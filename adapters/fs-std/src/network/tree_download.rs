@@ -3,9 +3,10 @@ pub(crate) mod driver;
 pub(crate) mod inline;
 pub(crate) mod namespace;
 mod one_shot;
+mod parallel;
 pub(crate) mod paths;
 use super::DownloadOptions;
-use crate::{Buffers, Control, Error, OutputDir, Repository};
+use crate::{Buffers, Control, Error, IncompleteOutput, OutputDir, Repository};
 use gnunet_client_host::EndpointSource;
 use gnunet_fs::{
     Content,
@@ -13,6 +14,7 @@ use gnunet_fs::{
 };
 use std::{
     fmt,
+    num::NonZeroU32,
     path::{Path, PathBuf},
 };
 
@@ -22,6 +24,9 @@ use std::{
 pub struct TreeDownloadOptions {
     /// One original endpoint-clock deadline and file retrieval policy.
     pub transfer: DownloadOptions,
+    /// Maximum active files for immediate extraction without a shared repository.
+    /// All native file connections also share the transfer's request allowance.
+    pub file_parallelism: NonZeroU32,
     /// Per-directory strict parser and metadata bounds.
     pub directory: dir::Limits,
     /// Root is depth zero.
@@ -36,7 +41,7 @@ pub struct TreeDownloadOptions {
     pub max_namespace_bytes: usize,
     /// An optional hint above this bound is ignored in favor of native retrieval.
     pub max_inline_bytes: usize,
-    /// Total admitted hint bytes across this operation.
+    /// Total admitted hint bytes. Later hints outside this budget are ignored.
     pub max_total_inline_bytes: usize,
     /// Actual namespace search graph, retained result and metadata bounds.
     pub namespace: crate::search::Limits,
@@ -47,6 +52,7 @@ impl TreeDownloadOptions {
     pub fn new(transfer: DownloadOptions) -> Self {
         Self {
             transfer,
+            file_parallelism: NonZeroU32::MIN,
             directory: dir::Limits::default(),
             max_depth: 64,
             max_entries: 4096,
@@ -82,6 +88,14 @@ pub struct DownloadedTree {
     /// Source-bound directory ownership and scheduled-byte accounting.
     pub walk: walk::Summary,
 }
+/// An independently failed file that was already active when extraction stopped.
+#[derive(Debug)]
+pub struct TreeFileFailure {
+    /// Caller-relative path of this file.
+    pub path: PathBuf,
+    /// Actual transfer or cleanup failure.
+    pub cause: Error,
+}
 /// Original failure plus known output prefix. Extraction is not a transaction:
 /// completed files stay useful, and the failing name can exist after a naming
 /// barrier fails. Inspect the original cause before reconciling that path.
@@ -100,13 +114,19 @@ pub struct TreeDownloadFailure {
     pub interruption: Option<Error>,
     /// Independent physical retirement failure from an original namespace lookup.
     pub namespace_cleanup: Option<crate::search::Error>,
+    /// Independent failures observed while draining other originally active files.
+    pub file_failures: Vec<TreeFileFailure>,
 }
 impl fmt::Display for TreeDownloadFailure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if let Some(error) = &self.interruption {
             write!(f, "{error}; ")?;
         }
-        write!(f, "FS tree output {:?}: {}", self.path, self.cause)
+        write!(f, "FS tree output {:?}: {}", self.path, self.cause)?;
+        for failure in &self.file_failures {
+            write!(f, "; {:?}: {}", failure.path, failure.cause)?;
+        }
+        Ok(())
     }
 }
 impl std::error::Error for TreeDownloadFailure {
@@ -126,7 +146,7 @@ impl OutputDir {
     /// search; first observed CHK/LOC is the explicit selection policy. One
     /// deadline covers the entire tree, including lookup updates and output.
     /// Cancellation/drop leaves previously committed outputs in place, removes
-    /// only the active file temporary and closes its original native MQ.
+    /// active file temporaries and closes their original native MQs.
     #[expect(
         clippy::too_many_arguments,
         reason = "Output, endpoint, root, buffers, cache, limits and cancellation have independent ownership"
@@ -141,10 +161,68 @@ impl OutputDir {
         options: TreeDownloadOptions,
         control: impl FnMut(TreeDownloadProgress) -> Control,
     ) -> std::result::Result<DownloadedTree, Box<TreeDownloadFailure>> {
-        let mut target = one_shot::Target::new(self, relative.as_ref());
+        self.download_tree_with(
+            relative.as_ref(),
+            source,
+            content,
+            buffers,
+            cache,
+            options,
+            None,
+            control,
+        )
+        .await
+    }
+
+    /// Extract an official directory tree and resume files at their verified
+    /// names under an existing output root or a newly created one. Directory
+    /// membership is authenticated anew. Completed siblings remain in place.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Recursive output, transfer policy and incomplete retention are independent"
+    )]
+    pub async fn download_tree_resumable(
+        &mut self,
+        relative: impl AsRef<Path>,
+        source: EndpointSource,
+        content: Content,
+        buffers: &mut Buffers,
+        options: TreeDownloadOptions,
+        incomplete: IncompleteOutput,
+        control: impl FnMut(TreeDownloadProgress) -> Control,
+    ) -> std::result::Result<DownloadedTree, Box<TreeDownloadFailure>> {
+        self.download_tree_with(
+            relative.as_ref(),
+            source,
+            content,
+            buffers,
+            None,
+            options,
+            Some(incomplete),
+            control,
+        )
+        .await
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Both output modes share the same authenticated tree traversal"
+    )]
+    async fn download_tree_with(
+        &mut self,
+        relative: &Path,
+        source: EndpointSource,
+        content: Content,
+        buffers: &mut Buffers,
+        cache: Option<&mut Repository>,
+        options: TreeDownloadOptions,
+        incomplete: Option<IncompleteOutput>,
+        control: impl FnMut(TreeDownloadProgress) -> Control,
+    ) -> std::result::Result<DownloadedTree, Box<TreeDownloadFailure>> {
+        let mut target = one_shot::Target::new(self, relative, incomplete);
         driver::run(
             &mut target,
-            relative.as_ref(),
+            relative,
             source,
             content,
             buffers,
@@ -161,6 +239,7 @@ impl OutputDir {
                 cause: failure.cause,
                 interruption: failure.interruption,
                 namespace_cleanup: failure.namespace_cleanup,
+                file_failures: failure.file_failures,
             })
         })
     }

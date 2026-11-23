@@ -735,16 +735,9 @@ impl<'a> Host<'a> {
                         }
                         let allowed = match address {
                             PeerAddress::Tcp(a) => self.options.access.allows(a.ip()),
-                            PeerAddress::Unix => match self.unix_access.allows(&connection) {
-                                Ok(allowed) => allowed,
-                                Err(error) => {
-                                    // Close this original, still unadmitted socket.
-                                    // Preserve the native cause without passing a
-                                    // credential lookup through accept backoff.
-                                    drop(connection);
-                                    return Poll::Ready(Err(error.into()));
-                                }
-                            },
+                            PeerAddress::Unix => {
+                                self.unix_access.admits(&connection, &mut *observe)
+                            }
                         };
                         if !allowed {
                             drop(connection);

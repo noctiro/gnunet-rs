@@ -32,26 +32,32 @@ source generation and deadline.
 The installed DNS factory uses the actual `with_dnssec` validator. Its complete
 chain/denial implementation is integrated independently; an unsupported
 security record or algorithm is an explicit failure, never a fabricated secure
-answer. Ordinary DNS and nameserver discovery stay on the DNS path, with the
-same exchange bounds through UDP/TCP, referral and alias processing. System
-address queries use the same process broker; their default 60-second record
-lifetime is explicit Rust policy because that broker returns no DNS TTL.
+answer. GNS2DNS nameserver hostnames and system address queries use the shared
+Resolver and its configured policy. Explicit `RESOLV_CONF` selects numeric
+wire DNS for GNS2DNS nameserver lookup. Delegated DNS queries and DNSSEC
+validation use the original raw DNS owner, with the same exchange bounds
+through UDP/TCP, referrals and aliases. The Resolver returns no DNS TTL, so
+system address records have a configurable lifetime of 60 seconds by default.
 
-The bounded service/protocol files profile uses `/etc/protocols` and
-`/etc/services` on Unix. Windows discovers its native system directory and uses
-`drivers/etc/protocol` and `drivers/etc/services`. Explicit `PROTOCOLS_FILE` and
-`SERVICES_FILE` override those defaults. This is a files profile, not complete
-NSS/provider enumeration.
+Named BOX/SBOX selectors use the operating system's protocol and service
+databases through a bounded worker. A registry miss falls back to the
+published GANA assignments. An unmapped service name is tried as a numeric
+port. Selectors without a mapping remain literal SBOX labels.
 
-DNS bootstrap uses bounded `/etc/resolv.conf` on Unix and a native configured-DNS
-snapshot on Windows. An explicit `RESOLV_CONF` selects file parsing on either
-platform. Native endpoint ordering and IPv6 scopes are preserved. These startup
-reads/snapshots issue no DNS query and retain their synchronous OS contract. `INTERCEPT_DNS=YES` attaches the configured ordinary `[dns]` CLIENT with the
+Setting either `[gns-rust] PROTOCOLS_FILE` or `SERVICES_FILE` selects the
+bounded files profile, prepared at startup. An unspecified counterpart uses
+`/etc/protocols` or `/etc/services` on Unix, and `protocol` or `services` under
+the Winsock `DatabasePath` on Windows.
+
+When a raw DNS operation needs bootstrap endpoints, it reads one bounded snapshot
+from the configured `RESOLV_CONF` file, `/etc/resolv.conf` on Unix, or Windows'
+configured DNS endpoints. The snapshot preserves endpoint order and IPv6
+scope and applies to that operation only. These numeric sources do not apply
+per-domain system DNS policy. `INTERCEPT_DNS=YES` attaches the configured ordinary `[dns]` CLIENT with the
 standard PRE_RESOLUTION subscription. Its original callbacks select typed zTLDs
 or configured `[gns] .suffix` public zones and use the same retained GNS Manager;
 non-GNS, malformed and other-profile questions are forwarded unchanged by their
-original callbacks. No self-RPC, extra UDP listener, Manager, Resolver or worker
-is created. A malformed selected namespace is an error, not DNS fallback.
+original callbacks. Malformed queries in the selected namespace report an error.
 
 ## Interception and resource limits
 

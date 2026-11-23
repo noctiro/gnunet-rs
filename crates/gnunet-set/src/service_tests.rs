@@ -47,12 +47,243 @@ fn next_ready<'id>(
     }
     Err(Error::Deadline)
 }
+
 #[test]
-fn lazy_copy_forks_at_connect_and_old_snapshot_is_immutable() -> Result<(), Error> {
+fn impossible_union_minimum_fails_the_request_without_opening_a_peer() -> Result<(), Error> {
+    let mut instance = Instance::new();
+    let abi = Abi::native();
+    let mut s = Service::new(&mut instance, Limits::default(), abi, 0)?;
+    let client = s.attach_client()?;
+    request(
+        &mut s,
+        client,
+        ClientRequest::Create {
+            operation: OperationType::Union as u32,
+        },
+    )?;
+    request(
+        &mut s,
+        client,
+        ClientRequest::Add {
+            element: element(b"one"),
+        },
+    )?;
+    let evaluate = |request_id, options| ClientRequest::Evaluate {
+        result_mode: ResultMode::Added as u32,
+        target: [1; 32],
+        app_id: [2; 64],
+        request_id,
+        options,
+        context: &[],
+    };
+    for (request_id, force_delta, minimum) in [(17, 0, 2), (18, 1, 1)] {
+        request(
+            &mut s,
+            client,
+            evaluate(
+                request_id,
+                wire::Options {
+                    byzantine: 1,
+                    byzantine_lower_bound: minimum,
+                    force_delta,
+                    ..wire::Options::default()
+                },
+            ),
+        )?;
+        check(s.ops.is_empty() && s.pending_effects() == 1)?;
+        let effect = s.effect().ok_or(Error::NotReady)?;
+        let id = effect.id;
+        let Action::ClientFrame {
+            client: owner,
+            operation: None,
+            bytes,
+        } = &effect.action
+        else {
+            return Err(Error::Conflict);
+        };
+        check(
+            *owner == client
+                && matches!(ClientResponse::decode(bytes, abi)?,
+                    ClientResponse::Result { request_id: id, status, .. }
+                    if id == request_id && status == Status::Failure as u16
+                ),
+        )?;
+        s.admit_effect(id)?;
+        let _original = s.complete_effect(id, Completion::Written)?;
+    }
+    request(&mut s, client, evaluate(19, wire::Options::default()))?;
+    check(
+        s.client_live(client)
+            && matches!(
+                s.effect().map(|effect| &effect.action),
+                Some(Action::OpenPeer { .. })
+            ),
+    )
+}
+
+#[test]
+fn late_controls_leave_other_original_set_work_live() -> Result<(), Error> {
+    let mut instance = Instance::new();
+    let mut s = Service::new(&mut instance, Limits::default(), Abi::native(), 0)?;
+    let client = s.attach_client()?;
+    request(
+        &mut s,
+        client,
+        ClientRequest::Create {
+            operation: OperationType::Union as u32,
+        },
+    )?;
+    let evaluate = |request_id| ClientRequest::Evaluate {
+        result_mode: ResultMode::Added as u32,
+        target: [1; 32],
+        app_id: [2; 64],
+        request_id,
+        options: wire::Options::default(),
+        context: &[],
+    };
+    request(&mut s, client, evaluate(17))?;
+    let cancelled = s.ops[0].id;
+    request(&mut s, client, ClientRequest::Cancel { request_id: 17 })?;
+    check(s.progress(1, &mut Scripted)?)?;
+    check(s.oi(cancelled) == Err(Error::Stale))?;
+
+    request(&mut s, client, evaluate(18))?;
+    let survivor = s.ops[0].id;
+    request(&mut s, client, ClientRequest::Cancel { request_id: 17 })?;
+    check(s.client_live(client) && s.operation_live(survivor))?;
+    check(s.pending_effects() == 1)?;
+
+    let listener = s.attach_client()?;
+    let app_id = [3; 64];
+    request(
+        &mut s,
+        listener,
+        ClientRequest::Listen {
+            operation: OperationType::Union as u32,
+            app_id,
+        },
+    )?;
+    for index in 0..2 {
+        let id = s.effect().ok_or(Error::NotReady)?.id;
+        check(match (&s.effect().ok_or(Error::NotReady)?.action, index) {
+            (Action::OpenPeer { operation, .. }, 0) => *operation == survivor,
+            (
+                Action::OpenPort {
+                    listener: owner, ..
+                },
+                1,
+            ) => *owner == listener,
+            _ => false,
+        })?;
+        s.admit_effect(id)?;
+        let _original = s.complete_effect(id, Completion::Written)?;
+    }
+    let original = s.incoming(
+        listener,
+        [4; 32],
+        app_id,
+        PeerMessage::OperationRequest {
+            operation: OperationType::Union as u32,
+            element_count: 0,
+            app_id,
+            context: &[],
+        },
+        1,
+        &mut Scripted,
+    )?;
+    let notification = s.effect().ok_or(Error::NotReady)?;
+    let id = notification.id;
+    let Action::ClientFrame { bytes, .. } = &notification.action else {
+        return Err(Error::Conflict);
+    };
+    let ClientResponse::Request { accept_id, .. } = ClientResponse::decode(bytes, Abi::native())?
+    else {
+        return Err(Error::Conflict);
+    };
+    s.admit_effect(id)?;
+    let _original = s.complete_effect(id, Completion::Written)?;
+    s.peer_lost(PeerOwner::Incoming(original), Error::Closed)?;
+    request(&mut s, listener, ClientRequest::Reject { accept_id })?;
+    check(s.cleanup_one() && s.ii(original) == Err(Error::Stale))?;
+    request(&mut s, listener, ClientRequest::Reject { accept_id })?;
+    check(s.client_live(listener) && s.operation_live(survivor))
+}
+
+#[test]
+fn late_accept_owns_a_standard_failure_until_its_original_write_settles() -> Result<(), Error> {
+    let mut instance = Instance::new();
+    let mut s = Service::new(&mut instance, Limits::default(), Abi::native(), 0)?;
+    let client = s.attach_client()?;
+    let other = s.attach_client()?;
+    for owner in [client, other] {
+        request(
+            &mut s,
+            owner,
+            ClientRequest::Create {
+                operation: OperationType::Union as u32,
+            },
+        )?;
+    }
+    request(
+        &mut s,
+        client,
+        ClientRequest::Accept {
+            accept_id: 123,
+            request_id: 17,
+            result_mode: ResultMode::Added as u32,
+            options: wire::Options::default(),
+        },
+    )?;
+    check(s.ops.is_empty())?;
+    let reply = s.effect().ok_or(Error::NotReady)?;
+    let id = reply.id;
+    let Action::ClientFrame {
+        client: owner,
+        operation: None,
+        bytes,
+    } = &reply.action
+    else {
+        return Err(Error::Conflict);
+    };
+    check(*owner == client)?;
+    check(matches!(
+        ClientResponse::decode(bytes, Abi::native())?,
+        ClientResponse::Result {
+            request_id: 17,
+            current_size: 0,
+            status,
+            element,
+        } if status == Status::Failure as u16 && element.element_type == 0 && element.data.is_empty()
+    ))?;
+    let evaluate = ClientRequest::Evaluate {
+        result_mode: ResultMode::Added as u32,
+        target: [1; 32],
+        app_id: [2; 64],
+        request_id: 17,
+        options: wire::Options::default(),
+        context: &[],
+    };
+    check(request(&mut s, client, evaluate) == Err(Error::Conflict))?;
+    request(&mut s, other, evaluate)?;
+    s.admit_effect(id)?;
+    check(request(&mut s, client, evaluate) == Err(Error::Conflict))?;
+    let _original = s.complete_effect(id, Completion::Written)?;
+    request(&mut s, client, evaluate)?;
+    check(s.client_live(client) && s.ops.len() == 2)
+}
+
+#[test]
+fn lazy_copy_forks_at_connect_and_preserves_iteration_across_abort() -> Result<(), Error> {
     let mut instance = Instance::new();
     let mut s = Service::new(&mut instance, Limits::default(), Abi::native(), 0)?;
     let source = s.attach_client()?;
-    request(&mut s, source, ClientRequest::Create { operation: 0 })?;
+    request(
+        &mut s,
+        source,
+        ClientRequest::Create {
+            operation: OperationType::Union as u32,
+        },
+    )?;
     request(
         &mut s,
         source,
@@ -70,6 +301,11 @@ fn lazy_copy_forks_at_connect_and_old_snapshot_is_immutable() -> Result<(), Erro
         return Err(Error::Conflict);
     };
     s.admit_effect(id)?;
+    let premature = s.attach_client()?;
+    check(
+        request(&mut s, premature, ClientRequest::CopyLazyConnect { cookie }) == Err(Error::Stale),
+    )?;
+    s.detach_client(premature)?;
     let _actual = s.complete_effect(id, Completion::Written)?;
     request(
         &mut s,
@@ -90,8 +326,76 @@ fn lazy_copy_forks_at_connect_and_old_snapshot_is_immutable() -> Result<(), Erro
             element: element(&[1]),
         },
     )?;
-    check(s.content(s.ci(source)?)?.1.len() == 1)?;
+    request(
+        &mut s,
+        source,
+        ClientRequest::Add {
+            element: element(&[3]),
+        },
+    )?;
+    check(s.content(s.ci(source)?)?.1.len() == 2)?;
     check(s.content(at)?.1.len() == 2)?;
+
+    for generation in [0, 1] {
+        request(&mut s, copy, ClientRequest::Iterate)?;
+        let mut members = [false; 2];
+        for _ in 0..=generation {
+            for _ in 0..8 {
+                s.progress(1, &mut Scripted)?;
+                if s.effect().is_some() {
+                    break;
+                }
+            }
+            let response = s.effect().ok_or(Error::NotReady)?;
+            let id = response.id;
+            let Action::ClientFrame { client, bytes, .. } = &response.action else {
+                return Err(Error::Conflict);
+            };
+            let ClientResponse::IterElement {
+                iteration_id,
+                element,
+            } = ClientResponse::decode(bytes, Abi::native())?
+            else {
+                return Err(Error::Conflict);
+            };
+            check(*client == copy && iteration_id == generation && element.element_type == 19)?;
+            let [value @ (1 | 2)] = element.data else {
+                return Err(Error::Conflict);
+            };
+            members[usize::from(*value - 1)] = true;
+            s.admit_effect(id)?;
+            let _actual = s.complete_effect(id, Completion::Written)?;
+            request(
+                &mut s,
+                copy,
+                ClientRequest::IterAck {
+                    send_more: u32::from(generation != 0),
+                },
+            )?;
+        }
+        for _ in 0..8 {
+            s.progress(1, &mut Scripted)?;
+            if s.effect().is_some() {
+                break;
+            }
+        }
+        if generation == 0 {
+            check(s.effect().is_none())?;
+        } else {
+            check(members == [true, true])?;
+            let response = s.effect().ok_or(Error::NotReady)?;
+            let id = response.id;
+            let Action::ClientFrame { client, bytes, .. } = &response.action else {
+                return Err(Error::Conflict);
+            };
+            check(
+                *client == copy
+                    && ClientResponse::decode(bytes, Abi::native())? == ClientResponse::IterDone,
+            )?;
+            s.admit_effect(id)?;
+            let _actual = s.complete_effect(id, Completion::Written)?;
+        }
+    }
     request(
         &mut s,
         copy,
@@ -101,7 +405,13 @@ fn lazy_copy_forks_at_connect_and_old_snapshot_is_immutable() -> Result<(), Erro
     )?;
     check(frozen.len() == 2)?;
     let third = s.attach_client()?;
-    check(request(&mut s, third, ClientRequest::CopyLazyConnect { cookie }) == Err(Error::Stale))
+    check(request(&mut s, third, ClientRequest::CopyLazyConnect { cookie }) == Err(Error::Stale))?;
+
+    request(&mut s, source, ClientRequest::CopyLazyPrepare)?;
+    let lost = s.effect().ok_or(Error::NotReady)?.id;
+    s.admit_effect(lost)?;
+    let _actual = s.complete_effect(lost, Completion::Lost(Error::Closed))?;
+    check(s.copies.is_empty() && s.client_live(copy))
 }
 #[test]
 fn typed_duplicates_and_refused_growth_do_not_change_membership() -> Result<(), Error> {

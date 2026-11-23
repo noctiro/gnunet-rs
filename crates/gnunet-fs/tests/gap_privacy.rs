@@ -124,10 +124,7 @@ fn higher_queries_wait_for_real_equivalent_relay_writes_and_never_self_cover() -
     let four = get(&mut router, origin, [5; 64])?;
     let five = get(&mut router, origin, [6; 64])?;
     let own = router.start_with_seen(
-        Selection {
-            kind: BlockType::DBLOCK,
-            query: [4; 64],
-        },
+        Selection::new(BlockType::DBLOCK, [4; 64])?,
         44,
         3,
         32,
@@ -260,7 +257,7 @@ fn real_publisher_anonymity_delay_and_revoked_permission_keep_original_settlemen
                 block: &ciphertexts[0][..lengths[0]],
             }
             .encode(&mut wire)?;
-            router.source_finished_local(job.route, Some(&wire[..n]), 3)?;
+            router.source_finished_local(job.route, Some(&wire[..n]), 3, job.started_us)?;
         } else {
             router.source_finished(job.route, None)?;
         }

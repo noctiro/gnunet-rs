@@ -5,10 +5,9 @@
 //! and retire an MQ after protocol/announcement validation errors. Output is
 //! never a processing/durability acknowledgement. No local token enters the wire.
 mod owner;
-mod storage;
 #[cfg(feature = "alloc")]
-pub use storage::HeapBytes;
-pub use storage::{ByteStorage, InlineBytes};
+pub use crate::storage::HeapBytes;
+pub use crate::storage::{ByteStorage, InlineBytes};
 /// Optional native storage profile, with bounded metadata and exact-length
 /// heap requests/HELLO cache. It shares the same sans-I/O owner and wire rules.
 #[cfg(feature = "alloc")]

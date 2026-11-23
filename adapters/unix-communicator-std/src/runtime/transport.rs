@@ -57,9 +57,8 @@ impl<'id> Runtime<'id> {
             let failed = queue.failed_send();
             if queue.retire_send(self.epoch, self.socket_epoch, observe) {
                 sends += 1;
-                // poll_send is one atomic nonblocking syscall: Pending owns no
-                // in-flight native write. This cancels only the original intent;
-                // actual Whole/Failed/Unknown facts remain separate below.
+                // Each attempt is one atomic nonblocking syscall. Between
+                // attempts only the original send intent may require cancellation.
             }
             // A failed native destination is not live metadata to reannounce
             // after MQ replacement, even if its original DOWN was not written.

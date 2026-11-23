@@ -7,7 +7,7 @@ use gnunet_program_host::{
     service::{self, Preparation},
     shared_clock::SharedClock,
 };
-use gnunet_resolver_host::{MachineInputs, startup};
+use gnunet_resolver_host::startup;
 use std::{
     error::Error,
     fmt,
@@ -99,19 +99,8 @@ pub(super) fn run() -> Result<ExitCode, Failure> {
             ))?
         } else {
             let _entered = runtime.enter();
-            gnunet_service_runtime::BoundListeners::from_activation(activation)?
+            gnunet_service_runtime::BoundListeners::from_activation_with_access(activation, access)?
         };
-        let files = MachineInputs::production(16 * 1024 * 1024);
-        for diagnostic in &files.diagnostics {
-            diagnostics.message(
-                "resolver.machine",
-                Level::WARNING,
-                format_args!(
-                    "resolver machine input {}: {}",
-                    diagnostic.source, diagnostic.error
-                ),
-            )?;
-        }
         runtime.block_on(async {
             let mut signals = gnunet_service_runtime::signals::Termination::new()?;
             let shutdown = std::future::poll_fn(|cx| {
@@ -127,20 +116,11 @@ pub(super) fn run() -> Result<ExitCode, Failure> {
                 }
                 signals.poll_stop(cx)
             });
-            let report = startup::foreground_listening_with_async_ready(
-                &config, bound, files, &[],
+            let report = startup::serve_standalone(
+                &config, bound, Arc::new(clock.clone()),
+                |diagnostic| diagnostics.machine_input(diagnostic),
                 |bound| {
-                    let preparation = (|| {
-                        for error in bound.failures() {
-                            diagnostics.message("resolver.listener.alternate", Level::WARNING,
-                                format_args!("resolver alternate listener: {error}"))?;
-                        }
-                        diagnostics.message("resolver.ready", Level::INFO,
-                            format_args!("Resolver Host ready: actual core/stub/IDNA, selected UTC, machine data and original listeners"))?;
-                        let mut output = io::stdout().lock();
-                        writeln!(output, "READY resolver")?;
-                        output.flush()
-                    })();
+                    let preparation = diagnostics.ready(bound);
                     async {
                         preparation?;
                         if let Some(ready) = &mut ready {
@@ -159,7 +139,7 @@ pub(super) fn run() -> Result<ExitCode, Failure> {
                         (Level::WARNING, "resolver.socket.failed")
                     } else { (Level::DEBUG, "resolver.socket.activity") };
                     diagnostics.observe(site, level, format_args!("resolver socket: {event:?}"));
-                }, Arc::new(clock.clone()),
+                },
             ).await;
             let report = service::retain_diagnostic(report, diagnostics.take_failure())?;
             let mut output = io::stdout().lock();

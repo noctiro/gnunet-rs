@@ -505,7 +505,11 @@ async fn serve(input: Serving<'_, '_, '_>) -> Result<(), Failure> {
         bound.try_reserve_exact(2)?;
         if !activation.is_empty() {
             if control.checkpoint().await? { return Ok(()); }
-            bound.push(BoundListeners::bind(config, b"rest", activation).await?);
+            #[cfg(unix)]
+            let active = BoundListeners::bind(config, b"rest", activation).await?;
+            #[cfg(windows)]
+            let active = BoundListeners::from_activation_with_access(activation, settings.unix)?;
+            bound.push(active);
         } else {
             let mut first = None;
             for v6 in [false, true] {

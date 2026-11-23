@@ -1,7 +1,7 @@
 //! Exclusive staging files retained across publication and uncertain errors.
 use super::{Error, Files, ProtocolError};
 use gnunet_native::filesystem::{Directory, FileIdentity, private_single_file_identity};
-use std::{ffi::OsStr, fs::File, io};
+use std::{ffi::OsStr, fs::File, io, mem::DropGuard};
 pub(in super::super) struct Temporary {
     directory: Directory,
     pub(super) name: String,
@@ -25,8 +25,12 @@ impl Files {
             self.dirty(values);
             match directory.create_private_file(OsStr::new(&name)) {
                 Ok(file) => {
-                    let identity = private_single_file_identity(&file)
+                    let pending = DropGuard::new(file, |file| {
+                        let _cleanup = directory.remove_file(OsStr::new(&name), &file);
+                    });
+                    let identity = private_single_file_identity(&pending)
                         .map_err(|e| Error::io("temporary-metadata", e))?;
+                    let file = DropGuard::dismiss(pending);
                     return Ok(Temporary {
                         directory,
                         name,

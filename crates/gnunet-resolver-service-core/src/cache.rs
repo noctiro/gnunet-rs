@@ -150,6 +150,14 @@ impl<'a> Cache<'a> {
         self.order = o.order;
         Ok(())
     }
+
+    pub(crate) fn reset_epoch(&mut self, epoch: u64) {
+        self.pool.reset_epoch(epoch);
+        self.hosts.fill(None);
+        self.buckets.fill(None);
+        self.records.fill(None);
+        self.order = 0;
+    }
     /// Number of dynamic queried-name buckets.
     pub fn bucket_count(&self) -> usize {
         self.buckets.iter().flatten().count()
@@ -325,24 +333,49 @@ impl<'a> Cache<'a> {
         }
         Ok(())
     }
+
+    /// Make actual bounded metadata room for a native DNS batch, keeping
+    /// records of the current query name across its A and AAAA phases.
+    pub(crate) fn begin_native_batch(&mut self, key: BlobId, incoming: usize) -> Result<(), Error> {
+        if incoming > self.records.len() {
+            return Err(Error::Capacity);
+        }
+        let current = self.find_bucket(key)?;
+        while self.records.iter().filter(|entry| entry.is_none()).count() < incoming
+            || (current.is_none() && self.buckets.iter().all(Option::is_some))
+        {
+            let (_, tail) = self
+                .buckets
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| Some(*index) != current)
+                .filter_map(|(index, bucket)| bucket.map(|b| (b.lru, index)))
+                .min()
+                .ok_or(Error::Capacity)?;
+            self.remove_bucket(tail)?;
+        }
+        Ok(())
+    }
+
+    fn find_bucket(&self, key: BlobId) -> Result<Option<usize>, Error> {
+        let name = self.pool.get(key)?;
+        for (index, bucket) in self.buckets.iter().enumerate() {
+            if let Some(bucket) = bucket
+                && self.pool.get(bucket.key)?.eq_ignore_ascii_case(name)
+            {
+                return Ok(Some(index));
+            }
+        }
+        Ok(None)
+    }
+
     pub(crate) fn insert(&mut self, key: BlobId, record: RecordMeta) -> Result<(), Error> {
         let r = self
             .records
             .iter()
             .position(Option::is_none)
             .ok_or(Error::Capacity)?;
-        let mut existing = None;
-        for (i, b) in self.buckets.iter().enumerate() {
-            if let Some(b) = b
-                && self
-                    .pool
-                    .get(b.key)?
-                    .eq_ignore_ascii_case(self.pool.get(key)?)
-            {
-                existing = Some(i);
-                break;
-            }
-        }
+        let existing = self.find_bucket(key)?;
         let i = existing
             .or_else(|| self.buckets.iter().position(Option::is_none))
             .ok_or(Error::Capacity)?;
@@ -488,6 +521,11 @@ impl<'a> Cache<'a> {
                 self.release_record(r)?;
             }
         }
+        self.clear_dynamic()
+    }
+    /// Reclaim the current network's cache pins, retaining machine hosts and
+    /// any results independently pinned by an admitted output.
+    pub fn clear_dynamic(&mut self) -> Result<(), Error> {
         for i in 0..self.buckets.len() {
             self.remove_bucket(i)?;
         }

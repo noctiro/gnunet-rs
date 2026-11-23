@@ -1,8 +1,9 @@
 //! Standalone Windows children qualify original-handle launch and cancellation.
 #[cfg(windows)]
 mod windows {
-    use gnunet_native::process::{
-        Console, ExportedHandle, LaunchLimits, Process, ProcessWait, Spawn, Stdio,
+    use gnunet_native::{
+        process::{Console, ExportedHandle, LaunchLimits, Process, ProcessWait, Spawn, Stdio},
+        socket_activation::{ExportSection, Source},
     };
     use gnunet_service_runtime::process::{ChildRegistry, RegistryError};
     use std::{
@@ -11,7 +12,7 @@ mod windows {
         io::{self, Read, Seek, SeekFrom, Write},
         os::windows::{
             ffi::OsStringExt,
-            io::{AsHandle, FromRawHandle},
+            io::{AsHandle, AsSocket, FromRawHandle},
         },
         path::{Path, PathBuf},
         sync::{
@@ -301,6 +302,73 @@ mod windows {
         }
         Ok(())
     }
+    fn activation_requires_the_admitted_child(executable: &Path) -> io::Result<()> {
+        let directory = Directory::new()?;
+        let environment = environment("quick");
+        let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))?;
+        let sources = [Source::new(listener.as_socket())];
+        let mut section = ExportSection::for_listeners(&sources)?;
+        let mut registry = ChildRegistry::new(1).map_err(io::Error::other)?;
+        let token = registry
+            .spawn_for_activation(
+                command(executable, &[], &environment, &directory.0, &[]),
+                &mut section,
+                OsStr::new("GNUNET_RS_ACTIVATION_HANDLE"),
+                LaunchLimits::default(),
+            )
+            .map_err(io::Error::other)?;
+        let mut original = RegistryChild { registry, token };
+        let mut registry = ChildRegistry::new(1).map_err(io::Error::other)?;
+        let mut unrelated_section = ExportSection::for_listeners(&sources)?;
+        let token = registry
+            .spawn_for_activation(
+                command(executable, &[], &environment, &directory.0, &[]),
+                &mut unrelated_section,
+                OsStr::new("GNUNET_RS_ACTIVATION_HANDLE"),
+                LaunchLimits::default(),
+            )
+            .map_err(io::Error::other)?;
+        let mut unrelated = RegistryChild { registry, token };
+
+        let refused = section.publish(
+            unrelated
+                .registry
+                .activation_target(&unrelated.token)
+                .map_err(io::Error::other)?,
+        );
+        check(
+            matches!(refused, Err(failure) if failure.exported == 0
+                && failure.error.kind() == io::ErrorKind::PermissionDenied),
+            "activation exported a listener to an unrelated child",
+        )?;
+        check(
+            original.registry.resume(&original.token).is_err(),
+            "original activation child resumed without publication",
+        )?;
+
+        for mut child in [original, unrelated] {
+            let code = 0xdead_0004;
+            child
+                .registry
+                .terminate(&child.token, code)
+                .map_err(io::Error::other)?;
+            drive(|cx| {
+                child
+                    .registry
+                    .poll_child_signal(cx)
+                    .map_err(io::Error::other)
+            })?;
+            child.registry.reap_completed().map_err(io::Error::other)?;
+            check(
+                child
+                    .registry
+                    .take_reaped()
+                    .is_some_and(|r| r.child == child.token && r.exit_code == code),
+                "activation refusal lost the actual suspended process",
+            )?;
+        }
+        Ok(())
+    }
     fn registry_cancellation_and_credit(executable: &Path) -> io::Result<()> {
         let directory = Directory::new()?;
         let env = environment("wait");
@@ -498,6 +566,7 @@ mod windows {
         let executable = std::env::current_exe()?;
         arguments_and_unsigned_exit(&executable)?;
         suspended_start_permissions(&executable)?;
+        activation_requires_the_admitted_child(&executable)?;
         registry_cancellation_and_credit(&executable)?;
         exact_reaping_preserves_other_receipts(&executable)?;
         cancellation_does_not_wait_for_caller_wake(&executable)

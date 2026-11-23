@@ -15,7 +15,7 @@ pub mod activation;
 pub mod clock;
 /// Unique Unix/TCP streams and explicit dependent lifetime leases.
 pub mod connection;
-/// Shared kernel Unix credential admission policy.
+/// Shared local admission policy for native credentials or listener ACLs.
 pub mod credentials;
 /// Persistent secure framing and original immutable FIFO ownership.
 pub mod framing;
@@ -27,9 +27,11 @@ pub mod local;
 pub mod local_listener;
 #[cfg(unix)]
 mod native_spawn;
-/// Official AF_UNIX address shaping shared by clients and service hosts.
+/// Official local address shaping and native IPC socket address encoding.
 #[cfg(any(unix, windows))]
 pub mod network;
+/// Coalesced host hints for owners of native interface scans.
+pub mod network_change;
 #[cfg(any(unix, windows))]
 mod path;
 /// Private Windows parent/child byte channels with explicit submission receipts.

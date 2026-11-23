@@ -5,6 +5,21 @@
 )]
 use gnunet_arm_core::wire::*;
 use gnunet_types::Error;
+
+#[test]
+fn configured_peer_layout_overrides_the_local_default() -> Result<(), &'static str> {
+    let local = ArmAbi::configured(None)?;
+    let (other_name, other_result_bytes) = match local {
+        ArmAbi::U64Align8 => (b"align4".as_slice(), 20),
+        ArmAbi::U64Align4 => (b"align8".as_slice(), 24),
+    };
+    let peer = ArmAbi::configured(Some(other_name))?;
+    assert_eq!(peer.result_bytes(), other_result_bytes);
+    assert_eq!(peer.list_bytes(), other_result_bytes);
+    assert!(ArmAbi::configured(Some(b"align16")).is_err());
+    Ok(())
+}
+
 #[test]
 fn all_request_assignments_have_exact_packed_layout_and_c_string_rules() -> Result<(), Error> {
     let id = WireId(0x0102030405060708);

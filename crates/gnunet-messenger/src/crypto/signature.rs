@@ -9,14 +9,14 @@ use gnunet_types::Error as Fault;
 use gnunet_wire::official::AbsoluteTime;
 use subtle::ConstantTimeEq;
 use wire::{
-    KeyType, PublicKey,
+    KeyType, PublicKey, SensitiveBytes,
     body::Body,
-    envelope::{self, Header, Signature},
+    envelope::{self, Header, Kind, Signature},
     message::{Message, Short},
     padding,
     profile::Profile,
 };
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 /// Exact canonical original signed-message digest, excluding recognized outer
 /// padding. This alone checks neither a signature nor a claimed sender.
 pub fn message_hash(message: Message<'_>) -> [u8; 64] {
@@ -40,14 +40,23 @@ pub fn sign_digest(key: &SecretKey, digest: &[u8; 64]) -> Result<[u8; 68], Error
         KeyType::Ecdsa => {
             PkeySecret::from_bytes(*raw)?.sign(envelope::SIGNATURE_PURPOSE, &[&payload])?
         }
-        KeyType::Eddsa => *EddsaPrivateKey::from_seed(*raw)
-            .sign(envelope::SIGNATURE_PURPOSE, &payload)?
-            .as_bytes(),
+        KeyType::Eddsa => sign_peer_payload(&EddsaPrivateKey::from_seed(*raw), &payload)?,
     };
-    let mut encoded = [0; 68];
-    encoded[..4].copy_from_slice(&key.key_type().value().to_be_bytes());
-    encoded[4..].copy_from_slice(&signature);
-    Ok(encoded)
+    Ok(tag_signature(key.key_type(), &signature))
+}
+
+fn sign_peer_payload(
+    key: &EddsaPrivateKey,
+    payload: &[u8; envelope::SIGNED_HASH_LEN],
+) -> Result<[u8; 64], Error> {
+    Ok(*key.sign(envelope::SIGNATURE_PURPOSE, payload)?.as_bytes())
+}
+
+fn tag_signature(kind: KeyType, signature: &[u8; 64]) -> [u8; envelope::SIGNATURE_LEN] {
+    let mut encoded = [0; envelope::SIGNATURE_LEN];
+    encoded[..4].copy_from_slice(&kind.value().to_be_bytes());
+    encoded[4..].copy_from_slice(signature);
+    encoded
 }
 /// Sealed proof that this original message's actual signature passed under this
 /// caller-selected key. It grants no room membership, DAG continuity or epoch
@@ -183,6 +192,77 @@ pub struct SigningHeader<'a> {
     /// Selected previous original message hash.
     pub previous: &'a [u8; 64],
 }
+
+fn draft_header<'a>(
+    header: SigningHeader<'a>,
+    kind: Kind,
+    placeholder: &'a [u8; envelope::SIGNATURE_LEN],
+) -> Result<Header<'a>, Error> {
+    Ok(Header {
+        signature: Signature::new(placeholder)?,
+        timestamp: header.timestamp,
+        sender_id: header.sender_id,
+        previous: header.previous,
+        kind,
+    })
+}
+
+fn finish_signature(
+    frame: &mut [u8],
+    profile: Profile,
+    pad: padding::Encode<'_>,
+    sign: impl FnOnce(&[u8; 64]) -> Result<[u8; envelope::SIGNATURE_LEN], Error>,
+) -> Result<(), Error> {
+    let mode = match pad {
+        padding::Encode::Absent => padding::Decode::Absent,
+        padding::Encode::ToLength { .. } => padding::Decode::Required,
+    };
+    let digest = message_hash(Message::decode(frame, profile, mode)?);
+    let signature = sign(&digest)?;
+    frame[..envelope::SIGNATURE_LEN].copy_from_slice(&signature);
+    Ok(())
+}
+
+/// Sign an already encoded, unpadded Messenger body with the native EdDSA peer
+/// key and write the official frame into caller storage without allocating.
+/// The body must match `kind` and `profile`; its bytes are preserved exactly.
+/// This establishes a signature and gives no room or source authorization.
+///
+/// # Errors
+/// Rejects an invalid profile, padding shape, body or short output. Failures
+/// after encoding starts erase only the frame prefix; the unused tail is untouched.
+pub fn encode_signed_peer(
+    key: &EddsaPrivateKey,
+    header: SigningHeader<'_>,
+    kind: Kind,
+    body: SensitiveBytes<'_>,
+    profile: Profile,
+    pad: padding::Encode<'_>,
+    output: &mut [u8],
+) -> Result<usize, Error> {
+    profile.validate()?;
+    let unpadded = envelope::HEADER_LEN
+        .checked_add(body.len())
+        .ok_or(Fault::Overflow)?;
+    let total = padding::encoded_length(unpadded, pad)?;
+    let frame = output.get_mut(..total).ok_or(Fault::Capacity)?;
+    let placeholder = tag_signature(KeyType::Eddsa, &[0; 64]);
+    let fields = draft_header(header, kind, &placeholder)?;
+    let result = (|| {
+        let unpadded = envelope::encode(fields, body, frame)?;
+        padding::write(unpadded, pad, profile, frame)?;
+        finish_signature(frame, profile, pad, |digest| {
+            let payload = signing_payload(digest)?;
+            let signature = sign_peer_payload(key, &payload)?;
+            Ok(tag_signature(KeyType::Eddsa, &signature))
+        })
+    })();
+    if result.is_err() {
+        frame.zeroize();
+    }
+    result.map(|()| total)
+}
+
 impl<const N: usize> SensitiveBuffer<N> {
     /// Encode and actually sign one typed message into erased owner storage.
     /// Initial dummy bytes exist only in this owner until replaced by the real
@@ -195,26 +275,12 @@ impl<const N: usize> SensitiveBuffer<N> {
         profile: Profile,
         pad: padding::Encode<'_>,
     ) -> Result<(), Error> {
-        let mut placeholder = [0; 68];
-        placeholder[..4].copy_from_slice(&key.key_type().value().to_be_bytes());
-        let fields = Header {
-            signature: Signature::new(&placeholder)?,
-            timestamp: header.timestamp,
-            sender_id: header.sender_id,
-            previous: header.previous,
-            kind: body.kind(),
-        };
+        let placeholder = tag_signature(key.key_type(), &[0; 64]);
+        let fields = draft_header(header, body.kind(), &placeholder)?;
         self.encode_message(fields, body, profile, pad)?;
-        let mode = match pad {
-            padding::Encode::Absent => padding::Decode::Absent,
-            padding::Encode::ToLength { .. } => padding::Decode::Required,
-        };
-        let result = (|| {
-            let digest = message_hash(self.message(profile, mode)?);
-            let signature = sign_digest(key, &digest)?;
-            self.bytes[..68].copy_from_slice(&signature);
-            Ok(())
-        })();
+        let result = finish_signature(&mut self.bytes[..self.len], profile, pad, |digest| {
+            sign_digest(key, digest)
+        });
         if result.is_err() {
             self.clear();
         }
@@ -231,6 +297,58 @@ impl<const N: usize> SensitiveBuffer<N> {
         self.encode_short(&[0; 64], body, profile, pad)?;
         let digest = hash512(&self.bytes[64..self.len]);
         self.bytes[..64].copy_from_slice(&digest);
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "Check native peer signing against the existing typed encoder and output bounds"
+    )]
+    fn peer_frame_matches_typed_signing_with_the_same_key_and_padding() -> Result<(), Error> {
+        const TOTAL: usize = 192;
+        let peer = EddsaPrivateKey::from_seed([0x59; 32]);
+        let mut tagged = Zeroizing::new([0x59; 36]);
+        tagged[..4].copy_from_slice(&KeyType::Eddsa.value().to_be_bytes());
+        let member = SecretKey::from_serialized(&tagged[..])?;
+        let public = peer.public_key();
+        let fields = SigningHeader {
+            timestamp: AbsoluteTime::from_micros(17),
+            sender_id: public.as_bytes(),
+            previous: &[0x24; 64],
+        };
+        let profile = Profile::BIG_255;
+        let pad = padding::Encode::ToLength {
+            total: TOTAL,
+            noise: SensitiveBytes::new(&[0x6e; TOTAL - envelope::HEADER_LEN - 4 - 3]),
+        };
+        let body = Body::Info { version: 3 };
+        let mut typed = SensitiveBuffer::<TOTAL>::new();
+        typed.encode_signed(&member, fields, body, profile, pad)?;
+        let mut raw = [0; 4];
+        let len = body.encode(profile, &mut raw)?;
+        let mut output = [0xa5; TOTAL + 1];
+        let written = encode_signed_peer(
+            &peer,
+            fields,
+            body.kind(),
+            SensitiveBytes::new(&raw[..len]),
+            profile,
+            pad,
+            &mut output,
+        )?;
+        assert_eq!(written, TOTAL);
+        assert_eq!(&output[..written], typed.expose());
+        assert_eq!(output[written], 0xa5);
+        verify_peer(
+            Message::decode(&output[..written], profile, padding::Decode::Required)?,
+            public.as_bytes(),
+        )?;
         Ok(())
     }
 }

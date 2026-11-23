@@ -2,10 +2,23 @@
 //! Two-buffer C variants map to the same reentrant Rust operation; a returned
 //! value is never overwritten by a later call on this or another thread.
 use crate::logging::base32;
+use gnunet_types::AbsoluteTime;
 use std::{
     io::{self, Write},
     net::{Ipv4Addr, Ipv6Addr},
 };
+
+/// Format `GNUNET_STRINGS_absolute_time_to_string` in the native local calendar.
+///
+/// # Errors
+/// Returns a native calendar or formatting failure.
+pub fn absolute_time(time: AbsoluteTime) -> io::Result<Vec<u8>> {
+    if time == AbsoluteTime::NEVER {
+        return Ok(b"end of time".to_vec());
+    }
+    let seconds = i64::try_from(time.as_micros() / 1_000_000).map_err(io::Error::other)?;
+    crate::native::Calendar::new(seconds, 0, false)?.format(b"%a %b %d %H:%M:%S %Y", 255)
+}
 /// GNUNET_b2s: SHA512 arbitrary bytes, then the first eight Crockford characters.
 #[must_use]
 pub fn bytes_short(bytes: &[u8]) -> Vec<u8> {

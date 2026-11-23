@@ -70,10 +70,10 @@ def main():
         cmd.run('services', [sys.executable, '-B', TOOLS / 'compare_services.py', *common,
                             '--reference', args.reference, '--output', out / 'services'])
         selected = [piece for package in PACKAGES for piece in ('-p', package)]
-        cmd.run('rustdoc', ['cargo', '+1.99.1', 'doc', '--manifest-path', workspace / 'Cargo.toml',
+        cmd.run('rustdoc', [*cmd.cargo, 'doc', '--manifest-path', workspace / 'Cargo.toml',
                             '--locked', '--offline', *selected, '--no-deps', '-j', '1'])
         for target in ('thumbv6m-none-eabi', 'thumbv7em-none-eabi'):
-            cmd.run(target, ['cargo', '+1.99.1', 'check', '--manifest-path', workspace / NOALLOC / 'Cargo.toml',
+            cmd.run(target, [*cmd.cargo, 'check', '--manifest-path', workspace / NOALLOC / 'Cargo.toml',
                              '--locked', '--offline', '--target', target, '-j', '1'])
         binary = cmd.example(HOST, 'normal_peer')
         fresh = sha(binary)

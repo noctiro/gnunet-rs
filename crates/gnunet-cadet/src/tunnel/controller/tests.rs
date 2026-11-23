@@ -433,6 +433,7 @@ fn actual_original_write_starts_retry_and_only_fresh_book_reset_proof_pauses_gen
             .prepare(a.scope(), abook, MonoInstant(0), &mut wire, entropy)?
             .ok_or(Error::NotReady)?;
         let original = prepared.attempt();
+        let original_candidate = a.snapshot().candidate;
         let original_exchange = PeerMessage::decode(prepared.bytes())?;
         assert!(a.snapshot().retry_at.is_none());
         a.reject_prepared(prepared)?;
@@ -526,7 +527,7 @@ fn actual_original_write_starts_retry_and_only_fresh_book_reset_proof_pauses_gen
         );
         assert_eq!(a.snapshot().reset_high_water, 77);
         assert!(a.snapshot().traffic_paused);
-        assert!(a.snapshot().candidate.is_none());
+        assert_eq!(a.snapshot().candidate, original_candidate);
         assert_eq!(
             a.peer_reset(a.scope(), proof, MonoInstant(250_001)),
             Err(Error::Replay)
@@ -537,6 +538,75 @@ fn actual_original_write_starts_retry_and_only_fresh_book_reset_proof_pauses_gen
         a.reject_prepared(prepared)?;
         assert!(a.snapshot().pending.is_none());
         assert!(a.snapshot().closed);
+        Ok(())
+    })
+}
+
+#[test]
+fn authenticated_reset_crossing_first_kx_keeps_the_original_transcript_and_completes()
+-> Result<(), Error> {
+    with_pair(|a, b, abook, bbook, sources, entropy| {
+        a.request(a.scope(), MonoInstant(0), entropy)?;
+        let candidate = a.snapshot().candidate;
+        let deadline = a.snapshot().negotiation_deadline;
+        let mut wire = [0; 168];
+        let n = emit_control(a, abook, 0, &mut wire, entropy)?;
+        control(b, bbook, sources[1], &wire[..n], 0, entropy)?;
+        // Betty's real purpose38 CREATE crosses the already emitted first KX,
+        // while her corresponding AUTH is still in flight. It may request that
+        // original negotiation; it cannot silently replace Alice's A0.
+        let one = gnunet_crypto::EddsaPrivateKey::from_seed([1; 32]);
+        let two = gnunet_crypto::EddsaPrivateKey::from_seed([2; 32]);
+        let key = if *one.public_key().as_bytes() == b.scope().local() {
+            one
+        } else {
+            two
+        };
+        let mut purpose = [0; 16];
+        ConnectionInitiatorPurpose { monotime: 77 }.encode(&mut purpose)?;
+        let signature = key.sign(CONNECTION_INITIATOR_PURPOSE, &purpose)?;
+        let path = [b.scope().local(), a.scope().local()];
+        let create = PeerMessage::ConnectionCreate {
+            options_bytes: [2, 0, 0, 0],
+            has_monotime_bytes: [1, 0, 0, 0],
+            monotime: 77,
+            monotime_signature: *signature.as_bytes(),
+            connection: [10; 32],
+            path: PathPeers::new(&path),
+        };
+        let connection::Event::Created {
+            reset: connection::Reset::Fresh(proof),
+            ..
+        } = abook.receive(sources[0], create, MonoInstant(1))?
+        else {
+            return Err(Error::Malformed);
+        };
+        assert_eq!(
+            a.peer_reset(a.scope(), proof, MonoInstant(1))?,
+            Event::ResetArmed
+        );
+        assert_eq!(a.snapshot().candidate, candidate);
+        assert_eq!(a.snapshot().negotiation_deadline, deadline);
+        assert_eq!(
+            a.request(a.scope(), MonoInstant(1), entropy)?,
+            Event::CandidateBusy
+        );
+        assert_eq!(
+            a.peer_reset(a.scope(), proof, MonoInstant(1)),
+            Err(Error::Replay)
+        );
+        let n = emit_control(b, bbook, 1, &mut wire, entropy)?;
+        assert!(
+            matches!(control(a, abook, sources[0], &wire[..n], 1, entropy)?, Event::Confirmed(found) if Some(found) == candidate)
+        );
+        let n = emit_control(a, abook, 1, &mut wire, entropy)?;
+        assert!(matches!(
+            control(b, bbook, sources[1], &wire[..n], 1, entropy)?,
+            Event::Confirmed(_)
+        ));
+        assert!(!a.snapshot().traffic_paused);
+        assert!(a.snapshot().candidate.is_none());
+        assert!(a.snapshot().confirmed.is_some() && b.snapshot().confirmed.is_some());
         Ok(())
     })
 }
@@ -672,6 +742,10 @@ fn retained_unadmitted_keepalive_yields_to_auth_and_confirmed_failed_auth_is_new
         let now = 30_000_000;
         let route = abook.select(a.scope().peer()).ok_or(Error::NotReady)?;
         a.keepalive(a.scope(), route, abook, MonoInstant(now))?;
+        assert_eq!(
+            a.keepalive(a.scope(), route, abook, MonoInstant(now)),
+            Err(Error::NotReady)
+        );
         let mut keepalive = [0; 168];
         let prepared = a
             .prepare(a.scope(), abook, MonoInstant(now), &mut keepalive, entropy)?

@@ -207,6 +207,7 @@ impl<'id> Client<'id> {
                 }
                 self.initialized = true;
                 self.initial_hard = None;
+                self.channel.reset_backoff();
                 Ok(Progress::Initialized(epoch))
             }
         }

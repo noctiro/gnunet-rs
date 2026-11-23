@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
 """Fresh actual production Resolver app smoke, separate from the C-client fixture.
 
-Only real literal /etc/hosts data is queried over raw official4/5 Unix IPC.
-No test file/upstream/config extensions are supplied to production. MacOS also
-runs the app under an explicit outbound-IP denial policy. If the exact native
-hosts parser cannot establish a loopback localhost alias, fail as an unavailable
-profile before starting a service or making a lookup; never substitute DNS.
+Query localhost over official request4/response5 Unix IPC. On macOS the DNS-SD
+backend resolves localhost. On other Unix platforms the query must hit a proven
+literal /etc/hosts entry. No fixture files or upstreams are supplied to the app.
 
 All build artifacts, snapshots and receipts live in --output; source is read-only.
 """
@@ -24,6 +22,13 @@ import subprocess
 import sys
 import tempfile
 import time
+
+
+TOOLS=Path(__file__).resolve().parents[3]/"tools"
+sys.dont_write_bytecode=True
+sys.path.insert(0,str(TOOLS))
+from cargo_artifacts import CargoArtifacts
+from rust_toolchain import rust_channel
 
 
 def sha(path):
@@ -76,15 +81,16 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--repository', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--toolchain')
     args = parser.parse_args()
     repo, output = args.repository.resolve(), args.output.resolve()
     for source in [repo, Path(__file__).resolve().parent]:
         if output.is_relative_to(source) or source.is_relative_to(output):
             parser.error('output overlaps source')
     output.mkdir(mode=0o700, parents=True, exist_ok=False)
-    report = {'status': 'failed', 'scope': 'Fresh actual production Resolver app: literal hosts-only raw IPC, SIGTERM, inherited descriptor bypass and parent path ownership; separate from normal C-client fixture proof', 'commands': [], 'checks': []}
+    report = {'status': 'failed', 'scope': 'Resolver production localhost IPC, SIGTERM, and inherited endpoint ownership', 'commands': [], 'checks': []}
     env = dict(os.environ, CARGO_TARGET_DIR=str(output / 'target'))
-    cargo = ['cargo', '+1.99.1']
+    cargo = ['cargo', '+' + rust_channel(repo, args.toolchain)]
     before = {}
     owned = None
     def run(label, argv, timeout=180):
@@ -102,17 +108,28 @@ def main():
         report['checks'].append(row)
         assert value, row
     try:
-        hosts = Path('/etc/hosts').read_bytes()
-        aliases = native_hosts(hosts)
-        selected = [address for alias, address in aliases if alias == b'localhost']
-        if not selected or not selected[-1].is_loopback or len(aliases) > 1024 or len(hosts) > 16 * 1024 * 1024:
-            report['status'] = 'profile-unavailable'
-            report['reason'] = 'Native literal hosts parse cannot prove an in-capacity loopback localhost cache hit; no lookup or service started'
-            return 2
-        expected = selected[-1].packed
-        report['literal_hosts_profile'] = {'file': '/etc/hosts', 'sha256': sha('/etc/hosts'), 'alias_hex': b'localhost'.hex(), 'expected_latest_address': str(selected[-1]), 'alias_count': len(aliases), 'rule': 'source parser prepends entries, Any returns first matching native row'}
+        system_dns = sys.platform == 'darwin'
+        machine_files = []
+        if system_dns:
+            name = b'localhost.\0'
+            family = socket.AF_INET
+            expected = None
+            report['lookup_profile'] = 'macOS DNS-SD, absolute localhost IPv4'
+        else:
+            machine_files = [Path('/etc/hosts'), Path('/etc/resolv.conf')]
+            hosts = machine_files[0].read_bytes()
+            aliases = native_hosts(hosts)
+            selected = [address for alias, address in aliases if alias == b'localhost']
+            if not selected or not selected[-1].is_loopback or len(aliases) > 1024 or len(hosts) > 16 * 1024 * 1024:
+                report['status'] = 'profile-unavailable'
+                report['reason'] = 'Literal hosts input has no in-capacity loopback localhost match'
+                return 2
+            name = b'localhost\0'
+            family = socket.AF_UNSPEC
+            expected = selected[-1].packed
+            report['lookup_profile'] = {'file': '/etc/hosts', 'sha256': sha('/etc/hosts'), 'expected_address': str(selected[-1])}
         metadata = json.loads(run('metadata', cargo + ['metadata', '--manifest-path', repo / 'Cargo.toml', '--offline', '--locked', '--format-version', '1']))
-        paths = [Path(__file__).resolve(), repo / 'Cargo.toml', repo / 'Cargo.lock', repo / 'rust-toolchain.toml', Path('/etc/hosts'), Path('/etc/resolv.conf')]
+        paths = [Path(__file__).resolve(), TOOLS / 'cargo_artifacts.py', TOOLS / 'rust_toolchain.py', repo / 'Cargo.toml', repo / 'Cargo.lock', repo / 'rust-toolchain.toml', *machine_files]
         paths += [p for p in (repo / '.cargo').rglob('*') if p.is_file()]
         for package in metadata['packages']:
             if package['source'] is not None:
@@ -125,8 +142,8 @@ def main():
                     paths.append(manifest.parent / name)
         before = {str(p): sha(p) for p in sorted(set(paths))}
         report['source_inputs_before_build'] = before
-        run('fresh-app-build', cargo + ['build', '--manifest-path', repo / 'Cargo.toml', '--offline', '--locked', '-p', 'gnunet-service-resolver'])
-        built = output / 'target/debug/gnunet-service-resolver'
+        build = run('fresh-app-build', cargo + ['build', '--manifest-path', repo / 'Cargo.toml', '--offline', '--locked', '-p', 'gnunet-service-resolver', '--message-format=json'])
+        built = CargoArtifacts(build).binary('gnunet-service-resolver', repo / 'apps/gnunet-service-resolver/Cargo.toml')
         snapshot = output / 'production-app'
         shutil.copy2(built, snapshot)
         snapshot.chmod(0o500)
@@ -144,16 +161,14 @@ def main():
             path = owned / key.lower()
             path.mkdir(mode=0o700)
             base[key] = str(path)
-        # The profile is additional containment, not a replacement for proving
-        # that this actual raw daemon request hits the literal hosts cache.
-        if sys.platform == 'darwin' and Path('/usr/bin/sandbox-exec').is_file():
+        if system_dns and Path('/usr/bin/sandbox-exec').is_file():
             policy = output / 'deny-outbound-ip.sb'
             policy.write_text('(version 1)\n(allow default)\n(deny network-outbound (remote ip))\n')
             prefix = ['/usr/bin/sandbox-exec', '-f', str(policy)]
-            report['ip_network_containment'] = {'kind': 'macos-sandbox-outbound-ip-denial', 'policy_sha256': sha(policy)}
+            report['ip_network_containment'] = {'kind': 'macos-app-outbound-ip-denial', 'policy_sha256': sha(policy)}
         else:
             prefix = []
-            report['ip_network_containment'] = {'kind': 'no-general-IP-sandbox-available', 'boundary': 'Only source-proven real literal-hosts cache hit is requested; no external lookup is submitted'}
+            report['ip_network_containment'] = {'kind': 'no-app-ip-sandbox'}
         def one(label, inherited=False):
             directory = output / label
             directory.mkdir()
@@ -193,14 +208,23 @@ def main():
                         if time.monotonic() >= until:
                             raise TimeoutError(label + ' readiness')
                         time.sleep(.005)
-                # Exact official request4: direction0, AF_UNSPEC0, opaque raw ID.
+                # Official forward request with the target's native family and opaque ID.
                 wire_id = bytes.fromhex('9a0080ff') if inherited else bytes.fromhex('ff80009a')
-                name = b'localhost\0'
-                query = struct.pack('!HHii', 16 + len(name), 4, 0, 0) + wire_id + name
+                query = struct.pack('!HHii', 16 + len(name), 4, 0, family) + wire_id + name
                 stream.sendall(query)
-                address_frame, address = response(stream, wire_id)
-                end_frame, end = response(stream, wire_id)
-                check(label + '-raw-request4-response5-and-opaque-id', address == expected and end == b'', {'request_hex': query.hex(), 'address_frame_hex': address_frame.hex(), 'end_frame_hex': end_frame.hex()})
+                addresses = []
+                frames = []
+                for _ in range(33 if system_dns else 2):
+                    frame, address = response(stream, wire_id)
+                    frames.append(frame.hex())
+                    if not address:
+                        break
+                    addresses.append(address)
+                valid_addresses = (bool(addresses) and all(
+                    len(address) == 4 and ipaddress.IPv4Address(address).is_loopback
+                    for address in addresses
+                )) if system_dns else addresses == [expected]
+                check(label + '-raw-request4-response5-and-opaque-id', valid_addresses and not address, {'request_hex': query.hex(), 'response_frames_hex': frames})
                 check(label + '-configured-unused-path-absent', not configured.exists() if inherited else path.exists())
                 # Preserve a real connected session with an incomplete frame;
                 # immediate signal shutdown must revoke it without completing RX.
@@ -243,7 +267,7 @@ def main():
         one('configured')
         one('inherited', True)
         check('fresh-and-executed-binaries-unchanged', sha(built) == digest and sha(snapshot) == digest)
-        check('all-source-and-real-machine-file-inputs-unchanged', all(sha(p) == h for p, h in before.items()))
+        check('all-inputs-unchanged', all(sha(p) == h for p, h in before.items()))
         report['status'] = 'passed'
         report['inputs_unchanged'] = True
     except Exception as exc:

@@ -1,4 +1,5 @@
 use super::*;
+mod application;
 impl<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy>
     Coordinator<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy>
 {
@@ -16,11 +17,22 @@ impl<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy>
         loss: tun::Loss,
         observe: &mut impl FnMut(Event<'id, 'cadet>),
     ) -> Result<(), Error> {
-        if loss.epoch != self.device.epoch() {
+        if self.device.epoch().as_ref() != Some(&loss.epoch) {
             return Err(Fault::StaleGeneration.into());
         }
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "freebsd"))]
         let recovering = self.arm_recovery(&loss)?;
+        #[cfg(target_os = "freebsd")]
+        let loss = {
+            let mut loss = loss;
+            if let Some(owner) = loss.freebsd_recovery.take() {
+                if self.recovery.packet.is_some() {
+                    return Err(Fault::Conflict.into());
+                }
+                self.recovery.packet = Some(recovery::PacketRecovery::Retained(owner));
+            }
+            loss
+        };
         // An unexpected source loss is not this coordinator's explicit
         // same-epoch device-removal receipt, even if its close returned no errno.
         self.control.uncertain = true;
@@ -36,7 +48,7 @@ impl<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy>
                 .as_ref()
                 .is_some_and(|id| id.helper_accepted_prefix() > 0))
             && let Some(p) = self.output.as_ref()
-            && loss.pending.as_ref() == Some(&p.write)
+            && loss.pending.as_ref() == p.write.native()
         {
             self.server.engine_mut().exposed(p.effect)?;
         }
@@ -59,6 +71,16 @@ impl<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy>
             observe(Event::TunLost(loss));
             return result;
         }
+        #[cfg(target_os = "freebsd")]
+        if recovering {
+            let result = self.retire_control_for_recovery(observe);
+            if result.is_ok() && self.stopping.is_none() {
+                observe(Event::TunRecovering(loss));
+            } else {
+                observe(Event::TunLost(loss));
+            }
+            return result;
+        }
         observe(Event::TunLost(loss));
         self.request_shutdown();
         Ok(())
@@ -72,58 +94,64 @@ impl<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy>
             return Ok(false);
         }
         let mut activity = false;
-        match self.device.io.poll_write(cx) {
-            Poll::Ready(tun::WriteEvent::Written { write, raw_bytes }) => {
-                let p = self.output.take().ok_or(Fault::StaleGeneration)?;
-                if p.write != write {
-                    self.output = Some(p);
-                    return Err(Fault::StaleGeneration.into());
-                }
-                self.server.engine_mut().exposed(p.effect)?;
-                self.server.engine_mut().written(p.effect)?;
-                let event = if self.device.io.is_helper() {
-                    self.report.helper_submitted = self.report.helper_submitted.saturating_add(1);
-                    Event::HelperSubmitted {
-                        write,
-                        effect: p.effect,
-                        bytes: raw_bytes,
+        if self.device.provenance == Provenance::Provider {
+            activity |= self.poll_provider_output(cx, observe)?;
+        } else {
+            match self.device.io.poll_write(cx) {
+                Poll::Ready(tun::WriteEvent::Written { write, raw_bytes }) => {
+                    let p = self.output.take().ok_or(Fault::StaleGeneration)?;
+                    if p.write.native() != Some(&write) {
+                        self.output = Some(p);
+                        return Err(Fault::StaleGeneration.into());
                     }
-                } else {
-                    self.report.tun_written = self.report.tun_written.saturating_add(1);
-                    Event::TunWritten {
-                        write,
-                        effect: p.effect,
-                        bytes: raw_bytes,
+                    self.server.engine_mut().exposed(p.effect)?;
+                    self.server.engine_mut().written(p.effect)?;
+                    let event = if self.device.io.is_helper() {
+                        self.report.helper_submitted =
+                            self.report.helper_submitted.saturating_add(1);
+                        Event::HelperSubmitted {
+                            write,
+                            effect: p.effect,
+                            bytes: raw_bytes,
+                        }
+                    } else {
+                        self.report.tun_written = self.report.tun_written.saturating_add(1);
+                        Event::TunWritten {
+                            write,
+                            effect: p.effect,
+                            bytes: raw_bytes,
+                        }
+                    };
+                    observe(event);
+                    activity = true;
+                }
+                Poll::Ready(tun::WriteEvent::Unsent { write, reason }) => {
+                    let p = self.output.take().ok_or(Fault::StaleGeneration)?;
+                    if p.write.native() != Some(&write) {
+                        self.output = Some(p);
+                        return Err(Fault::StaleGeneration.into());
                     }
-                };
-                observe(event);
-                activity = true;
-            }
-            Poll::Ready(tun::WriteEvent::Unsent { write, reason }) => {
-                let p = self.output.take().ok_or(Fault::StaleGeneration)?;
-                if p.write != write {
-                    self.output = Some(p);
-                    return Err(Fault::StaleGeneration.into());
+                    self.server.engine_mut().unsent(
+                        p.effect,
+                        match reason {
+                            tun::Unsent::Cancelled => Fault::Cancelled,
+                            tun::Unsent::Deadline => Fault::Deadline,
+                        },
+                    )?;
+                    activity = true;
                 }
-                self.server.engine_mut().unsent(
-                    p.effect,
-                    match reason {
-                        tun::Unsent::Cancelled => Fault::Cancelled,
-                        tun::Unsent::Deadline => Fault::Deadline,
-                    },
-                )?;
-                activity = true;
-            }
-            Poll::Ready(tun::WriteEvent::Lost(loss)) => {
-                self.tun_lost(loss, observe)?;
-                return Ok(true);
-            }
-            Poll::Ready(tun::WriteEvent::Closed) => {
-                if !self.control.dead {
-                    return Err(Fault::Closed.into());
+                Poll::Ready(tun::WriteEvent::Lost(loss)) => {
+                    self.tun_lost(loss, observe)?;
+                    return Ok(true);
                 }
+                Poll::Ready(tun::WriteEvent::Closed) => {
+                    if !self.control.dead {
+                        return Err(Fault::Closed.into());
+                    }
+                }
+                Poll::Pending
+                | Poll::Ready(tun::WriteEvent::Idle | tun::WriteEvent::WaitDeadline) => {}
             }
-            Poll::Pending | Poll::Ready(tun::WriteEvent::Idle | tun::WriteEvent::WaitDeadline) => {}
         }
         if self.output.is_none()
             && self.stopping.is_none()
@@ -156,7 +184,23 @@ impl<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy>
                         self.drop_input(Some(flow), Fault::Deadline, observe);
                         return Ok(true);
                     }
-                    match self.device.io.queue(prepared.bytes, until) {
+                    let io = &mut self.device.io;
+                    let queue = if let Some(owner) = io.provider_mut() {
+                        owner.issue().and_then(|id| {
+                            let request = provider::PacketRequest {
+                                id,
+                                deadline: until,
+                            };
+                            owner.driver.begin_write(request, prepared.bytes)?;
+                            Ok(PacketWrite::Provider {
+                                request,
+                                bytes: prepared.bytes.len(),
+                            })
+                        })
+                    } else {
+                        io.queue(prepared.bytes, until).map(PacketWrite::Native)
+                    };
+                    match queue {
                         Ok(write) => {
                             self.server.engine_mut().queued(effect)?;
                             self.output = Some(TunOutput { write, effect });
@@ -164,6 +208,14 @@ impl<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy>
                         }
                         Err(e) => {
                             self.server.engine_mut().reject_prepared(effect)?;
+                            if self.device.provenance == Provenance::Provider {
+                                if e.kind() == io::ErrorKind::WouldBlock {
+                                    return Ok(activity);
+                                }
+                                self.control.provider_error.get_or_insert(Error::Native(e));
+                                self.request_shutdown();
+                                return Ok(true);
+                            }
                             return Err(e.into());
                         }
                     }
@@ -190,37 +242,74 @@ impl<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy>
         }
         let mut activity = false;
         if self.input.is_none() {
-            match self.device.io.poll_read(cx) {
-                Poll::Pending | Poll::Ready(tun::ReadEvent::WaitDeadline) => {}
-                Poll::Ready(tun::ReadEvent::Packet(packet)) => {
-                    if packet.epoch() != &self.device.epoch() {
-                        return Err(Fault::StaleGeneration.into());
+            if let Some(owner) = self.device.io.provider_mut() {
+                match owner.driver.poll_read(cx, self.limits.mtu as usize) {
+                    Poll::Ready(Ok(Some(packet))) => {
+                        if packet.len() > self.limits.mtu as usize || tun::version(&packet).is_err()
+                        {
+                            self.drop_input(None, Fault::Malformed, observe);
+                            return Ok(true);
+                        }
+                        self.report.tun_read = self.report.tun_read.saturating_add(1);
+                        self.input = Some(TunInput {
+                            packet: IncomingPacket::Provider(packet),
+                            until: Self::deadline(self.limits.input_timeout)?,
+                        });
+                        activity = true;
                     }
-                    self.report.tun_read = self.report.tun_read.saturating_add(1);
-                    self.input = Some(TunInput {
-                        packet,
-                        until: Self::deadline(self.limits.input_timeout)?,
-                    });
-                    activity = true;
-                }
-                Poll::Ready(tun::ReadEvent::Rejected(_)) => {
-                    self.drop_input(None, Fault::Malformed, observe);
-                    return Ok(true);
-                }
-                Poll::Ready(tun::ReadEvent::WriteExpired(write)) => {
-                    let p = self.output.take().ok_or(Fault::StaleGeneration)?;
-                    if p.write != write {
-                        self.output = Some(p);
-                        return Err(Fault::StaleGeneration.into());
+                    Poll::Ready(Ok(None)) => {
+                        self.control
+                            .provider_error
+                            .get_or_insert(Fault::Closed.into());
+                        self.request_shutdown();
+                        return Ok(true);
                     }
-                    self.server.engine_mut().unsent(p.effect, Fault::Deadline)?;
-                    return Ok(true);
+                    Poll::Ready(Err(error)) if error.kind() == io::ErrorKind::InvalidData => {
+                        self.drop_input(None, Fault::Malformed, observe);
+                        return Ok(true);
+                    }
+                    Poll::Ready(Err(error)) => {
+                        self.control
+                            .provider_error
+                            .get_or_insert(Error::Native(error));
+                        self.request_shutdown();
+                        return Ok(true);
+                    }
+                    Poll::Pending => {}
                 }
-                Poll::Ready(tun::ReadEvent::Lost(loss)) => {
-                    self.tun_lost(loss, observe)?;
-                    return Ok(true);
+            } else {
+                match self.device.io.poll_read(cx) {
+                    Poll::Pending | Poll::Ready(tun::ReadEvent::WaitDeadline) => {}
+                    Poll::Ready(tun::ReadEvent::Packet(packet)) => {
+                        if self.device.epoch().as_ref() != Some(packet.epoch()) {
+                            return Err(Fault::StaleGeneration.into());
+                        }
+                        self.report.tun_read = self.report.tun_read.saturating_add(1);
+                        self.input = Some(TunInput {
+                            packet: IncomingPacket::Native(packet),
+                            until: Self::deadline(self.limits.input_timeout)?,
+                        });
+                        activity = true;
+                    }
+                    Poll::Ready(tun::ReadEvent::Rejected(_)) => {
+                        self.drop_input(None, Fault::Malformed, observe);
+                        return Ok(true);
+                    }
+                    Poll::Ready(tun::ReadEvent::WriteExpired(write)) => {
+                        let p = self.output.take().ok_or(Fault::StaleGeneration)?;
+                        if p.write.native() != Some(&write) {
+                            self.output = Some(p);
+                            return Err(Fault::StaleGeneration.into());
+                        }
+                        self.server.engine_mut().unsent(p.effect, Fault::Deadline)?;
+                        return Ok(true);
+                    }
+                    Poll::Ready(tun::ReadEvent::Lost(loss)) => {
+                        self.tun_lost(loss, observe)?;
+                        return Ok(true);
+                    }
+                    Poll::Ready(tun::ReadEvent::Closed) => return Err(Fault::Closed.into()),
                 }
-                Poll::Ready(tun::ReadEvent::Closed) => return Err(Fault::Closed.into()),
             }
         }
         if let Some(input) = self.input.take() {
@@ -307,7 +396,7 @@ impl<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy>
             // Native processing remains outstanding until actual channel close.
             return Ok(true);
         }
-        let peer = self.links[i].as_ref().and_then(|l| l.peer);
+        let peer = self.links[i].as_ref().and_then(Link::peer);
         let Some(peer) = peer else {
             self.links[i].as_mut().ok_or(Fault::StaleGeneration)?.input = Some(input);
             return Ok(false);
@@ -328,7 +417,7 @@ impl<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy>
             if self.links[i]
                 .as_ref()
                 .ok_or(Fault::StaleGeneration)?
-                .remote_closed
+                .remote_closed()
             {
                 // Its actual TUN writes have settled. Drop the old outer receipt
                 // locally; an ended channel cannot receive processing credit.

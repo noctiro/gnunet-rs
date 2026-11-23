@@ -6,7 +6,7 @@
 mod account;
 mod client;
 mod ready_status;
-pub use account::configured_user;
+pub use account::{configured_user, configured_user_with};
 pub use client::{ClientError, ClientStartup};
 pub use ready_status::ReadyStatus;
 #[cfg(any(unix, windows))]

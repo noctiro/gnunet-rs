@@ -15,6 +15,9 @@ sys.dont_write_bytecode=True
 from hpke_corpus import base, failures, summary
 PIN='346358e26d4dcc2dc4f51bef5d52dca29c7d8165'
 BASE=Path(__file__).resolve().parents[1]
+TOOLS=BASE.parents[1]/"tools"
+sys.path.insert(0,str(TOOLS))
+from rust_toolchain import rust_channel
 PACKAGE=BASE
 TEST='hpke::tests::normal_c_public_contexts_and_rust_ciphertexts_accepted_by_c'
 
@@ -129,7 +132,7 @@ def run(args,out):
     dump(out/'inventory-review.json',inventory_result)
     def discover_paths():
         cpaths=[source/line for line in subprocess.check_output(['git','ls-files'],cwd=source,text=True).splitlines() if (source/line).is_file()]
-        paths=files(PACKAGE)+files(BASE/'reference')+files(BASE/'tools')+cpaths+list(linked)+[declarations_path,helper,ref,build/'gnunet_private_config.h',build/'src/include/gnunet_config.h',build/'compile_commands.json',repo/'Cargo.toml',repo/'Cargo.lock',repo/'rust-toolchain.toml']
+        paths=files(PACKAGE)+files(BASE/'reference')+files(BASE/'tools')+cpaths+list(linked)+[TOOLS/'rust_toolchain.py',repo/'rust-toolchain.toml',declarations_path,helper,ref,build/'gnunet_private_config.h',build/'src/include/gnunet_config.h',build/'compile_commands.json',repo/'Cargo.toml',repo/'Cargo.lock',repo/'rust-toolchain.toml']
         paths += [Path(item['path']) for item in receipt['libraries']]
         for name in ('gnunet-types','gnunet-wire','gnunet-crypto'):paths+=files(repo/'crates'/name)
         paths += [BASE/name for name in ('hpke-inventory.json','HPKE.md','HPKE_API.md','README.md') if (BASE/name).is_file()]
@@ -206,7 +209,7 @@ def run(args,out):
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     for name in ('repository','source','reference','deps-prefix','output'):parser.add_argument('--'+name,type=Path,required=True)
-    parser.add_argument('--toolchain',default='1.99.1');args=parser.parse_args();out=args.output.resolve();receipt=json.loads(args.reference.read_text())
+    parser.add_argument('--toolchain');args=parser.parse_args();args.toolchain=rust_channel(args.repository,args.toolchain);out=args.output.resolve();receipt=json.loads(args.reference.read_text())
     for root in (args.repository,args.source,args.deps_prefix,PACKAGE,BASE/'reference',BASE/'tools',Path(receipt['build']),Path(receipt['prefix'])):
         root=root.resolve()
         if out==root or root in out.parents or out in root.parents:raise ValueError('output overlaps input '+str(root))

@@ -6,6 +6,8 @@ use gnunet_pils_host::client as pils;
 use gnunet_service_runtime::{
     accepted::{AcceptState, SocketEvent},
     clock::{ClockSubscription, Deadline, RuntimeClock},
+    connection::Connection,
+    credentials::UnixAccess,
     service::{Listener, PeerAddress, ServiceOptions},
 };
 use gnunet_transport::{
@@ -25,7 +27,12 @@ use std::{
     pin::Pin,
     sync::Arc,
     task::{Context, Poll},
+    time::Duration,
 };
+use tokio::time::{Instant, Sleep, sleep_until};
+
+// TRANSPORT's PILS_FEED_ADDRESSES_DELAY in the pinned reference implementation.
+const ADDRESS_FEED_DELAY: Duration = Duration::from_secs(3);
 
 /// Actual original runtime failure; no accepted IPC input is replayed on error.
 #[derive(Debug)]
@@ -86,13 +93,21 @@ pub struct ServicePorts {
     /// Original fenced native public-peerstore backend.
     pub journal: Journal,
 }
+/// Access to one configured endpoint, with independent TCP and Unix policies.
+#[derive(Default)]
+pub struct EndpointPolicy {
+    /// Official service options, including the TCP address ACL.
+    pub options: ServiceOptions,
+    /// Explicit kernel Unix credential policy for the same endpoint.
+    pub unix: UnixAccess,
+}
 /// Separate service policies on one physical process resource owner.
 #[derive(Default)]
 pub struct Policies {
-    /// Official TRANSPORT TCP access policy.
-    pub transport: ServiceOptions,
-    /// Official public PEERSTORE TCP access policy.
-    pub peerstore: ServiceOptions,
+    /// Official TRANSPORT endpoint policy.
+    pub transport: EndpointPolicy,
+    /// Official public PEERSTORE endpoint policy.
+    pub peerstore: EndpointPolicy,
 }
 /// Bounded runtime resource policy, independent of official wire fields.
 #[derive(Clone, Copy)]
@@ -206,9 +221,9 @@ impl Limits {
     reason = "Original bounded PILS results/loss reports return without a fallible allocation after physical retirement or response consumption"
 )]
 pub enum Progress<'a> {
-    /// New transport actor activated on a verified current local identity.
+    /// Transport activated a verified current local identity.
     Activated([u8; 32]),
-    /// Original physical/identity actor was retired before replacement.
+    /// Original local signing authority was fenced before replacement.
     Retired,
     /// Real IO, clock, protocol or storage progress.
     Activity,
@@ -231,9 +246,9 @@ pub enum Progress<'a> {
 /// Cumulative concrete runtime observations.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Report {
-    /// Verified transport actor activations.
+    /// Verified local signing authorities activated.
     pub activations: u64,
-    /// Retired transport actor epochs.
+    /// Original local signing authorities retired.
     pub retirements: u64,
     /// Actual PILS physical losses.
     pub pils_losses: u64,
@@ -275,9 +290,73 @@ pub struct Report {
 }
 struct Actor<'a> {
     epoch: pc::Epoch<'a>,
-    peer: [u8; 32],
+    authority: Authority,
     server: Server,
+    feed_delay: FeedDelay,
 }
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum Authority {
+    Active([u8; 32]),
+    Withdrawing(OriginalOutput),
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum OriginalOutput {
+    Pending,
+    Settled,
+}
+
+impl Authority {
+    fn peer(self) -> Option<[u8; 32]> {
+        match self {
+            Self::Active(peer) => Some(peer),
+            Self::Withdrawing(_) => None,
+        }
+    }
+}
+
+#[derive(Default)]
+struct FeedDelay(Option<Pin<Box<Sleep>>>);
+
+impl FeedDelay {
+    fn changed(&mut self) -> Result<(), ProtocolError> {
+        let deadline = Instant::now()
+            .checked_add(ADDRESS_FEED_DELAY)
+            .ok_or(ProtocolError::Overflow)?;
+        if let Some(alarm) = &mut self.0 {
+            alarm.as_mut().reset(deadline);
+        } else {
+            self.0 = Some(Box::pin(sleep_until(deadline)));
+        }
+        Ok(())
+    }
+
+    fn ready(&mut self, cx: &mut Context<'_>) -> bool {
+        self.0.as_mut().is_none_or(|alarm| {
+            Instant::now() >= alarm.deadline() || alarm.as_mut().poll(cx).is_ready()
+        })
+    }
+}
+#[cfg(test)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn feed_delay_restarts_from_the_last_effective_change() {
+    let mut delay = FeedDelay::default();
+    let mut cx = Context::from_waker(std::task::Waker::noop());
+    assert!(delay.ready(&mut cx));
+    assert_eq!(delay.changed(), Ok(()));
+    assert!(!delay.ready(&mut cx));
+    tokio::time::advance(Duration::from_secs(2)).await;
+    assert_eq!(delay.changed(), Ok(()));
+    tokio::time::advance(Duration::from_secs(1)).await;
+    assert!(!delay.ready(&mut cx));
+    tokio::time::advance(Duration::from_millis(1999)).await;
+    assert!(!delay.ready(&mut cx));
+    tokio::time::advance(Duration::from_millis(1)).await;
+    assert!(delay.ready(&mut cx));
+    assert!(delay.ready(&mut cx));
+}
+
 struct Random;
 impl Entropy for Random {
     fn fill(&mut self, out: &mut [u8]) -> Result<(), ProtocolError> {
@@ -317,7 +396,7 @@ impl Signer for ServiceSigning<'_> {
 struct PendingPublication<'a> {
     id: gnunet_transport::addresses::PublicationId,
     operation: pc::OperationId<'a>,
-    identity: pc::Identity<'a>,
+    epoch: pc::Epoch<'a>,
 }
 struct PendingSignature<'a> {
     request: ValidationRequest,
@@ -326,11 +405,18 @@ struct PendingSignature<'a> {
     result: Option<(PeerId, [u8; 64])>,
 }
 struct Draining<'a> {
-    identity: Option<pc::Identity<'a>>,
+    feed_epoch: Option<pc::Epoch<'a>>,
     deadline: Deadline,
-    publication_required: bool,
     completed: bool,
 }
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum AddressPublication {
+    Held,
+    Available,
+    Owned,
+}
+
 /// Caller-driven native runtime. No service/backend/Resolver task is spawned.
 /// Physical PILS epochs and actor identity are retained independently from keys.
 pub struct Runtime<'a> {
@@ -346,8 +432,8 @@ pub struct Runtime<'a> {
     own_bounds: gnunet_transport::own::PublicationBounds,
     deferred: Option<peerstore::JournalTransaction>,
     limits: Limits,
-    tr_options: ServiceOptions,
-    ps_options: ServiceOptions,
+    tr_policy: EndpointPolicy,
+    ps_policy: EndpointPolicy,
     accept_state: AcceptState,
     tr_cursor: usize,
     ps_cursor: usize,
@@ -367,9 +453,8 @@ pub struct Runtime<'a> {
     publication: Option<PendingPublication<'a>>,
     publication_scratch: Vec<u8>,
     publication_limits: gnunet_pils::HelloLimits,
-    publication_owned: bool,
+    address_publication: AddressPublication,
     reset_publication: bool,
-    retire_pils_for_publication: bool,
 }
 impl<'a> Runtime<'a> {
     /// Construct the explicit verified-local-key mode around existing native ports.
@@ -421,8 +506,8 @@ impl<'a> Runtime<'a> {
             mut journal,
         } = ports;
         let Policies {
-            transport: tr_options,
-            peerstore: ps_options,
+            transport: tr_policy,
+            peerstore: ps_policy,
         } = policies;
         if !Arc::ptr_eq(&source.clock(), &clock) {
             return Err(ProtocolError::InvalidInput.into());
@@ -469,8 +554,8 @@ impl<'a> Runtime<'a> {
             own_bounds,
             deferred: None,
             limits,
-            tr_options,
-            ps_options,
+            tr_policy,
+            ps_policy,
             accept_state: Default::default(),
             tr_cursor: 0,
             ps_cursor: 0,
@@ -490,9 +575,8 @@ impl<'a> Runtime<'a> {
             publication: None,
             publication_scratch,
             publication_limits,
-            publication_owned: false,
+            address_publication: AddressPublication::Available,
             reset_publication: false,
-            retire_pils_for_publication: false,
         })
     }
     /// Snapshot actual observations without advancing any port.
@@ -548,18 +632,30 @@ impl<'a> Runtime<'a> {
     /// Current actually verified transport identity, absent while unready/offline.
     #[must_use]
     pub fn identity(&self) -> Option<[u8; 32]> {
-        self.actor.as_ref().map(|a| a.peer)
+        self.actor.as_ref().and_then(|a| a.authority.peer())
     }
     /// Exact latest verified PILS observation. This does not grant an active
     /// transport lease or authenticate the reference profile's address claims.
     pub fn announcement(&self) -> Option<&[u8]> {
         self.pils.announcement()
     }
+
+    pub(crate) fn hold_address_publication(&mut self) {
+        self.address_publication = AddressPublication::Held;
+    }
+
+    pub(crate) fn start_address_publication(&mut self) {
+        if self.address_publication == AddressPublication::Held {
+            self.address_publication = AddressPublication::Available;
+        }
+    }
+
     /// Stop service admission and drop original service clients before draining
     /// a fresh empty publication. Original partial PILS frames retain their FIFO
     /// cursors. The timeout uses the canonical clock; cancellation of a waiting
-    /// drive future preserves this owner. A physical/key epoch change or refused
-    /// clock fails the drain and never republishes using a later identity.
+    /// drive future preserves this owner. Losing the original PILS connection
+    /// fails an owed FEED drain. Same-stream peer announcements are observations
+    /// while the original publisher withdraws its managed records.
     ///
     /// Poll `drive` until `Progress::Drained`, then call `close`. The resulting
     /// local full write is not a PILS application ACK. `close` remains immediate
@@ -580,21 +676,23 @@ impl<'a> Runtime<'a> {
         if end == u64::MAX {
             return Err(ProtocolError::InvalidInput.into());
         }
-        let identity = self.pils.identity();
-        if self.actor.as_ref().is_some_and(|actor| {
-            identity.is_none_or(|i| i.epoch() != actor.epoch || *i.peer().as_bytes() != actor.peer)
-        }) || (self.publication_owned && self.actor.is_none())
-        {
-            return Err(ProtocolError::Stale.into());
-        }
+        let feed_epoch = if self.address_publication == AddressPublication::Owned {
+            let actor = self.actor.as_ref().ok_or(ProtocolError::NotReady)?;
+            let current = self.pils.identity().ok_or(ProtocolError::Stale)?;
+            if actor.epoch != current.epoch() {
+                return Err(ProtocolError::Stale.into());
+            }
+            Some(actor.epoch)
+        } else {
+            None
+        };
         let deadline = Deadline::at(
             self.clock.clone(),
             gnunet_types::AbsoluteTime::from_micros(end),
         )?;
         self.draining = Some(Draining {
-            identity,
+            feed_epoch,
             deadline,
-            publication_required: self.publication_owned,
             completed: false,
         });
         let stopped = (|| {
@@ -603,7 +701,7 @@ impl<'a> Runtime<'a> {
             }
             if let Some(actor) = &mut self.actor {
                 actor.server.shutdown()?;
-                if self.publication_owned {
+                if feed_epoch.is_some() {
                     // A new current-resource effect; an older partial original
                     // stays owned and completes before this FIFO successor.
                     actor.server.refresh_address_publication()?;
@@ -624,9 +722,20 @@ impl<'a> Runtime<'a> {
             draining.completed = true;
             self.report.graceful_drains = self.report.graceful_drains.saturating_add(1);
         }
-        let local_empty_written = draining.publication_required;
+        let local_empty_written = draining.feed_epoch.is_some();
+        if let Some(original) = self.pending_pils_notice.take() {
+            return self.ready(Progress::Pils(original));
+        }
+        if let Some(original) = self.take_own_notice() {
+            return self.ready(Progress::OwnPublicationNotice(original));
+        }
         self.ready(Progress::Drained {
             local_empty_written,
+        })
+    }
+    pub(crate) fn drain_completed(&self) -> bool {
+        self.draining.as_ref().is_some_and(|drain| {
+            drain.completed || (drain.feed_epoch.is_none() && self.own.is_none())
         })
     }
     fn retire(&mut self) -> Result<bool, Error> {
@@ -635,13 +744,15 @@ impl<'a> Runtime<'a> {
         }
         if let Some(mut old) = self.actor.take() {
             let clients = old.server.engine().snapshot().clients;
-            self.report.retirements = self.report.retirements.saturating_add(1);
+            if old.authority.peer().is_some() {
+                self.report.retirements = self.report.retirements.saturating_add(1);
+            }
             let retired = old.server.shutdown();
             if clients > 0 {
                 self.accept_state.client_closed();
             }
             let cancelled = self.cancel_signatures();
-            if self.publication_owned {
+            if self.address_publication == AddressPublication::Owned {
                 self.reset_publication = true;
             }
             let publication = self.retire_publication();
@@ -654,10 +765,25 @@ impl<'a> Runtime<'a> {
     }
     fn reconcile(&mut self, now: u64) -> Result<Option<Progress<'a>>, Error> {
         let current = self.pils.identity();
-        if self.actor.as_ref().is_some_and(|a| {
-            current.is_none_or(|i| i.epoch() != a.epoch || *i.peer().as_bytes() != a.peer)
-        }) {
+        if self
+            .actor
+            .as_ref()
+            .is_some_and(|a| current.is_none_or(|i| i.epoch() != a.epoch))
+        {
             self.retire()?;
+            return Ok(Some(Progress::Retired));
+        }
+        if let (Some(actor), Some(identity)) = (&mut self.actor, current)
+            && let Authority::Active(peer) = actor.authority
+            && *identity.peer().as_bytes() != peer
+        {
+            actor.authority = Authority::Withdrawing(OriginalOutput::Pending);
+            self.deadline = None;
+            if let Some(own) = &mut self.own {
+                own.begin_retirement();
+            }
+            self.cancel_signatures()?;
+            self.report.retirements = self.report.retirements.saturating_add(1);
             return Ok(Some(Progress::Retired));
         }
         if let Some(capability) = &self.capability
@@ -673,36 +799,49 @@ impl<'a> Runtime<'a> {
                     self.report.local_key_mismatches.saturating_add(1);
             }
         }
-        if self.actor.is_none()
+        if self
+            .actor
+            .as_ref()
+            .is_none_or(|actor| actor.authority == Authority::Withdrawing(OriginalOutput::Settled))
             && self.own.is_none()
+            && self.publication.is_none()
             && (self.capability.is_none()
                 || self.pils.local_key_status() == pc::LocalKeyStatus::Matched)
             && let Some(identity) = self.pils.identity()
         {
             let peer = *identity.peer().as_bytes();
-            let mut engine = Engine::new(PeerId(peer), self.limits.transport)?;
-            if self.reset_publication {
-                engine.refresh_address_publication()?;
-                self.reset_publication = false;
-            }
-            let server = Server::new(
-                engine,
-                self.limits.transport_clients,
-                self.limits.transport_pending_bytes,
-            )?;
-            self.own = Some(Publisher::new(
+            let publisher = Publisher::new(
                 identity,
                 self.limits
                     .transport
                     .control_messages
                     .min(self.limits.transport.control_bytes / 6),
                 self.own_bounds,
-            )?);
-            self.actor = Some(Actor {
-                epoch: identity.epoch(),
-                peer,
-                server,
-            });
+            )?;
+            if let Some(actor) = &mut self.actor {
+                actor.server.replace_local_peer(PeerId(peer))?;
+                actor.authority = Authority::Active(peer);
+                self.reconcile_addresses()?;
+            } else {
+                let mut engine = Engine::new(PeerId(peer), self.limits.transport)?;
+                if self.reset_publication {
+                    engine.refresh_address_publication()?;
+                    self.reset_publication = false;
+                }
+                let server = Server::new(
+                    engine,
+                    self.limits.transport_clients,
+                    self.limits.transport_pending_bytes,
+                )?;
+                self.actor = Some(Actor {
+                    epoch: identity.epoch(),
+                    authority: Authority::Active(peer),
+                    server,
+                    feed_delay: FeedDelay::default(),
+                });
+            }
+            self.own = Some(publisher);
+            self.deadline = None;
             self.report.activations = self.report.activations.saturating_add(1);
             return Ok(Some(Progress::Activated(peer)));
         }
@@ -768,10 +907,13 @@ impl<'a> Runtime<'a> {
         let Some(actor) = &mut self.actor else {
             return Ok(false);
         };
+        let Authority::Active(peer) = actor.authority else {
+            return Ok(false);
+        };
         if let Some(index) = self.signatures.iter().position(|p| {
             !actor.server.validation_live(p.request.id())
                 || p.identity.epoch() != actor.epoch
-                || *p.identity.peer().as_bytes() != actor.peer
+                || *p.identity.peer().as_bytes() != peer
         }) {
             let original = self.signatures.remove(index);
             if original.result.is_none() {
@@ -852,13 +994,6 @@ impl<'a> Runtime<'a> {
         let Some(original) = self.publication.take() else {
             return Ok(());
         };
-        // FEED has no expected-key field. An unfinished original body must not
-        // advance after a different peer was observed on this same physical MQ.
-        if self.pils.identity().is_some_and(|i| {
-            i.epoch() == original.identity.epoch() && i.peer() != original.identity.peer()
-        }) {
-            self.retire_pils_for_publication = true;
-        }
         match self.pils.cancel(original.operation) {
             Ok(()) => {}
             Err(pils::Error::Protocol(ProtocolError::Stale)) => {}
@@ -889,9 +1024,7 @@ impl<'a> Runtime<'a> {
             return Err(ProtocolError::Closed.into());
         }
         if let Some(actor) = &mut self.actor {
-            if actor.epoch != original.identity.epoch()
-                || actor.peer != *original.identity.peer().as_bytes()
-            {
+            if actor.epoch != original.epoch {
                 return Err(ProtocolError::Stale.into());
             }
             actor.server.address_publication_written(&original.id)?;
@@ -901,16 +1034,22 @@ impl<'a> Runtime<'a> {
         Ok(())
     }
     fn reconcile_publication_observation(&mut self) -> Result<(), Error> {
-        if !self.publication_owned
-            || self.publication.is_some()
-            || !matches!(
-                &self.pending_pils_notice,
-                Some(pils::Progress::Inbound(pc::Inbound::Identity { .. }))
-            )
-        {
+        if matches!(
+            &self.pending_pils_notice,
+            Some(pils::Progress::Inbound(pc::Inbound::Identity { .. }))
+        ) {
+            self.reconcile_addresses()?;
+        }
+        Ok(())
+    }
+    fn reconcile_addresses(&mut self) -> Result<(), Error> {
+        if self.address_publication != AddressPublication::Owned || self.publication.is_some() {
             return Ok(());
         }
         let Some(actor) = &mut self.actor else {
+            return Ok(());
+        };
+        let Authority::Active(peer) = actor.authority else {
             return Ok(());
         };
         if actor.server.address_publication()?.is_some() {
@@ -923,7 +1062,7 @@ impl<'a> Runtime<'a> {
             &mut self.publication_scratch,
             self.publication_limits,
         )?;
-        if *hello.peer().as_bytes() != actor.peer {
+        if *hello.peer().as_bytes() != peer {
             return Err(ProtocolError::Authentication.into());
         }
         // FEED has no application ACK or expected-key field. A late prior
@@ -936,8 +1075,8 @@ impl<'a> Runtime<'a> {
         }
         Ok(())
     }
-    fn drive_publication(&mut self) -> Result<bool, Error> {
-        if self.publication.is_some() {
+    fn drive_publication(&mut self, cx: &mut Context<'_>) -> Result<bool, Error> {
+        if self.address_publication == AddressPublication::Held || self.publication.is_some() {
             return Ok(false);
         }
         let Some(actor) = &mut self.actor else {
@@ -946,8 +1085,18 @@ impl<'a> Runtime<'a> {
         let Some(offered) = actor.server.address_publication()? else {
             return Ok(false);
         };
+        if self.draining.is_none() && !actor.feed_delay.ready(cx) {
+            return Ok(false);
+        }
         let identity = self.pils.identity().ok_or(ProtocolError::NotReady)?;
-        if identity.epoch() != actor.epoch || *identity.peer().as_bytes() != actor.peer {
+        let admitted = match &self.draining {
+            Some(drain) => drain.feed_epoch == Some(identity.epoch()),
+            None => match actor.authority {
+                Authority::Active(peer) => *identity.peer().as_bytes() == peer,
+                Authority::Withdrawing(_) => return Ok(false),
+            },
+        };
+        if identity.epoch() != actor.epoch || !admitted {
             return Err(ProtocolError::Authentication.into());
         }
         let id = offered.id().clone();
@@ -970,9 +1119,9 @@ impl<'a> Runtime<'a> {
         self.publication = Some(PendingPublication {
             id,
             operation,
-            identity,
+            epoch: identity.epoch(),
         });
-        self.publication_owned = true;
+        self.address_publication = AddressPublication::Owned;
         self.report.address_publication_requests =
             self.report.address_publication_requests.saturating_add(1);
         Ok(true)
@@ -1042,14 +1191,23 @@ impl<'a> Runtime<'a> {
         ps: &[Listener<'_>],
         observe: &mut impl FnMut(SocketEvent),
     ) -> Result<Progress<'a>, Error> {
-        poll_fn(|cx| match self.poll_step(cx, tr, ps, observe) {
+        poll_fn(|cx| self.poll_drive(cx, tr, ps, observe)).await
+    }
+
+    pub(crate) fn poll_drive(
+        &mut self,
+        cx: &mut Context<'_>,
+        tr: &[Listener<'_>],
+        ps: &[Listener<'_>],
+        observe: &mut impl FnMut(SocketEvent),
+    ) -> Poll<Result<Progress<'a>, Error>> {
+        match self.poll_step(cx, tr, ps, observe) {
             Poll::Ready(Err(error)) => {
                 let _closed = self.close();
                 Poll::Ready(Err(error))
             }
             other => other,
-        })
-        .await
+        }
     }
     fn poll_step(
         &mut self,
@@ -1067,7 +1225,7 @@ impl<'a> Runtime<'a> {
             return Poll::Pending;
         }
         if let Some(draining) = &mut self.draining {
-            if draining.completed || (!draining.publication_required && self.own.is_none()) {
+            if draining.completed || (draining.feed_epoch.is_none() && self.own.is_none()) {
                 return self.drained();
             }
             match Pin::new(&mut draining.deadline).poll(cx) {
@@ -1088,13 +1246,6 @@ impl<'a> Runtime<'a> {
         }
         if let Some(original) = self.take_own_notice() {
             return self.ready(Progress::OwnPublicationNotice(original));
-        }
-        if self.retire_pils_for_publication {
-            // Original notice is handed out first. The physical owner is then
-            // retired before any driver poll can advance its old partial FEED.
-            let original = self.pils.reconnect()?;
-            self.retire_pils_for_publication = false;
-            return self.ready(Progress::Pils(original));
         }
         if sample.revision != self.revision {
             self.revision = sample.revision;
@@ -1142,15 +1293,12 @@ impl<'a> Runtime<'a> {
             Poll::Pending => {}
         }
         if let Some(draining) = &self.draining {
-            let same = match (draining.identity, self.pils.identity()) {
-                (Some(original), Some(current)) => {
-                    original.epoch() == current.epoch() && original.peer() == current.peer()
-                }
-                (None, None) => true,
-                _ => false,
-            };
-            if !same {
-                self.retire()?;
+            if let Some(epoch) = draining.feed_epoch
+                && self
+                    .pils
+                    .identity()
+                    .is_none_or(|current| current.epoch() != epoch)
+            {
                 return Poll::Ready(Err(ProtocolError::Stale.into()));
             }
         } else if let Some(progress) = self.reconcile(sample.now.as_micros())? {
@@ -1169,7 +1317,8 @@ impl<'a> Runtime<'a> {
                 .draining
                 .as_ref()
                 .ok_or(ProtocolError::Stale)?
-                .publication_required;
+                .feed_epoch
+                .is_some();
             let feed_done = !required
                 || (self.publication.is_none()
                     && self
@@ -1180,15 +1329,12 @@ impl<'a> Runtime<'a> {
                         .address_publication()?
                         .is_none());
             if self.own.is_none() && feed_done {
-                if let Some(original) = self.pending_pils_notice.take() {
-                    return self.ready(Progress::Pils(original));
-                }
-                if let Some(original) = self.take_own_notice() {
-                    return self.ready(Progress::OwnPublicationNotice(original));
-                }
                 return self.drained();
             }
-            if (required && self.drive_publication()?) || activity || own_progress {
+            if (required && self.own.is_none() && self.drive_publication(cx)?)
+                || activity
+                || own_progress
+            {
                 return self.ready(Progress::Activity);
             }
             if self.deadline.is_none()
@@ -1213,7 +1359,8 @@ impl<'a> Runtime<'a> {
         }
         self.reconcile_publication_observation()?;
         let storage_blocked = self.own_storage_pending();
-        let signed = if storage_blocked {
+        let active = self.identity().is_some();
+        let signed = if storage_blocked || !active {
             None
         } else {
             Some(self.signed_time(sample.now.as_micros())?)
@@ -1223,36 +1370,66 @@ impl<'a> Runtime<'a> {
             self.actor_cursor = (actor + 1) % 9;
             match actor {
                 0 => {
-                    if let (Some(host), Some(identity), Some(signed)) =
-                        (&mut self.actor, self.pils.identity(), signed)
-                    {
+                    if let Some(host) = &mut self.actor {
                         let before = host.server.engine().snapshot().clients;
-                        let step = if self.capability.is_none() {
-                            host.server.poll_step(
-                                cx,
-                                None,
-                                signed,
-                                &mut ServiceSigning(identity),
-                                &mut Random,
-                                &mut self.journal,
-                            )
-                        } else if let Some(key) = self.pils.local_key() {
-                            let mut signer = Signing {
-                                identity,
-                                key,
-                                count: &mut self.report.validation_signatures,
-                            };
-                            host.server.poll_step(
-                                cx,
-                                None,
-                                signed,
-                                &mut signer,
-                                &mut Random,
-                                &mut self.journal,
-                            )
+                        let original_revision = host.server.engine().address_set_revision();
+                        let step = if let Authority::Withdrawing(original) = host.authority {
+                            match original {
+                                OriginalOutput::Pending if !storage_blocked => host
+                                    .server
+                                    .poll_identity_outputs(cx, &mut self.journal)
+                                    .map(|result| {
+                                        result.map(|()| {
+                                            host.authority =
+                                                Authority::Withdrawing(OriginalOutput::Settled);
+                                            gnunet_transport_host::Step::Progress
+                                        })
+                                    }),
+                                _ => match host.server.poll_native_guard(cx) {
+                                    Ok(Some(_)) => {
+                                        Poll::Ready(Ok(gnunet_transport_host::Step::Progress))
+                                    }
+                                    Ok(None) => Poll::Pending,
+                                    Err(error) => Poll::Ready(Err(error)),
+                                },
+                            }
+                        } else if let (Some(identity), Some(signed)) =
+                            (self.pils.identity(), signed)
+                        {
+                            if self.capability.is_none() {
+                                host.server.poll_step(
+                                    cx,
+                                    None,
+                                    signed,
+                                    &mut ServiceSigning(identity),
+                                    &mut Random,
+                                    &mut self.journal,
+                                )
+                            } else if let Some(key) = self.pils.local_key() {
+                                let mut signer = Signing {
+                                    identity,
+                                    key,
+                                    count: &mut self.report.validation_signatures,
+                                };
+                                host.server.poll_step(
+                                    cx,
+                                    None,
+                                    signed,
+                                    &mut signer,
+                                    &mut Random,
+                                    &mut self.journal,
+                                )
+                            } else {
+                                return Poll::Ready(Err(ProtocolError::NotReady.into()));
+                            }
                         } else {
-                            return Poll::Ready(Err(ProtocolError::NotReady.into()));
+                            Poll::Pending
                         };
+                        if !matches!(step, Poll::Ready(Err(_)))
+                            && host.server.engine().address_set_revision() != original_revision
+                        {
+                            host.feed_delay.changed()?;
+                        }
                         match step {
                             Poll::Ready(Ok(step)) => {
                                 if host.server.engine().snapshot().clients < before {
@@ -1289,43 +1466,50 @@ impl<'a> Runtime<'a> {
                 }
                 2 => {
                     if self.actor.as_ref().is_some_and(|a| {
-                        a.server.engine().snapshot().clients < self.limits.transport_clients
+                        active
+                            && a.server.engine().snapshot().clients < self.limits.transport_clients
                     }) && self.accept_state.ready()
-                        && let Some(connection) = accept(
+                        && let Poll::Ready(connection) = accept(
                             cx,
                             tr,
                             &mut self.tr_cursor,
-                            &self.tr_options,
+                            &self.tr_policy,
                             &mut self.accept_state,
                             observe,
                         )
                     {
-                        self.actor
-                            .as_mut()
-                            .ok_or(ProtocolError::NotReady)?
-                            .server
-                            .admit(connection)?;
-                        self.report.transport_connections =
-                            self.report.transport_connections.saturating_add(1);
-                        return self.ready(Progress::Activity);
+                        if let Some(connection) = connection {
+                            self.actor
+                                .as_mut()
+                                .ok_or(ProtocolError::NotReady)?
+                                .server
+                                .admit(connection)?;
+                            self.report.transport_connections =
+                                self.report.transport_connections.saturating_add(1);
+                            return self.ready(Progress::Activity);
+                        }
+                        activity = true;
                     }
                 }
                 3 => {
                     if self.peerstore.clients() < self.limits.peerstore_clients
                         && self.accept_state.ready()
-                        && let Some(connection) = accept(
+                        && let Poll::Ready(connection) = accept(
                             cx,
                             ps,
                             &mut self.ps_cursor,
-                            &self.ps_options,
+                            &self.ps_policy,
                             &mut self.accept_state,
                             observe,
                         )
                     {
-                        self.peerstore.admit(connection)?;
-                        self.report.peerstore_connections =
-                            self.report.peerstore_connections.saturating_add(1);
-                        return self.ready(Progress::Activity);
+                        if let Some(connection) = connection {
+                            self.peerstore.admit(connection)?;
+                            self.report.peerstore_connections =
+                                self.report.peerstore_connections.saturating_add(1);
+                            return self.ready(Progress::Activity);
+                        }
+                        activity = true;
                     }
                 }
                 5 => {
@@ -1349,7 +1533,7 @@ impl<'a> Runtime<'a> {
                     }
                 }
                 7 => {
-                    if self.drive_publication()? {
+                    if self.drive_publication(cx)? {
                         return self.ready(Progress::Activity);
                     }
                 }
@@ -1374,16 +1558,25 @@ impl<'a> Runtime<'a> {
             }
         }
         if self.deadline.is_none() {
-            let own = self.own.as_ref().and_then(Publisher::next_deadline);
-            let when = if storage_blocked {
-                own.ok_or(ProtocolError::OutcomeUnknown)?
-            } else {
-                own.map_or(self.next_tick, |own| own.min(self.next_tick))
-            };
-            self.deadline = Some(Deadline::at(
-                self.clock.clone(),
-                gnunet_types::AbsoluteTime::from_micros(when),
-            )?);
+            let mut when = self.own.as_ref().and_then(Publisher::next_deadline);
+            if storage_blocked && when.is_none() {
+                return Poll::Ready(Err(ProtocolError::OutcomeUnknown.into()));
+            }
+            if active && !storage_blocked {
+                when = Some(when.map_or(self.next_tick, |bound| bound.min(self.next_tick)));
+            }
+            if self.capability.is_some()
+                && self.pils.identity().is_some()
+                && self.pils.local_key_status() != pc::LocalKeyStatus::Matched
+            {
+                when = Some(when.map_or(self.next_key_read, |bound| bound.min(self.next_key_read)));
+            }
+            if let Some(when) = when {
+                self.deadline = Some(Deadline::at(
+                    self.clock.clone(),
+                    gnunet_types::AbsoluteTime::from_micros(when),
+                )?);
+            }
         }
         if let Some(deadline) = &mut self.deadline {
             match Pin::new(deadline).poll(cx) {
@@ -1413,7 +1606,6 @@ impl<'a> Runtime<'a> {
             };
         }
         self.closed = true;
-        let sampled = self.clock.sample();
         let retired = self.retire();
         self.peerstore.shutdown();
         let cancelled = self.pils.close();
@@ -1428,10 +1620,13 @@ impl<'a> Runtime<'a> {
         self.draining = None;
         self.subscription = None;
         retired?;
-        let now = sampled?.now.as_micros();
         if self.deferred.is_some() {
             return Err(ProtocolError::OutcomeUnknown.into());
         }
+        if self.own.as_ref().is_none_or(Publisher::retired) {
+            return Ok(());
+        }
+        let now = self.clock.sample()?.now.as_micros();
         let bound = self
             .limits
             .transport
@@ -1495,33 +1690,42 @@ fn accept(
     cx: &mut Context<'_>,
     listeners: &[Listener<'_>],
     cursor: &mut usize,
-    options: &ServiceOptions,
+    policy: &EndpointPolicy,
     state: &mut AcceptState,
     observe: &mut impl FnMut(SocketEvent),
-) -> Option<gnunet_service_runtime::connection::Connection> {
+) -> Poll<Option<Connection>> {
+    let mut rejected = false;
     for _ in 0..listeners.len() {
         let i = *cursor % listeners.len();
         *cursor = (*cursor + 1) % listeners.len();
         match listeners[i].poll_canonical_connection(cx) {
             Poll::Ready(Ok(accepted)) => {
-                let allowed = match accepted.peer() {
-                    PeerAddress::Unix => true,
-                    PeerAddress::Tcp(a) => options.access.allows(a.ip()),
-                };
-                let (connection, _, diagnostics) = accepted.into_parts();
+                let (connection, peer, diagnostics) = accepted.into_parts();
                 for diagnostic in diagnostics {
                     observe(SocketEvent::Diagnostic(diagnostic));
                 }
+                let allowed = match peer {
+                    PeerAddress::Unix => policy.unix.admits(&connection, &mut *observe),
+                    PeerAddress::Tcp(address) => policy.options.access.allows(address.ip()),
+                };
                 if allowed {
-                    return Some(connection);
+                    return Poll::Ready(Some(connection));
                 }
+                rejected = true;
             }
             Poll::Ready(Err(e)) => {
                 observe(state.failed(e));
-                return None;
+                break;
             }
             Poll::Pending => {}
         }
     }
-    None
+    // An actual refusal may leave another stream queued on the same listener.
+    // Report that finite work so the driver continues without requiring a new
+    // readiness notification or claiming an application connection.
+    if rejected {
+        Poll::Ready(None)
+    } else {
+        Poll::Pending
+    }
 }

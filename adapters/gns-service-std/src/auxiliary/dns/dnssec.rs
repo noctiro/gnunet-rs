@@ -1,34 +1,24 @@
-//! Original-budget DNSSEC owner for authenticated GNS2DNS DS delegations.
+//! Original-budget DNSSEC owner for authenticated GNS2DNS delegations.
 //! Native exchanges remain in the parent's original Run; AD grants no trust.
-mod crypto;
 mod roots;
 
 use super::{
-    Budget, Decision, DnsReport, Error, Inner, OperationFuture, OwnedQuery, OwnedRecord, Query,
-    QueryFlags, RecursiveDns, Reply, Run, Secure, SecuredRequest, Shared, address, address_data,
-    canonical, cooperate, copy_slice, kind, push_server, suffix, terminal, valid_server, wire_name,
-    zeroes,
+    Budget, Decision, Error, Inner, OperationFuture, OwnedQuery, OwnedRecord, Query, QueryFlags,
+    RecursiveDns, Reply, Run, Secure, SecuredRequest, Shared, address, address_data, canonical,
+    cooperate, copy_slice, kind, push_server, suffix, terminal, valid_server, wire_name, zeroes,
 };
 use crate::{
     Bounds, Operation, Value,
     native::{Error as NativeError, Report},
 };
 use gnunet_dns::{
-    Name,
-    dnssec::{self as core, Rrset, Scratch, TrustedKeys, Validated, denial},
+    Name, Type,
+    dnssec::{self as core, Rrset, Scratch, TrustedKeys, Validated, crypto::Backend, denial},
 };
 use gnunet_gns::{Origin, Record, RecordFlags, RecordType};
 use gnunet_service_runtime::clock::RuntimeClock;
 use gnunet_types::Error as Fault;
-use std::{
-    cell::{Cell, RefCell},
-    future::Future,
-    marker::PhantomData,
-    net::SocketAddr,
-    pin::Pin,
-    rc::Rc,
-    sync::Arc,
-};
+use std::{cell::Cell, future::Future, marker::PhantomData, net::SocketAddr, pin::Pin, sync::Arc};
 
 /// Explicit native validation resources; every operation also keeps the original
 /// parent DNS exchange/depth/packet limits and the original absolute Bounds.
@@ -104,12 +94,8 @@ impl Secure for Validator {
         NativeError<'id>,
     > {
         super::super::guard(bounds)?;
-        let trace = Rc::new(RefCell::new(DnsReport::new(bounds)));
-        let run = Run {
-            shared: self.shared.clone(),
-            bounds,
-            trace: trace.clone(),
-        };
+        let run = Run::new(self.shared.clone(), bounds);
+        let state = run.state.clone();
         let budget = run
             .budget(request.remaining_steps)
             .map_err(NativeError::Dns)?;
@@ -136,7 +122,7 @@ impl Secure for Validator {
                 permit: None,
                 bounds,
                 alarm: None,
-                trace: Some(trace),
+                state: Some(state),
                 closing: false,
                 lifetime: PhantomData,
             }),
@@ -144,8 +130,20 @@ impl Secure for Validator {
     }
 }
 
-struct DsData {
-    records: Vec<Vec<u8>>,
+enum AnchorRecord {
+    Ds(Vec<u8>),
+    Dnskey(Vec<u8>),
+}
+impl AnchorRecord {
+    fn borrow(&self) -> core::Anchor<'_> {
+        match self {
+            Self::Ds(data) => core::Anchor::Ds(data),
+            Self::Dnskey(data) => core::Anchor::Dnskey(data),
+        }
+    }
+}
+struct AnchorData {
+    records: Vec<AnchorRecord>,
     expires: u64,
 }
 struct Route {
@@ -155,12 +153,12 @@ struct Route {
 }
 struct Anchor {
     zone: Vec<u8>,
-    ds: Arc<DsData>,
+    trust: Arc<AnchorData>,
     route: Route,
 }
 struct Keys {
     zone: Vec<u8>,
-    ds: Arc<DsData>,
+    trust: Arc<AnchorData>,
     records: Vec<OwnedRecord>,
 }
 enum Chain {
@@ -172,7 +170,7 @@ struct Fetched {
     server: SocketAddr,
 }
 enum DsResult {
-    Cut(Arc<DsData>),
+    Cut(Arc<AnchorData>),
     NotCut,
     NameAbsent,
     Insecure(u64),
@@ -206,16 +204,13 @@ impl Task {
         let now = self.run.now(self.run.bounds.until())?.as_micros();
         let server = SocketAddr::new(request.server, self.run.shared.limits.port);
         valid_server(server)?;
-        let mut ds = Vec::new();
-        ds.try_reserve_exact(request.security.len())
+        let mut records = Vec::new();
+        records
+            .try_reserve_exact(request.security.len())
             .map_err(Error::allocation)?;
         let mut expires = u64::MAX;
         for record in request.security {
             self.run.native(self.run.bounds.hard())?;
-            if record.record_type.value() != 43 {
-                return Err(Fault::Unsupported.into());
-            }
-            check_ds(&record.data)?;
             let end = if record.flags.contains(RecordFlags::RELATIVE_EXPIRATION) {
                 now.saturating_add(record.expiration_time)
             } else {
@@ -224,10 +219,21 @@ impl Task {
             if end <= now {
                 continue;
             }
+            let anchor = match u16::try_from(record.record_type.value()).map(Type) {
+                Ok(Type::DS) => {
+                    check_ds(&record.data)?;
+                    AnchorRecord::Ds(record.data)
+                }
+                Ok(Type::DNSKEY) => {
+                    let _ = core::Dnskey::parse(&record.data)?;
+                    AnchorRecord::Dnskey(record.data)
+                }
+                _ => return Err(Fault::Unsupported.into()),
+            };
             expires = expires.min(end);
-            ds.push(record.data);
+            records.push(anchor);
         }
-        if ds.is_empty() {
+        if records.is_empty() {
             return Err(Fault::Deadline.into());
         }
         let anchor = Anchor {
@@ -237,15 +243,12 @@ impl Task {
                 recursive: false,
             },
             zone: authority,
-            ds: Arc::new(DsData {
-                records: ds,
-                expires,
-            }),
+            trust: Arc::new(AnchorData { records, expires }),
         };
-        // Even if a later CNAME leaves this namespace, the supplied DS anchor
-        // must really authenticate its DNSKEY RRset before any result is used.
+        // Authenticate the original namespace before allowing a CNAME to
+        // select a different DNS anchor.
         let mut original_keys = Some(
-            self.load_keys(&anchor.zone, anchor.ds.clone(), &anchor.route)
+            self.load_keys(&anchor.zone, anchor.trust.clone(), &anchor.route)
                 .await?,
         );
         let mut seen = Vec::new();
@@ -276,12 +279,12 @@ impl Task {
                 match original_keys.take() {
                     Some(keys) => keys,
                     None => {
-                        self.load_keys(&selected.zone, selected.ds.clone(), &selected.route)
+                        self.load_keys(&selected.zone, selected.trust.clone(), &selected.route)
                             .await?
                     }
                 }
             } else {
-                self.load_keys(&selected.zone, selected.ds.clone(), &selected.route)
+                self.load_keys(&selected.zone, selected.trust.clone(), &selected.route)
                     .await?
             };
             let chain = self.chain_to(chain_name, keys, &selected.route).await?;
@@ -296,7 +299,7 @@ impl Task {
                     (decision, true, cap)
                 }
                 Chain::Insecure { expires } => {
-                    self.run.trace.borrow_mut().dnssec_insecure = true;
+                    self.run.state.trace.borrow_mut().dnssec_insecure = true;
                     let decision =
                         self.run
                             .decision(fetched.reply, &name, wanted, &selected.zone)?;
@@ -308,11 +311,11 @@ impl Task {
             match decision {
                 Decision::Answer(records) => {
                     let result = self.convert(records, fetched.server, alias_cap)?;
-                    self.run.trace.borrow_mut().dnssec_verified = all_secure;
+                    self.run.state.trace.borrow_mut().dnssec_verified = all_secure;
                     return Ok(result);
                 }
                 Decision::Negative => {
-                    self.run.trace.borrow_mut().dnssec_verified = all_secure;
+                    self.run.state.trace.borrow_mut().dnssec_verified = all_secure;
                     return Ok(Vec::new());
                 }
                 Decision::Alias(target, expiration) if code == 0 => {
@@ -330,25 +333,23 @@ impl Task {
         if self.limits.root_ds.is_empty() {
             return Err(Fault::NotReady.into());
         }
-        if self.run.shared.bootstrap.is_empty() {
-            return Err(self.run.shared.unavailable_bootstrap());
-        }
+        let bootstrap = self.run.bootstrap()?;
         let mut records = Vec::new();
         records
             .try_reserve_exact(self.limits.root_ds.len())
             .map_err(Error::allocation)?;
         for raw in self.limits.root_ds {
-            records.push(copy_slice(raw)?);
+            records.push(AnchorRecord::Ds(copy_slice(raw)?));
         }
         Ok(Anchor {
             zone: vec![0],
-            ds: Arc::new(DsData {
+            trust: Arc::new(AnchorData {
                 records,
                 expires: u64::MAX,
             }),
             route: Route {
                 zone: vec![0],
-                servers: copy_slice(&self.run.shared.bootstrap)?,
+                servers: copy_slice(bootstrap)?,
                 recursive: self.run.shared.limits.bootstrap_recursion_desired,
             },
         })
@@ -357,7 +358,7 @@ impl Task {
     async fn load_keys(
         &mut self,
         zone: &[u8],
-        ds: Arc<DsData>,
+        trust: Arc<AnchorData>,
         route: &Route,
     ) -> Result<Keys, Error> {
         let fetched = self.fetch(copy_slice(zone)?, 48, route, 0).await?;
@@ -375,7 +376,7 @@ impl Task {
         }
         let material = Keys {
             zone: copy_slice(zone)?,
-            ds,
+            trust,
             records,
         };
         let run = self.run.clone();
@@ -451,9 +452,9 @@ impl Task {
                         .map_err(Error::allocation)?;
                     for raw in &group.records {
                         check_ds(raw)?;
-                        records.push(copy_slice(raw)?);
+                        records.push(AnchorRecord::Ds(copy_slice(raw)?));
                     }
-                    return Ok(DsResult::Cut(Arc::new(DsData {
+                    return Ok(DsResult::Cut(Arc::new(AnchorData {
                         records,
                         expires: expires(now, validated.ttl()),
                     })));
@@ -915,9 +916,7 @@ impl Task {
         names: Vec<Vec<u8>>,
         depth: usize,
     ) -> Result<Vec<SocketAddr>, Error> {
-        if self.run.shared.bootstrap.is_empty() {
-            return Err(self.run.shared.unavailable_bootstrap());
-        }
+        let bootstrap = self.run.bootstrap()?;
         let mut addresses = Vec::new();
         let mut last = None;
         for ns in names {
@@ -934,7 +933,7 @@ impl Task {
                             kind: family,
                             recursion_desired: self.run.shared.limits.bootstrap_recursion_desired,
                         },
-                        copy_slice(&self.run.shared.bootstrap)?,
+                        copy_slice(bootstrap)?,
                         vec![0],
                         &mut self.budget,
                         depth + 1,
@@ -985,7 +984,7 @@ impl Task {
 struct Guard<'a> {
     run: &'a Run,
     left: &'a Cell<usize>,
-    backend: crypto::Backend,
+    backend: Backend,
 }
 impl Guard<'_> {
     fn before(&self) -> Result<(), Fault> {
@@ -1004,6 +1003,14 @@ impl Guard<'_> {
     }
 }
 impl core::Crypto for Guard<'_> {
+    fn supports_signature(&self, algorithm: u8) -> bool {
+        self.backend.supports_signature(algorithm)
+    }
+
+    fn supports_digest(&self, algorithm: u8) -> bool {
+        self.backend.supports_digest(algorithm)
+    }
+
     fn verify(
         &self,
         algorithm: u8,
@@ -1153,7 +1160,7 @@ fn context<T>(
     ) -> Result<T, Error>,
 ) -> Result<T, Error> {
     let now = run.now(run.bounds.until())?.as_micros();
-    if now >= keys.ds.expires {
+    if now >= keys.trust.expires {
         return Err(Fault::Deadline.into());
     }
     let mut key_groups = groups(keys.records.iter(), now, run.shared.limits.records)?;
@@ -1161,7 +1168,7 @@ fn context<T>(
         .iter()
         .position(|group| group.owner == keys.zone && group.kind == 48)
         .ok_or(Fault::Authentication)?;
-    key_groups[key_index].ttl = key_groups[key_index].ttl.min(ttl(keys.ds.expires, now));
+    key_groups[key_index].ttl = key_groups[key_index].ttl.min(ttl(keys.trust.expires, now));
     let keys_set = &key_groups[key_index];
     let key_signatures = find(&key_groups, &keys.zone, 46).ok_or(Fault::Authentication)?;
     let groups = match reply {
@@ -1176,21 +1183,17 @@ fn context<T>(
     let mut backend = Guard {
         run,
         left: crypto_left,
-        backend: crypto::Backend,
+        backend: Backend,
     };
-    let mut ds = Vec::new();
-    ds.try_reserve_exact(keys.ds.records.len())
+    let mut anchors = Vec::new();
+    anchors
+        .try_reserve_exact(keys.trust.records.len())
         .map_err(Error::allocation)?;
-    for record in &keys.ds.records {
-        ds.push(record.as_slice());
-    }
-    if !ds.iter().any(|record| matches!(record[3], 1 | 2 | 4)) {
-        return Err(Fault::Unsupported.into());
-    }
+    anchors.extend(keys.trust.records.iter().map(AnchorRecord::borrow));
     run.native(run.bounds.hard())?;
-    let trusted = core::trust_dnskeys(
+    let trusted = core::trust_dnskeys_with_anchors(
         Name::from_wire(&keys.zone)?,
-        &ds,
+        &anchors,
         keys_set.set()?,
         key_signatures.set()?,
         serial(now),

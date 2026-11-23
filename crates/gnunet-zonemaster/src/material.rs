@@ -16,53 +16,30 @@ fn origin() -> Result<Origin, Error> {
             .ok_or(Error::Overflow)?,
     ))
 }
-use gnunet_crypto::gns::{EdkeySecret, PkeySecret};
-use gnunet_gnscrypto::{Label, ZoneSecret};
-use gnunet_gnsrecord::{RecordData, RecordFlags as Flags, RecordSet, RecordType, ZoneKey};
-use gnunet_identity::{KeyType, SecretKey, SecretKeyView};
-use gnunet_namestore::{Filter, normalize_records};
+use crate::projection::{self, EMPTY_RECORD, Lane, Source, Values};
+pub use crate::projection::{Input, Limits};
+use gnunet_gnscrypto::ZoneSecret;
+use gnunet_gnsrecord::{RecordData, RecordType, ZoneKey};
+use gnunet_identity::SecretKey;
 use gnunet_types::Error;
 use zeroize::Zeroizing;
-/// Explicit finite per-label preparation/worker ceilings.
-#[derive(Clone, Copy, Debug)]
-pub struct Limits {
-    /// Count bound, capped by existing cryptographic record codec.
-    pub records: usize,
-    /// Canonical label bytes, excluding terminating NUL.
-    pub label_bytes: usize,
-    /// Raw/padded plaintext bytes per public/local block.
-    pub plaintext_bytes: usize,
-}
-impl Default for Limits {
-    fn default() -> Self {
-        Self {
-            records: gnunet_gnscrypto::MAX_RECORDS,
-            label_bytes: 255,
-            plaintext_bytes: gnunet_gnsrecord::MAX_BLOCK_SIZE,
-        }
-    }
-}
-/// Actual original NAMESTORE record set and its returned block expiration.
-/// Every field borrows the exact original zeroizing native reply.
-pub struct Input<'a> {
-    /// Original private authority, never a synthesized key ID.
-    pub zone: SecretKeyView<'a>,
-    /// Original canonical label, without NUL.
-    pub label: &'a [u8],
-    /// Exact count-validated original record serialization.
-    pub records: RecordSet<'a>,
-    /// Actual full-set source expiration, including tombstone floor. Used for
-    /// the complete local output; it never substitutes for the public floor.
-    pub source_expiry: u64,
-}
-/// Actual destinations chosen before retaining worker material. PublicOnly is
-/// the explicit NAMECACHE-disabled mode, not a fabricated complete local set.
+
+/// Actual destinations selected by the allocated publication scheduler.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Destinations {
-    /// Prepare and seal only an existing public projection.
+    /// Prepare only the public projection when NAMECACHE is disabled.
     PublicOnly,
     /// Also prepare the complete authoritative local NAMECACHE view.
     PublicAndLocal,
+}
+
+impl From<Destinations> for projection::Destinations {
+    fn from(destinations: Destinations) -> Self {
+        match destinations {
+            Destinations::PublicOnly => Self::PublicOnly,
+            Destinations::PublicAndLocal => Self::PublicAndLocal,
+        }
+    }
 }
 struct Rdata {
     bytes: Arc<Zeroizing<Vec<u8>>>,
@@ -101,36 +78,15 @@ fn bytes(input: &[u8]) -> Result<Zeroizing<Vec<u8>>, Error> {
     v.extend_from_slice(input);
     Ok(Zeroizing::new(v))
 }
-fn empty() -> RecordData<'static> {
-    RecordData {
-        expiration_time: 0,
-        record_type: RecordType::ANY,
-        flags: Flags::from_bits_preserve(0),
-        data: &[],
-    }
-}
-fn serialize(
-    records: &[RecordData<'_>],
-    now: u64,
-    max: usize,
-) -> Result<Zeroizing<Vec<u8>>, Error> {
-    let mut absolute = reserve(records.len())?;
-    for r in records {
-        let mut value = *r;
-        if value.has_relative_expiration() {
-            value.expiration_time = now.saturating_add(value.expiration_time);
-            value.flags = value.flags.without(Flags::RELATIVE_EXPIRATION);
-        }
-        absolute.push(value)
-    }
-    let n = gnunet_gnsrecord::serialized_len(&absolute)?;
+fn serialize(records: &[RecordData<'_>], max: usize) -> Result<Zeroizing<Vec<u8>>, Error> {
+    let n = gnunet_gnsrecord::serialized_len(records)?;
     if n > max {
         return Err(Error::Capacity);
     }
-    let mut out = reserve(n)?;
+    let mut out = Zeroizing::new(reserve(n)?);
     out.resize(n, 0);
-    gnunet_gnsrecord::serialize(&absolute, &mut out)?;
-    Ok(Zeroizing::new(out))
+    gnunet_gnsrecord::serialize_to_size(records, &mut out)?;
+    Ok(out)
 }
 /// Prepare only the selected destinations at one coherent source time, before
 /// worker queuing. Relative times convert once here, never at late signing.
@@ -144,101 +100,40 @@ pub fn prepare(
     critical: fn(RecordType) -> bool,
     destinations: Destinations,
 ) -> Result<Option<Prepared>, Error> {
-    if limits.records == 0
-        || limits.records > gnunet_gnscrypto::MAX_RECORDS
-        || limits.label_bytes > 255
-        || limits.plaintext_bytes > gnunet_gnsrecord::MAX_BLOCK_SIZE
-    {
-        return Err(Error::InvalidInput);
-    }
-    if input.records.len() > limits.records
-        || input.label.len() > limits.label_bytes
-        || input.label.contains(&0)
-        || input.label.contains(&b'.')
-    {
-        return Err(Error::Capacity);
-    }
-    let label_text = core::str::from_utf8(input.label).map_err(|_| Error::Malformed)?;
+    projection::validate_input(&input, limits, now)?;
     let mut scalars = Zeroizing::new(reserve(4096)?);
     scalars.resize(4096, '\0');
     let mut canonical = Zeroizing::new(reserve(limits.label_bytes)?);
     canonical.resize(limits.label_bytes, 0);
-    let label = Label::normalize(label_text, &mut scalars, &mut canonical)?;
-    if label.as_str().as_bytes() != input.label {
-        return Err(Error::Malformed);
-    }
-    if input.records.is_empty() {
+    projection::canonical_label(input.label, &mut scalars, &mut canonical)?;
+    let count = input.records.len();
+    let mut source = reserve(count)?;
+    source.resize(count, EMPTY_RECORD);
+    let Some(source) = Source::read(&input, now, destinations.into(), &mut source)? else {
         return Ok(None);
-    }
-    if destinations == Destinations::PublicAndLocal && input.source_expiry <= now {
-        return Err(Error::Deadline);
-    }
-    let mut records = reserve(input.records.len())?;
-    let mut min_relative = None;
-    for record in input.records.iter() {
-        let r = record?;
-        r.validate_fixed_size()?;
-        if r.has_relative_expiration() {
-            min_relative =
-                Some(min_relative.map_or(r.expiration_time, |n: u64| n.min(r.expiration_time)));
-        }
-        records.push(r)
-    }
-    let mut indices = reserve(records.len())?;
-    indices.resize(records.len(), 0);
-    let mut public_out = reserve(records.len())?;
-    public_out.resize(records.len(), empty());
-    let public = normalize_records(
-        input.label,
-        &records,
-        now,
-        Filter::OMIT_PRIVATE,
-        &mut public_out,
-        &mut indices,
-        critical,
-    )?;
-    let public_count = public.records().len();
-    if destinations == Destinations::PublicOnly {
-        if public_count == 0 {
-            return Ok(None);
-        }
-        if public.expires() <= now {
-            return Err(Error::Deadline);
-        }
-        // Private lifetimes do not schedule refreshes for an absent local lane.
-        min_relative = public
-            .records()
-            .iter()
-            .filter(|r| r.has_relative_expiration())
-            .map(|r| r.expiration_time)
-            .min();
-    }
-    let public = if public_count > 0 {
-        Some(Rdata {
-            expiration: public.expires(),
-            bytes: Arc::new(serialize(public.records(), now, limits.plaintext_bytes)?),
-        })
-    } else {
-        None
     };
+    let mut indices = reserve(count)?;
+    indices.resize(count, 0);
+    let mut projected = reserve(count)?;
+    projected.resize(count, EMPTY_RECORD);
+    let (public, public_count, mut min_relative) =
+        match source.project(Lane::Public, &mut projected, &mut indices, critical)? {
+            Some(selected) => (
+                Some(Rdata {
+                    expiration: selected.expiration,
+                    bytes: Arc::new(serialize(selected.records, limits.plaintext_bytes)?),
+                }),
+                selected.records.len(),
+                selected.minimum_relative,
+            ),
+            None => (None, 0, None),
+        };
     let (local, private_records) = if destinations == Destinations::PublicAndLocal {
-        let mut local_out = reserve(records.len())?;
-        local_out.resize(records.len(), empty());
-        let local = normalize_records(
-            input.label,
-            &records,
-            now,
-            Filter::NONE,
-            &mut local_out,
-            &mut indices,
-            critical,
-        )?;
-        // Retain private shadows too: they may become applicable before expiry.
-        let private_records = local
-            .records()
-            .iter()
-            .any(|r| r.flags.contains(Flags::PRIVATE));
-        let serialized = serialize(local.records(), now, limits.plaintext_bytes)?;
+        let selected = source
+            .project(Lane::Local, &mut projected, &mut indices, critical)?
+            .ok_or(Error::Conflict)?;
+        min_relative = selected.minimum_relative;
+        let serialized = serialize(selected.records, limits.plaintext_bytes)?;
         let data = if let Some(p) = &public
             && p.bytes.as_ref().as_slice() == serialized.as_slice()
         {
@@ -249,13 +144,16 @@ pub fn prepare(
         (
             Some(Rdata {
                 bytes: data,
-                expiration: input.source_expiry,
+                expiration: selected.expiration,
             }),
-            private_records,
+            selected.private,
         )
     } else {
         (None, false)
     };
+    if public.is_none() && local.is_none() {
+        return Ok(None);
+    }
     Ok(Some(Prepared {
         origin: origin()?,
         key: SecretKey::from_serialized(input.zone.expose_serialized())?,
@@ -458,22 +356,13 @@ impl Prepared {
     /// encrypted block is produced until an explicitly assigned expiration is
     /// returned to the resulting plan. The production host durably reserves it.
     pub fn into_sealing(self) -> Result<SealPlan, Error> {
-        let mut raw = Zeroizing::new([0; 32]);
-        raw.copy_from_slice(&self.key.expose_serialized()[4..]);
-        let secret = match self.key.key_type() {
-            KeyType::Ecdsa => ZoneSecret::Pkey(PkeySecret::from_bytes(*raw)?),
-            KeyType::Eddsa => ZoneSecret::Edkey(EdkeySecret::from_seed(*raw)),
-        };
+        let secret = projection::secret(self.key.view()?)?;
         let zone = secret.public_key();
         let mut scalars = Zeroizing::new(reserve(4096)?);
         scalars.resize(4096, '\0');
         let mut label_bytes = Zeroizing::new(reserve(self.label.len())?);
         label_bytes.resize(self.label.len(), 0);
-        let label = Label::normalize(
-            core::str::from_utf8(&self.label).map_err(|_| Error::Malformed)?,
-            &mut scalars,
-            &mut label_bytes,
-        )?;
+        let label = projection::canonical_label(&self.label, &mut scalars, &mut label_bytes)?;
         let query = gnunet_gnscrypto::query(zone, label)?;
         Ok(SealPlan {
             input: self,
@@ -485,60 +374,13 @@ impl Prepared {
     }
 }
 
-/// Actual nonempty output shape. It is private so no caller can manufacture an
-/// empty assignment or a local product that was never requested.
-#[derive(Clone, Copy)]
-enum Values {
-    Public(u64),
-    Local(u64),
-    Shared(u64),
-    Distinct { public: u64, local: u64 },
-}
-impl Values {
-    const fn public(self) -> Option<u64> {
-        match self {
-            Self::Public(n) | Self::Shared(n) => Some(n),
-            Self::Distinct { public, .. } => Some(public),
-            Self::Local(_) => None,
-        }
-    }
-    const fn local(self) -> Option<u64> {
-        match self {
-            Self::Local(n) | Self::Shared(n) => Some(n),
-            Self::Distinct { local, .. } => Some(local),
-            Self::Public(_) => None,
-        }
-    }
-    fn same_shape(self, other: Self) -> bool {
-        matches!(
-            (self, other),
-            (Self::Public(_), Self::Public(_))
-                | (Self::Local(_), Self::Local(_))
-                | (Self::Shared(_), Self::Shared(_))
-                | (Self::Distinct { .. }, Self::Distinct { .. })
-        )
-    }
-    fn maximum(self) -> u64 {
-        match self {
-            Self::Public(n) | Self::Local(n) | Self::Shared(n) => n,
-            Self::Distinct { public, local } => public.max(local),
-        }
-    }
-}
 impl Prepared {
     fn minimum_values(&self) -> Result<Values, Error> {
-        match (&self.public, &self.local) {
-            (Some(p), Some(l)) if shared_rdata(&self.public, &self.local) => {
-                Ok(Values::Shared(p.expiration.max(l.expiration)))
-            }
-            (Some(p), Some(l)) => Ok(Values::Distinct {
-                public: p.expiration,
-                local: l.expiration,
-            }),
-            (Some(p), None) => Ok(Values::Public(p.expiration)),
-            (None, Some(l)) => Ok(Values::Local(l.expiration)),
-            (None, None) => Err(Error::InvalidInput),
-        }
+        Values::minima(
+            self.public.as_ref().map(|rdata| rdata.expiration),
+            self.local.as_ref().map(|rdata| rdata.expiration),
+            shared_rdata(&self.public, &self.local),
+        )
     }
 }
 /// One original material's official storage-key request for actual selected
@@ -561,20 +403,7 @@ impl ExpirationRequest {
     /// Distinct local output must dominate its paired public cache projection;
     /// PublicOnly has no unused local value and may assign a final public MAX.
     pub fn after(&self, previous: Option<u64>) -> Result<Expirations, Error> {
-        let next = previous
-            .map(|n| n.checked_add(1).ok_or(Error::Overflow))
-            .transpose()?;
-        let floor = |minimum: u64| next.map_or(minimum, |n| minimum.max(n));
-        let values = match self.minimum {
-            Values::Public(n) => Values::Public(floor(n)),
-            Values::Local(n) => Values::Local(floor(n)),
-            Values::Shared(n) => Values::Shared(floor(n)),
-            Values::Distinct { public, local } => {
-                let public = floor(public);
-                let local = local.max(public.checked_add(1).ok_or(Error::Overflow)?);
-                Values::Distinct { public, local }
-            }
-        };
+        let values = self.minimum.after(previous)?;
         Ok(Expirations {
             origin: self.origin,
             values,
@@ -596,11 +425,7 @@ impl Expirations {
     /// Actual nonce values consumed; absent outputs consume nothing.
     #[must_use]
     pub const fn allocations(&self) -> u8 {
-        if matches!(self.values, Values::Distinct { .. }) {
-            2
-        } else {
-            1
-        }
+        self.values.allocations()
     }
 }
 /// One original prepared secret and official query, awaiting explicit assigned
@@ -635,18 +460,7 @@ impl SealPlan {
         let shared = shared_rdata(&self.input.public, &self.input.local);
         if !self.requested
             || assigned.origin != self.input.origin
-            || !assigned.values.same_shape(minimum)
-            || assigned
-                .values
-                .public()
-                .zip(minimum.public())
-                .is_some_and(|(n, floor)| n < floor)
-            || assigned
-                .values
-                .local()
-                .zip(minimum.local())
-                .is_some_and(|(n, floor)| n < floor)
-            || matches!(assigned.values, Values::Distinct { public, local } if local <= public)
+            || !assigned.values.meets(minimum)
         {
             return Err(Error::Stale);
         }
@@ -654,11 +468,7 @@ impl SealPlan {
         scalars.resize(4096, '\0');
         let mut label_bytes = Zeroizing::new(reserve(self.input.label.len())?);
         label_bytes.resize(self.input.label.len(), 0);
-        let label = Label::normalize(
-            core::str::from_utf8(&self.input.label).map_err(|_| Error::Malformed)?,
-            &mut scalars,
-            &mut label_bytes,
-        )?;
+        let label = projection::canonical_label(&self.input.label, &mut scalars, &mut label_bytes)?;
         let capacity = |n: usize| {
             n.checked_add(gnunet_gnscrypto::BLOCK_HEADER_LEN + 16)
                 .ok_or(Error::Overflow)

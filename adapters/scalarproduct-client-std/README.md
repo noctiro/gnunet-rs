@@ -24,11 +24,12 @@ not service processing acknowledgements.
 
 There is one physical epoch. Socket attempts may retry before attachment
 within the same original bounds. After attachment, source loss, EOF, errors or
-explicit close retire that original MQ and never replay a prefix, multipart
-suffix or computation on another connection. Close is clock-free; no CANCEL
-or ACK frame is invented. Dropping a progress future retains the same owner. Actual response-ready storage is consumed before sending additional input. A successful response requires every original input frame to have wholly
-written. An service failure may terminate earlier, preserving partial
-input receipts. EOF is never a result.
+explicit close retire that original MQ without replaying input. Close is
+clock-free. Dropping a progress future retains the same owner. The caller
+receives a complete response before sending more input. Success requires all
+original input frames to have written. A service failure may arrive sooner.
+Retirement receipts retain actual byte counts for late writes and invalid or
+partial response frames.
 
 Response retains the exact raw status, independent signed range and original
 GCRYMPI_FMT_STD product bytes. Only status2 is success; this SDK does not turn
@@ -44,7 +45,6 @@ to it, never renewed by partial progress. The caller may use the clock-free
 native fence during unrelated waits. These finite storage profiles do not
 constitute an exact RSS or performance measurement.
 
-Real C↔Rust role/multipart/cancel/source/result timing
-and platform interoperability remain unaccepted. A Rust computation service,
-peer crypto, SET intersection and full SCALARPRODUCT functionality remain
-separate missing capabilities.
+See the [computation services](../../apps/gnunet-service-scalarproduct/README.md)
+for ECC and Paillier selection and the [implementation status](../../IMPLEMENTATION_STATUS.md)
+for pending interoperability qualification.

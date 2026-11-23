@@ -240,7 +240,11 @@ impl<'a, 'listen, 'stats> Service<'a, 'listen, 'stats> {
                                 self.settings.options.access.allows(address.ip())
                             }
                             PeerAddress::Unix => {
-                                self.settings.unix.allows(accepted.connection())?
+                                self.settings.unix.admits(accepted.connection(), |event| {
+                                    self.reports.diagnostic(format_args!(
+                                        "TRANSPORT accepted socket: {event:?}"
+                                    ));
+                                })
                             }
                         };
                         if allowed {

@@ -20,12 +20,14 @@ use gnunet::{
 };
 use serde_json::{Value, json};
 use std::{
+    cell::Cell,
     error::Error,
     ffi::OsStr,
     fmt,
     io::{self, Write},
     path::Path,
 };
+mod stopping;
 
 fn row(out: &mut impl Write, value: &Value) -> io::Result<()> {
     serde_json::to_writer(&mut *out, value).map_err(io::Error::other)?;
@@ -204,16 +206,22 @@ fn quota(raw: Option<&impl AsRef<OsStr>>, maximum: usize) -> Result<Option<usize
 struct RunFailure {
     task: Option<Box<task::Failure>>,
     outcome: Option<task::Outcome>,
+    setup: Option<io::Error>,
     output: Option<io::Error>,
+    cleanup: Option<io::Error>,
     diagnostic: Option<io::Error>,
+    signal: Option<io::Error>,
 }
 impl fmt::Debug for RunFailure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SearchTaskCliFailure")
             .field("task", &self.task)
             .field("outcome_retained", &self.outcome.is_some())
+            .field("setup", &self.setup)
             .field("output", &self.output)
+            .field("cleanup", &self.cleanup)
             .field("diagnostic", &self.diagnostic)
+            .field("signal", &self.signal)
             .finish()
     }
 }
@@ -231,8 +239,17 @@ impl fmt::Display for RunFailure {
         if let Some(error) = &self.output {
             write!(f, "; result output: {error}")?;
         }
+        if let Some(error) = &self.setup {
+            write!(f, "; run setup: {error}")?;
+        }
+        if let Some(error) = &self.cleanup {
+            write!(f, "; output cleanup: {error}")?;
+        }
         if let Some(error) = &self.diagnostic {
             write!(f, "; diagnostic output: {error}")?;
+        }
+        if let Some(error) = &self.signal {
+            write!(f, "; stop source: {error}")?;
         }
         Ok(())
     }
@@ -250,8 +267,11 @@ impl Error for RunFailure {
         } else if let Some(error) = &self.output {
             Some(error)
         } else {
-            self.diagnostic
+            self.setup
                 .as_ref()
+                .or(self.cleanup.as_ref())
+                .or(self.diagnostic.as_ref())
+                .or(self.signal.as_ref())
                 .map(|error| error as &(dyn Error + 'static))
         }
     }
@@ -354,53 +374,96 @@ pub(super) fn run(
     let source = ipc::EndpointSource::unix(Path::new(args[0].as_ref()).to_path_buf());
     out.interval(interval)?;
     let deadline = target(&source, interval)?;
-    row(
-        out,
-        &json!({"event":"fs_search_task_run_started","task_id":hex(task.task_id()),"status":status(task.status()),
-        "deadline_micros":deadline.as_micros(),"new_visible_results_per_run":limit,
-        "anonymity":task.manifest().options.anonymity,
-        "scope":"explicit search observation run; no whole-network completion or absence conclusion"}),
-    )?;
-    let mut output = None;
-    let result = tokio::runtime::Builder::new_current_thread()
+    let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
-        .build()?
-        .block_on(task.run(source, deadline, |progress, event| {
+        .build()?;
+    let setup = (|| -> io::Result<_> {
+        let _entered = runtime.enter();
+        // Install native stop observation before publishing the started row.
+        let signals = super::stop::StopEvents::new()?;
+        row(
+            out,
+            &json!({"event":"fs_search_task_run_started","task_id":hex(task.task_id()),"status":status(task.status()),
+            "deadline_micros":deadline.as_micros(),"new_visible_results_per_run":limit,
+            "anonymity":task.manifest().options.anonymity,
+            "scope":"explicit search observation run; no whole-network completion or absence conclusion"}),
+        )?;
+        Ok(signals)
+    })();
+    let mut signals = match setup {
+        Ok(signals) => signals,
+        Err(error) => {
+            return Err(Box::new(RunFailure {
+                task: None,
+                outcome: None,
+                setup: Some(error),
+                output: None,
+                cleanup: out.cleanup().err(),
+                diagnostic: None,
+                signal: None,
+            }));
+        }
+    };
+    let mut output = None;
+    let (result, signal) = runtime.block_on(async {
+        let stopped = Cell::new(false);
+        let original = task.run(source, deadline, |progress, event| {
             if output.is_none() {
                 output = observed(out, progress, event).err();
             }
-            if output.is_some() || limit.is_some_and(|limit| progress.new_visible_results >= limit)
+            if stopped.get()
+                || output.is_some()
+                || limit.is_some_and(|limit| progress.new_visible_results >= limit)
             {
                 Control::Pause
             } else {
                 Control::Continue
             }
-        }));
-    out.cleanup()?;
+        });
+        let result = stopping::drive(&stopped, |cx| signals.poll(cx), original).await;
+        (result, signals.take_failure())
+    });
+    let cleanup = out.cleanup().err();
     match result {
         Ok(done) => {
             let diagnostic=row(out,&json!({"event":if done.reason==StopReason::Cancelled{"fs_search_task_cancelled"}else{"fs_search_task_paused"},
                 "task_id":hex(task.task_id()),"reason":reason(done.reason),"status":status(task.status()),"progress":progress(done.progress),
                 "query_failures":done.query_failures.iter().map(|failure|json!({"query_id":failure.query.index(),"cause":failure.cause.to_string()})).collect::<Vec<_>>(),
                 "deadline_observation":done.deadline_observation.as_ref().map(ToString::to_string),
+                "output_cleanup_error":cleanup.as_ref().map(ToString::to_string),
+                "stop_source_error":signal.as_ref().map(ToString::to_string),
                 "scope":"caller observation stopped; no whole-network completion or absence conclusion"})).err();
-            if output.is_some() || diagnostic.is_some() || !done.query_failures.is_empty() {
+            if output.is_some()
+                || cleanup.is_some()
+                || diagnostic.is_some()
+                || signal.is_some()
+                || !done.query_failures.is_empty()
+            {
                 return Err(Box::new(RunFailure {
                     task: None,
                     outcome: Some(done),
+                    setup: None,
                     output,
+                    cleanup,
                     diagnostic,
+                    signal,
                 }));
             }
             Ok(())
         }
         Err(error) => {
-            let diagnostic = row(out, &failure_row(&error)).err();
+            let mut failure = failure_row(&error);
+            failure["output_cleanup_error"] = json!(cleanup.as_ref().map(ToString::to_string));
+            failure["stop_source_error"] = json!(signal.as_ref().map(ToString::to_string));
+            let diagnostic = row(out, &failure).err();
             Err(Box::new(RunFailure {
                 task: Some(error),
                 outcome: None,
+                setup: None,
                 output,
+                cleanup,
                 diagnostic,
+                signal,
             }))
         }
     }

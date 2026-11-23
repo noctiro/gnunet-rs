@@ -5,6 +5,7 @@ use super::{
 };
 use crate::network::ublock::{PublishedUblocks, UblockFailure, UblockOptions, UblockProgress};
 use crate::{Buffers, Control};
+use gnunet_crypto::gns::EdkeySecret;
 use gnunet_datastore_host::Client;
 use gnunet_fs::{Uri, metadata};
 use gnunet_types::Error as ProtocolError;
@@ -118,6 +119,21 @@ impl std::error::Error for Failure {
         Some(&self.cause)
     }
 }
+
+enum Authority<'a> {
+    File(&'a KeyFile),
+    Identity(&'a EdkeySecret),
+}
+
+impl<'a> Authority<'a> {
+    fn secret(&self) -> &'a EdkeySecret {
+        match self {
+            Self::File(key) => key.secret(),
+            Self::Identity(key) => key,
+        }
+    }
+}
+
 impl Buffers {
     /// Publish through the original single-label owner, then record only an
     /// actual accepted update. `None` and `Some(b"")` have the same wire update
@@ -132,7 +148,7 @@ impl Buffers {
     )]
     pub async fn store_managed_namespace<'id>(
         &mut self,
-        mut store: Client<'id, '_, '_>,
+        store: Client<'id, '_, '_>,
         key: &KeyFile,
         graph: &mut Graph,
         identifier: &[u8],
@@ -142,11 +158,79 @@ impl Buffers {
         options: UblockOptions,
         control: impl FnMut(UblockProgress) -> Control,
     ) -> Result<PublishedNamespace, Box<Failure>> {
+        self.store_namespace_graph(
+            store,
+            Authority::File(key),
+            graph,
+            identifier,
+            update,
+            uri,
+            metadata,
+            options,
+            control,
+        )
+        .await
+    }
+
+    /// Publish an Identity-held EdDSA key's update and record the actual ACK in
+    /// its public-key-bound graph. The seed remains in its zeroizing owner.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Keep each signed field and the native transaction explicit"
+    )]
+    pub async fn store_identity_namespace<'id>(
+        &mut self,
+        store: Client<'id, '_, '_>,
+        secret: &EdkeySecret,
+        graph: &mut Graph,
+        identifier: &[u8],
+        update: &[u8],
+        uri: Uri<'_>,
+        metadata: Option<&metadata::Plan<'_>>,
+        options: UblockOptions,
+        control: impl FnMut(UblockProgress) -> Control,
+    ) -> Result<PublishedNamespace, Box<Failure>> {
+        self.store_namespace_graph(
+            store,
+            Authority::Identity(secret),
+            graph,
+            identifier,
+            Some(update),
+            uri,
+            metadata,
+            options,
+            control,
+        )
+        .await
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Keep each signed field and the native transaction explicit"
+    )]
+    async fn store_namespace_graph<'id>(
+        &mut self,
+        mut store: Client<'id, '_, '_>,
+        key: Authority<'_>,
+        graph: &mut Graph,
+        identifier: &[u8],
+        update: Option<&[u8]>,
+        uri: Uri<'_>,
+        metadata: Option<&metadata::Plan<'_>>,
+        options: UblockOptions,
+        control: impl FnMut(UblockProgress) -> Control,
+    ) -> Result<PublishedNamespace, Box<Failure>> {
         let prepared = (|| -> Result<Option<Prepared>, FailureCause> {
-            if graph.namespace() != &key.public_key() {
+            let public = match &key {
+                Authority::File(key) => key.public_key(),
+                Authority::Identity(secret) => secret.public_key(),
+            };
+            if graph.namespace() != &public {
                 return Err(FailureCause::Protocol(ProtocolError::InvalidInput));
             }
-            key.revalidate().map_err(FailureCause::Key)?;
+            if let Authority::File(key) = &key {
+                key.revalidate().map_err(FailureCause::Key)?;
+            }
             let Some(update) = update else {
                 return Ok(None);
             };

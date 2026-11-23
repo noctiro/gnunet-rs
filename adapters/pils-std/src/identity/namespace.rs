@@ -1,10 +1,12 @@
 //! Native private directory and persistent cooperating-writer fence.
 use gnunet_native::{
     DirectorySync,
-    filesystem::{Directory, FileIdentity, private_single_file_identity},
+    filesystem::{
+        Directory, EntryInfo, FileIdentity, FileInfo, private_single_file_identity, publication,
+    },
 };
 use std::{
-    ffi::{OsStr, OsString},
+    ffi::OsString,
     fs::{self, File},
     io,
     path::{Path, PathBuf},
@@ -101,49 +103,35 @@ impl Namespace {
         }
         Ok(())
     }
-    pub(super) fn verify_key(&self, file: &File) -> io::Result<()> {
+    pub(super) fn verify_key(&self, snapshot: FileInfo) -> io::Result<()> {
         self.verify()?;
-        if !self.directory.same_file(&self.key, file)? {
-            return Err(io::Error::other("PILS original key name changed"));
+        let named = self.directory.entry_info(&self.key)?;
+        if named != EntryInfo::File(snapshot) {
+            return Err(io::Error::other(format!(
+                "PILS named key snapshot changed: held={snapshot:?}, named={named:?}",
+            )));
         }
         Ok(())
     }
-    pub(super) fn open_key(&self, sync: bool) -> io::Result<File> {
-        if sync {
-            self.directory.open_file_for_sync(&self.key)
-        } else {
-            self.directory.open_file(&self.key)
-        }
+    pub(super) fn open_key(&self) -> io::Result<File> {
+        self.directory.open_file(&self.key)
+    }
+    pub(super) fn sync_key(&self, original: &File) -> io::Result<()> {
+        self.verify()?;
+        publication::sync_original(&self.directory, &self.key, original)
     }
     pub(super) fn sync(&self) -> io::Result<DirectorySync> {
         self.directory.sync()
     }
-    pub(super) fn staging(&self) -> io::Result<(OsString, File)> {
-        let mut nonce = [0; 16];
-        getrandom::fill(&mut nonce).map_err(io::Error::other)?;
-        let mut name = self.key.clone();
-        name.push(format!(".new-{:032x}", u128::from_be_bytes(nonce)));
-        let file = self.directory.create_private_file(&name)?;
-        Ok((name, file))
-    }
-    pub(super) fn publish(&self, name: &OsStr, original: &File) -> io::Result<()> {
-        self.verify()?;
-        match self.directory.entry_info(&self.key) {
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Ok(_) => {
-                return Err(io::Error::new(
-                    io::ErrorKind::AlreadyExists,
-                    "PILS key appeared during creation",
-                ));
-            }
-            Err(error) => return Err(error),
-        }
-        self.directory.replace_file(name, original, &self.key)
-    }
-    pub(super) fn discard(&self, name: &OsStr, original: &File) -> io::Result<()> {
-        match self.directory.remove_file(name, original) {
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-            result => result,
-        }
+    pub(super) fn publish(&self, seed: &[u8; 32]) -> io::Result<(File, DirectorySync)> {
+        let published = publication::publish(
+            &self.directory,
+            &self.key,
+            seed,
+            publication::Destination::Create,
+            || self.verify(),
+        )
+        .map_err(|failure| io::Error::new(failure.cause.kind(), failure))?;
+        Ok(published.into_parts())
     }
 }

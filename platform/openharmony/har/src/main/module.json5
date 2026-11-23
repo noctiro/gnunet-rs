@@ -1,0 +1,10 @@
+{
+  "module": {
+    "name": "gnunet_node",
+    "type": "har",
+    "deviceTypes": ["default", "tablet", "tv", "wearable", "car", "2in1"],
+    "requestPermissions": [
+      { "name": "ohos.permission.INTERNET" }
+    ]
+  }
+}

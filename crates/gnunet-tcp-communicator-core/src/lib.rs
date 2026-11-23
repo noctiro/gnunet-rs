@@ -3,6 +3,7 @@
 //! Native effects are supplied by the separate host; no implicit RNG or private handshake.
 #![no_std]
 #![forbid(unsafe_code)]
+pub mod firmware;
 /// Exact initial Elligator confirmation composition; no queue admission.
 pub mod initial;
 /// Actual official TCP statistics coordinates; no wire or native owner.
@@ -12,10 +13,12 @@ pub mod nat;
 pub mod record;
 /// Scope-branded bounded physical-session and NAT-reversal metadata.
 pub mod registry;
+pub mod replay_store;
 /// Exact local PEERSTORE/PILS/TRANSPORT IPC bytes with explicit effect ownership.
 pub mod services;
 /// Bounded source-shaped session owner with explicit leased external effects.
 pub mod session;
+pub mod stream;
 pub mod wire;
 
 #[cfg(test)]

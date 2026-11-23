@@ -64,6 +64,9 @@ tests run locally; ordinary BINDTO names can still consult native NSS/DNS.
 `getifaddrs` or Windows `GetAdaptersAddresses`. `InterfaceState` keeps POSIX flags
 separate from Windows adapter type, operational status and per-address DAD state.
 Addresses preserve native indices, IPv6 scopes and prefix/netmask information.
+On macOS, iOS and FreeBSD, each IP row takes its index from the matching
+`AF_LINK` record in the same `getifaddrs` list. Missing or conflicting link
+indices leave the row's index at zero.
 `is_usable` requires an up interface and, on Windows, preferred/deprecated DAD.
 Invalid records or exceeded bounds fail the complete snapshot.
 
@@ -71,8 +74,17 @@ Windows interface and DNS projections share an initialized aligned native buffer
 with bounded growth and checked record/pointer extents. No enumeration performs
 DNS queries or mutates interfaces.
 `network::isolated_datagram_receive_error` and `socket_family_unavailable` retain
-native error classification. Windows UDP setup disables ICMP port-unreachable
+native error classification. Windows UDP TTL-expiration reports remain isolated
+receive errors with their original code, without attributing a peer or retiring
+the shared socket. Windows UDP setup disables ICMP port-unreachable
 receive resets on the original socket; that control grants no send receipt.
+
+`network::LocalReplyPath` binds a received UDP datagram to its original listener,
+peer, local destination and ingress. A reply uses that local source and the
+observed zone when either endpoint is IPv6 link-local. Linux and macOS use
+packet information, FreeBSD supplies IPv4 destination and ingress separately,
+and Windows uses provider-specific `WSARecvMsg` and `WSASendMsg` on the original
+registered socket. An invalid path or source-selection failure returns an error.
 
 On Windows, `interfaces::Identity` observes the LUID, GUID, index and calling
 thread's network compartment. Revalidation selects the original LUID and rejects
@@ -239,12 +251,17 @@ GNUnet domain selection does not emulate Windows search lists or devolution.
 
 `filesystem::publication::publish` stages private bytes under a held directory,
 synchronizes and explicitly closes their writer, then applies the caller's
-original selection/deadline fence. `Create` refuses replacement; `Replace`
-requires caller-authorized namespace administration. A returned read lease owns
-the actual published object. File publication and the native `DirectorySync`
-capability remain separate. Failures retain stage, possible publication, original
-writer-close error and identity-checked temporary cleanup without retrying an
-uncertain unlink. This shared mechanism backs REST credentials and CONFIG output.
+original selection/deadline fence. `Create` refuses replacement. Windows moves
+the original stage to the target in one native no-replace rename. FreeBSD uses
+`renameat2` with `AT_RENAME_NOREPLACE` when available. Other Unix paths use
+exclusive linking followed by removal of the stage name.
+`Replace` requires caller-authorized namespace administration. Finalization
+synchronizes the directory when available. When unavailable, it flushes the
+original at its published name and returns `DirectorySync::Unavailable`. A
+returned read lease owns the actual published object. Failures retain stage,
+possible publication, original writer-close error and identity-checked temporary
+cleanup without retrying an uncertain unlink. This shared mechanism backs REST
+credentials and CONFIG output.
 
 `filesystem::Directory` owns an original directory on Unix and Windows. Child
 opens, private creation, no-replace linking and checked removal use that held
@@ -252,6 +269,15 @@ directory rather than rebuilding full paths. Unix callers serialize namespace
 administration across identity checks and POSIX name-based link/unlink requests.
 Windows publication/deletion acts on captured original objects. `sync` reports
 `DirectorySync` independently of data-file synchronization.
+
+On Windows, `Directory::sync` qualifies the original handle's volume as local
+NTFS and reopens that same directory with `FILE_ADD_FILE` access. If access is
+denied, it retries with `FILE_ADD_SUBDIRECTORY` access. Either lease can request
+the normal `NtFlushBuffersFileEx` barrier. A completed flush reports
+`Synchronized`. Other filesystems and access or sharing rules that exclude the
+writable lease report `Unavailable`. Other open and flush errors retain the
+native cause.
+[MS-FSA directory flush](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fsa/0de7dc40-9627-437e-a4df-c4696cdc3d02) · [Windows filesystem behavior](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fsa/4e3695bd-7574-4f24-a223-b4679c065b63) · [NtFlushBuffersFileEx](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/nf-ntifs-ntflushbuffersfileex)
 
 General directory owners permit compatible metadata mutation. The explicit
 `open_source`, `from_source_file` and `open_source_directory` constructors retain
@@ -270,11 +296,12 @@ uncertainty and synchronize data/names separately.
 
 `publish_directory` installs a prepared original sibling at an absent name;
 `remove_directory` retires only an empty directory matching its held original.
-Linux/macOS use kernel no-replacement rename, and Windows captures and renames
-the original directory handle without replacement. FreeBSD locks an independent
-original parent descriptor around its absence check and rename. All cooperating
-publishers use this boundary; callers still exclude administrative namespace
-races. `AlreadyExists` means unpublished; other errors can follow publication.
+Linux, macOS, and FreeBSD with `renameat2` use kernel no-replacement rename.
+Windows captures and renames the original directory handle without replacement.
+On FreeBSD, an independent original parent descriptor serializes publication and
+removal. Kernels without `renameat2` check for absence while holding that lock.
+Callers still exclude administrative namespace races. `AlreadyExists` means
+unpublished; other errors can follow publication.
 Neither operation performs recursive cleanup or a synchronization barrier.
 
 `entries` owns an independent cursor over the original directory: Unix uses a
@@ -483,7 +510,7 @@ before the native invalid-parameter handler can run. Output has an explicit
 UTF-16 capacity, supports empty expansions and retains native code units. See
 Microsoft's [calendar conversion](https://learn.microsoft.com/en-us/cpp/c-runtime-library/reference/gmtime-s-gmtime32-s-gmtime64-s)
 and [wide formatting](https://learn.microsoft.com/en-us/cpp/c-runtime-library/reference/strftime-wcsftime-strftime-l-wcsftime-l)
-contracts. Native Windows runtime qualification remains in the [central status](../../IMPLEMENTATION_STATUS.md#pending-qualification).
+contracts. See the [native test matrix](../../tests/README.md#continuous-integration).
 
 `calendar::DateParser` retains LC_TIME names and an immutable CRT locale snapshot
 under the caller's native-locale mutation exclusion. Parsing accepts complete ISO
@@ -527,12 +554,13 @@ and [local conversion](https://learn.microsoft.com/en-us/cpp/c-runtime-library/r
 contracts, Windows [year-specific timezone metadata](https://learn.microsoft.com/en-us/windows/win32/api/timezoneapi/nf-timezoneapi-gettimezoneinformationforyear)
 and [transition rules](https://learn.microsoft.com/en-us/windows/win32/api/timezoneapi/ns-timezoneapi-time_zone_information).
 
-The POSIX current-thread capability retains the pinned source's mixed-locale
-failure effect through a TLS owner and detaches it before freeing it. Its unsafe
-acquisition contract requires external native-locale mutation/lifetime exclusion.
-The same exclusion protects Windows current-thread observations, which expose no
-raw locale pointer or installation authority. Native tests exercise thread-exit
-ownership and the distinct late-destructor contracts.
+The POSIX current-thread capability installs an owned numeric-C locale only for
+the conversion call. Its guard restores the previous selection before freeing
+the temporary locale, including on lexical failure. Its unsafe acquisition
+contract requires external native-locale mutation/lifetime exclusion. The same
+exclusion protects Windows current-thread observations, which expose no raw
+locale pointer or installation authority. Native tests check selection identity
+on success and failure, retained snapshots and conversion during thread exit.
 
 ## Local command and path bytes
 

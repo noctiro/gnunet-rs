@@ -41,8 +41,11 @@ components never reset a floor. The private V2 frontier remains exactly 89 bytes
 V1 is refused without migration.
 
 Frontier inspection uses a held native directory and the original private,
-single-link file. It checks full file/directory identity, exact bytes and named
-bindings across file synchronization and the directory barrier. First catalog
+single-link file. It synchronizes the original file and directory, pins a
+separate same-identity read-only handle and closes the synchronization handle
+before capturing the full immutable read fence. Exact original bytes, EOF,
+metadata and file/directory name bindings remain checked; failures never remove
+canonical state. First catalog
 creation uses the shared no-replace directory publication backend on Linux,
 macOS, FreeBSD and Windows.
 

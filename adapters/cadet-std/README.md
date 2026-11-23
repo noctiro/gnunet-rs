@@ -32,6 +32,17 @@ Cross-peer qualification is tracked in [implementation status](../../IMPLEMENTAT
 
 ## Application server
 
+The `startup` feature exposes `startup::serve_embedded` for a node that owns
+its private IPC endpoints and persistent monotime path. It uses the daemon's
+same CADET coordinator and enables client admission after the original PILS
+identity matches CORE's reply. Provide a local DHT endpoint to enable DHT
+path discovery. Complete the stop future and drive the service to return before
+retiring its dependencies or releasing the IPC directory.
+
+The standalone daemon supplies its own STATISTICS publisher to
+`startup::serve_process`. The shared foreground drives its original deadlines
+and retirement on the Resolver and clock of that invocation.
+
 `server::Server` drives the independent application SERVICE core over actual
 accepted streams. The caller supplies configured listeners, admission policy,
 bounded tables/shared payload buffers and the canonical clock. Each MQ retains
@@ -58,8 +69,10 @@ loopback pairs, rejects remaining dispatched opens/bindings before mutation and
 recomputes current port challenges without changing frozen native output.
 
 Peer operations remain explicit `next_open`/`next_send`/receive/close effects,
-bound to peer owners and their completions. Without a peer backend
-there is no remote Ready or credit. Management serving still requires real
+bound to peer owners and their completions. An authenticated peer Destroy
+revokes further sends for that channel in the same coordinator turn. Already
+started CORE sends retain their original completion ownership. Without a peer
+backend there is no remote Ready or credit. Management serving still requires real
 coordinator state; known unsupported requests return a protocol failure rather
 than a fabricated END. Capacity-blocked input stays retained in wire order;
 the caller must apply a bounded retirement policy when later requests on that
@@ -114,7 +127,8 @@ explicit `[cadet-rust] PEER_CORE=NO` selects its local-only profile.
 
 `management` supplies bounded PEERS/TUNNELS/PATH snapshots. Node captures actual
 Book/controller/channel state and binds the completed snapshot to the original
-MQ/query. Private management and application output origins remain separate. Partial writes retain the original frame and report; only matching full END
+MQ/query. The explicit local-only service captures an empty peer domain.
+Private management and application output origins remain separate. Partial writes retain the original frame and report; only matching full END
 writes complete a stream. Another management MQ or ordinary application can
 continue while one inspector is slow. Server without an explicit provider keeps
 management Unsupported. GetChannel remains Unsupported, matching the pinned C
@@ -146,8 +160,8 @@ exact reconciliation; all values in a reconciled failed range remain burned.
 Windows flushes the selected file after replacement before reading back its
 80-byte checked state, including the file metadata described by the
 [Windows caching contract](https://learn.microsoft.com/en-us/windows/win32/fileio/file-caching).
-The distinct directory barrier remains `DirectorySync::Unavailable` on Windows;
-`Store::directory_sync` and `Range::directory_sync` expose the actual observation.
+`Store::directory_sync` and `Range::directory_sync` expose the separate
+[native naming barrier](../native-std/API.md#anchored-filesystem-operations).
 An outstanding range retains the original writer lock after its store drops.
 
 A new sign admission selects the current verified PILS
@@ -158,17 +172,22 @@ changed-key or changed-epoch sources keep their original refusal/close behavior.
 
 ## Discovery
 
-Node exposes pending discovery tickets in bounded slot order, fixed native
-opening targets and explicit path admission. A ticket remains valid only while
-its exact application Open is live. Application EOF or closure cannot restore
-discovery work while peer retirement or an old GET stop is pending.
+Node issues a discovery ticket for a pending application open or for an
+authenticated tunnel with an established channel that loses its last endpoint
+path. Temporary CORE send backpressure does not invalidate an existing path.
+The service holds one DHT GET per destination through its original STOP.
+Each GET can retain three verified paths with distinct first hops while CREATE
+is pending. If the opening fails, the same GET resumes candidate selection,
+trying unused paths first. A confirmed path, canceled demand, or the original
+lookup deadline ends the GET.
 
-Path admission validates the Open generation, its logical/native bounds, path
-endpoints, absence of cycles, Book capacity and a current first-hop neighbor.
-The service verifies DHT HELLO and path signatures first. Admission uses the
-existing Book CREATE, monotime/signing and tunnel KX; it grants no authentication
-receipt. Native bounds are fixed when the application Open is taken and cannot
-be extended by lookup retries or arriving results.
+The service verifies DHT HELLO and path signatures before admission. Node checks
+the original ticket, both deadline bounds, the path endpoints and uniqueness,
+and the current first-hop neighbor. Each CREATE and its retries use one share of
+the original lookup budget, leaving time for alternatives.
+CORE cancels an unwritten CREATE on expiry and drains any original exposed
+suffix. A replacement path uses the existing CADET handshake, and a confirmed
+tunnel retains its keys and established channels during lookup.
 
 ## Diagnostics
 

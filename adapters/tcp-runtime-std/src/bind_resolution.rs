@@ -138,7 +138,7 @@ pub async fn prepare<
         result.map_err(Failure::new)?;
         return Ok(None);
     }
-    let Some(hostname) = settings.hostname.as_ref().filter(|_| activation.is_empty()) else {
+    let Some(hostname) = settings.hostname().filter(|_| activation.is_empty()) else {
         return Listeners::prepare(settings, activation)
             .map(Some)
             .map_err(Failure::new);
@@ -198,7 +198,7 @@ pub async fn prepare<
     if Instant::now() >= hard {
         return Err(Failure::new(timeout()));
     }
-    let lookup = if settings.disable_v6 {
+    let lookup = if settings.disable_v6() {
         port.lookup_ipv4(hostname.name(), Duration::from_secs(60))
     } else {
         port.lookup(hostname.name(), Duration::from_secs(60))
@@ -330,7 +330,7 @@ pub async fn prepare<
                     break Err(Failure::new(Error::Capacity));
                 }
                 callbacks += 1;
-                if settings.disable_v6 && ip.is_ipv6() {
+                if settings.disable_v6() && ip.is_ipv6() {
                     break Err(Failure::new(Error::Unsupported));
                 }
                 let address = SocketAddr::new(ip, hostname.port());

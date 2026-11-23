@@ -4,7 +4,6 @@ use crate::{
     wire::{Abi, Element as Borrowed},
 };
 use alloc::{rc::Rc, vec::Vec};
-use gnunet_crypto::hash512_parts;
 use gnunet_types::Error;
 /// One owned, immutable source element; no operation can mutate a prior snapshot.
 #[derive(Debug)]
@@ -19,13 +18,7 @@ impl Element {
     /// size/type + data SHA512, then the official HKDF-derived IBF key.
     pub fn new(element: Borrowed<'_>, abi: Abi) -> Result<Self, Error> {
         abi.validate()?;
-        let size = u16::try_from(element.data.len()).map_err(|_| Error::TooLarge)?;
-        if element.data.len() > 65527 {
-            return Err(Error::TooLarge);
-        }
-        let size = abi.order.u16(size);
-        let ty = abi.order.u16(element.kind);
-        let hash = hash512_parts(&[&size, &ty, element.data]);
+        let hash = crate::element_hash(element, abi)?;
         let order = match abi.order {
             crate::wire::Order::Little => Order::Little,
             crate::wire::Order::Big => Order::Big,

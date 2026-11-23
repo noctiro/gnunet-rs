@@ -28,11 +28,11 @@ For a local-only service:
 
 ```ini
 [namestore]
-UNIXPATH = /private/tmp/gnunet-runtime/namestore.sock
+UNIXPATH = ${GNUNET_RUNTIME_DIR}/namestore.sock
 UNIX_MATCH_UID = YES
 
 [namestore-rust]
-DIRECTORY = /private/tmp/gnunet-data/namestore
+DIRECTORY = ${GNUNET_DATA_HOME}/namestore
 ```
 
 On Windows, use absolute native paths. A new store commits the valid empty
@@ -42,6 +42,24 @@ Snapshot capacity must fit the 12-byte empty authority before opening storage.
 The [shared snapshot contract](../../adapters/snapshot-std/README.md) defines
 private creation, original-object fences, native file synchronization and
 explicit directory-barrier availability. C databases are not imported.
+
+## Offline maintenance
+
+`gnunet-namestore-dbtool` uses the service's storage path and exclusive writer
+lease. Run it under the configured service account. Stop the service before
+opening its store with this command.
+
+```sh
+gnunet-namestore-dbtool -c gnunet.conf --plugin rust --init
+gnunet-namestore-dbtool -c gnunet.conf --plugin rust --reset
+```
+
+`--init` initializes fresh storage or completes a marked store whose first
+snapshot is absent. An intact existing inventory is validated and kept.
+`--reset` discards all stored NAMESTORE rows by publishing an empty snapshot
+under the same lease. It keeps the store marker and advances the snapshot
+generation. Previously published GNS data retains its original lifetime.
+Physical media erasure is outside the snapshot publication contract.
 
 ## Readiness, stop and errors
 

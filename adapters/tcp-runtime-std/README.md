@@ -7,7 +7,9 @@ bounded session storage and runtime adapters independently of the C process spli
 
 The standard PROGRAM entry uses the selected shared Logger/Reporter and one
 Services context, Resolver broker and clock Arc. `BINDTO` accepts a bare port,
-numeric IPv4/bracketed IPv6 or a hostname with optional port. Hostname lookup uses
+numeric IPv4/bracketed IPv6 or a hostname with optional port. A bare port binds
+IPv4 and tries IPv6 unless disabled. Only an unsupported IPv6 socket family can
+be skipped; explicit IPv6 binds and all other failures are reported. Hostname lookup uses
 that same official Resolver, with a fixed 60-second native/logical budget and up
 to 16 callbacks/listeners. Each callback performs its bind before returning
 its lease; excess is explicit refusal, never silent truncation. Inherited FDs are
@@ -26,6 +28,23 @@ changes on the same MQ preserve healthy sessions. A Node may instead
 inject its existing lawful key capability through the embedding API.
 
 ## Protocol and ownership layers
+
+The embedding `LocalStartup.peer_mode` explicitly selects
+`PeerMode::Listening` or `PeerMode::OutboundOnly`. Outbound-only startup skips
+`BINDTO` and rejects inherited listeners. Its sealed `Listeners::outbound_only()`
+owner has no sockets or local endpoints. The same foreground, original
+TRANSPORT/PEERSTORE MQs, remote CREATE address hints, ordinary outbound connects,
+official TCP handshake, replay protection and peer replacement continue to run.
+No listener address is invented or advertised: this profile performs no local
+address ADD, NAT registration, interface scan or accept. A port-zero reversal
+hint receives a negative CREATE result because no local listener exists.
+Readiness supplies an empty endpoint slice and reports no listening port.
+
+A prebound embedding selects the same profile with
+`PreparedStartup.listeners = Listeners::outbound_only()`. Its physical-resource
+mode is retained through identity replacement. A packet-tunnel application must
+also omit other communicators that create peer listeners; selecting this TCP
+profile does not change separately started UDP, QUIC, HTTP/3 or UNIX runtimes.
 
 The pure core owns framing, handshake/rekey and replay comparison. The host
 Manager retains session, ticket, physical-MQ epoch and PEERSTORE scan
@@ -49,6 +68,11 @@ Uncertain history or failed retirement prevents replacement. Lifetime counters s
 owner. Only the first generation emits process READY; typed diagnostics report
 subsequent local readiness without claiming reachability.
 
+A peer change on the same PILS connection retires the old sessions, callbacks
+and replay worker. The original service streams, registered addresses and NAT
+registration stay with the process. Already-read frames reach their original
+boundary before session admission resumes under the replacement key.
+
 PILS EOF and connection I/O loss fence the current generation and retire its
 peer sockets before new provider work. The retained PILS client stays unpolled
 while original callbacks, address publications and the replay worker finish.
@@ -67,12 +91,26 @@ replaying requests. Listeners, namespace fences, Resolver and statistics stay
 with the process; old session buffers, keys and workers do not overlap the next
 generation. Protocol, resource and clock failures remain terminal.
 
-PublishedPool merges listeners, native interface snapshots and official
-NAT ADDRESSES into canonical multi-source claims admitted to the original
-TRANSPORT ADD/DEL FIFO. Loss withdraws only that source. A fresh NAT observer can
-start after its End and old unsupported DEL admission; it never replays an
-old mutation or renews the first cleanup deadline. Readiness describes local
-listeners, service acquisition and READY output flush, not remote reachability.
+PublishedPool admits listener and native interface addresses to the original
+TRANSPORT ADD/DEL FIFO. A `[nat] UNIXPATH` or an enabled `[nat] PORT` with
+`HOSTNAME` also supplies NAT address claims and IPv4 port-zero reversal. Without
+a NAT endpoint, the original listener and interface claims still work and
+port-zero reversal reports unavailable. A configured NAT observer can restart
+after its original End and retirement of old NAT claims. Readiness describes
+local listeners and required service acquisition.
+
+`LocalStartup.socket_policy` supplies native egress preparation before each new
+listener bind/listen, peer connect or reversal connect. The original listener
+owner retains that policy through identity replacement. Protected startup rejects
+already-activated listeners whose earlier bind/listen cannot be prepared here.
+Standalone constructors use the ordinary process policy. `DISABLE_V6` also
+refuses inherited IPv6 listeners.
+
+`LocalStartup` and `Services` accept a host-owned `NetworkChanges` consumer.
+A coalesced notification wakes the interface scan at its normal turn, after
+native and clock guards. Stopping suppresses fresh scans. A default consumer
+uses the periodic scan schedule. The consumer stays with the process across
+identity generation replacement.
 
 IPv4 port-zero CREATE uses that same original NAT registration. Its reverse
 admission retains the original expected peer/IP/generation and ten-second bound. The bounded prototype driver reads the official 4/36-byte preamble. A clear probe
@@ -120,18 +158,24 @@ cannot substitute for that recovery. This pairing does not claim protection
 against hostile simultaneous rollback of the entire trusted persistent state.
 
 The epoch owner separates the fixed codec, writer fence, staging file and
-publication/reconciliation modules. A settled snapshot retains its original file
-alongside its decoded image. Unknown publication accepts only that held
-candidate at the canonical name; byte-identical replacements cannot settle it.
-The original predecessor plus the original still-staged candidate can establish
-nonpublication. Failed stage cleanup retains one original file and blocks new
-work until `Store::reconcile` removes that same file. Primary and cleanup errors
-remain separate.
+publication/reconciliation modules. Each synchronized stage closes its writer
+before publication, retaining a read-only handle to the same original file.
+A settled snapshot retains the handle and the identity, size, mtime and ctime
+from its final readback. Live reservations and PEERSTORE admission recheck that
+fence. An empty owner requires the canonical name to remain absent.
+Unknown publication requires the original candidate at the canonical name.
+The original predecessor and the still-staged candidate establish
+nonpublication. `Store::reconcile` can refresh a restored original after exact
+byte readback and synchronization. Failed stage cleanup retains its original
+file and blocks new work until reconciliation removes that file. Primary and
+cleanup errors remain separate.
 
 `Store::directory_sync`, `Ledger::synchronization` and catalog lease observations
-report actual native directory barriers. Windows reports `Unavailable` and
-flushes the held file. These observations grant no epoch, floor or quiescence
-proof and do not claim directory crash persistence.
+report actual native directory barriers. When the directory barrier is unavailable
+after replacement, the Windows backend flushes a separately opened,
+identity-checked file handle and checks the retained read-only object again.
+Epoch, floor and quiescence have independent checks.
+[Native naming barriers](../native-std/API.md#anchored-filesystem-operations)
 
 ## Native platform boundaries
 

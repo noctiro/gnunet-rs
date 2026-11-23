@@ -54,7 +54,7 @@ fn entry() -> Result<(), Failure> {
     use gnunet_program_host::{
         logging::Logger,
         policy::Level,
-        program::{self, Defaults, Invocation, NlsDisabled, Preparation},
+        program::{self, Defaults, Invocation, Preparation},
         reporting::Reporter,
         shared_clock::SharedClock,
     };
@@ -68,7 +68,7 @@ fn entry() -> Result<(), Failure> {
     let arguments = options::Arguments::new();
     let mut logger = Logger::new(b"gnunet-directory", std::process::id(), false)?;
     let help: &[u8] = b"Display local plaintext GNUnet directory artifacts: gnunet-directory [OPTIONS] FILE... . Each selected regular file is read incrementally; no repository, CHK, download, service or network is required. Root and entry metadata plus exact URI/name text are escaped safely; binary/embedded values report their actual length. Syntax parsing does not authenticate a source or embedded file. A partial, corrupt, changed or unreadable file makes the final exit nonzero, retaining already written output; independent selected files are still inspected. Standard PROGRAM -c/-L/-l; --timeout DURATION is an optional fixed whole-operation bound (zero/FOREVER unbounded). [directory-rust] resource settings bound records/metadata/URI scratch without a fixed file-size or total-entry cap. Signals and parent stop end the original operation; native file/stdio/codec calls are synchronous and cannot be preempted.";
-    let prepared = program::prepare(
+    let prepared = program::prepare_installed(
         configuration,
         Invocation {
             binary_name: b"gnunet-directory",
@@ -79,7 +79,6 @@ fn entry() -> Result<(), Failure> {
         arguments.options(),
         std::env::args_os(),
         &program::Environment::capture(),
-        &mut NlsDisabled,
         &mut logger,
         &clock,
         &mut io::stdout().lock(),

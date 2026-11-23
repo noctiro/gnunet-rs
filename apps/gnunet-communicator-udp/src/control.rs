@@ -2,12 +2,14 @@
 use crate::Cause;
 use gnunet_program_host::reporting::Reporter;
 use gnunet_service_startup::{ParentControl, StopSignals};
+use gnunet_udp_communicator_runtime::Stop;
 use std::{
     cell::Cell,
     io,
     rc::Rc,
     task::{Context, Poll},
 };
+
 pub(super) struct Control {
     signals: StopSignals,
     stop: Rc<Cell<bool>>,
@@ -25,10 +27,13 @@ impl Control {
             reporter,
         })
     }
-    pub(super) fn stopped(&self) -> bool {
+}
+
+impl Stop for Control {
+    fn stopped(&self) -> bool {
         self.stop.get() || self.reporter.failed()
     }
-    pub(super) fn poll(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+    fn poll(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         self.reporter.register(cx);
         if self.stopped() {
             self.stop.set(true);

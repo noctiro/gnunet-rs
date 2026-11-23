@@ -325,6 +325,17 @@ impl<'id, 'request, const KNOWN: usize> Client<'id, 'request, KNOWN> {
         self.now
     }
 
+    /// Cache a complete UBLOCK already authenticated by historical search replay.
+    /// Its original whole-block digest is the official seen-list identity.
+    pub(crate) fn remember_search_history(&mut self, block: &[u8]) -> Result<(), Error> {
+        if self.closed {
+            return Err(ProtocolError::Closed.into());
+        }
+        self.core
+            .remember_verified_history(gnunet_crypto::hash512(block))?;
+        Ok(())
+    }
+
     /// Terminal protocol cause and potential uncertain mutation, if any. Native
     /// errors returned by drive retain their actual OS/configuration cause too.
     #[must_use]
@@ -482,6 +493,9 @@ impl<'id, 'request, const KNOWN: usize> Client<'id, 'request, KNOWN> {
             frame.bytes(),
         )?);
         framed.release_frame();
+        if matches!(kind, Some(Kind::Block { .. })) {
+            self.channel.reset_backoff();
+        }
         let result = kind.map(|kind| Received { frame, kind });
         if self.core.retirement_needed() {
             self.close()?;

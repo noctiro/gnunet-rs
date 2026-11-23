@@ -690,7 +690,7 @@ impl<'id, 'slots, 'bytes, 'worker> Server<'id, 'slots, 'bytes, 'worker> {
                 match self.core.complete_store(effect, e.record, *result) {
                     Err(ProtocolError::StaleGeneration) => {
                         if result.is_ok() {
-                            self.core.committed_after_loss(e.record)
+                            self.core.externally_committed(e.record)
                         } else {
                             Ok(())
                         }

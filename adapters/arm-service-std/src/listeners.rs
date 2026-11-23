@@ -177,6 +177,8 @@ impl<'scope> ManagedListeners<'scope> {
     }
     /// Bind eligible entries from the immutable registry. Individual source
     /// address/bind failures are retained and do not unregister the service.
+    /// On Windows, a malformed local restriction fails that AF_UNIX bind
+    /// before selecting its account or creating the endpoint.
     /// Resource maximum errors reject before the next native bind, retaining all
     /// earlier real listeners in this value so shutdown can consume them safely.
     /// Call inside an entered Tokio runtime with its I/O driver enabled, as
@@ -220,6 +222,7 @@ impl<'scope> ManagedListeners<'scope> {
                     diagnostic,
                 });
             }
+            #[cfg(unix)]
             let access = if matches!(config.get_yesno(&service.name, b"UNIX_MATCH_UID"), Ok(true)) {
                 LocalListenerAccess::Owner
             } else if matches!(config.get_yesno(&service.name, b"UNIX_MATCH_GID"), Ok(true)) {
@@ -229,7 +232,56 @@ impl<'scope> ManagedListeners<'scope> {
             };
             let start = self.entries.len();
             for address in addresses.addresses {
-                match self.bind_address(index, address, access).await? {
+                #[cfg(windows)]
+                let bind_access = if let Address::Unix(path) = &address {
+                    use gnunet_service_runtime::credentials::UnixAccess;
+                    let access = match UnixAccess::from_config(config, &service.name) {
+                        Ok(access) => LocalListenerAccess::from(access.unwrap_or_default()),
+                        Err(error) => {
+                            self.failures.push(Failure::Bind {
+                                service: index,
+                                address,
+                                error: io::Error::new(io::ErrorKind::InvalidInput, error),
+                            });
+                            continue;
+                        }
+                    };
+                    if let crate::registry::WindowsAccount::Dedicated { sid, credential } =
+                        &service.account
+                    {
+                        if self.entries.len() == self.maximum {
+                            return Err(Error::Capacity);
+                        }
+                        match crate::process::AccountPreparation::for_listener(
+                            sid,
+                            credential,
+                            path.clone(),
+                            access.into(),
+                        )
+                        .await
+                        {
+                            Ok(bind) => bind::Access::Account(Box::new(bind)),
+                            Err(error) => {
+                                self.failures.push(Failure::Bind {
+                                    service: index,
+                                    address,
+                                    error,
+                                });
+                                continue;
+                            }
+                        }
+                    } else {
+                        bind::Access::Current(access)
+                    }
+                } else {
+                    bind::Access::Current(LocalListenerAccess::default())
+                };
+                #[cfg(unix)]
+                let bind_access = bind::Access::Current(access);
+                match self
+                    .bind_address_with_access(index, address, bind_access)
+                    .await?
+                {
                     BindOutcome::Bound { .. } | BindOutcome::Failed => {}
                 }
             }
@@ -255,6 +307,16 @@ impl<'scope> ManagedListeners<'scope> {
         service: usize,
         address: Address,
         access: LocalListenerAccess,
+    ) -> Result<BindOutcome, Error> {
+        self.bind_address_with_access(service, address, bind::Access::Current(access))
+            .await
+    }
+
+    async fn bind_address_with_access(
+        &mut self,
+        service: usize,
+        address: Address,
+        access: bind::Access,
     ) -> Result<BindOutcome, Error> {
         if self.entries.len() == self.maximum {
             return Err(Error::Capacity);
@@ -485,6 +547,18 @@ impl<'scope> ManagedListeners<'scope> {
                     port.as_socket()
                 }
             })
+    }
+    #[cfg(windows)]
+    pub(crate) fn launch_source(
+        &self,
+        id: ListenerId<'scope>,
+    ) -> Option<gnunet_native::socket_activation::Source<'_>> {
+        self.entries
+            .iter()
+            .find(|entry| entry.id == Some(id))?
+            .port
+            .as_ref()
+            .map(RegisteredListener::launch_source)
     }
     /// Actual bound endpoint for a listener, including the chosen fixture port.
     pub fn address(&self, index: usize) -> Option<&Address> {

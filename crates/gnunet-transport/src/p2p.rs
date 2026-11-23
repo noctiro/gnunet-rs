@@ -13,6 +13,40 @@ pub const MAX_VALIDITY: u64 = 30 * 24 * 60 * 60 * 1_000_000;
 /// Local validation lifetime cap before renewed reachability proof.
 pub const VALIDATION_INTERVAL: u64 = 4 * 60 * 60 * 1_000_000;
 
+/// Network frames whose handling can depend on the original DV source.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DvFrame {
+    /// A complete top-level DV LEARN or BOX message.
+    Direct,
+    /// One legal reliability envelope containing a complete DV message.
+    Reliable,
+    /// A valid fragment whose assembled message may need the DV source.
+    Fragment,
+}
+
+impl DvFrame {
+    /// Classify an original network frame using the same envelope decoders as
+    /// receive. Malformed frames stay on the ordinary protocol error path.
+    #[must_use]
+    pub fn classify(input: &[u8]) -> Option<Self> {
+        let frame = Frame::decode(input).ok()?;
+        match frame.header().message_type().value() {
+            crate::dv::LEARN_TYPE | crate::dv::BOX_TYPE => Some(Self::Direct),
+            1216 => {
+                let wrapped = Reliable::decode(input).ok()?;
+                let inner = Frame::decode(wrapped.message).ok()?;
+                matches!(
+                    inner.header().message_type().value(),
+                    crate::dv::LEARN_TYPE | crate::dv::BOX_TYPE
+                )
+                .then_some(Self::Reliable)
+            }
+            1214 => Fragment::decode(input).ok().map(|_| Self::Fragment),
+            _ => None,
+        }
+    }
+}
+
 pub(crate) fn bytes<const N: usize>(input: &[u8], offset: usize) -> Result<[u8; N], Error> {
     input
         .get(offset..offset.checked_add(N).ok_or(Error::Overflow)?)
@@ -240,6 +274,8 @@ impl<'a> Reliable<'a> {
         })
     }
 }
+pub(crate) const FRAGMENT_HEADER_LEN: usize = 32;
+
 /// One fragment; the reassembler must check overlap, capacity and replay state.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Fragment<'a> {
@@ -258,7 +294,7 @@ impl<'a> Fragment<'a> {
     /// Encode one exact official fragment without allocating or changing IDs.
     /// The fragment body is a slice of the original frame, not a nested envelope.
     pub fn encode(self, output: &mut [u8]) -> Result<usize, Error> {
-        let size = 32usize
+        let size = FRAGMENT_HEADER_LEN
             .checked_add(self.body.len())
             .ok_or(Error::Overflow)?;
         if self.total < 4
@@ -278,7 +314,7 @@ impl<'a> Fragment<'a> {
         output[6..8].copy_from_slice(&self.total.to_be_bytes());
         output[8..24].copy_from_slice(&self.ack);
         output[24..32].copy_from_slice(&self.message_id);
-        output[32..size].copy_from_slice(self.body);
+        output[FRAGMENT_HEADER_LEN..size].copy_from_slice(self.body);
         Ok(size)
     }
     /// Validate nonempty bounded fragment bytes before reassembly.
@@ -289,7 +325,7 @@ impl<'a> Fragment<'a> {
         }
         let offset = u16::from_be_bytes(bytes(input, 4)?);
         let total = u16::from_be_bytes(bytes(input, 6)?);
-        let body = input.get(32..).ok_or(Error::Truncated)?;
+        let body = input.get(FRAGMENT_HEADER_LEN..).ok_or(Error::Truncated)?;
         if total < 4
             || body.is_empty()
             || usize::from(offset)

@@ -18,6 +18,10 @@ const PROFILE: Profile = Profile::LITTLE_255;
 const ROOM: Hash = [1; 64];
 const LOCAL: ShortHash = [1; 32];
 const REMOTE: ShortHash = [2; 32];
+mod derivation;
+mod frontier;
+mod recency;
+mod synchronization;
 
 struct Entropy(u8);
 impl crypto::Entropy for Entropy {
@@ -139,7 +143,7 @@ fn receive<'id>(
             source,
             ReceiveMeta {
                 epoch,
-                flags: 0,
+                flags: 8,
                 requested: false,
                 sender_hash: None,
                 context: None,
@@ -148,6 +152,65 @@ fn receive<'id>(
         )
         .map_err(|e| e.error)?;
     drain(core, room)?;
+    Ok(hash)
+}
+// Own membership is established through its actual signing/write/echo ports;
+// receiving another retained signature is never substituted for this boundary.
+fn owned_join<'id>(
+    core: &mut Core<'id>,
+    address: (Room<'id>, Source<'id>),
+    key: &SecretKey,
+    hpke: PublicKey,
+) -> Result<Hash, Error> {
+    let (room, source) = address;
+    let operation = core.prepare_join(source, hpke, 100, 10_000)?;
+    let Work::Sign {
+        binding,
+        kind,
+        body,
+        sender,
+        previous,
+        timestamp,
+        ..
+    } = core.take_work(room)?.ok_or(Fault::NotReady)?
+    else {
+        return Err(Fault::Conflict.into());
+    };
+    let bytes = signed(
+        key,
+        &sender,
+        &previous,
+        Body::decode(kind, body.expose(), PROFILE)?,
+        timestamp,
+    )?;
+    core.complete_signature(
+        binding,
+        OwnedBytes::copy_from(bytes.expose())?,
+        padding::Decode::Absent,
+        100,
+    )
+    .map_err(|error| error.error)?;
+    let Work::Wire { binding, frame, .. } = core.take_work(room)?.ok_or(Fault::NotReady)? else {
+        return Err(Fault::Conflict.into());
+    };
+    core.write_progress(binding, frame.expose().len(), true)?;
+    let hash = gnunet_crypto::hash512(&bytes.expose()[68..]);
+    core.on_notification(
+        source,
+        wire::Response::Receive {
+            key: &ROOM,
+            sender: &gnunet_crypto::hash512(&key.public_key()?),
+            context: &[0; 64],
+            hash: &hash,
+            epoch: &hash,
+            flags: 8,
+            message: wire::SensitiveBytes::new(bytes.expose()),
+        },
+        100,
+    )?;
+    drain(core, room)?;
+    assert!(core.source_joined(source)?);
+    core.retire_operation(operation)?;
     Ok(hash)
 }
 fn join<'id>(
@@ -162,19 +225,40 @@ fn join<'id>(
     let mut public = [0; 36];
     hpke.public_key().encode_hpke(&mut public)?;
     let signing = key.public_key()?;
-    let hash = receive(
-        core,
-        (room, source),
-        key,
-        id,
-        previous,
-        epoch,
-        Body::Join {
-            epoch: &epoch,
-            public_key: wire::PublicKey::new(&signing)?,
-            hpke_key: wire::keys::HpkePublicKey::new(&public)?,
-        },
-    )?;
+    let hash = if core
+        .rooms
+        .get(source.room)?
+        .sources
+        .get(source.slot)?
+        .public
+        == Some(signing)
+        && core
+            .rooms
+            .get(source.room)?
+            .sources
+            .get(source.slot)?
+            .member_id
+            == Some(*id)
+        && !core.source_joined(source)?
+    {
+        assert_eq!(core.rooms.get(source.room)?.last_message, *previous);
+        assert_eq!(core.rooms.get(source.room)?.current_epoch, epoch);
+        owned_join(core, (room, source), key, public)?
+    } else {
+        receive(
+            core,
+            (room, source),
+            key,
+            id,
+            previous,
+            epoch,
+            Body::Join {
+                epoch: &epoch,
+                public_key: wire::PublicKey::new(&signing)?,
+                hpke_key: wire::keys::HpkePublicKey::new(&public)?,
+            },
+        )?
+    };
     let (member, contact) = core
         .members(room)?
         .find_map(|(member, contact, actual, phase)| {
@@ -439,19 +523,21 @@ fn submit<'id>(
         return Err(Fault::Conflict.into());
     };
     core.write_progress(written, frame.expose().len(), true)?;
-    let hash = core
-        .receive_owned(
-            source,
-            ReceiveMeta {
-                epoch,
-                flags: 0,
-                requested: false,
-                sender_hash: None,
-                context: None,
-            },
-            OwnedBytes::copy_from(bytes.expose())?,
-        )
-        .map_err(|e| e.error)?;
+    let hash = gnunet_crypto::hash512(&bytes.expose()[68..]);
+    let room_key = *core.room_key(room)?;
+    core.on_notification(
+        source,
+        wire::Response::Receive {
+            key: &room_key,
+            sender: &gnunet_crypto::hash512(&key.public_key()?),
+            context: &[0; 64],
+            hash: &hash,
+            epoch: &epoch,
+            flags: 8,
+            message: wire::SensitiveBytes::new(bytes.expose()),
+        },
+        100,
+    )?;
     drain(core, room)?;
     Ok(hash)
 }
@@ -540,3 +626,5 @@ fn original_outgoing_target_and_own_transcript_recipient_stay_distinct() -> Resu
     );
     Ok(())
 }
+
+mod historical;

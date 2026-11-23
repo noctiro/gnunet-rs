@@ -62,7 +62,7 @@ pub(super) struct Facts {
     pub quiescent: bool,
     pub regex: crate::announcement::Report,
     pub unremoved_routes: Vec<gnunet_tun_host::Action>,
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "freebsd"))]
     pub recovery: crate::network::recovery::Report,
 }
 impl fmt::Debug for Facts {
@@ -72,7 +72,7 @@ impl fmt::Debug for Facts {
             .field("quiescent", &self.quiescent)
             .field("regex", &self.regex)
             .field("unremoved_routes", &self.unremoved_routes);
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "freebsd"))]
         out.field("recovery", &self.recovery);
         out.finish()
     }

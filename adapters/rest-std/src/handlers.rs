@@ -13,7 +13,6 @@ use std::{
 };
 use tokio::time::Instant;
 use zeroize::Zeroizing;
-const COPYING:&[u8]=b"GNU Affero General Public License version 3 or later. See also: <http://www.gnu.org/licenses/>";
 /// All caller-owned stable native token domains. No hidden global domain exists.
 #[derive(Clone, Copy)]
 pub struct Instances<'a> {
@@ -478,7 +477,7 @@ impl<'a, I: gnunet_dns::Idna> Context<'a, I> {
         match request.endpoint {
             Copying => Ok(Response {
                 status: 200,
-                body: copy(COPYING)?,
+                body: copy(gnunet_rest::COPYING)?,
                 content_type: b"text/plain",
                 service_status: None,
                 headers: Vec::new(),

@@ -21,6 +21,6 @@ pub mod native;
 pub mod ports;
 pub mod refresh;
 pub mod server;
-pub use gnunet_gns::{EffectId, Failure, Instance, Limits, Lookup, QueryId, Record};
+pub use gnunet_gns::{DnsPolicy, EffectId, Failure, Instance, Limits, Lookup, QueryId, Record};
 pub use manager::{Cause, Event, Manager};
 pub use ports::{Bounds, Close, NativeFailure, Operation, Provider, Shared, Value};

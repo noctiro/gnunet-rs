@@ -1,11 +1,16 @@
 //! Client room leases, session snapshots and matching CLOSE retirement.
-use crate::{engine::Core, state::*, *};
+#[cfg(feature = "alloc")]
+use crate::state::*;
+use crate::{engine::Core, *};
+#[cfg(feature = "alloc")]
 use gnunet_types::Error as Fault;
+#[cfg(feature = "alloc")]
 use wire::envelope::Kind;
-impl<'id> Core<'id> {
+impl<'id, const ROOMS: usize> Core<'id, ROOMS> {
     /// Exact current active local session in this original room generation.
     /// This uses its own session/public-ID snapshot, never a Contact.key changed
     /// by another room. Absence grants no membership or signing authorization.
+    #[cfg(feature = "alloc")]
     pub fn local_member(&self, room: Room<'id>) -> Result<Option<MemberSession<'id>>, Error> {
         let r = self.check_room(room)?;
         Ok(self
@@ -34,6 +39,7 @@ impl<'id> Core<'id> {
     /// Consumes the completed CLOSE and optional matching whole-written LEAVE.
     /// A LEAVE without an echo is retired without a Complete event: CLOSE proves
     /// local room detachment, never remote receipt of that message.
+    #[cfg(feature = "alloc")]
     pub fn retire_room_lease(
         &mut self,
         source: Source<'id>,
@@ -50,8 +56,7 @@ impl<'id> Core<'id> {
             return Err(Fault::NotReady.into());
         }
         let operation = room.operations.get(close.slot)?;
-        if operation.binding.source != source
-            || operation.binding.operation != close
+        if operation.binding.source != source.slot
             || operation.phase != OperationPhase::Complete
             || !matches!(
                 &operation.job,
@@ -70,8 +75,7 @@ impl<'id> Core<'id> {
                 return Err(Fault::StaleGeneration.into());
             }
             let original = room.operations.get(leave.slot)?;
-            if original.binding.operation != leave
-                || original.binding.source != source
+            if original.binding.source != source.slot
                 || original.signed_kind != Some(Kind::LEAVE)
                 || !matches!(
                     original.phase,
@@ -87,9 +91,9 @@ impl<'id> Core<'id> {
                 .checked_add(original.charged_bytes)
                 .ok_or(Fault::Overflow)?;
         }
-        if room.operations.iter().any(|(_, o)| {
-            o.binding.source == source
-                && Some(o.binding.operation) != leave
+        if room.operations.iter().any(|(slot, o)| {
+            o.binding.source == source.slot
+                && Some(slot) != leave.map(|operation| operation.slot)
                 && !matches!(
                     o.phase,
                     OperationPhase::Complete | OperationPhase::Failed | OperationPhase::Cancelled
@@ -97,29 +101,20 @@ impl<'id> Core<'id> {
         }) {
             return Err(Fault::NotReady.into());
         }
-        for (_, n) in room.nodes.iter() {
-            if n.origin.live() == Some(source) && n.auth.is_none() {
-                released = released
-                    .checked_add(n.payload_bytes())
-                    .ok_or(Fault::Overflow)?;
-            }
-        }
         // Accounting and every scope/debt preflight precede the first mutation.
-        if released > self.used {
-            return Err(Fault::Conflict.into());
-        }
+        self.reclaim_source_inputs(source, released)?;
         let room = self.rooms.get_mut(source.room)?;
         room.operations.remove(close.slot)?;
         if let Some(leave) = leave {
             room.operations.remove(leave.slot)?;
         }
         room.sources.remove(source.slot)?;
-        for (_, n) in room.nodes.iter_mut() {
-            if n.origin.live() == Some(source) && n.auth.is_none() {
-                n.frame = None;
-                n.plaintext = None;
-                n.phase = MessagePhase::Rejected;
-            }
+        if room.frontier_control.is_some_and(|control| {
+            room.operations
+                .get(control)
+                .is_ok_and(|operation| operation.binding.source == source.slot)
+        }) {
+            room.frontier_control = None;
         }
         if room.sources.len() == 0 {
             room.joined = false;
@@ -131,13 +126,13 @@ impl<'id> Core<'id> {
                 s.renew_operation = None;
             }
         }
-        self.release(released)?;
         Ok(())
     }
     /// Configure a new local signing owner for a genuinely detached room with
     /// no live lease or unsettled original work. History retains its original
     /// author/session snapshots. This queues no OPEN/JOIN and proves no key
     /// possession; those require real original native and signature results.
+    #[cfg(feature = "alloc")]
     pub fn configure_reopen(&mut self, room: Room<'id>, public: PublicKey) -> Result<(), Error> {
         let r = self.check_room(room)?;
         wire::PublicKey::new(&public)?;

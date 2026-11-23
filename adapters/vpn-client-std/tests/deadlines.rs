@@ -13,6 +13,7 @@ use gnunet_vpn_client_host::{
     Address, AfProfile, Cancel, Client, EndpointSource, Family, Instance, Limits, LossCause,
     Outcome, Progress, Reason, Submission,
 };
+use gnunet_wire::official::vpn;
 use std::{
     error::Error as StdError,
     future::{Future, poll_fn},
@@ -26,7 +27,7 @@ use std::{
     time::Duration,
 };
 use tokio::{
-    io::AsyncReadExt,
+    io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
     time::Instant,
 };
@@ -167,6 +168,119 @@ async fn prefix(client: &mut Client<'_>, listener: TcpListener) -> Result<TcpStr
         }),
     )
     .await?
+}
+
+#[test]
+fn partial_response_retires_its_original_mq_without_a_clock_sample() -> Result<(), Failure> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    runtime.block_on(async {
+        let clock = Arc::new(Clock {
+            fail: AtomicBool::new(false),
+            calls: AtomicUsize::new(0),
+        });
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+        let mut instance = Instance::new();
+        let profile = AfProfile::native();
+        let mut client = Client::new(
+            &mut instance,
+            source(listener.local_addr()?, clock.clone())?,
+            profile,
+            Limits {
+                io_slice_bytes: 3,
+                input_timeout: Duration::from_millis(200),
+                ..Limits::default()
+            },
+        )?;
+        let operation = client.internet(
+            Address::V4([192, 0, 2, 1]),
+            Some(Family::V4),
+            u64::MAX,
+            10_000_000,
+        )?;
+        let mut peer = prefix(&mut client, listener).await?;
+        let until = Instant::now() + Duration::from_secs(2);
+        loop {
+            match client.drive(Some(until)).await? {
+                Progress::Written {
+                    operation: sent, ..
+                } if sent == operation => break,
+                Progress::Activity { .. } => {}
+                _ => return Err("original VPN request did not finish writing".into()),
+            }
+        }
+        let mut request = [0; 36];
+        request[..3].copy_from_slice(&[0, 36, 0]);
+        tokio::time::timeout_at(until, peer.read_exact(&mut request[3..])).await??;
+        let vpn::Request::Internet { request_id, .. } =
+            vpn::Request::decode_with_profile(&request, profile)?
+        else {
+            return Err("expected original redirect".into());
+        };
+        let response = vpn::Response {
+            request_id,
+            address: Some(Address::V4([10, 0, 0, 1])),
+        };
+        let mut bytes = vec![0; response.encoded_len()?];
+        response.encode_with_profile(&mut bytes, profile)?;
+        let request_deadline = client
+            .next_native_deadline()
+            .ok_or("missing request deadline")?;
+        let mut input_deadline = None;
+        for byte in &bytes[..2] {
+            peer.write_all(std::slice::from_ref(byte)).await?;
+            assert!(matches!(
+                client.drive(Some(until)).await?,
+                Progress::Activity { read_bytes: 1, .. }
+            ));
+            let current = client
+                .next_native_deadline()
+                .ok_or("missing input deadline")?;
+            assert!(current < request_deadline);
+            if let Some(first) = input_deadline {
+                assert_eq!(
+                    current, first,
+                    "new bytes renewed the partial response deadline"
+                );
+            } else {
+                input_deadline = Some(current);
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        }
+
+        clock.fail.store(true, Ordering::Relaxed);
+        let calls = clock.calls.load(Ordering::Relaxed);
+        let loss = tokio::time::timeout_at(
+            until,
+            poll_fn(|cx| {
+                client
+                    .poll_native_guard(cx)
+                    .map_or(Poll::Pending, Poll::Ready)
+            }),
+        )
+        .await??;
+        let Progress::Lost {
+            epoch: Some(epoch),
+            cause: LossCause::Deadline,
+        } = loss
+        else {
+            return Err("partial input did not retire the original MQ".into());
+        };
+        assert!(matches!(client.next_event(), Some(Progress::Completed {
+            epoch: Some(original_epoch), operation: original,
+            outcome: Outcome::Local { reason: Reason::Lost, submission: Submission::Unknown },
+        }) if original_epoch == epoch && original == operation));
+        assert_eq!(clock.calls.load(Ordering::Relaxed), calls);
+        assert_eq!(client.pending(), 0);
+        assert!(client.next_native_deadline().is_none());
+        let mut byte = [0; 1];
+        assert_eq!(
+            tokio::time::timeout_at(until, peer.read(&mut byte)).await??,
+            0
+        );
+        Ok(())
+    })
 }
 
 #[test]

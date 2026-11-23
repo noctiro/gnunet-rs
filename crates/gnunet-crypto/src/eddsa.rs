@@ -96,6 +96,16 @@ impl EddsaPublicKey {
         &self.0
     }
 
+    /// Check the canonical nonzero prime-order point used by a provisioned
+    /// GNUnet peer identity. This checks the key, without authenticating an owner.
+    pub fn validate_peer(self) -> Result<(), Error> {
+        let key = self.verifying_key()?;
+        if key.is_weak() || !key.to_edwards().is_torsion_free() {
+            return Err(Error::Authentication);
+        }
+        Ok(())
+    }
+
     /// Verify an expected-purpose region and its ordinary Ed25519 signature.
     ///
     /// Requires exact signed size, canonical public-key/R/S encodings and
@@ -108,15 +118,24 @@ impl EddsaPublicKey {
         signature: &EddsaSignature,
     ) -> Result<(), Error> {
         validate_region(expected_purpose, signed_region)?;
+        self.verify_message(signed_region, signature)
+    }
+
+    /// Verify a raw Ed25519 message for a protocol that defines its own framing.
+    /// The caller supplies the exact signed bytes and validates protocol claims.
+    /// Key and signature encodings must be canonical. Small-order points are refused.
+    pub fn verify_message(self, message: &[u8], signature: &EddsaSignature) -> Result<(), Error> {
+        self.verifying_key()?
+            .verify_strict(message, &ed25519_dalek::Signature::from_bytes(&signature.0))
+            .map_err(|_| Error::Authentication)
+    }
+
+    fn verifying_key(self) -> Result<VerifyingKey, Error> {
         let key = VerifyingKey::from_bytes(&self.0).map_err(|_| Error::Authentication)?;
         if key.to_edwards().compress().to_bytes() != self.0 {
             return Err(Error::Authentication);
         }
-        key.verify_strict(
-            signed_region,
-            &ed25519_dalek::Signature::from_bytes(&signature.0),
-        )
-        .map_err(|_| Error::Authentication)
+        Ok(key)
     }
 }
 

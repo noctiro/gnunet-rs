@@ -1,4 +1,4 @@
-//! Strict local v3 event bytes. The original TaskStore owns checksums and WAL ordering.
+//! Strict local event bytes. The original TaskStore owns checksums and WAL ordering.
 use super::model::{
     EntryBinding, Event, Manifest, ModelError, Phase, RootMode, TempFact, validate_path,
 };
@@ -8,12 +8,13 @@ use crate::{
 };
 use gnunet_fs::{Content, Location, Uri, directory::walk::Kind};
 use gnunet_types::AbsoluteTime;
-use std::path::PathBuf;
+use std::{num::NonZeroU32, path::PathBuf};
 /// Maximum returned event body; caller may use a stricter Store body cap.
 pub const MAX_EVENT_BYTES: usize = 8 * 1024 * 1024;
 /// Bounded official root/LOC URI bytes, independent of encoded proof size.
 pub const MAX_URI_BYTES: usize = 16_384;
 const VERSION: u16 = 3;
+const MANIFEST_VERSION: u16 = 4;
 #[cfg(test)]
 mod tests;
 const MANIFEST: u16 = 1;
@@ -47,7 +48,11 @@ pub struct SelectionView<'a> {
 /// Transfer deadlines are omitted and rebuilt explicitly for each run.
 pub fn encode_event(event: &Event<'_>) -> Result<(u16, Vec<u8>), ModelError> {
     let mut w = Writer(Vec::new());
-    w.u16(VERSION)?;
+    w.u16(if matches!(event, Event::Manifest(_)) {
+        MANIFEST_VERSION
+    } else {
+        VERSION
+    })?;
     let kind = match event {
         Event::Manifest(m) => {
             m.validate()?;
@@ -152,7 +157,8 @@ pub fn decode_event(kind: u16, bytes: &[u8]) -> Result<Event<'_>, ModelError> {
         return Err(ModelError::Limit);
     }
     let mut r = Reader(bytes);
-    if r.u16()? != VERSION {
+    let version = r.u16()?;
+    if version != VERSION && (version != MANIFEST_VERSION || kind != MANIFEST) {
         return Err(ModelError::Version);
     }
     let event = match kind {
@@ -164,7 +170,7 @@ pub fn decode_event(kind: u16, bytes: &[u8]) -> Result<Event<'_>, ModelError> {
                 },
                 _ => return Err(ModelError::Format),
             };
-            let options = get_options(&mut r)?;
+            let options = get_options(&mut r, version)?;
             let root_uri = copy(r.blob(MAX_URI_BYTES)?)?;
             let relative = path(r.blob(4096)?)?;
             let m = Manifest {
@@ -345,6 +351,7 @@ fn put_options(w: &mut Writer, o: TreeDownloadOptions) -> Result<(), ModelError>
     w.raw(&o.transfer.target)?;
     w.u8(u8::from(o.transfer.local_only))?;
     w.u32(o.transfer.queries_per_connection)?;
+    w.u32(o.transfer.request_parallelism.get())?;
     w.usize(o.transfer.io_slice_bytes)?;
     w.u64(o.directory.max_extent)?;
     w.usize(o.directory.max_entries)?;
@@ -379,7 +386,7 @@ fn put_options(w: &mut Writer, o: TreeDownloadOptions) -> Result<(), ModelError>
     }
     Ok(())
 }
-fn get_options(r: &mut Reader<'_>) -> Result<TreeDownloadOptions, ModelError> {
+fn get_options(r: &mut Reader<'_>, version: u16) -> Result<TreeDownloadOptions, ModelError> {
     let mut o = TreeDownloadOptions::new(DownloadOptions::new(AbsoluteTime::from_micros(0)));
     o.transfer.limits.max_file_bytes = r.u64()?;
     o.transfer.limits.max_encoded_bytes = r.u128()?;
@@ -387,6 +394,9 @@ fn get_options(r: &mut Reader<'_>) -> Result<TreeDownloadOptions, ModelError> {
     o.transfer.target = r.array()?;
     o.transfer.local_only = r.boolean()?;
     o.transfer.queries_per_connection = r.u32()?;
+    if version == MANIFEST_VERSION {
+        o.transfer.request_parallelism = NonZeroU32::new(r.u32()?).ok_or(ModelError::Format)?;
+    }
     o.transfer.io_slice_bytes = r.usize()?;
     o.directory.max_extent = r.u64()?;
     o.directory.max_entries = r.usize()?;

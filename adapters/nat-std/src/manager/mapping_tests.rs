@@ -74,25 +74,18 @@ fn settings() -> Settings {
         enable_ipscan: false,
         disable_v6: false,
         return_local_addresses: false,
-        use_stun: false,
         interface_interval: Duration::from_secs(60),
         dyndns_interval: Duration::from_secs(60),
         external_interval: Duration::from_secs(60),
         stun_stale: Duration::from_secs(60),
-        stun_interval: Duration::from_secs(60),
-        stun_servers: Vec::new(),
-        stun_datagrams: 1,
+        active_stun: None,
         job_timeout: Duration::from_secs(5),
         cleanup_timeout: Duration::from_secs(5),
         mapping_interval: Duration::from_secs(60),
         jobs: 4,
         mappings: 4,
         interfaces: gnunet_native::interfaces::Limits::default(),
-        helper_limits: crate::helpers::Limits::default(),
-        helper_paths: crate::helpers::Paths {
-            server: "/private/tmp/gnrs-upnp-unused-server".into(),
-            client: "/private/tmp/gnrs-upnp-unused-client".into(),
-        },
+        helpers: None,
     }
 }
 fn manager(device: Device) -> Result<(Manager, Source, Intent), Failure> {
@@ -110,6 +103,7 @@ fn manager_with_clock(
         state::Limits::default(),
         resolver,
         clock,
+        Default::default(),
     )?;
     let source = manager.source_attached()?;
     let binding = SocketAddress::V4 {

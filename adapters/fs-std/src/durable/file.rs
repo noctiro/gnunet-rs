@@ -614,6 +614,7 @@ impl Run<'_> {
                 cause,
                 interruption,
                 namespace_cleanup: None,
+                file_failures: Vec::new(),
             })),
         }
     }

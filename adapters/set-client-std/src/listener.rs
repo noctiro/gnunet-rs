@@ -106,6 +106,7 @@ pub struct Listener {
     accepted: Vec<Weak<Acceptance>>,
     recover_reject: Option<u32>,
     closed: bool,
+    pending_loss: Option<ListenerLoss>,
 }
 impl Listener {
     /// Reject one actual still-uncommitted incoming preparation on its original
@@ -172,9 +173,13 @@ impl Listener {
             accepted: Vec::new(),
             recover_reject: None,
             closed: false,
+            pending_loss: None,
         })
     }
     fn lost(&mut self, cause: Cause, retry: bool) -> ListenerLoss {
+        if let Some(loss) = self.pending_loss.take() {
+            return loss;
+        }
         let transport = self.session.retire(!retry);
         self.recover_reject = None;
         self.accepted.clear();
@@ -199,6 +204,9 @@ impl Listener {
         }
     }
     fn failed(&mut self, error: Error, retry: bool) -> ListenerLoss {
+        if let Some(loss) = self.pending_loss.take() {
+            return loss;
+        }
         let (cause, deadline) = error.into_cause_parts();
         let mut loss = self.lost(cause, retry);
         loss.deadline = deadline;
@@ -216,6 +224,9 @@ impl Listener {
     }
     /// Clock-free deadline fence for a caller waiting on unrelated output.
     pub fn poll_native_guard(&mut self, cx: &mut Context<'_>) -> Option<ListenerLoss> {
+        if let Some(loss) = self.pending_loss.take() {
+            return Some(loss);
+        }
         if self.closed {
             return None;
         }
@@ -292,11 +303,11 @@ impl Listener {
         cx: &mut Context<'_>,
         decide: &mut impl FnMut(Incoming<'_>) -> Decision,
     ) -> Poll<Result<ListenProgress, Error>> {
-        if self.closed {
-            return Poll::Ready(Err(Fault::Closed.into()));
-        }
         if let Some(loss) = self.poll_native_guard(cx) {
             return Poll::Ready(Ok(ListenProgress::Lost(loss)));
+        }
+        if self.closed {
+            return Poll::Ready(Err(Fault::Closed.into()));
         }
         if let Some(id) = self.recover_reject {
             return Poll::Ready(match self.reject(id) {
@@ -320,12 +331,18 @@ impl Listener {
                 tag,
                 bytes,
                 complete,
-            } => Ok(ListenProgress::Written {
-                epoch,
-                rejected: tag,
-                bytes,
-                complete,
-            }),
+                failure,
+            } => {
+                if let Some(error) = failure {
+                    self.pending_loss = Some(self.failed(error, false));
+                }
+                Ok(ListenProgress::Written {
+                    epoch,
+                    rejected: tag,
+                    bytes,
+                    complete,
+                })
+            }
             Step::Activity => Ok(ListenProgress::Activity),
             Step::Eof => return Poll::Ready(Ok(ListenProgress::Lost(self.lost(Cause::Eof, true)))),
             Step::Frame { epoch, bytes } => self.frame(epoch, &bytes, decide),

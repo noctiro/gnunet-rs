@@ -1,20 +1,24 @@
 //! Completion-owned kernel loans; dropping a waiter requests cancellation only.
-use super::{CapturedAddress, Device, abi::Address};
+mod admission;
+mod control;
+mod status;
+use super::{CapturedAddress, Device, ReplyAddress, abi::Address};
+use admission::Direction as Kind;
+pub(super) use control::Control;
+pub use status::CompletionStatusUnavailable;
+use status::Notice;
 use std::{
     cell::UnsafeCell,
     ffi::c_void,
     fmt, io,
     os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle},
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicU64, Ordering},
-    },
-    task::{Context, Poll, Waker},
+    sync::{Arc, atomic::Ordering},
+    task::{Context, Poll},
 };
 use windows_sys::Win32::{
     Foundation::{ERROR_IO_PENDING, ERROR_NOT_FOUND, WAIT_OBJECT_0},
     System::{
-        IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED},
+        IO::{CancelIoEx, OVERLAPPED},
         Threading::{
             CloseThreadpoolWait, CreateEventW, CreateThreadpoolWait,
             DisassociateCurrentThreadFromCallback, PTP_CALLBACK_INSTANCE, PTP_WAIT,
@@ -22,13 +26,6 @@ use windows_sys::Win32::{
         },
     },
 };
-const PENDING: u64 = u64::MAX;
-const TAKEN: u64 = u64::MAX - 1;
-#[derive(Clone, Copy)]
-enum Kind {
-    Receive,
-    Send,
-}
 struct Memory {
     overlapped: OVERLAPPED,
     packet: zeroize::Zeroizing<Vec<u8>>,
@@ -41,14 +38,13 @@ struct Loan {
     event: OwnedHandle,
     memory: UnsafeCell<Memory>,
     kind: Kind,
-    result: AtomicU64,
-    waker: Mutex<Option<Waker>>,
+    completion: Notice,
 }
 #[expect(
     unsafe_code,
     reason = "The kernel alone accesses the stable UnsafeCell while I/O is pending; the one completion callback publishes retirement before the unique Request owner may access its memory"
 )]
-// SAFETY: native completion and the result release/acquire fence separate kernel
+// SAFETY: native completion and the notice mutex separate kernel
 // writes from Rust access; the private callback owns an independent strong Arc.
 unsafe impl Send for Loan {}
 #[expect(
@@ -61,7 +57,7 @@ impl Drop for Loan {
     fn drop(&mut self) {
         // Final Drop is possible only before submission or after the callback
         // retired the loan. The event and provider stay owned through this point.
-        if self.result.load(Ordering::Acquire) == PENDING {
+        if self.completion.pending() {
             match self.kind {
                 Kind::Receive => &self.device.receive,
                 Kind::Send => &self.device.send,
@@ -112,14 +108,12 @@ pub enum Completion {
 /// A session admits at most one pending kernel operation in each direction.
 pub struct Request {
     loan: Arc<Loan>,
+    cancel_on_drop: bool,
 }
 impl fmt::Debug for Request {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("WinDivertRequest")
-            .field(
-                "pending",
-                &(self.loan.result.load(Ordering::Acquire) == PENDING),
-            )
+            .field("pending", &self.loan.completion.pending())
             .finish_non_exhaustive()
     }
 }
@@ -131,22 +125,17 @@ impl Request {
         let mut packet = Vec::new();
         packet.try_reserve_exact(bytes).map_err(io::Error::other)?;
         packet.resize(bytes, 0);
-        Self::submit(
-            device,
-            zeroize::Zeroizing::new(packet),
-            Address::default(),
-            Kind::Receive,
-        )
+        Self::submit(device, zeroize::Zeroizing::new(packet), None)
     }
     pub(super) fn send(
         device: Arc<Device>,
         packet: zeroize::Zeroizing<Vec<u8>>,
-        address: Address,
+        address: &ReplyAddress,
     ) -> io::Result<Self> {
         if packet.is_empty() || packet.len() > 65575 {
             return Err(io::ErrorKind::InvalidInput.into());
         }
-        Self::submit(device, packet, address, Kind::Send)
+        Self::submit(device, packet, Some(address))
     }
     #[expect(
         unsafe_code,
@@ -155,9 +144,14 @@ impl Request {
     fn submit(
         device: Arc<Device>,
         packet: zeroize::Zeroizing<Vec<u8>>,
-        address: Address,
-        kind: Kind,
+        route: Option<&ReplyAddress>,
     ) -> io::Result<Self> {
+        // Direction and raw projection derive from the same immutable original
+        // route borrow; no caller can supply independent unchecked send metadata.
+        let (kind, address) = match route {
+            Some(address) => (Kind::Send, address.raw),
+            None => (Kind::Receive, Address::default()),
+        };
         // Prepare every fallible native resource before lending any memory.
         // SAFETY: null attributes/name; manual-reset private event starts unset.
         let event = unsafe { CreateEventW(std::ptr::null(), 1, 0, std::ptr::null()) };
@@ -187,8 +181,7 @@ impl Request {
                 transferred: 0,
             }),
             kind,
-            result: AtomicU64::new(PENDING),
-            waker: Mutex::new(None),
+            completion: Notice::new(),
         });
         let raw = Arc::into_raw(Arc::clone(&loan));
         // SAFETY: the independent context Arc is live before submission; no wait
@@ -202,52 +195,66 @@ impl Request {
             drop(unsafe { Arc::from_raw(raw) });
             return Err(error);
         }
-        let result = loan.device.call(|handle| {
-            // SAFETY: native submission has not happened; no callback is armed.
-            let memory = unsafe { &mut *loan.memory.get() };
-            let accepted = match kind {
-                Kind::Receive => {
-                    // SAFETY: exact stable packet/address/count/OVERLAPPED loans.
-                    unsafe {
-                        (loan.device.api.recv)(
-                            handle,
-                            memory.packet.as_mut_ptr().cast(),
-                            memory.packet.len() as u32,
-                            &mut memory.transferred,
-                            0,
-                            &mut memory.address,
-                            &mut memory.address_bytes,
-                            &mut memory.overlapped,
-                        )
+        let result = loan
+            .device
+            .handle
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .submit(&loan, |handle| {
+                // SAFETY: native submission has not happened; no callback is armed.
+                let memory = unsafe { &mut *loan.memory.get() };
+                let accepted = match route {
+                    None => {
+                        // SAFETY: exact stable packet/address/count/OVERLAPPED loans.
+                        unsafe {
+                            (loan.device.api.recv)(
+                                handle,
+                                memory.packet.as_mut_ptr().cast(),
+                                memory.packet.len() as u32,
+                                &mut memory.transferred,
+                                0,
+                                &mut memory.address,
+                                &mut memory.address_bytes,
+                                &mut memory.overlapped,
+                            )
+                        }
+                    }
+                    Some(address) => {
+                        // Resource preparation and waiting for original handle
+                        // admission can outlive an earlier route observation.
+                        // Recheck this same owner's route here, before any send,
+                        // while the unarmed native wait still has no kernel loan.
+                        if !std::sync::Weak::ptr_eq(&address.owner, &Arc::downgrade(&loan.device)) {
+                            return Err(io::ErrorKind::InvalidInput.into());
+                        }
+                        address.check().map_err(io::Error::other)?;
+                        // SAFETY: immutable packet/address and stable output loans.
+                        unsafe {
+                            (loan.device.api.send)(
+                                handle,
+                                memory.packet.as_ptr().cast(),
+                                memory.packet.len() as u32,
+                                &mut memory.transferred,
+                                0,
+                                &memory.address,
+                                memory.address_bytes,
+                                &mut memory.overlapped,
+                            )
+                        }
+                    }
+                };
+                if accepted == 0 {
+                    let error = io::Error::last_os_error();
+                    if error.raw_os_error() != Some(ERROR_IO_PENDING as i32) {
+                        return Err(error);
                     }
                 }
-                Kind::Send => {
-                    // SAFETY: immutable packet/address and stable output loans.
-                    unsafe {
-                        (loan.device.api.send)(
-                            handle,
-                            memory.packet.as_ptr().cast(),
-                            memory.packet.len() as u32,
-                            &mut memory.transferred,
-                            0,
-                            &memory.address,
-                            memory.address_bytes,
-                            &mut memory.overlapped,
-                        )
-                    }
-                }
-            };
-            if accepted == 0 {
-                let error = io::Error::last_os_error();
-                if error.raw_os_error() != Some(ERROR_IO_PENDING as i32) {
-                    return Err(error);
-                }
-            }
-            Ok(())
-        });
+                Ok(())
+            });
         if let Err(error) = result {
-            // SAFETY: non-pending failure means there is no kernel loan, and the
-            // unarmed wait cannot invoke its callback. Release both native/count.
+            // SAFETY: route/admission refusal or a non-pending SDK failure left
+            // no kernel loan. The unarmed wait cannot invoke its callback.
+            // Release the native wait and its independent callback count once.
             unsafe {
                 CloseThreadpoolWait(wait);
                 drop(Arc::from_raw(raw));
@@ -260,50 +267,63 @@ impl Request {
         unsafe {
             SetThreadpoolWait(wait, loan.event.as_raw_handle(), std::ptr::null());
         }
-        Ok(Self { loan })
+        Ok(Self {
+            loan,
+            cancel_on_drop: true,
+        })
     }
     /// Poll the original I/O once. Ready consumes its data/result; later polls
-    /// fail instead of replaying a packet. Registration races recheck the result.
+    /// fail instead of replaying a packet. Completion publication and wake
+    /// registration share one mutex, so a canceled poll cannot lose the result.
     ///
     /// # Panics
     /// Panics if the shared capture interface-observation mutex was poisoned.
     #[expect(
         unsafe_code,
-        reason = "The acquire-loaded completed result proves the kernel loan retired; the unique Request owner alone may take the buffer, and the callback never accesses it after publishing"
+        reason = "The mutex-published completed result proves the kernel loan retired; the unique Request owner alone may take the buffer, and the callback never accesses it after publishing"
     )]
     pub fn poll_complete(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<Completion>> {
-        let mut result = self.loan.result.load(Ordering::Acquire);
-        if result == PENDING {
-            {
-                let mut wake = self
-                    .loan
-                    .waker
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                if wake.as_ref().is_none_or(|old| !old.will_wake(cx.waker())) {
-                    *wake = Some(cx.waker().clone());
-                }
+        let bytes = std::task::ready!(self.poll_extent(cx))?;
+        match self.loan.kind {
+            Kind::Receive => {
+                // SAFETY: poll_extent consumed the kernel completion and verified
+                // both original outputs. No callback can still access this loan.
+                let memory = unsafe { &mut *self.loan.memory.get() };
+                let address = CapturedAddress::received(memory.address, &self.loan.device);
+                memory.packet.truncate(bytes);
+                Poll::Ready(Ok(Completion::Received {
+                    packet: std::mem::take(&mut *memory.packet),
+                    address,
+                }))
             }
-            result = self.loan.result.load(Ordering::Acquire);
-            if result == PENDING {
-                return Poll::Pending;
-            }
+            Kind::Send => Poll::Ready(Ok(Completion::Sent { bytes })),
         }
-        if result == TAKEN {
-            return Poll::Ready(Err(io::Error::other(
-                "WinDivert original result already consumed",
-            )));
+    }
+
+    /// Observe and discard an original receive during shutdown.
+    /// No route is qualified and the loan retains the packet for zeroization.
+    ///
+    /// # Errors
+    /// Refuses a send request and preserves the original receive outcome.
+    pub fn poll_discard_receive(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        if !matches!(self.loan.kind, Kind::Receive) {
+            return Poll::Ready(Err(io::ErrorKind::InvalidInput.into()));
         }
-        self.loan.result.store(TAKEN, Ordering::Release);
-        if result >> 32 != 0 {
-            return Poll::Ready(Err(io::Error::from_raw_os_error(
-                (result >> 32) as u32 as i32,
-            )));
-        }
-        // SAFETY: kernel completion precedes publication, and callback access to
-        // Memory has ended. No other public Request can share or take this loan.
-        let memory = unsafe { &mut *self.loan.memory.get() };
-        let bytes = result as u32 as usize;
+        self.poll_extent(cx).map(|result| result.map(|_| ()))
+    }
+
+    #[expect(
+        unsafe_code,
+        reason = "the ready result ends callback and kernel access to the original outputs before validation"
+    )]
+    fn poll_extent(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<usize>> {
+        let bytes = match self.loan.completion.poll(cx) {
+            Poll::Pending => return Poll::Pending,
+            Poll::Ready(Err(error)) => return Poll::Ready(Err(error)),
+            Poll::Ready(Ok(bytes)) => bytes as usize,
+        };
+        // SAFETY: kernel completion precedes publication and native access has ended.
+        let memory = unsafe { &*self.loan.memory.get() };
         if bytes > memory.packet.len() && matches!(self.loan.kind, Kind::Receive) {
             return Poll::Ready(Err(io::Error::other(
                 "WinDivert completion exceeded original packet storage",
@@ -318,16 +338,9 @@ impl Request {
                         "WinDivert capture returned non-NETWORK packet metadata",
                     )));
                 }
-                let address = CapturedAddress::received(memory.address, &self.loan.device);
-                memory.packet.truncate(bytes);
-                Poll::Ready(Ok(Completion::Received {
-                    packet: std::mem::take(&mut *memory.packet),
-                    address,
-                }))
+                Poll::Ready(Ok(bytes))
             }
-            Kind::Send if bytes == memory.packet.len() => {
-                Poll::Ready(Ok(Completion::Sent { bytes }))
-            }
+            Kind::Send if bytes == memory.packet.len() => Poll::Ready(Ok(bytes)),
             Kind::Send => Poll::Ready(Err(io::Error::other(InjectionLengthError {
                 expected: memory.packet.len(),
                 observed: bytes,
@@ -341,7 +354,7 @@ impl Request {
         reason = "CancelIoEx borrows a raw pointer to the same stable original OVERLAPPED under the device close guard, without creating a Rust reference during kernel access"
     )]
     pub fn request_cancel(&mut self) -> io::Result<()> {
-        if self.loan.result.load(Ordering::Acquire) != PENDING {
+        if !self.loan.completion.pending() {
             return Ok(());
         }
         self.loan.device.call(|handle| {
@@ -358,10 +371,21 @@ impl Request {
             Ok(())
         })
     }
+
+    /// Release the completion observer without another native cancellation call.
+    /// The original callback retains the event, buffers and provider until
+    /// completion. Use this after making the required cancellation or close
+    /// attempt when the caller's completion observation window has ended.
+    pub fn detach(mut self) {
+        self.cancel_on_drop = false;
+    }
 }
 impl Drop for Request {
     fn drop(&mut self) {
-        let _canceled = self.request_cancel();
+        self.loan.completion.detach_observer();
+        if self.cancel_on_drop {
+            let _canceled = self.request_cancel();
+        }
     }
 }
 #[expect(
@@ -388,27 +412,14 @@ unsafe extern "system" fn complete(
         }
         return;
     }
-    let outcome = loan.device.call(|handle| {
-        let mut bytes = 0;
-        // SAFETY: the private event was signaled by this completed original I/O.
-        let overlapped = unsafe { std::ptr::addr_of_mut!((*loan.memory.get()).overlapped) };
-        // SAFETY: original live handle and stable completed OVERLAPPED; no wait.
-        if unsafe { GetOverlappedResult(handle, overlapped, &mut bytes, 0) } == 0 {
-            return Err(io::Error::last_os_error());
-        }
-        Ok(bytes)
-    });
-    let result = match outcome {
-        Ok(bytes) => u64::from(bytes),
-        Err(error) => {
-            u64::from(
-                error
-                    .raw_os_error()
-                    .filter(|code| *code != 0)
-                    .unwrap_or(995) as u32,
-            ) << 32
-        }
-    };
+    // Remove this exact original from close-time queries before publishing its
+    // memory or making its directional credit available to a later operation.
+    let outcome = loan
+        .device
+        .handle
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .complete(&loan);
     // SAFETY: no wait-object state is used after close. Independent Arc ownership
     // permits native disassociation before arbitrary caller Wake code runs.
     unsafe {
@@ -420,12 +431,7 @@ unsafe extern "system" fn complete(
         Kind::Send => &loan.device.send,
     }
     .store(false, Ordering::Release);
-    loan.result.store(result, Ordering::Release);
-    let wake = loan
-        .waker
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .take();
+    let wake = loan.completion.publish(outcome);
     if let Some(wake) = wake {
         let _notified = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| wake.wake()));
     }

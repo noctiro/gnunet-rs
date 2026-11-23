@@ -2,15 +2,14 @@
 //! Only actual local identity observations call these APIs; remote messages do
 //! not establish own lineage. No source is stopped or rebranded by a transition.
 use crate::{engine::Core, state::*, *};
-use alloc::vec::Vec;
 use gnunet_types::Error as Fault;
 
-impl<'id> Core<'id> {
+impl<'id, const ROOMS: usize> Core<'id, ROOMS> {
     /// Whether this peer was explicitly observed as a local signer or restored
     /// as such from trusted owned history. This is historical provenance only;
     /// it does not authorize a live source or signing with an old private key.
     pub fn is_own_signer(&self, peer: &[u8; 32]) -> bool {
-        self.own_signers.binary_search(peer).is_ok()
+        self.own_signers.peers().binary_search(peer).is_ok()
     }
     /// Bind an actual current service PILS identity. After archive restoration
     /// this grants fresh local authority, without claiming that the historical
@@ -55,7 +54,7 @@ impl<'id> Core<'id> {
                     continue;
                 }
                 let own_lease = matches!(
-                    room.sources.get(op.binding.source.slot)?.role,
+                    room.sources.get(op.binding.source)?.role,
                     SourceRole::ServiceSigner(_)
                 );
                 let old_sign = matches!(&op.job, Job::Sign { public, .. } if public[4..] == old);
@@ -64,9 +63,8 @@ impl<'id> Core<'id> {
                 }
             }
         }
-        // This is the last fallible step. Capacity growth is charged with the
-        // predecessor allocation still retained. Every following write is local
-        // and infallible; refusal above leaves all identity/lease state intact.
+        // This is the last fallible step. Refusal keeps the current identity
+        // and all original signer leases intact.
         self.remember_own_signer(peer)?;
         for (_, room) in self.rooms.iter_mut() {
             for (_, source) in room.sources.iter_mut() {
@@ -80,55 +78,13 @@ impl<'id> Core<'id> {
     }
 
     pub(crate) fn remember_own_signer(&mut self, peer: [u8; 32]) -> Result<(), Error> {
-        let at = match self.own_signers.binary_search(&peer) {
-            Ok(_) => return Ok(()),
-            Err(at) => at,
-        };
-        if self.own_signers.len() == self.limits.own_signers {
-            return Err(Fault::Capacity.into());
-        }
-        if self.own_signers.len() == self.own_signers.capacity() {
-            let capacity = self
-                .own_signers
-                .capacity()
-                .checked_mul(2)
-                .ok_or(Fault::Overflow)?
-                .max(1)
-                .min(self.limits.own_signers);
-            let requested = capacity
-                .checked_mul(core::mem::size_of::<[u8; 32]>())
-                .ok_or(Fault::Overflow)?;
-            if requested > self.remaining_bytes() {
-                return Err(Fault::Capacity.into());
-            }
-            let mut next = Vec::new();
-            next.try_reserve_exact(capacity)
-                .map_err(|_| Fault::Capacity)?;
-            let bytes = next
-                .capacity()
-                .checked_mul(core::mem::size_of::<[u8; 32]>())
-                .ok_or(Fault::Overflow)?;
-            if bytes > self.remaining_bytes() {
-                return Err(Fault::Capacity.into());
-            }
-            let previous = self
-                .own_signers
-                .capacity()
-                .checked_mul(core::mem::size_of::<[u8; 32]>())
-                .ok_or(Fault::Overflow)?;
-            let used = self
-                .used
-                .checked_add(bytes)
-                .and_then(|n| n.checked_sub(previous))
-                .ok_or(Fault::Overflow)?;
-            next.extend_from_slice(&self.own_signers);
-            self.own_signers = next;
-            self.used = used;
-        }
-        self.own_signers.insert(at, peer);
+        let budget = self.remaining_bytes();
+        self.used += self
+            .own_signers
+            .remember(peer, self.limits.own_signers, budget)?;
         Ok(())
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "alloc"))]
 mod tests;

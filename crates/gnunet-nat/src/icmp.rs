@@ -108,6 +108,38 @@ pub fn echo_probe(
     icmp_crc(&mut out[20..28]);
     Ok(28)
 }
+/// Build the IPv4 header and empty UDP datagram used by the other official
+/// periodic probe. The NAT looks up the same source and destination port.
+pub fn udp_probe(
+    local: [u8; 4],
+    ttl: u8,
+    profile: IpLengthProfile,
+    out: &mut [u8],
+) -> Result<usize, Error> {
+    if out.len() < 28 {
+        return Err(Error::Capacity);
+    }
+    if ttl == 0 {
+        return Err(Error::InvalidInput);
+    }
+    ip(
+        out,
+        IpHeader {
+            source: local,
+            destination: DUMMY,
+            id: 0,
+            ttl,
+            protocol: 17,
+            total: 28,
+            profile,
+        },
+    );
+    out[20..22].copy_from_slice(&TRAVERSAL_PORT.to_be_bytes());
+    out[22..24].copy_from_slice(&TRAVERSAL_PORT.to_be_bytes());
+    out[24..26].copy_from_slice(&8u16.to_be_bytes());
+    out[26..28].fill(0); // UDP checksum zero is allowed in IPv4.
+    Ok(28)
+}
 /// Build the official56-byte TIME_EXCEEDED packet carrying an ECHO reversal
 /// port. Source is the requester's reachable IP; target is the NAT external IP.
 pub fn reversal_icmp(

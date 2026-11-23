@@ -8,11 +8,13 @@ pub mod discovery;
 mod engine;
 /// Shared IP parsing, checksum, NAT rewrite and ICMP quote primitives for EXIT.
 pub mod packet;
+mod peer_af;
 mod types;
 pub use engine::Engine;
 pub use gnunet_wire::official::vpn::{
     Address, AfProfile, Family, Helper, PeerMessage, Request as WireRequest, Response,
 };
+pub use peer_af::{PeerProfiles, parse_peer_identity};
 pub use types::*;
 /// Actual service-name descriptor hash, without a terminating NUL or private tag.
 #[must_use]

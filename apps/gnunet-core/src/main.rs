@@ -32,7 +32,7 @@ fn run() -> Result<(), Failure> {
         getopt::Options,
         helpers::{self, Target},
         logging::Logger,
-        program::{self, Defaults, Invocation, NlsDisabled, Preparation},
+        program::{self, Defaults, Invocation, Preparation},
         shared_clock::SharedClock,
     };
     use std::sync::Arc;
@@ -68,13 +68,12 @@ fn run() -> Result<(), Failure> {
         defaults: Defaults::Native,
     };
     let environment = program::Environment::capture();
-    let preparation = program::prepare(
+    let preparation = program::prepare_installed(
         config,
         invocation,
         options,
         std::env::args_os(),
         &environment,
-        &mut NlsDisabled,
         &mut logger,
         &clock,
         &mut io::stdout().lock(),

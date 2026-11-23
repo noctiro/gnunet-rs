@@ -24,9 +24,11 @@ empty keys/values, over-budget input and duplicate hashed keys are refused. Peer
 
 ## Results and cancellation
 
-Requester success prints one signed uppercase hexadecimal integer and newline. The original service payload is MPI STD, a signed big-endian value. The command
-scans it as signed, adds it when the independent range word is positive and
-negates it otherwise, matching the C API operation. Empty MPI is zero. Leading sign padding is not discarded as an unsigned-magnitude convention. No metadata header is added to stdout. A responder success is a status
+Requester success prints one signed uppercase hexadecimal integer and newline.
+The command decodes the service's signed big-endian MPI STD value and uses
+the independent range word to keep its sign when positive and negate it
+otherwise. Output follows libgcrypt's MPI HEX format, including whole octets,
+a zero octet before high-bit magnitudes and `00` for zero. A responder success is a status
 observation logged through the selected logger; it prints no fabricated product. Unknown/failure/disconnected status words remain non-success with original
 response fields and input receipts retained in the failure.
 

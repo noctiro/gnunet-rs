@@ -147,6 +147,12 @@ impl Book {
     pub(crate) fn demand(&self) -> Option<&Demand> {
         self.demand.as_ref()
     }
+    /// Retire the local identity's authority. Keep the committed numeric floor
+    /// and the process's demand sequence.
+    pub(crate) fn retire_authority(&mut self) {
+        self.active = None;
+        self.demand = None;
+    }
     pub(crate) fn state(&self) -> State {
         State {
             active: self.active,

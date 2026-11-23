@@ -12,9 +12,14 @@ use gnunet_service_runtime::{
     credentials::UnixAccess,
 };
 mod driver;
+mod embedded;
 mod identity;
 mod reporting;
-use driver::run_foreground;
+pub use crate::histogram::{
+    Failure as HistogramFailure, IoFailure as HistogramIoFailure, Report as HistogramReport,
+};
+use driver::{Foreground, Sources, run_foreground};
+pub use embedded::{EmbeddedSettings, LocalEndpoints, Ready, serve_embedded};
 #[cfg(unix)]
 use gnunet_service_runtime::ListenerPreparation;
 #[cfg(unix)]
@@ -118,23 +123,29 @@ pub async fn foreground_with_clock(
     #[cfg(unix)]
     let bound = BoundListeners::bind(config, b"NSE", activation).await?;
     #[cfg(windows)]
-    let bound = if activation.is_empty() {
-        BoundListeners::bind_configured(config, b"NSE", unix_access(config)?.into()).await?
-    } else {
-        BoundListeners::from_activation(activation)?
+    let bound = {
+        let access = unix_access(config)?;
+        if activation.is_empty() {
+            BoundListeners::bind_configured(config, b"NSE", access.into()).await?
+        } else {
+            BoundListeners::from_activation_with_access(activation, access)?
+        }
     };
     run_foreground(
-        config,
-        bound,
-        limits,
+        Foreground {
+            config,
+            bound: &bound,
+            limits,
+            clock,
+            sources: Sources::Configured,
+        },
         ready,
         shutdown,
         observe,
-        clock,
         stderr_admission,
         || false,
         NoStatistics,
-        std::future::ready(Ok(())),
+        Some(std::future::ready(Ok(()))),
     )
     .await
 }
@@ -198,17 +209,20 @@ pub async fn foreground_prepared_with_clock<F: StatisticsFactory>(
     let limits = configured_limits(config, limits)?;
     let bound = listeners.finish().await?;
     run_foreground(
-        config,
-        bound,
-        limits,
+        Foreground {
+            config,
+            bound: &bound,
+            limits,
+            clock,
+            sources: Sources::Configured,
+        },
         ready,
         shutdown,
         observe,
-        clock,
         diagnostic,
         diagnostic_failed,
         statistics_factory,
-        std::future::ready(Ok(())),
+        Some(std::future::ready(Ok(()))),
     )
     .await
 }
@@ -237,17 +251,20 @@ pub async fn foreground_listening_with_clock<F: StatisticsFactory>(
     verify_configured_identity(config)?;
     let limits = configured_limits(config, limits)?;
     run_foreground(
-        config,
-        bound,
-        limits,
+        Foreground {
+            config,
+            bound: &bound,
+            limits,
+            clock,
+            sources: Sources::Configured,
+        },
         ready,
         shutdown,
         observe,
-        clock,
         diagnostic,
         diagnostic_failed,
         statistics_factory,
-        notification,
+        Some(notification),
     )
     .await
 }

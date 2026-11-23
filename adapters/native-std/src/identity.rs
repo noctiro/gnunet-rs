@@ -104,8 +104,7 @@ fn invalid(message: &'static str) -> io::Error {
 
 pub(crate) struct SecurityDescriptor(pub(crate) windows_sys::Win32::Security::PSECURITY_DESCRIPTOR);
 
-/// Owner-only native descriptor for synchronous interoperability with Windows
-/// resource constructors. No inheritable handle or process privilege is granted.
+/// A protected native descriptor for synchronous Windows resource construction.
 pub struct PrivateSecurityDescriptor(SecurityDescriptor);
 /// Borrowed initialized SECURITY_ATTRIBUTES. Its descriptor owner must outlive
 /// the synchronous native constructor; the constructor must not retain this pointer.
@@ -118,6 +117,19 @@ impl PrivateSecurityDescriptor {
     /// Native conversion/token errors retain their original domain and cause.
     pub fn owner_only() -> io::Result<Self> {
         private_file_descriptor().map(Self)
+    }
+    /// Admit one additional authenticated account to a local, single-instance pipe.
+    pub fn pipe_with_client(client: &Sid) -> io::Result<Self> {
+        let owner = process_user()?;
+        security_descriptor(&format!("D:P(A;;FA;;;{owner})(A;;GRGW;;;{client})")).map(Self)
+    }
+    pub(crate) fn process_with_socket_publisher(child: &Sid) -> io::Result<Self> {
+        use windows_sys::Win32::System::Threading::PROCESS_DUP_HANDLE;
+        let publisher = process_user()?;
+        security_descriptor(&format!(
+            "D:P(A;;GA;;;SY)(A;;GA;;;{child})(A;;0x{PROCESS_DUP_HANDLE:08x};;;{publisher})"
+        ))
+        .map(Self)
     }
     /// Borrow noninheritable attributes for a synchronous Windows constructor.
     pub fn attributes(&self) -> SecurityAttributes<'_> {
@@ -184,11 +196,16 @@ pub(crate) fn security_descriptor(sddl: &str) -> io::Result<SecurityDescriptor> 
 
 /// Observe the primary group SID of the process token. This is a native Windows
 /// group, not a POSIX GID, and does not authenticate a socket peer.
+pub fn process_primary_group() -> io::Result<Sid> {
+    let token = primary_token()?;
+    token_primary_group(&token)
+}
+
 #[expect(
     unsafe_code,
-    reason = "GetTokenInformation writes bounded aligned TOKEN_PRIMARY_GROUP and SID storage; the SID is copied before the token and buffer are released"
+    reason = "Read a bounded primary-group SID from the same original token used to observe the user"
 )]
-pub fn process_primary_group() -> io::Result<Sid> {
+pub(crate) fn token_primary_group(token: &OwnedHandle) -> io::Result<Sid> {
     use windows_sys::Win32::Security::TOKEN_PRIMARY_GROUP;
     use windows_sys::Win32::Security::TokenPrimaryGroup;
     #[repr(C)]
@@ -196,7 +213,6 @@ pub fn process_primary_group() -> io::Result<Sid> {
         group: TOKEN_PRIMARY_GROUP,
         sid: [u32; SECURITY_MAX_SID_SIZE as usize / size_of::<u32>()],
     }
-    let token = primary_token()?;
     // SAFETY: these native scalar/pointer fields permit zero initialization.
     let mut output: Buffer = unsafe { zeroed() };
     let mut written = 0;
@@ -229,22 +245,30 @@ pub fn process_primary_group() -> io::Result<Sid> {
 /// Query the owner SID of this original opened file/directory handle. READ_CONTROL
 /// access is required; its error is retained. No path is reopened and no ACL is
 /// changed. This time-local ownership observation is not an access grant.
+pub fn file_owner(file: &std::fs::File) -> io::Result<Sid> {
+    use std::os::windows::io::AsHandle;
+    use windows_sys::Win32::Security::Authorization::SE_FILE_OBJECT;
+    object_owner(file.as_handle(), SE_FILE_OBJECT)
+}
+
 #[expect(
     unsafe_code,
-    reason = "GetSecurityInfo borrows a live File handle and returns one guarded native security descriptor; its valid owner SID is copied before release"
+    reason = "GetSecurityInfo borrows a live Windows object and returns one guarded native security descriptor; its valid owner SID is copied before release"
 )]
-pub fn file_owner(file: &std::fs::File) -> io::Result<Sid> {
+pub(crate) fn object_owner(
+    handle: std::os::windows::io::BorrowedHandle<'_>,
+    object: windows_sys::Win32::Security::Authorization::SE_OBJECT_TYPE,
+) -> io::Result<Sid> {
     use windows_sys::Win32::Security::{
-        Authorization::{GetSecurityInfo, SE_FILE_OBJECT},
-        OWNER_SECURITY_INFORMATION,
+        Authorization::GetSecurityInfo, OWNER_SECURITY_INFORMATION,
     };
     let mut owner = ptr::null_mut();
     let mut descriptor = ptr::null_mut();
     // SAFETY: exact output slots; requesting only owner data leaves other slots null.
     let code = unsafe {
         GetSecurityInfo(
-            file.as_raw_handle(),
-            SE_FILE_OBJECT,
+            handle.as_raw_handle(),
+            object,
             OWNER_SECURITY_INFORMATION,
             &mut owner,
             ptr::null_mut(),
@@ -257,13 +281,13 @@ pub fn file_owner(file: &std::fs::File) -> io::Result<Sid> {
         return Err(io::Error::from_raw_os_error(code as i32));
     }
     if descriptor.is_null() {
-        return Err(invalid("file owner query returned no security descriptor"));
+        return Err(invalid("owner query returned no security descriptor"));
     }
     let _descriptor = SecurityDescriptor(descriptor);
     // SAFETY: a non-null owner returned by GetSecurityInfo is a live SID within
     // its guarded allocation. Validate before interpreting its native length.
     if owner.is_null() || unsafe { IsValidSid(owner) } == 0 {
-        return Err(invalid("file security descriptor has no valid owner SID"));
+        return Err(invalid("security descriptor has no valid owner SID"));
     }
     // SAFETY: the native SID has just been validated and remains guarded.
     let length = unsafe { GetLengthSid(owner) } as usize;
@@ -294,12 +318,16 @@ pub(crate) fn primary_token() -> io::Result<OwnedHandle> {
 /// Observe the current process's primary-token user, not a thread impersonation
 /// identity. One TOKEN_QUERY handle is owned and closed exactly once. No group,
 /// file access, elevation or peer authentication is inferred from this SID.
-#[expect(
-    unsafe_code,
-    reason = "GetTokenInformation writes exact aligned initialized TOKEN_USER/SID storage using a uniquely owned query token"
-)]
 pub fn process_user() -> io::Result<Sid> {
     let token = primary_token()?;
+    token_user(&token)
+}
+
+#[expect(
+    unsafe_code,
+    reason = "GetTokenInformation writes exact aligned initialized TOKEN_USER/SID storage using a live query token"
+)]
+pub(crate) fn token_user(token: &OwnedHandle) -> io::Result<Sid> {
     // SAFETY: TOKEN_USER contains only native scalar/pointer storage; zero is valid.
     let mut output: TokenBuffer = unsafe { zeroed() };
     let mut written = 0;
@@ -331,16 +359,13 @@ pub fn process_user() -> io::Result<Sid> {
     Sid::copy_native(output.user.User.Sid, available)
 }
 
-/// Resolve the actual primary-token user's native account name. This uses the
-/// token SID rather than mutable USERNAME environment data. Name service may
-/// block; a lookup error grants no default username or peer identity.
+/// Resolve the native account name from a verified SID. The name service can block.
 #[expect(
     unsafe_code,
     reason = "LookupAccountSidW borrows a validated owned token SID and two bounded initialized exclusive wide buffers for one synchronous name lookup"
 )]
-pub fn process_account_name() -> io::Result<std::ffi::OsString> {
+pub(crate) fn account_name(sid: &Sid) -> io::Result<std::ffi::OsString> {
     use std::os::windows::ffi::OsStringExt;
-    let sid = process_user()?;
     let mut account = [0_u16; 1024];
     let mut domain = [0_u16; 1024];
     let mut account_units = account.len() as u32;
@@ -368,6 +393,11 @@ pub fn process_account_name() -> io::Result<std::ffi::OsString> {
         .filter(|name| !name.is_empty() && !name.contains(&0))
         .ok_or_else(|| invalid("account name exceeds its native buffer"))?;
     Ok(std::ffi::OsString::from_wide(name))
+}
+
+/// Resolve the actual primary-token user's native account name.
+pub fn process_account_name() -> io::Result<std::ffi::OsString> {
+    account_name(&process_user()?)
 }
 
 /// Resolve a native account name through LookupAccountNameW. Unicode is passed

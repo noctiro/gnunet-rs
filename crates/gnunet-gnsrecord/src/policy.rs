@@ -36,13 +36,24 @@ enum Class {
 pub fn validate_authoritative_records<'a>(
     label: &[u8],
     records: &[RecordData<'a>],
+    retain: impl FnMut(&RecordData<'a>) -> bool,
+) -> Result<(), Error> {
+    validate_authoritative_iter(label, records.iter().copied().map(Ok), retain)
+}
+
+/// Apply the same authority policy directly to decoded borrowed records.
+/// Decoding failures are propagated without allocating a record table.
+pub fn validate_authoritative_iter<'a>(
+    label: &[u8],
+    records: impl IntoIterator<Item = Result<RecordData<'a>, Error>>,
     mut retain: impl FnMut(&RecordData<'a>) -> bool,
 ) -> Result<(), Error> {
     let apex = label == b"@";
     let mut class = Class::Empty;
     let mut active_unique = false;
     for record in records {
-        if !retain(record)
+        let record = record?;
+        if !retain(&record)
             || record.flags.contains(RecordFlags::MAINTENANCE)
             || (apex && record.record_type == RecordType::NICK)
         {

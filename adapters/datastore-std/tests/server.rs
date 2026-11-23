@@ -8,7 +8,7 @@
 use gnunet_client::datastore::{self as pure, Request, Response};
 use gnunet_client_host::{ConnectError, EndpointSource};
 use gnunet_config::Configuration;
-use gnunet_datastore::{Config, backend::Backend};
+use gnunet_datastore::{Config, backend::Lifecycle};
 use gnunet_datastore_host::{
     Client, Limits as ClientLimits, Step, Taken,
     backend::{Limits as StoreLimits, Store},

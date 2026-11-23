@@ -7,7 +7,7 @@ use gnunet_fs::{
     content::encode_data,
     gap::{self, Entropy, NeighborSlot, PathSlot, RouteSlot, storage},
 };
-use gnunet_types::Error;
+use gnunet_types::{Error, MonoInstant};
 use gnunet_wire::official::{
     AbsoluteTime, RelativeTime,
     datastore::Data,
@@ -23,6 +23,15 @@ impl Entropy for Random {
 fn block(out: &mut [u8]) -> Result<([u8; 64], usize), Error> {
     let c = encode_data(b"actual test content", out)?;
     Ok((c.key().query, c.bytes().len()))
+}
+
+const UTC: u64 = 1_709_000_000_000_000;
+
+fn time(elapsed: u64) -> storage::Time {
+    storage::Time {
+        absolute: AbsoluteTime::from_micros(UTC + elapsed),
+        elapsed: MonoInstant(elapsed),
+    }
 }
 
 #[test]
@@ -70,16 +79,16 @@ fn cache_advances_only_original_status_and_pressure_encodes_real_stop_duration()
     }
     .encode(&mut wire)?;
     let storage::CacheAdmission::Queued(original) =
-        owner.receive(peer, &wire[..n], 7, false, 100)?
+        owner.receive(peer, &wire[..n], 7, false, time(100))?
     else {
         return Err(Error::NotReady);
     };
     assert_eq!(owner.report().cache_stored, 0);
     assert!(matches!(
-        owner.receive(peer, &wire[..n], 0, false, 100)?,
+        owner.receive(peer, &wire[..n], 0, false, time(100))?,
         storage::CacheAdmission::Declined(storage::Declined::Capacity)
     ));
-    let Some(storage::Command::Put(write)) = owner.next_command(100)? else {
+    let Some(storage::Command::Put(write)) = owner.next_command(time(100))? else {
         return Err(Error::NotReady);
     };
     assert_eq!(write.token, original);
@@ -89,12 +98,27 @@ fn cache_advances_only_original_status_and_pressure_encodes_real_stop_duration()
         (write.data.anonymity, write.data.replication, write.data.uid),
         (1, 0, 0)
     );
-    assert_eq!(write.data.expiration.as_micros(), 100 + storage::YEAR_US);
+    assert_eq!(
+        write.data.expiration.as_micros(),
+        UTC + 100 + storage::YEAR_US
+    );
     assert_eq!(write.data.value, Put::decode(&wire[..n])?.block);
-    owner.cache_status(original, 1, AbsoluteTime::UNIX_EPOCH, 101, &mut Random)?;
+    owner.cache_status(
+        original,
+        1,
+        AbsoluteTime::UNIX_EPOCH,
+        time(101),
+        &mut Random,
+    )?;
     assert_eq!(owner.report().cache_stored, 1);
     assert_eq!(
-        owner.cache_status(original, 1, AbsoluteTime::UNIX_EPOCH, 102, &mut Random),
+        owner.cache_status(
+            original,
+            1,
+            AbsoluteTime::UNIX_EPOCH,
+            time(102),
+            &mut Random
+        ),
         Err(Error::StaleGeneration)
     );
     let Some(stop) = owner.next_stop(101)? else {
@@ -165,7 +189,7 @@ fn selected_uid_score_and_anonymity_survive_push_pause_without_closing_queries()
     )?;
     owner.attach(first, [1; 32])?;
     owner.attach(second, [2; 32])?;
-    let Some(storage::Command::Replication(selection)) = owner.next_command(0)? else {
+    let Some(storage::Command::Replication(selection)) = owner.next_command(time(0))? else {
         return Err(Error::NotReady);
     };
     let mut encrypted = [0; 128];
@@ -177,12 +201,12 @@ fn selected_uid_score_and_anonymity_survive_push_pause_without_closing_queries()
         anonymity: 3,
         replication: 7,
         uid: 55,
-        expiration: AbsoluteTime::from_micros(storage::YEAR_US),
+        expiration: AbsoluteTime::from_micros(UTC + storage::YEAR_US),
         key: &key,
         value: &encrypted[..length],
     };
-    owner.selected(selection, Some(data), 1)?;
-    let Some(push) = owner.next_push(1)? else {
+    owner.selected(selection, Some(data), time(1))?;
+    let Some(push) = owner.next_push(time(1))? else {
         return Err(Error::NotReady);
     };
     assert_eq!(push.metadata.uid, 55);
@@ -200,17 +224,7 @@ fn selected_uid_score_and_anonymity_survive_push_pause_without_closing_queries()
     assert_eq!(gap.reply_requirement(queued.path)?.level(), Some(3));
     assert_eq!(gap.prepare_reply(queued.path), Err(Error::NotReady));
     // A genuine ordinary consumer is separately owned and is still serviceable.
-    let ordinary = gap.start(
-        gap::Selection {
-            kind: BlockType::DBLOCK,
-            query: key,
-        },
-        9,
-        1,
-        1,
-        60,
-        1,
-    )?;
+    let ordinary = gap.start(gap::Selection::new(BlockType::DBLOCK, key)?, 9, 1, 1, 60, 1)?;
     let lookup = gap.next_lookup().ok_or(Error::NotReady)?;
     assert_eq!(lookup.route, ordinary.route);
     let mut wire = [0; 256];
@@ -220,7 +234,7 @@ fn selected_uid_score_and_anonymity_survive_push_pause_without_closing_queries()
         block: data.value,
     }
     .encode(&mut wire)?;
-    gap.source_finished_local(ordinary.route, Some(&wire[..n]), 1)?;
+    gap.source_finished_local(ordinary.route, Some(&wire[..n]), 1, 1)?;
     owner.pause(target, RelativeTime::from_micros(1_000_000), 10)?;
     assert!(owner.blocked(target, 1_000_009));
     assert!(!owner.blocked(target, 1_000_010));
@@ -229,7 +243,7 @@ fn selected_uid_score_and_anonymity_survive_push_pause_without_closing_queries()
     assert!(gap.local_result(ordinary.path)?.is_some());
     assert_eq!(owner.report().push_written, 0);
     assert_eq!(owner.report().push_retired, 1);
-    let Some(next) = owner.next_push(11)? else {
+    let Some(next) = owner.next_push(time(11))? else {
         return Err(Error::NotReady);
     };
     assert_ne!(
@@ -241,13 +255,13 @@ fn selected_uid_score_and_anonymity_survive_push_pause_without_closing_queries()
     owner.pause(target, RelativeTime::ZERO, 13)?;
     assert!(!owner.blocked(target, 13));
     // Actual selected-score uncertainty is not a no-block response or retry.
-    let Some(storage::Command::Replication(unknown)) = owner.next_command(100_001)? else {
+    let Some(storage::Command::Replication(unknown)) = owner.next_command(time(100_001))? else {
         return Err(Error::NotReady);
     };
     owner.failed(unknown, true, 100_002)?;
     assert!(owner.fenced());
     assert_eq!(owner.report().unknown, 1);
-    assert!(owner.next_command(100_003)?.is_none());
+    assert!(owner.next_command(time(100_003))?.is_none());
     owner.request_shutdown();
     assert!(owner.quiesced());
     gap.request_shutdown();

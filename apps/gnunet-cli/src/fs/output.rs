@@ -41,6 +41,7 @@ impl<W: Write> Write for Output<'_, W> {
 type Cause = Box<dyn Error>;
 #[derive(Debug)]
 struct Report {
+    binary: &'static str,
     operation: Option<Cause>,
     stdout: Option<Result<Snapshot, Failure>>,
     diagnostic: Option<Cause>,
@@ -93,7 +94,7 @@ fn report(mut failure: Report) -> Result<(), Cause> {
         text: String::new(),
         truncated: false,
     };
-    let _format = write!(diagnostic, "gnunet-cli: {failure}");
+    let _format = write!(diagnostic, "{}: {failure}", failure.binary);
     if diagnostic.truncated {
         diagnostic.text.push_str(" [truncated]");
     }
@@ -116,10 +117,18 @@ fn report(mut failure: Report) -> Result<(), Cause> {
     Err(Box::new(failure))
 }
 pub(crate) fn native(args: &[impl AsRef<OsStr>]) -> Result<(), Cause> {
-    let output = if args
+    let bytes = args
         .first()
-        .is_some_and(|value| value.as_ref() == OsStr::new("cat"))
-    {
+        .is_some_and(|value| value.as_ref() == OsStr::new("cat"));
+    with_stdout("gnunet-cli", bytes, |out| super::execute(args, out))
+}
+
+pub(super) fn with_stdout(
+    binary: &'static str,
+    bytes: bool,
+    operation: impl FnOnce(&mut Output<'_, BoundedOutput>) -> Result<(), Cause>,
+) -> Result<(), Cause> {
+    let output = if bytes {
         BoundedOutput::stdout_bytes(GRACE)
     } else {
         BoundedOutput::stdout(GRACE)
@@ -128,6 +137,7 @@ pub(crate) fn native(args: &[impl AsRef<OsStr>]) -> Result<(), Cause> {
         Ok(output) => output,
         Err(error) => {
             return report(Report {
+                binary,
                 operation: Some(Box::new(error)),
                 stdout: None,
                 diagnostic: None,
@@ -135,7 +145,7 @@ pub(crate) fn native(args: &[impl AsRef<OsStr>]) -> Result<(), Cause> {
         }
     };
     let control = stdout.control();
-    let operation = super::execute(args, &mut Output::new(&mut stdout, control.clone()));
+    let operation = operation(&mut Output::new(&mut stdout, control.clone()));
     if operation.is_err() {
         stdout.discard_buffer();
     }
@@ -146,6 +156,7 @@ pub(crate) fn native(args: &[impl AsRef<OsStr>]) -> Result<(), Cause> {
         return Ok(());
     }
     report(Report {
+        binary,
         operation: operation
             .err()
             .or_else(|| cleanup.err().map(|error| Box::new(error) as Cause)),

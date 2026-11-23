@@ -75,7 +75,10 @@ keep the original held_now and cannot renew the pass. This adds no worker,
 self-wake loop, clock target or additional core work within one CPU-class turn.
 
 First-byte client/peer classification and each immutable native write retain
-fixed physical phase bounds. A held complete input freezes its original logical
+fixed physical phase bounds. Queued peer frames wait for CADET credit within
+their original SET operation lifetime. On CADET admission, the local write
+deadline is capped by both that operation and the physical write allowance.
+A held complete input freezes its original logical
 origin through backpressure. Pure tick advances deadlines and a separate
 fair progress class performs bounded algorithm work. Soft shutdown stops new
 admission and waits for existing app sources within the foreground's own grace;

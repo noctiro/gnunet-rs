@@ -1,9 +1,12 @@
-//! Allocation-free official GNUnet service protocols.
+//! Official GNUnet service protocols with allocation-free defaults.
 //!
 //! These clients use GNUnet v0.29.1 IPC messages. They do not speak
 //! private wire formats, start a C daemon, or implement the peer services themselves.
 #![no_std]
 #![forbid(unsafe_code)]
+
+#[cfg(feature = "alloc")]
+extern crate alloc;
 
 pub mod core;
 pub mod gns;

@@ -101,37 +101,12 @@ impl<'id, 'pils, 'pool, 'slots, 'buf> Runtime<'id, 'pils, 'pool, 'slots, 'buf> {
         }
         let mut progress = false;
         for i in 0..self.rows.len() {
-            let Some(row) = &self.rows[i] else {
-                continue;
-            };
-            let endpoint = self.endpoint.as_ref().ok_or(Protocol::Closed)?;
-            let done = endpoint.driver_done(&row.driver)?;
-            if done {
-                let forced = endpoint.driver_was_canceled(&row.driver)?;
-                self.identity_forced_drivers += usize::from(forced);
-                observe(Event::IdentityDriverRetired {
-                    epoch: self.epoch,
-                    queue: row.id,
-                    forced,
-                });
-                self.reap_row(i)?;
-                progress = true;
+            if self.rows[i].is_none() {
                 continue;
             }
-            if row.retire_hard.is_some_and(|t| Instant::now() >= t) {
-                let driver = row.driver.clone();
-                let forced = self
-                    .endpoint
-                    .as_mut()
-                    .ok_or(Protocol::Closed)?
-                    .cancel_driver(&driver)?;
+            if self.driver_retired(i, Instant::now())? {
+                let forced = self.reap_row(i, observe)?;
                 self.identity_forced_drivers += usize::from(forced);
-                observe(Event::IdentityDriverRetired {
-                    epoch: self.epoch,
-                    queue: row.id,
-                    forced,
-                });
-                self.reap_row(i)?;
                 progress = true;
             }
         }

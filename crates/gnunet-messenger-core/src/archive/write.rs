@@ -1,17 +1,92 @@
 use super::*;
-impl<'id> Core<'id> {
-    pub(super) fn write_archive(&self, w: &mut Encoder) -> Result<(), Error> {
+
+/// A conservative byte ceiling for the service archive encoder at these limits.
+/// This includes full original frames, optional metadata and every epoch alias.
+/// It does not include a storage backend's record envelope or commit witnesses.
+///
+/// # Errors
+/// Returns an overflow error if the ceiling cannot be represented.
+pub fn maximum_service_bytes(limits: Limits) -> Result<usize, Error> {
+    const TAG: usize = 1;
+    const WORD: usize = 8;
+    const SLOT: usize = 2 * WORD;
+    const HASH: usize = core::mem::size_of::<Hash>();
+    const SHORT: usize = core::mem::size_of::<ShortHash>();
+    const PUBLIC: usize = core::mem::size_of::<PublicKey>();
+    const PROFILE: usize = TAG + WORD;
+    const OPT_WORD: usize = TAG + WORD;
+    const OPT_HASH: usize = TAG + HASH;
+    const CONTACT: usize = SLOT + PUBLIC + OPT_WORD + OPT_HASH + TAG;
+    const ROOM: usize = SLOT + 3 * HASH + PROFILE + 9 * WORD;
+    const SESSION: usize = 3 * SLOT + SHORT + 2 * PUBLIC + 4 * WORD + 3 * TAG + 2 * HASH;
+    const SOURCE: usize = 2 * SLOT + TAG + SHORT;
+    const AUTH: usize = TAG + SLOT + 2 * WORD + TAG + SLOT + PUBLIC + TAG + SHORT;
+    const LAYOUT: usize = 2 * TAG + 2 * PROFILE + PUBLIC;
+    const EPOCH: usize = 2 * SLOT + 3 * HASH + 2 * TAG + 4 * WORD;
+    const PEER: usize = SHORT + TAG + 2 * WORD;
+
+    // Node widths follow the writer. The frame body is counted separately.
+    const ORIGINAL: usize = SLOT + HASH + SOURCE + TAG + OPT_WORD;
+    const FORMATS: usize = TAG + LAYOUT + 3 * (TAG + 2 * PROFILE);
+    const GRAPH: usize = 4 * TAG + 6 * HASH + 4 * WORD;
+    const STATE: usize = 4 * TAG + OPT_WORD + 2 * OPT_HASH + SHORT + PUBLIC;
+    const RECEIVE_META: usize = HASH + WORD + TAG + 2 * OPT_HASH;
+    const NODE: usize = ORIGINAL + AUTH + FORMATS + GRAPH + STATE + RECEIVE_META;
+
+    fn total(prefix: usize, rows: &[(usize, usize)]) -> Result<usize, Error> {
+        rows.iter().try_fold(prefix, |sum, &(count, width)| {
+            count
+                .checked_mul(width)
+                .and_then(|size| sum.checked_add(size))
+                .ok_or_else(|| Fault::Overflow.into())
+        })
+    }
+
+    let epoch = total(EPOCH, &[(limits.sessions_per_room, SLOT)])?;
+    let node_and_frontier = total(NODE + HASH, &[(1, limits.frame_bytes)])?;
+    let room = total(
+        ROOM,
+        &[
+            (limits.sessions_per_room, SESSION),
+            (limits.messages_per_room, node_and_frontier),
+            (
+                AliasBuckets::bucket_count(limits.messages_per_room)?,
+                2 * HASH,
+            ),
+            (limits.epochs_per_room, epoch),
+            (limits.sources_per_room, PEER),
+        ],
+    )?;
+    let contact = total(CONTACT, &[(1, limits.name_bytes)])?;
+    total(
+        MAGIC.len() + PROFILE + TAG + SHORT + 3 * WORD,
+        &[
+            (limits.own_signers, SHORT),
+            (limits.contacts, contact),
+            (limits.rooms, room),
+        ],
+    )
+}
+
+impl<'id, const ROOMS: usize> Core<'id, ROOMS> {
+    pub(super) fn write_archive(
+        &self,
+        w: &mut Encoder<impl ArchiveSink>,
+        selection: Option<Selection<'_>>,
+    ) -> Result<(), Error> {
         w.size(self.contacts.len())?;
         for (slot, c) in self.contacts.iter() {
             w.slot(slot)?;
             w.raw(&c.key)?;
-            w.owned(c.name.as_ref())?;
+            w.opt_bytes(self.contact_name_at(slot)?)?;
             w.opt_array(c.anonymous_context.as_ref())?;
             w.bool(c.canonical)?;
         }
         w.size(self.rooms.len())?;
         for (slot, room) in self.rooms.iter() {
-            if !room.hpke_keys.is_empty() {
+            let detached =
+                |hash: &Hash| selection.is_some_and(|selection| selection.contains(slot, hash));
+            if room.queues.has_recipient_keys() {
                 return Err(Error::Permission);
             }
             w.slot(slot)?;
@@ -24,7 +99,7 @@ impl<'id> Core<'id> {
             w.size(room.sessions.len())?;
             for (slot, s) in room.sessions.iter() {
                 w.slot(slot)?;
-                w.slot(s.contact.slot)?;
+                w.slot(s.contact)?;
                 w.raw(&s.id)?;
                 w.raw(&s.public)?;
                 w.raw(&s.hpke)?;
@@ -41,125 +116,28 @@ impl<'id> Core<'id> {
                 w.opt_slot(s.successor)?;
                 w.opt_u64(s.completed_at)?;
             }
-            let count = room.nodes.iter().filter(|(_, n)| n.auth.is_some()).count();
-            w.size(count)?;
-            for (slot, n) in room.nodes.iter() {
-                let Some(auth) = n.auth else { continue };
-                if !n.epoch_indexed {
-                    return Err(Fault::WouldBlock.into());
-                }
-                if n.plaintext.is_some() || n.recipient.is_some() {
-                    return Err(Error::Permission);
-                }
-                let transient = crate::graph::discourse_kind(n.kind);
-                w.slot(slot)?;
-                w.raw(&n.hash)?;
-                w.source(n.provenance)?;
-                w.u8(phase(if transient {
-                    MessagePhase::Deleted
-                } else {
-                    n.phase
-                }))?;
-                w.owned(if transient { None } else { n.frame.as_ref() })?;
-                w.bool(auth.owner.is_some())?;
-                if let Some(o) = auth.owner {
-                    w.slot(o.contact.slot)?;
-                    w.u64(o.lineage)?;
-                    w.u64(o.generation)?
-                }
-                w.opt_slot(auth.session)?;
-                w.raw(&auth.public)?;
-                w.opt_array(auth.peer.as_ref())?;
-                w.u8(pad(n.padding))?;
-                w.layout(n.layout)?;
-                w.bool(!transient && n.cipher_layout.is_some())?;
-                if let Some(layout) = n.cipher_layout.filter(|_| !transient) {
-                    w.profile(layout.body)?;
-                    w.profile(layout.padding)?;
-                }
-                w.bool(!transient && n.plain_layout.is_some())?;
-                if let Some(layout) = n.plain_layout.filter(|_| !transient) {
-                    w.profile(layout.body)?;
-                    w.profile(layout.padding)?;
-                }
-                w.bool(!transient && n.transcript_layout.is_some())?;
-                if let Some(layout) = n.transcript_layout.filter(|_| !transient) {
-                    w.profile(layout.body)?;
-                    w.profile(layout.padding)?;
-                }
-                w.u8(match if transient { None } else { n.identifier_order } {
-                    None => 0,
-                    Some(wire::profile::Endian::Little) => 1,
-                    Some(wire::profile::Endian::Big) => 2,
-                })?;
-                w.bool(transient || n.semantic_applied)?;
-                w.bool(n.complete)?;
-                for p in &n.parents {
-                    w.raw(p)?
-                }
-                for p in if transient {
-                    &[[0; 64]; 3]
-                } else {
-                    &n.references
-                } {
-                    w.raw(p)?
-                }
-                w.bool(transient || n.frontier_applied)?;
-                w.raw(if transient { &[0; 64] } else { &n.epoch })?;
-                w.u64(u64::from(n.kind.value()))?;
-                w.u64(u64::from(n.semantic_kind.value()))?;
-                w.u64(n.timestamp)?;
-                w.u64(n.sequence)?;
-                w.bool(!transient && n.requested)?;
-                w.opt_u64(if transient { None } else { n.delete_at })?;
-                w.opt_array(if transient {
-                    None
-                } else {
-                    n.deleted_by.as_ref()
-                })?;
-                w.opt_array(if transient {
-                    None
-                } else {
-                    n.discourse.as_ref()
-                })?;
-                w.bool(!transient && n.local_sent)?;
-                w.opt_array(if transient {
-                    None
-                } else {
-                    n.transcript.as_ref()
-                })?;
-                w.opt_array(if transient {
-                    None
-                } else {
-                    n.private_recipient.as_ref()
-                })?;
-                w.raw(if transient { &[0; 64] } else { &n.meta.epoch })?;
-                w.u64(if transient {
-                    0
-                } else {
-                    u64::from(n.meta.flags)
-                })?;
-                w.bool(!transient && n.meta.requested)?;
-                w.opt_array(if transient {
-                    None
-                } else {
-                    n.meta.sender_hash.as_ref()
-                })?;
-                w.opt_array(if transient {
-                    None
-                } else {
-                    n.meta.context.as_ref()
-                })?;
+            let messages = || {
+                room.nodes
+                    .iter()
+                    .filter(|(_, node)| !detached(&node.hash))
+                    .filter_map(|(slot, node)| {
+                        AuthenticatedMessageRow::from_node(&room.key, slot, node)
+                    })
+            };
+            w.size(messages().count())?;
+            for message in messages() {
+                message.write(w, &self.frames)?;
             }
-            w.size(room.frontier.len())?;
-            for h in &room.frontier {
+            w.size(room.queues.frontier.len())?;
+            for h in &room.queues.frontier {
                 w.raw(h)?
             }
             let durable_alias = |key: &Hash| {
-                !room
-                    .find_node(key)
-                    .and_then(|s| room.nodes.get(s).ok())
-                    .is_some_and(|n| crate::graph::discourse_kind(n.kind))
+                !detached(key)
+                    && !room
+                        .find_node(key)
+                        .and_then(|s| room.nodes.get(s).ok())
+                        .is_some_and(|n| crate::graph::discourse_kind(n.kind))
             };
             w.size(
                 room.epoch_aliases
@@ -179,7 +157,7 @@ impl<'id> Core<'id> {
             }
             w.size(room.epochs.len())?;
             for (slot, e) in room.epochs.iter() {
-                if e.ephemeral.is_some() {
+                if e.has_client_secrets() {
                     return Err(Error::Permission);
                 }
                 w.slot(slot)?;
@@ -190,66 +168,35 @@ impl<'id> Core<'id> {
                 match e.mutation {
                     crate::epoch::EpochMutation::Join(c) => {
                         w.u8(0)?;
-                        w.slot(c.slot)?
+                        w.slot(c)?
                     }
                     crate::epoch::EpochMutation::Leave(c) => {
                         w.u8(1)?;
-                        w.slot(c.slot)?
+                        w.slot(c)?
                     }
                     crate::epoch::EpochMutation::Merge => w.u8(2)?,
                 }
-                w.size(e.members.len())?;
-                for c in &e.members {
-                    w.slot(c.slot)?
+                let members = room.epoch_members(e);
+                w.size(members.len())?;
+                for c in members {
+                    w.slot(c)?
                 }
                 w.bool(e.complete)?;
                 w.u64(e.revision)?;
-                w.size(e.nonces.len())?;
-                for n in &e.nonces {
-                    w.raw(&n.value)?;
-                    w.raw(&n.message)?
-                }
-                w.size(e.groups.len())?;
-                for (slot, g) in e.groups.iter() {
-                    if g.key.is_some() {
-                        return Err(Error::Permission);
-                    }
-                    w.slot(slot)?;
-                    w.raw(&g.identifier)?;
-                    w.u8(match g.identifier_order {
-                        wire::profile::Endian::Little => 0,
-                        wire::profile::Endian::Big => 1,
-                    })?;
-                    w.size(g.target)?;
-                    w.bool(g.valid)?;
-                    w.bool(g.phase == KeyPhase::Revoked)?;
-                    w.u64(g.expires)?;
-                    w.opt_array(g.appeal.as_ref())?;
-                    w.u64(g.appeal_until)?;
-                    w.opt_array(g.proposal.as_ref())?;
-                    w.u64(g.generation)?;
-                    w.bool(g.derived_from.is_some())?;
-                    if let Some((epoch, id)) = g.derived_from {
-                        w.raw(&epoch)?;
-                        w.raw(&id)?
-                    }
-                    w.size(g.confirmations.len())?;
-                    for c in &g.confirmations {
-                        w.slot(c.contact.slot)?;
-                        w.raw(&c.message)?;
-                        w.bool(c.verified_mac)?
-                    }
-                }
+                // Reserved counts for client replay and group key state.
+                w.u64(0)?;
+                w.u64(0)?;
             }
             // Discourse subscriptions are live/temporary intervals. Recovering
             // old intervals would silently restore audience/renewal authority.
             w.size(0)?;
-            w.size(room.peers.len())?;
-            for peer in &room.peers {
+            w.size(room.queues.peers.len())?;
+            for peer in &room.queues.peers {
                 w.raw(&peer.peer)?;
-                w.bool(peer.announced || peer.historical_candidate)?;
-                w.u64(u64::from(peer.connection_amount))?;
-                w.u64(u64::from(peer.connection_flags))?;
+                w.bool(true)?;
+                // Current CONNECTION metadata is not part of a recovered route.
+                w.u64(0)?;
+                w.u64(0)?;
             }
         }
         Ok(())

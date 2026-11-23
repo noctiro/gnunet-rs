@@ -62,7 +62,7 @@ impl<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy>
         receipt: &tun::WintunScopeRetirement,
         observe: &mut impl FnMut(Event<'id, 'cadet>),
     ) -> Result<(), Error> {
-        if receipt.original_epoch() != &self.device.epoch()
+        if self.device.epoch().as_ref() != Some(receipt.original_epoch())
             || !self.control.dead
             || self.control.unconfirmed_control_closes != 0
         {
@@ -123,7 +123,7 @@ impl<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy>
             if !self.recovery.enabled || self.closed.is_some() || self.stopping.is_some() {
                 return Err(Fault::Closed.into());
             }
-            if owner.original_epoch() != &self.device.epoch() || !self.control.dead {
+            if self.device.epoch().as_ref() != Some(owner.original_epoch()) || !self.control.dead {
                 return Err(Fault::StaleGeneration.into());
             }
             if self.control.unconfirmed_control_closes != 0 {
@@ -232,6 +232,7 @@ impl<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy>
         }
         let loss = match &mut self.device.io {
             PacketIo::Native(io) => io.retire_missing_wintun()?,
+            PacketIo::Provider(_) => return Ok(false),
         };
         if let Some(loss) = loss {
             self.tun_lost(loss, observe)?;

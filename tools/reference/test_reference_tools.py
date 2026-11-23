@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Isolated harness-boundary tests; not reference daemon interoperability."""
 import contextlib
+import copy
 import io
 import json
 import os
@@ -13,7 +14,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import bootstrap_dependencies
-from statistics_daemons import Harness, read_dump
+from statistics_daemons import Harness, artifact, read_dump
 
 
 def frame(value=7, flags=2, names=b"s\0n\0"):
@@ -62,6 +63,68 @@ class HarnessBoundaries(unittest.TestCase):
                 self.assertEqual(watcher["out_path"].read_bytes().splitlines(), [b"55", b"57"])
             finally:
                 harness.cleanup()
+
+    def test_image_coverage_distinguishes_verified_epochs_from_one_shot_commands(self):
+        with tempfile.TemporaryDirectory() as folder:
+            output = Path(folder)
+            harness = Harness(output, {}, images=object())
+            binary, library = output / "actor", output / "library"
+            binary.write_bytes(b"staged actor")
+            library.write_bytes(b"original library")
+            binary_ref, library_ref = artifact(binary, output), artifact(library, output)
+            staged = {"actor": {"snapshot": str(binary), "sha256": binary_ref["sha256"]}}
+            phase = {"binary": binary_ref, "loaded_files": {"library": library_ref["sha256"]},
+                     "mapped_files": [{"device": [8, 1], "inode": 2, "artifact": binary_ref},
+                                      {"device": [8, 1], "inode": 3, "artifact": library_ref}]}
+            row = {"stdout": "daemon.stdout", "one_shot": False, "argv": [str(binary)],
+                   "exit_code": 0, "ready_images": phase, "pre_stop_images": copy.deepcopy(phase)}
+            harness.commands.extend([row, {"stdout": "get.stdout", "one_shot": True}])
+            harness.diagnostics["commands"].append(
+                {"stdout": "known-variance.stdout", "one_shot": False, "exit_code": -signal.SIGKILL}
+            )
+
+            result = harness.image_coverage(staged, normal_passed=True)
+            self.assertEqual(result["status"], "matched-long-lived-actors")
+            self.assertEqual(result["matched_long_lived"], ["daemon.stdout"])
+            self.assertEqual(result["unobserved_one_shot"], ["get.stdout"])
+            self.assertEqual(result["excluded_diagnostic"], ["known-variance.stdout"])
+            self.assertEqual(harness.image_coverage(staged, normal_passed=False)["status"], "incomplete")
+            self.assertEqual(Harness(output, {}).image_coverage({}, True), {"status": "not-requested"})
+
+            for change, reason in [
+                ({"pre_stop_images": {"unavailable": "process already exited"}}, "missing live"),
+                ({"pre_stop_images": {**phase, "mapped_files": []}}, "changed between"),
+                ({"argv": [str(library)]}, "differs from the staged actor"),
+                ({"forced_kill": True}, "missing normal actor exit"),
+            ]:
+                with self.subTest(reason=reason), patch.dict(row, change):
+                    result = harness.image_coverage(staged, normal_passed=True)
+                    self.assertEqual(result["status"], "incomplete")
+                    self.assertIn(reason, result["failures"][0]["reason"])
+            library.write_bytes(b"replacement")
+            result = harness.image_coverage(staged, normal_passed=True)
+            self.assertEqual(result["status"], "incomplete")
+            self.assertIn("retained mapped-file bytes changed", result["failures"][0]["reason"])
+
+    def test_config_is_bound_to_arguments_and_log_drift_cannot_replace_original_hash(self):
+        with tempfile.TemporaryDirectory() as folder:
+            output = Path(folder)
+            harness = Harness(output, dict(os.environ))
+            configuration = output / "active.conf"
+            harness.retain_config(configuration, output / "socket", output / "database", "retained.conf")
+            argv = [sys.executable, "-c", "print('original')", "-c", str(configuration)]
+            harness.command("configured", argv)
+            row = harness.commands[0]
+            self.assertEqual(row["configuration"], artifact(output / "retained.conf", output))
+            self.assertTrue(harness.configurations_unchanged())
+            configuration.write_bytes(b"edited")
+            self.assertFalse(harness.configurations_unchanged())
+
+            original = row["stdout_sha256"]
+            (output / row["stdout"]).write_bytes(b"edited output\n")
+            harness.cleanup()
+            self.assertEqual(row["stdout_sha256"], original)
+            self.assertTrue(any("retained log changed" in item["error"] for item in harness.cleanup_errors))
 
 
 class BootstrapBuildTools(unittest.TestCase):

@@ -17,7 +17,7 @@ pub(super) fn target(d: std::time::Duration) -> Result<Instant, Failure> {
         .ok_or_else(|| "native deadline overflow".into())
 }
 pub(super) mod device;
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "freebsd"))]
 pub(super) mod recovery;
 mod verification;
 pub(super) use device::open;
@@ -267,6 +267,10 @@ pub(super) async fn cleanup(
         let action = added[remaining].clone();
         // Each deletion uses the same global shutdown target; no per-route extension.
         let result = async {
+            #[cfg(target_os = "freebsd")]
+            let Some(original) = scope_before_delete(driver, &action, until).await? else {
+                return Ok(());
+            };
             let effect = driver.plan_tun_action(action, until)?;
             let value = route(driver.route_tun_action(effect)?, stop, false).await?;
             stop.reports.debug(
@@ -274,6 +278,13 @@ pub(super) async fn cleanup(
                 format_args!("EXIT actual route cleanup: {value:?}"),
             );
             if !value.outcome.is_success() || value.close_error.is_some() {
+                return Err(Box::new(RouteFailure(value)) as Failure);
+            }
+            #[cfg(target_os = "freebsd")]
+            if value.id.epoch() != &original
+                || value.table != original.route_table()
+                || value.write_error.is_some()
+            {
                 return Err(Box::new(RouteFailure(value)) as Failure);
             }
             Ok(())
@@ -295,6 +306,39 @@ pub(super) async fn cleanup(
     match failure {
         Some(e) => Err(e),
         None => Ok(()),
+    }
+}
+
+#[cfg(target_os = "freebsd")]
+async fn scope_before_delete(
+    driver: &Exit<'_, '_, '_>,
+    action: &Action,
+    until: Instant,
+) -> Result<Option<gnunet_tun_host::Epoch>, Failure> {
+    use gnunet_tun_host::RouteQueryProgress;
+    let Action::Route {
+        add: false,
+        destination,
+        prefix,
+        gateway,
+    } = *action
+    else {
+        return Err(gnunet_types::Error::Conflict.into());
+    };
+    let mut query = driver.query_tun_route(destination, prefix, gateway, until)?;
+    let done = loop {
+        match poll_fn(|cx| query.poll(cx)).await {
+            RouteQueryProgress::Complete(done) => break done,
+            RouteQueryProgress::Finished => {
+                return Err("EXIT FreeBSD cleanup route observation is missing".into());
+            }
+            _ => tokio::task::yield_now().await,
+        }
+    };
+    let original = done.target().epoch().clone();
+    match recovery::classify_route(done, until)? {
+        recovery::RoutePresence::Exact => Ok(Some(original)),
+        recovery::RoutePresence::Absent => Ok(None),
     }
 }
 

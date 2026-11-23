@@ -1,4 +1,4 @@
-import argparse,hashlib,json,pathlib
+import argparse,json,pathlib
 parser=argparse.ArgumentParser();parser.add_argument('--reference',type=pathlib.Path,required=True);parser.add_argument('--output',type=pathlib.Path,required=True);args=parser.parse_args();crate=args.output.resolve();crate.mkdir(parents=True,exist_ok=False);(crate/'tests').mkdir();base=args.reference.resolve();r=json.loads((base/'parser-result.json').read_text());allobs={o['id']:o for o in r['observations']};rows=[];matrix=[]
 def query(v):return f"{v['name']}/{v['type']}/{v['class']}"
 def record(v):
@@ -50,6 +50,5 @@ for o in r['observations']:
  matrix.append({'id':id,'c_mode':mode,'execution_action':action,'classification':status,'reason':why})
 assert len(rows)==153
 (crate/'tests/c_corpus.tsv').write_text('\n'.join(rows)+'\n')
-sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
-(crate/'c-corpus-map.json').write_text(json.dumps({'source_receipt':str(base/'parser-result.json'),'source_sha256':sha(base/'parser-result.json'),'rows':matrix,'classifications':{k:sum(x['classification']==k for x in matrix)for k in sorted(set(x['classification']for x in matrix))},'no_full_idna_claim':True},indent=2)+'\n')
+(crate/'c-corpus-map.json').write_text(json.dumps({'rows':matrix,'classifications':{k:sum(x['classification']==k for x in matrix)for k in sorted(set(x['classification']for x in matrix))},'no_full_idna_claim':True},indent=2)+'\n')
 print('rows',len(rows))

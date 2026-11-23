@@ -44,9 +44,8 @@ Each complete local peer selects a V2 89-byte frontier and matching replay
 catalog. Missing, foreign, older or V1 state is refused without reset or import.
 The native storage layer retains original directory/file handles across
 publication and reconciliation. Observed file synchronization and directory
-barrier availability are distinct: Windows reports an unavailable directory
-barrier rather than claiming a Unix directory crash guarantee. See
-[replay recovery](../../adapters/tcp-runtime-std/README.md#persistent-replay-recovery).
+barrier availability are recorded separately.
+[Replay recovery](../../adapters/tcp-runtime-std/README.md#persistent-replay-recovery)
 
 ## Operation and shutdown
 

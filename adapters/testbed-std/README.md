@@ -13,8 +13,10 @@ Windows temporary directory. `Options::from_environment` selects the official
 `GNUNET_TESTBED_PREFIX` override.
 
 The owner holds the original parent/root directories, marker file and exclusively
-locked file. Marker contents, native identity and private Unix permissions or
-Windows DACLs are checked. Root or marker/lock replacement refuses new effects.
+locked file. Marker and counter reads require private single-link files and the
+same native identity, length and change times across the read. The marker
+retains that snapshot as the live fence. Root or marker/lock replacement
+refuses new effects.
 The checked counter is synchronized and atomically published before each numbered
 home is created. Missing or corrupt counters in an existing marked root are
 errors. Existing numbered homes are never overwritten.
@@ -71,6 +73,48 @@ symlink targets. Marker/lock/counter metadata remain until ordinary contents are
 removed. Cleanup errors preserve the first cause and independent failure count.
 Standard owner Drop releases remaining handles without claiming a close-errno or
 successful tree-removal receipt.
+
+## TESTING command helpers
+
+`testing::topology::Topology` reads the netjail configuration and resolves
+backbone, carrier and subnet roles in the launcher's peer order. Section
+selectors are one-based and namespace suffixes are zero-based. Setup commands
+remain configuration text. The topology retains the original bytes for the
+official helper initialization message.
+
+`testing::run_helpers` calls the supplied command factory once per peer. A
+`Helper` owns its command and declared barrier contributions. The driver
+opens dedicated pipes, admits each contribution only from its enrolled helper,
+and releases a barrier when all its counted contributions arrive. It uses the
+original GNUnet `INIT`, `BARRIER_REACHED`, `BARRIER_CROSSABLE` and
+`LOCAL_FINISHED` frames. A run supports up to 64 direct helpers and 128 distinct
+barriers and uses one caller-supplied deadline. It reaps its direct children
+on success after closing their input for orderly shutdown. Failure or deadline
+expiry triggers bounded retirement and reports any cleanup failure. The caller
+provides the peer environments and command programs.
+
+The peer-side `testing::peer::serve` validates original inherited barriers
+against a local `Program` before starting actions. It supports command batches,
+background tasks with explicit joins, exit-code expectations and barrier waits.
+The helper accepts commands from the locally registered program and preserves
+the original partial-message boundaries through asynchronous cancellation.
+
+On Linux, `testing::netjail::Netjail` creates private network namespaces, a
+switch namespace, bridges, veth links and the gateway. It assigns IPv4
+addresses and routes, installs source-network masquerade on routers, and
+starts helpers inside their original peer namespaces. The topology retains
+peer addresses and namespace indices from the launcher. Carrier gateway
+collisions use a reserved address, and each subnet's gateway uses its peers'
+connected subnet. Exact host routes reach carrier peers whose address falls at
+a nested subnet's network boundary. The native path retains the subnet's mask
+and directed broadcast and retires its obsolete lowest-address broadcast route
+on older kernels. One deadline covers provisioning and command execution.
+Drop releases the original namespace leases and Linux retires their interfaces
+when the last holder closes. [Installed launcher](../../apps/gnunet-testbed/README.md#linux-netjail-launcher)
+
+The selected C helper uses the default `TESTBED_PLUGIN`. Its older topology
+parser looks up carrier and subnet overrides with zero-based indices, so it
+can miss the one-based overrides used by the launcher.
 
 ## Resource limits
 

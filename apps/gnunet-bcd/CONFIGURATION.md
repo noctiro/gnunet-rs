@@ -5,12 +5,12 @@
 All keys below use `[bcd-rust]`. `BIND_TO` defaults to `::` and must be numeric;
 `-p/--port` defaults to 8888. The selected bind failure is a startup error.
 
-`PDFLATEX` and `GHOSTSCRIPT` select absolute native executables. Unix defaults
-are `/usr/bin/pdflatex` and `/usr/bin/gs`; Windows requires explicit paths for the
-requested rendering phase. Missing selection is reported by that request rather
-than preventing form service. TeX arguments select a fixed template, disable
-shell escape and automatic mktex helpers, and stop on errors. Select a compatible
-TeX Live installation with the required packages already available.
+Set `PDFLATEX` to the absolute path of a TeX Live `pdflatex` executable for PDF
+rendering. PNG rendering also requires `GHOSTSCRIPT`, the absolute path of the
+Ghostscript executable. Set paths in the deployment configuration. The form
+remains available without them; render requests report a missing tool when
+needed. TeX uses a fixed template, disables shell escape and automatic mktex
+helpers, and stops on errors. Install the template's TeX packages in advance.
 
 Unix `LAUNCHER` selects the shared `gnunet-arm-spawn-helper`; its default is the
 selected installation's libexec path. Windows creates the selected application

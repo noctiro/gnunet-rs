@@ -39,14 +39,13 @@ The normal entry uses shared GNUnet SERVICE options `-c/--config`, `-d/--daemoni
 
 The `gnunet-ipc-unix` server and `gnunet-statistics-store` remain the protocol and persistence owners. The ordinary host uses `AllocatedStatistics` with the same protocol/business algorithm as the allocation-free fixed-capacity core. Rows, names, connections, subscriptions, notifications and GET snapshots grow on demand within explicit bounds; startup does not allocate the maximum row count times the maximum name size. Global rows survive client disconnection and are never silently evicted to make room. Capacity or allocation failure is a refusal.
 
-All listeners share this one core. Actual address ACLs and Unix UID/GID credentials are checked before core admission. Newly created Unix socket/parent modes follow UID 0700/0700, otherwise GID 0770/0750, otherwise 0777/0755; existing parent permissions and inherited listener paths are retained. Filesystem permissions alone do not establish peer credentials.
-
-On Windows, use native absolute paths and set `UNIX_MATCH_UID = NO` and
-`UNIX_MATCH_GID = NO` for the owner-only AF_UNIX endpoint DACL. Requested Unix
-credential matching fails closed; SIDs are not Unix IDs. TCP retains its configured
-address ACLs. Activation consumes original native listeners without rebinding or
-claiming their filesystem nodes. Standalone `-d` uses shared native re-exec;
-supervised `-d` detaches before provider import, runtime and signal registration.
+All listeners share one core. TCP uses the configured IP ACLs and Unix checks
+kernel UID/GID. For Windows, use native absolute paths.
+`UNIX_MATCH_UID` and `UNIX_MATCH_GID` select owner or group access on the
+[configured AF_UNIX listener](../../adapters/service-runtime/README.md#configured-local-listeners).
+Activation retains original listeners and leaves their filesystem nodes with the
+creator. Standalone `-d` uses shared native re-exec. Supervised `-d` detaches
+before provider import, runtime and signal registration.
 
 Startup loads the official concatenated SET database into a fresh unpublished core with the selected resource limits. Invalid, truncated or capacity-exceeding files fail without replacing them with empty state. With no DATABASE, state is explicitly memory-only. Actual host metadata, bound listeners, database load and the saving buffer's retained-byte admission precede Ready, stdout flush and the original daemon-parent ready byte. A dropped parent control pipe is detached; only interrupt/terminate requests initiate shutdown. The daemon parent never continues service initialization.
 
@@ -56,9 +55,9 @@ Soft shutdown stops admission and lets existing non-monitor clients finish befor
 
 After all original client generations retire, shutdown saves persistent rows
 through the [snapshot store](../../adapters/statistics-store/README.md#saving-and-publication).
-The report separates actual file synchronization/publication from directory
-barriers; Windows reports its unavailable directory barrier explicitly. Empty
-persistent state removes the database. Actual save errors retain their stage
+The report separates file synchronization, publication and the barrier on the
+original directory. Empty persistent state removes the ordinary database file.
+Save errors retain their stage
 and uncertain-commit classification and are not retried. A prior driver/control
 error remains primary, with save/output/logging failures retained separately.
 DISCONNECT_CONFIRM is a processing barrier, never a durable save receipt.

@@ -3,53 +3,47 @@
 use std::{fmt, io};
 #[cfg(windows)]
 pub(crate) mod adapters;
+mod address;
 mod datagram;
+#[cfg(unix)]
+mod descriptor;
 mod listener;
 mod readiness;
+pub use address::{
+    SocketAddressHeader, UnixAddressLayout, socket_address_header, unix_address_layout,
+};
+#[cfg(all(
+    feature = "socket-io",
+    any(target_os = "linux", target_os = "freebsd", target_os = "macos")
+))]
+pub use datagram::local::LocalDatagram;
+#[cfg(all(windows, feature = "socket-io"))]
+pub use datagram::local::LocalDatagramIo;
+#[cfg(all(
+    feature = "socket-io",
+    any(
+        windows,
+        target_os = "linux",
+        target_os = "freebsd",
+        target_os = "macos"
+    )
+))]
+pub use datagram::local::LocalReplyPath;
+#[cfg(all(windows, feature = "socket-io"))]
+pub use datagram::send_windows::send_datagram_from;
+#[cfg(feature = "socket-io")]
+pub use datagram::source::DatagramSource;
 #[cfg(windows)]
 pub use datagram::suppress_udp_connection_resets;
 pub use datagram::{
     isolated_datagram_receive_error, isolated_datagram_send_error, socket_family_unavailable,
 };
+#[cfg(unix)]
+pub use descriptor::StableFd;
 pub use listener::is_listener;
 #[cfg(target_os = "macos")]
 pub use listener::{DARWIN_SOCKET_INFO_BUFFER_BYTES, DARWIN_SOCKET_OPTIONS_OFFSET};
 pub use readiness::{SocketEvents, SocketInterest, socket_readiness};
-
-/// Executing platform's local sockaddr_un display bounds.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct UnixAddressLayout {
-    /// Size of the native family typedef, not the offset of sun_path.
-    pub family_bytes: usize,
-    /// Complete native sockaddr_un size, including any native header/padding.
-    pub sockaddr_bytes: usize,
-    /// Actual offset of sun_path, including native length/family header fields.
-    pub path_offset: usize,
-}
-/// Native sizes used by local diagnostic formatting, without opening a socket
-/// or claiming support for every platform's Unix-socket transport/credentials.
-#[must_use]
-pub const fn unix_address_layout() -> UnixAddressLayout {
-    #[cfg(unix)]
-    {
-        UnixAddressLayout {
-            family_bytes: size_of::<libc::sa_family_t>(),
-            sockaddr_bytes: size_of::<libc::sockaddr_un>(),
-            path_offset: std::mem::offset_of!(libc::sockaddr_un, sun_path),
-        }
-    }
-    #[cfg(windows)]
-    {
-        UnixAddressLayout {
-            family_bytes: size_of::<windows_sys::Win32::Networking::WinSock::ADDRESS_FAMILY>(),
-            sockaddr_bytes: size_of::<windows_sys::Win32::Networking::WinSock::SOCKADDR_UN>(),
-            path_offset: std::mem::offset_of!(
-                windows_sys::Win32::Networking::WinSock::SOCKADDR_UN,
-                sun_path
-            ),
-        }
-    }
-}
 
 /// A live borrowed native socket; it never grants ownership.
 #[cfg(unix)]
@@ -131,6 +125,8 @@ impl std::error::Error for InitializationError {
 mod unix;
 #[cfg(windows)]
 mod windows;
+#[cfg(target_vendor = "apple")]
+pub use unix::unix_peer_ids;
 #[cfg(unix)]
 pub use unix::{initialize_accepted_stream, initialize_reactor_stream};
 #[cfg(windows)]
@@ -180,9 +176,6 @@ pub fn is_fatal_family_probe(error: &io::Error) -> bool {
         })
     }
 }
-
-#[cfg(windows)]
-pub use datagram::send_datagram_from;
 
 /// Whether this original nonblocking Internet-stream connect needs completion
 /// observation. This neither retries connect nor establishes peer association.

@@ -69,7 +69,7 @@ fn execute() -> Result<u8, Cause> {
     use gnunet_program_host::{
         foreground,
         logging::Logger,
-        program::{self, Defaults, Invocation, NlsDisabled, Preparation},
+        program::{self, Defaults, Invocation, Preparation},
         reporting::Reporter,
         shared_clock::SharedClock,
     };
@@ -88,13 +88,12 @@ fn execute() -> Result<u8, Cause> {
         select_default_filename: true,
         defaults: Defaults::Native,
     };
-    let preparation = program::prepare(
+    let preparation = program::prepare_installed(
         config,
         invocation,
         selection.options(),
         std::env::args_os(),
         &program::Environment::capture(),
-        &mut NlsDisabled,
         &mut logger,
         &clock,
         &mut io::stdout().lock(),

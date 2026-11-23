@@ -228,6 +228,20 @@ impl<'i> Reader<'i> {
             RData::Hostname(self.name(a)?)
         } else {
             match kind {
+                // RFC 1035 domain names can legally use packet compression.
+                // Retain their expanded wire bytes without altering the public
+                // opaque RDATA representation of these legacy types.
+                Type(3 | 4 | 7 | 8 | 9) => RData::Raw(self.name(a)?.wire()),
+                Type(14) => {
+                    let mailbox = self.name(a)?;
+                    let errors = self.name(a)?;
+                    let split = mailbox.wire_len();
+                    let length = split + errors.wire_len();
+                    let mut expanded = [0; 2 * MAX_WIRE_NAME_LENGTH];
+                    expanded[..split].copy_from_slice(mailbox.wire());
+                    expanded[split..length].copy_from_slice(errors.wire());
+                    RData::Raw(a.copy(&expanded[..length])?)
+                }
                 Type::MX => RData::Mx(Mx {
                     preference: self.u16()?,
                     host: self.name(a)?,

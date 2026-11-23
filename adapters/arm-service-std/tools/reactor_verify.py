@@ -14,6 +14,9 @@ import itertools
 
 sys.dont_write_bytecode = True
 PACKAGE = Path(__file__).resolve().parents[1]
+TOOLS = PACKAGE.parents[1] / "tools"
+sys.path.insert(0, str(TOOLS))
+from rust_toolchain import rust_channel
 REQUIRED = {'dedicated_registry_rejects_foreign_live_child_and_returns_foreign_actual_completion_without_core_reap','malformed_port_is_zero_but_range_and_boolean_are_fatal', 'zero_small_and_over_capacity_frames_retire_without_synthetic_empty_buffer_eof', 'native_numeric_input_has_exact_family_protocol_and_source_order', 'empty_registry_driver_reborrow_rejects_foreign_owner_without_touching_original_stream', 'actual_spawn_monitor_spelling_pipe_term_consuming_reap_and_original_argv0', 'expired_idle_restart_does_not_overtake_actual_fragmented_control_rx_or_nonempty_tx', 'sibling_disarm_and_every_actual_close_precede_term_admission', 'late_control_admission_survives_real_child_drain_and_persisted_requester_closes_on_owner_drop', 'actual_control_unix_test_list_fragment_cancel_unknown_and_malformed_eof', 'adopted_parent_listener_and_replaced_owned_path_are_never_unlinked', 'immediate_noarmbind_and_ondemand_branching_retains_nonlisteners', 'category_absence_yes_no_and_invalid_follow_source_selection', 'actual_nonzero_exit_restarts_at_idle_and_final_shutdown_cancels_the_original_timer', 'actual_host_child_capacity_refusal_has_no_ghost_and_does_not_block_original_term_or_reap', 'admitted_child_and_lease_survive_clock_error_and_driver_reborrow', 'no_endpoint_and_zero_port_do_not_invent_ephemeral_listener', 'partial_attachment_capacity_retains_native_owners_until_explicit_drop', 'all_services_remain_registered_and_head_insertion_order_is_preserved', 'foreign_owner_is_rejected_before_leasing_or_retiring_original_readiness', 'actual_idle_registration_survives_backward_utc_and_uses_original_absolute_target_after_forward_jump', 'every_managed_unix_path_is_closed_before_any_actual_control_term_byte', 'actual_two_listener_demand_preserves_kernel_queues_until_original_child_accepts', 'durable_fifo_and_mq_length_follow_partial_actual_write_attempts', 'fragmented_header_and_body_survive_cancel_and_do_not_advance_until_consumed', 'caller_capacity_rejects_complete_registry_and_recursive_substitutions', 'unix_only_does_not_resolve_an_irrelevant_bindto', 'queued_unix_connection_survives_readiness_cancel_disarm_and_actual_child_inheritance', 'canceled_drive_retains_real_partial_list_tx_and_blocked_peer_does_not_block_other_control', 'stale_socket_only_precheck_regular_and_live_entries_are_preserved', 'simple_filename_argv0_options_and_global_substitution_are_source_exact', 'actual_tcp_child_receives_queued_data_and_v6_is_v6only', 'registry_cross_section_binding_and_permission_precedence_follow_source'}
 
 REQUIRED |= {'ready_clients_and_each_stream_direction_progress_before_an_earlier_backlog_drains', 'queued_managed_demand_progresses_while_control_input_remains_ready'}
@@ -122,12 +125,13 @@ def pair_cases(value):
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     for key in ('repository','source','reference','output'):parser.add_argument('--'+key,type=Path,required=True)
+    parser.add_argument('--toolchain')
     a=parser.parse_args();repo,source,reference=map(lambda p:p.resolve(),(a.repository,a.source,a.reference))
     # Existing normal receipt remains immutable; output is external to every
     # declared source, installed prefix, build tree and original candidate.
     normal=json.loads(reference.read_text());validate_reference_details(normal,source)
     out=require_disjoint(a.output,[PACKAGE,repo,source,reference.parent,normal['build'],normal['prefix']]);out.mkdir(mode=0o700)
-    commands=[];cargo=['cargo','+1.99.1'];env=dict(os.environ,CARGO_BUILD_JOBS='1',CARGO_TARGET_DIR=str(out/'target'))
+    commands=[];channel=rust_channel(repo,a.toolchain);cargo=['cargo','+'+channel];env=dict(os.environ,CARGO_BUILD_JOBS='1',CARGO_TARGET_DIR=str(out/'target'))
     started=time.monotonic()
     def run(label,argv,timeout=300,extra=None):
         current=env.copy();current.update(extra or {});done=subprocess.run(list(map(str,argv)),cwd=repo,env=current,capture_output=True,timeout=timeout)
@@ -153,7 +157,7 @@ def main():
         def discover():
             value,current=normal_reference.load(reference,source,repo);validate_reference_details(value,source)
             if value!=normal or current!=normal_inputs:raise ValueError('normal reference changed')
-            paths=files(PACKAGE)|{repo/'Cargo.toml',repo/'Cargo.lock',repo/'rust-toolchain.toml',repo/'rustfmt.toml',repo/'adapters/arm-std/tools/reference.py',repo/'tools/reference/build_reference.py',repo/'crates/gnunet-arm-service-core/source-inventory.json',reference}
+            paths=files(PACKAGE)|{repo/'Cargo.toml',repo/'Cargo.lock',repo/'rust-toolchain.toml',repo/'rustfmt.toml',TOOLS/'rust_toolchain.py',TOOLS/'cargo_artifacts.py',repo/'adapters/arm-std/tools/reference.py',repo/'tools/reference/build_reference.py',repo/'crates/gnunet-arm-service-core/source-inventory.json',reference}
             for row in [*actual['packages'],*repository_metadata['packages']]:
                 if row['source']is None:paths|=files(Path(row['manifest_path']).resolve().parent)
             paths|={Path(path)for path in normal_inputs}
@@ -204,7 +208,7 @@ def main():
         expected_controls={'test_added_deleted_changed_source_paths_are_detected','test_dependency_feature_change_is_detected','test_duplicate_runtime_witness_is_rejected','test_empty_runtime_witness_is_rejected','test_missing_runtime_witness_is_rejected','test_reference_failed_setup_is_rejected','test_reference_wrong_kind_is_rejected','test_reference_wrong_revision_is_rejected','test_reference_wrong_source_or_build_is_rejected','test_output_source_or_ancestor_is_rejected','test_pair_empty_or_duplicate_actual_cases_is_rejected'}
         actual_controls=set(re.findall(r'^(test_\w+) \(__main__\.[^)]+\) \.\.\. ok$',controls,re.M))
         if actual_controls!=expected_controls or 'Ran 11 tests'not in controls or not controls.rstrip().endswith('OK'):raise ValueError('exact nonempty11 negative controls required')
-        run('actual-daemon-pair',[sys.executable,'-B',PACKAGE/'tools/reactor_pair.py','--package',generated,'--repository',repo,'--upstream',source,'--reference',reference,'--output',out/'pair'],timeout=300)
+        run('actual-daemon-pair',[sys.executable,'-B',PACKAGE/'tools/reactor_pair.py','--package',generated,'--repository',repo,'--upstream',source,'--reference',reference,'--output',out/'pair','--toolchain',channel],timeout=300)
         pair=json.loads((out/'pair/result.json').read_text());pair_cases(pair)
         # The generated lock and source set were finalized before any build.
         # No target/Cargo.lock mutation in original source is accepted.

@@ -2,7 +2,7 @@
 use crate::Failure;
 use gnunet_config::Configuration;
 use gnunet_exit::{
-    Address, AfProfile,
+    Address, AfProfile, PeerProfiles,
     engine::{self, Service},
     nat::Pool,
     policy::{Endpoint, InternetRules, Policy, Prefix, Protocol},
@@ -131,7 +131,7 @@ pub(super) struct Settings {
     pub dad: Duration,
     pub watch: Duration,
     pub lookup: Duration,
-    pub af: AfProfile,
+    pub peer_profiles: PeerProfiles,
 }
 fn tun_checkpoint(c: &Configuration, mode: TunMode) -> Result<Option<std::path::PathBuf>, Failure> {
     use gnunet_config::ProcessEnvironment;
@@ -409,18 +409,13 @@ impl Settings {
             io_chunk_bytes: size(c, b"RESOLVER_IO_SLICE_BYTES", rd.io_chunk_bytes)?,
             max_queued_frames: number(c, b"RESOLVER_QUEUE", rd.max_queued_frames)?,
         };
-        let af = match text(c, LOCAL, b"PEER_AF_PROFILE")? {
-            None | Some("native") => AfProfile::native(),
-            Some("linux") => AfProfile::LINUX,
-            Some("darwin") => AfProfile::DARWIN,
-            Some("freebsd") => AfProfile::FREEBSD,
-            Some("windows") => AfProfile::WINDOWS,
-            _ => {
-                return Err(
-                    "PEER_AF_PROFILE must be native, linux, darwin, freebsd or windows".into(),
-                );
-            }
-        };
+        let af: AfProfile = text(c, LOCAL, b"PEER_AF_PROFILE")?
+            .unwrap_or("native")
+            .parse()
+            .map_err(|_| "PEER_AF_PROFILE must be native, linux, darwin, freebsd or windows")?;
+        let peer_profiles =
+            PeerProfiles::parse(af, text(c, LOCAL, b"PEER_AF_PROFILES")?.unwrap_or(""))
+                .map_err(|error| format!("invalid PEER_AF_PROFILES: {error}"))?;
         let mtu = u32::try_from(number(c, b"MTU", 1400)?)?;
         if mtu == 0 || mtu > 65535 || (enable6 && mtu < 1280) {
             return Err("invalid MTU for enabled address families".into());
@@ -472,7 +467,7 @@ impl Settings {
             dad: duration(c, b"DAD_TIMEOUT", 10_000_000)?,
             watch: duration(c, b"ADDRESS_WATCH_LIFETIME", 60_000_000)?,
             lookup: duration(c, b"SERVICE_LOOKUP_TIMEOUT", 10_000_000)?,
-            af,
+            peer_profiles,
         })
     }
     pub fn enabled(&self, ip: IpAddr) -> bool {
@@ -503,7 +498,7 @@ impl Settings {
             }),
             services,
             dns: self.dns.is_some(),
-            af: self.af,
+            peer_profiles: &self.peer_profiles,
         }
     }
     pub fn bindings(&self, services: &[Service]) -> Result<Vec<Binding>, Failure> {

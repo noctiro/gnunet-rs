@@ -65,39 +65,266 @@ pub fn refused(stage: &'static str, cause: io::Error) -> Failure {
         cleanup: Cleanup::NotNeeded,
     }
 }
-struct Staged<'a> {
-    directory: &'a Directory,
-    name: OsString,
-    writer: Option<File>,
-    lease: Option<File>,
-    attempted: bool,
-    renamed: bool,
+
+fn after_publication(stage: &'static str, cause: io::Error) -> Failure {
+    Failure {
+        may_have_published: true,
+        cleanup: Cleanup::Retired,
+        ..refused(stage, cause)
+    }
 }
-impl Staged<'_> {
-    fn failure(mut self, stage: &'static str, cause: io::Error) -> Failure {
-        let cleanup = if self.renamed {
-            Cleanup::Retired
-        } else if let Some(original) = self.lease.as_ref().or(self.writer.as_ref()) {
-            match self.directory.remove_file(&self.name, original) {
-                Ok(()) => Cleanup::Retired,
-                Err(error) => Cleanup::Failed(error),
-            }
-        } else {
-            Cleanup::NotNeeded
-        };
-        let writer_close = self
-            .writer
-            .take()
-            .and_then(|file| filesystem::close(file).err());
+
+fn cleanup(directory: &Directory, name: &OsStr, original: &File) -> Cleanup {
+    match directory.remove_file(name, original) {
+        Ok(()) => Cleanup::Retired,
+        Err(error) => Cleanup::Failed(error),
+    }
+}
+
+fn writer_failed(
+    directory: &Directory,
+    name: &OsStr,
+    writer: File,
+    stage: &'static str,
+    cause: io::Error,
+) -> Failure {
+    Failure {
+        cleanup: cleanup(directory, name, &writer),
+        writer_close: filesystem::close(writer).err(),
+        ..refused(stage, cause)
+    }
+}
+
+/// Original read-only stage after its synchronized writer has closed.
+/// Dropping the lease leaves the name for its caller's recovery policy.
+#[must_use]
+pub struct Sealed<'a> {
+    directory: &'a Directory,
+    name: &'a OsStr,
+    file: File,
+    info: filesystem::FileInfo,
+}
+
+enum SealFailure {
+    Writer(&'static str, io::Error),
+    Reader(&'static str, io::Error),
+}
+
+fn verify_selection(
+    directory: &Directory,
+    name: &OsStr,
+    held: filesystem::FileInfo,
+) -> io::Result<()> {
+    let named = directory.entry_info(name)?;
+    if named != filesystem::EntryInfo::File(held) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("original staged file differs from its name: held={held:?}, named={named:?}"),
+        ));
+    }
+    Ok(())
+}
+
+fn prepare(
+    directory: &Directory,
+    name: &OsStr,
+    file: &mut File,
+    expected_bytes: u64,
+) -> Result<filesystem::FileInfo, SealFailure> {
+    file.sync_all()
+        .map_err(|error| SealFailure::Writer("file-sync", error))?;
+    let opened = (|| {
+        let lease = directory.open_file(name)?;
+        if filesystem::FileIdentity::of(file)? != filesystem::FileIdentity::of(&lease)? {
+            return Err(io::Error::other("original staged file changed"));
+        }
+        Ok(lease)
+    })();
+    let lease = opened.map_err(|error| SealFailure::Writer("stage-lease", error))?;
+    filesystem::close(std::mem::replace(file, lease))
+        .map_err(|error| SealFailure::Reader("writer-close", error))?;
+    let info = filesystem::private_data_file_info(file)
+        .map_err(|error| SealFailure::Reader("prepared-fence", error))?;
+    if info.bytes != expected_bytes {
+        return Err(SealFailure::Reader(
+            "prepared-fence",
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "original staged file length differs from synchronized input",
+            ),
+        ));
+    }
+    verify_selection(directory, name, info)
+        .map_err(|error| SealFailure::Reader("prepared-fence", error))?;
+    Ok(info)
+}
+
+/// Synchronize and close a staging writer while keeping its original object
+/// held. On success the supplied file is a separate read-only lease. On failure
+/// it still holds the original object for caller-owned cleanup. A failure before
+/// opening the reader leaves the writer in place. No name is changed.
+pub fn seal_retained(
+    directory: &Directory,
+    name: &OsStr,
+    file: &mut File,
+    expected_bytes: u64,
+) -> Result<filesystem::FileInfo, Failure> {
+    prepare(directory, name, file, expected_bytes).map_err(|error| match error {
+        SealFailure::Writer(stage, cause) | SealFailure::Reader(stage, cause) => {
+            refused(stage, cause)
+        }
+    })
+}
+
+/// Synchronize the private stage, consume its writer and retain a separate
+/// read-only handle to the same file. Failures remove only the original stage
+/// when possible and retain independent writer-close or name cleanup failures.
+pub fn seal<'a>(
+    directory: &'a Directory,
+    name: &'a OsStr,
+    writer: File,
+    expected_bytes: u64,
+) -> Result<Sealed<'a>, Failure> {
+    let mut file = writer;
+    let info = match prepare(directory, name, &mut file, expected_bytes) {
+        Ok(info) => info,
+        Err(SealFailure::Writer(stage, cause)) => {
+            return Err(writer_failed(directory, name, file, stage, cause));
+        }
+        Err(SealFailure::Reader(stage, cause)) => {
+            return Err(Failure {
+                cleanup: cleanup(directory, name, &file),
+                ..refused(stage, cause)
+            });
+        }
+    };
+    Ok(Sealed {
+        directory,
+        name,
+        file,
+        info,
+    })
+}
+
+impl Sealed<'_> {
+    fn verify(&self) -> io::Result<()> {
+        let observed = filesystem::private_data_file_info(&self.file)?;
+        if observed != self.info {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "original staged file changed before publication: expected={:?}, observed={observed:?}",
+                    self.info
+                ),
+            ));
+        }
+        verify_selection(self.directory, self.name, observed)
+    }
+
+    fn failed(&self, stage: &'static str, cause: io::Error) -> Failure {
         Failure {
-            stage,
-            cause,
-            may_have_published: self.attempted,
-            writer_close,
-            cleanup,
+            cleanup: cleanup(self.directory, self.name, &self.file),
+            ..refused(stage, cause)
+        }
+    }
+
+    /// Discard the stage by its original identity before any replacement.
+    pub fn discard(self) -> io::Result<()> {
+        self.directory.remove_file(self.name, &self.file)
+    }
+
+    /// Recheck the sealed file, attempt one native replacement and return the
+    /// original read lease with its actual replacement result. An outer error
+    /// means replacement was never attempted. After the attempt the caller owns
+    /// recovery, including original-file readback and any naming barrier.
+    pub fn replace(self, target: &OsStr) -> Result<(File, io::Result<()>), Failure> {
+        if target == self.name {
+            return Err(self.failed("replacement-target", io::ErrorKind::InvalidInput.into()));
+        }
+        if let Err(cause) = self.verify() {
+            return Err(self.failed("before-publication-fence", cause));
+        }
+        let replaced = self.directory.replace_file(self.name, &self.file, target);
+        Ok((self.file, replaced))
+    }
+}
+
+/// Synchronize the held original at its selected name. Windows requires a
+/// separate sync-capable handle, which is checked against the held identity and
+/// explicitly closed before returning. This operation never removes a name.
+pub fn sync_original(directory: &Directory, name: &OsStr, original: &File) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        if !directory.same_file(name, original)? {
+            return Err(io::Error::other(
+                "original file changed before synchronization",
+            ));
+        }
+        original.sync_all()
+    }
+    #[cfg(windows)]
+    {
+        let file = directory.open_file_for_sync(name)?;
+        let sync = (|| {
+            if filesystem::FileIdentity::of(original)? != filesystem::FileIdentity::of(&file)? {
+                return Err(io::Error::other(
+                    "original file changed before synchronization",
+                ));
+            }
+            file.sync_all()
+        })();
+        let close = filesystem::close(file);
+        match (sync, close) {
+            (Err(sync), Err(close)) => {
+                Err(io::Error::new(sync.kind(), SyncCloseFailed { sync, close }))
+            }
+            (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+            (Ok(()), Ok(())) => Ok(()),
         }
     }
 }
+
+#[cfg(windows)]
+#[derive(Debug)]
+struct SyncCloseFailed {
+    sync: io::Error,
+    close: io::Error,
+}
+#[cfg(windows)]
+impl std::fmt::Display for SyncCloseFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}. Independent sync handle close: {}",
+            self.sync, self.close
+        )
+    }
+}
+#[cfg(windows)]
+impl std::error::Error for SyncCloseFailed {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.sync)
+    }
+}
+
+/// After publication and retirement of the staging link, synchronize the held
+/// directory. If its barrier is unavailable, flush the original file at its new
+/// name. The file flush leaves the directory barrier result unchanged.
+pub fn synchronize_published(
+    directory: &Directory,
+    target: &OsStr,
+    original: &File,
+) -> Result<DirectorySync, Failure> {
+    let directory_sync = directory
+        .sync()
+        .map_err(|cause| after_publication("directory-sync", cause))?;
+    if directory_sync == DirectorySync::Unavailable {
+        sync_original(directory, target, original)
+            .map_err(|cause| after_publication("published-file-sync", cause))?;
+    }
+    Ok(directory_sync)
+}
+
 /// Requested destination operation. Neither variant grants target authority.
 #[derive(Clone, Copy, Debug)]
 pub enum Destination {
@@ -107,9 +334,11 @@ pub enum Destination {
     Replace,
 }
 /// Stage private bytes, synchronize and explicitly close their writer, then
-/// publish relative to this original directory. The caller excludes namespace
-/// administration and supplies its original target/deadline fence. The returned
-/// read lease retains the actual published object. No parent path is resolved.
+/// publish relative to this original directory. The caller excludes namespace,
+/// content and permission administration and supplies its original target/deadline
+/// fence. That callback must not change the prepared file; the original private
+/// data fences are checked around it. The returned read lease retains the actual
+/// published object. No parent path is resolved.
 pub fn publish(
     directory: &Directory,
     target: &OsStr,
@@ -127,7 +356,7 @@ pub fn publish(
             .try_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
             .map_err(|_| refused("temporary-serial", io::ErrorKind::StorageFull.into()))?;
         let name = OsString::from(format!(".gnunet-file-{}-{serial}.new", std::process::id()));
-        if name == target {
+        if name == target || (cfg!(windows) && name.eq_ignore_ascii_case(target)) {
             continue;
         }
         match directory.create_private_file(&name) {
@@ -139,87 +368,94 @@ pub fn publish(
             Err(error) => return Err(refused("temporary-create", error)),
         }
     }
-    let (name, file) =
+    let (name, mut writer) =
         opened.ok_or_else(|| refused("temporary-capacity", io::ErrorKind::AlreadyExists.into()))?;
-    let mut staged = Staged {
-        directory,
-        name,
-        writer: Some(file),
-        lease: None,
-        attempted: false,
-        renamed: false,
-    };
-    let prepare = (|| {
-        let file = staged.writer.as_mut().ok_or(io::ErrorKind::NotFound)?;
-        file.write_all(contents)?;
-        file.sync_all()?;
-        let lease = directory.open_file(&staged.name)?;
-        if !directory.same_file(&staged.name, file)?
-            || filesystem::FileIdentity::of(file)? != filesystem::FileIdentity::of(&lease)?
-        {
-            return Err(io::Error::other("original file temporary changed"));
+    let written = (|| {
+        let mut remaining = contents;
+        while !remaining.is_empty() {
+            // Advance only on reported writes. Preserve native errors, including
+            // interruption, without resubmitting the same stage prefix.
+            let count = writer.write(remaining)?;
+            if count == 0 {
+                return Err(io::ErrorKind::WriteZero.into());
+            }
+            remaining = &remaining[count..];
         }
-        staged.lease = Some(lease);
-        Ok::<_, io::Error>(())
+        Ok(())
     })();
-    if let Err(error) = prepare {
-        return Err(staged.failure("temporary-write-sync", error));
+    if let Err(cause) = written {
+        return Err(writer_failed(
+            directory,
+            &name,
+            writer,
+            "temporary-write-sync",
+            cause,
+        ));
     }
-    if let Some(file) = staged.writer.take()
-        && let Err(error) = filesystem::close(file)
-    {
-        return Err(staged.failure("writer-close", error));
-    }
-    if let Err(error) = before_publish() {
-        return Err(staged.failure("before-publication", error));
-    }
-    let Some(lease) = staged.lease.as_ref() else {
-        return Err(staged.failure("original-lease", io::ErrorKind::NotFound.into()));
+    let staged = seal(directory, &name, writer, contents.len() as u64).map_err(|mut error| {
+        if error.stage == "file-sync" {
+            error.stage = "temporary-write-sync";
+        }
+        error
+    })?;
+    before_publish().map_err(|cause| staged.failed("before-publication", cause))?;
+    staged
+        .verify()
+        .map_err(|cause| staged.failed("before-publication-fence", cause))?;
+    let lease = &staged.file;
+    let rename_failure = |stage, cause| Failure {
+        may_have_published: true,
+        ..staged.failed(stage, cause)
     };
-    staged.attempted = true;
     match destination {
-        Destination::Replace => {
-            if let Err(error) = directory.replace_file(&staged.name, lease, target) {
-                return Err(staged.failure("rename", error));
-            }
-        }
+        Destination::Replace => directory
+            .replace_file(&name, lease, target)
+            .map_err(|cause| rename_failure("rename", cause))?,
         Destination::Create => {
-            if let Err(error) = directory.link_file_from(directory, &staged.name, lease, target) {
-                return Err(staged.failure("publish-create", error));
-            }
-            if let Err(error) = directory.remove_file(&staged.name, lease) {
-                // The actual unlink was attempted once. Do not retry an uncertain
-                // removal, replace the destination or discard its original error.
-                return Err(Failure {
-                    stage: "temporary-retirement",
-                    cause: io::Error::other("published file retains an unresolved temporary link"),
-                    may_have_published: true,
-                    writer_close: None,
-                    cleanup: Cleanup::Failed(error),
-                });
+            #[cfg(windows)]
+            directory
+                .rename_new_file(&name, lease, target)
+                .map_err(|cause| rename_failure("publish-create", cause))?;
+            #[cfg(unix)]
+            {
+                #[cfg(target_os = "freebsd")]
+                let renamed = filesystem::freebsd::rename_noreplace(directory, &name, target)
+                    .map_err(|cause| rename_failure("publish-create", cause))?;
+                #[cfg(not(target_os = "freebsd"))]
+                let renamed = false;
+                if !renamed {
+                    directory
+                        .link_file_from(directory, &name, lease, target)
+                        .map_err(|cause| rename_failure("publish-create", cause))?;
+                    if let Err(error) = directory.remove_file(&name, lease) {
+                        // The actual unlink was attempted once. Its result is independent
+                        // of the already published destination.
+                        return Err(Failure {
+                            stage: "temporary-retirement",
+                            cause: io::Error::other(
+                                "published file retains an unresolved temporary link",
+                            ),
+                            may_have_published: true,
+                            writer_close: None,
+                            cleanup: Cleanup::Failed(error),
+                        });
+                    }
+                }
             }
         }
     }
-    staged.renamed = true;
-    let directory_sync = match directory.sync() {
-        Ok(observation) => observation,
-        Err(error) => return Err(staged.failure("directory-sync", error)),
-    };
-    let selected = match directory.same_file(target, lease) {
-        Ok(selected) => selected,
-        Err(error) => return Err(staged.failure("published-selection", error)),
-    };
-    if !selected {
-        return Err(staged.failure(
+    let directory_sync = synchronize_published(directory, target, lease)?;
+    if !directory
+        .same_file(target, lease)
+        .map_err(|cause| after_publication("published-selection", cause))?
+    {
+        return Err(after_publication(
             "published-selection",
             io::Error::other("original publication changed"),
         ));
     }
-    let Some(file) = staged.lease.take() else {
-        return Err(staged.failure("original-lease", io::ErrorKind::NotFound.into()));
-    };
     Ok(Published {
-        file,
+        file: staged.file,
         directory_sync,
     })
 }

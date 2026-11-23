@@ -3,10 +3,11 @@ use super::peer::hexadecimal;
 mod crypt;
 mod keys;
 mod messages;
+mod standalone;
 use gnunet::{
     clients::identity::{
-        Client, EndpointSource, Identity, Instance, KeyType, Limits, Lookup, LookupOutcome,
-        LookupProgress, Operation, Outcome, Progress, SecretKey, ipc,
+        Client, EndpointSource, Instance, KeyType, Limits, Lookup, LookupOutcome, LookupProgress,
+        Operation, Outcome, Progress, SecretKey, ipc,
     },
     crypto::Entropy,
     types::Error as Fault,
@@ -25,6 +26,13 @@ use std::{
 use tokio::time::Instant;
 use zeroize::Zeroizing;
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
+pub(super) use standalone::run as run_standalone;
+
+async fn interrupt() -> io::Result<()> {
+    let mut signals = gnunet_service_runtime::signals::Termination::new()?;
+    poll_fn(|cx| signals.poll_stop(cx)).await
+}
+
 async fn observed<T, E: Error + 'static>(
     progress: impl Future<Output = std::result::Result<T, E>>,
     mut signal: Pin<&mut impl Future<Output = io::Result<()>>>,
@@ -57,23 +65,53 @@ enum Action {
     Rename,
     Delete,
 }
-struct Command<'a> {
+#[derive(Clone, Copy)]
+enum Display {
+    Json,
+    Text { quiet: bool, verbose: bool },
+}
+impl Display {
+    fn event(self, out: &mut impl Write, event: impl FnOnce() -> Value) -> Result<()> {
+        if matches!(self, Self::Json) {
+            row(out, event())?;
+        }
+        Ok(())
+    }
+    fn ego(
+        self,
+        out: &mut impl Write,
+        event: &str,
+        name: &[u8],
+        key: &SecretKey,
+        private: bool,
+    ) -> Result<()> {
+        match self {
+            Self::Json => identity_row(out, event, name, key, private),
+            Self::Text { quiet, .. } => keys::text(out, (!quiet).then_some(name), key, private),
+        }
+    }
+    fn raw(self) -> bool {
+        matches!(self, Self::Text { .. })
+    }
+}
+struct Command {
     action: Action,
-    socket: PathBuf,
-    names: &'a [OsString],
+    names: Vec<Vec<u8>>,
+    filter: Option<Vec<u8>>,
+    display: Display,
     key_type: KeyType,
     imported: Option<SecretKey>,
     private_keys: bool,
     encrypted: Option<Zeroizing<Vec<u8>>>,
     timeout: Duration,
-    hold: Duration,
+    hold: Option<Duration>,
     limits: Limits,
 }
 fn parse(
     args: &[OsString],
     imported: Option<keys::Imported>,
     encrypted: Option<Zeroizing<Vec<u8>>>,
-) -> Result<Command<'_>> {
+) -> Result<(Command, PathBuf)> {
     let (action, count) = match args.first().and_then(|s| s.to_str()) {
         Some("list") => (Action::List, 0),
         Some("monitor") => (Action::Monitor, 0),
@@ -172,25 +210,37 @@ fn parse(
         return Err("identity deadline is not representable".into());
     }
     limits.initialization_timeout = timeout;
-    for name in names {
-        let name = crate::argument::wire_bytes(name)?;
-        if name.len() > limits.name_bytes {
-            return Err("identity name exceeds configured bound".into());
-        }
-        ipc::Request::Lookup { name }.encoded_len()?;
-    }
-    Ok(Command {
-        action,
+    let names = names
+        .iter()
+        .map(|name| {
+            let name = crate::argument::wire_bytes(name)?;
+            validate_name(name, limits)?;
+            Ok(name.to_vec())
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok((
+        Command {
+            action,
+            names,
+            filter: None,
+            display: Display::Json,
+            key_type,
+            imported: imported.map(|value| value.key),
+            private_keys,
+            encrypted,
+            timeout,
+            hold: Some(Duration::from_millis(hold_ms)),
+            limits,
+        },
         socket,
-        names,
-        key_type,
-        imported: imported.map(|value| value.key),
-        private_keys,
-        encrypted,
-        timeout,
-        hold: Duration::from_millis(hold_ms),
-        limits,
-    })
+    ))
+}
+fn validate_name(name: &[u8], limits: Limits) -> Result<()> {
+    if name.len() > limits.name_bytes {
+        return Err("identity name exceeds configured bound".into());
+    }
+    ipc::Request::Lookup { name }.encoded_len()?;
+    Ok(())
 }
 fn row(out: &mut impl Write, value: Value) -> Result<()> {
     serde_json::to_writer(&mut *out, &value)?;
@@ -200,6 +250,7 @@ fn row(out: &mut impl Write, value: Value) -> Result<()> {
 }
 /// Explicit private-key export shared by management frontdoors. The secret is
 /// streamed from the existing zeroizing fixed buffer, never a JSON Value.
+#[cfg(feature = "namestore")]
 pub(crate) fn private_key_row(out: &mut impl Write, public: &Value, key: &SecretKey) -> Result<()> {
     keys::row(out, public, key)
 }
@@ -219,15 +270,6 @@ fn identity_row(
     } else {
         row(out, public_row)
     }
-}
-fn returned(out: &mut impl Write, identity: &Identity, private: bool) -> Result<()> {
-    identity_row(
-        out,
-        "identity_found",
-        identity.name(),
-        identity.secret(),
-        private,
-    )
 }
 
 struct Random;
@@ -369,22 +411,21 @@ fn finish(
     out: &mut impl Write,
     original: Result<()>,
     report: Option<gnunet::clients::identity::Loss<'_>>,
-    raw_export: bool,
+    raw_output: bool,
 ) -> Result<()> {
-    finish_state(out, original, Ok(()), report, raw_export, None)
+    finish_state(out, original, Ok(()), report, raw_output, None)
 }
 fn finish_state(
     out: &mut impl Write,
     original: Result<()>,
     retirement: Result<()>,
     report: Option<gnunet::clients::identity::Loss<'_>>,
-    raw_export: bool,
+    raw_output: bool,
     mutation: Option<Observation>,
 ) -> Result<()> {
     let closed = report.map(Closed::from);
-    // Raw backup output is exactly one standard key line. No JSON or cleanup
-    // metadata can silently become part of the next imported key value.
-    let diagnostic = if raw_export {
+    // Keep machine-readable key, envelope and text output free of JSON events.
+    let diagnostic = if raw_output {
         out.flush()
             .map_err(|error| Box::new(error) as Box<dyn Error>)
     } else if let Some(report) = &closed {
@@ -411,7 +452,7 @@ fn finish_state(
     Ok(())
 }
 async fn lookup(
-    command: &Command<'_>,
+    command: &Command,
     source: EndpointSource,
     hard: Instant,
     until: u64,
@@ -419,7 +460,7 @@ async fn lookup(
 ) -> Result<()> {
     let instance = Instance::new();
     let clock = source.clock();
-    let name = crate::argument::wire_bytes(&command.names[0])?;
+    let name = command.names[0].as_slice();
     let mut lookup = if command.action == Action::Suffix {
         Lookup::by_suffix(&instance, source, name, until, command.limits)?
     } else {
@@ -430,7 +471,7 @@ async fn lookup(
         ..Observation::default()
     };
     let result = async {
-        let interrupt = tokio::signal::ctrl_c();
+        let interrupt = interrupt();
         tokio::pin!(interrupt);
         loop {
             if Instant::now() >= hard { return Err("identity lookup deadline".into()); }
@@ -443,15 +484,15 @@ async fn lookup(
                     return match command.action {
                         Action::Export => keys::line(out, identity.secret()),
                         Action::Decrypt => messages::decrypt(identity.secret(), command.encrypted.as_ref().ok_or("missing original encrypted message")?, hard, (clock.clone(), until), interrupt.as_mut(), out).await,
-                        _ => returned(out, &identity, command.private_keys),
+                        _ => command.display.ego(out, "identity_found", identity.name(), identity.secret(), command.private_keys),
                     };
                 },
                 LookupProgress::Finished { outcome: LookupOutcome::ResultCode(code), .. } => {
-                    if !matches!(command.action, Action::Export | Action::Decrypt) { row(out, json!({"event":"identity_lookup_result","code":code}))?; }
+                    if !matches!(command.action, Action::Export | Action::Decrypt) { command.display.event(out, || json!({"event":"identity_lookup_result","code":code}))?; }
                     return Err(format!("identity lookup returned code {code}").into());
                 }
                 LookupProgress::Finished { outcome: LookupOutcome::Local { reason, submission, result_code }, .. } => {
-                    if !matches!(command.action, Action::Export | Action::Decrypt) { row(out, json!({"event":"identity_lookup_local_end","reason":format!("{reason:?}"),"submission":format!("{submission:?}"),"result_code":result_code}))?; }
+                    if !matches!(command.action, Action::Export | Action::Decrypt) { command.display.event(out, || json!({"event":"identity_lookup_local_end","reason":format!("{reason:?}"),"submission":format!("{submission:?}"),"result_code":result_code}))?; }
                     return Err(format!("identity lookup local end: reason={reason:?}, submission={submission:?}, result_code={result_code:?}").into());
                 }
                 LookupProgress::Source(Progress::Lost { report, cause }) => {
@@ -471,12 +512,12 @@ async fn lookup(
         result,
         Ok(()),
         report,
-        matches!(command.action, Action::Export | Action::Decrypt),
+        command.display.raw() || matches!(command.action, Action::Export | Action::Decrypt),
         Some(state),
     )
 }
 async fn monitor(
-    command: &Command<'_>,
+    command: &Command,
     source: EndpointSource,
     hard: Instant,
     out: &mut impl Write,
@@ -485,38 +526,45 @@ async fn monitor(
     let mut client = Client::monitor(&instance, source, command.limits)?;
     let mut state = Observation::default();
     let result = async {
-        let interrupt = tokio::signal::ctrl_c();
+        let interrupt = interrupt();
         tokio::pin!(interrupt);
+        let mut initialized = false;
         let mut end = None;
         loop {
             if end.is_some_and(|end| Instant::now() >= end) {
-                return row(out, json!({"event":"identity_monitor_stopped","reason":"hold_elapsed"}));
+                return command.display.event(out, || json!({"event":"identity_monitor_stopped","reason":"hold_elapsed"}));
             }
-            if Instant::now() >= hard { return Err("identity initialization/overall deadline".into()); }
-            let observation = end.map_or(hard, |end: Instant| hard.min(end));
-            let Some(progress) = observed(client.drive(Some(observation)), interrupt.as_mut()).await? else {
-                return row(out, json!({"event":"identity_monitor_stopped","reason":"interrupt"}));
+            let observation = if initialized && command.hold.is_none() { None } else { Some(end.map_or(hard, |end: Instant| hard.min(end))) };
+            if observation.is_some_and(|target| Instant::now() >= target) { return Err("identity initialization/overall deadline".into()); }
+            let Some(progress) = observed(client.drive(observation), interrupt.as_mut()).await? else {
+                return command.display.event(out, || json!({"event":"identity_monitor_stopped","reason":"interrupt"}));
             };
             match progress {
                 Progress::Ego { ego, change, initial } => {
                     let ego = client.ego(ego)?;
-                    identity_row(out, if initial { "identity_initial" } else { match change {
+                    if !command.filter.as_deref().is_none_or(|name| name == ego.name()) { continue; }
+                    command.display.ego(out, if initial { "identity_initial" } else { match change {
                         gnunet::clients::identity::Change::Added => "identity_added",
                         gnunet::clients::identity::Change::Renamed => "identity_renamed",
                     } }, ego.name(), ego.secret(), command.private_keys)?;
                 }
-                Progress::Deleted { identity, .. } => identity_row(out, "identity_deleted", identity.name(), identity.secret(), command.private_keys)?,
+                Progress::Deleted { identity, .. } => {
+                    if !command.display.raw() {
+                        identity_row(out, "identity_deleted", identity.name(), identity.secret(), command.private_keys)?;
+                    }
+                }
                 Progress::Initialized(_) => {
-                    row(out, json!({"event":"identity_initialized"}))?;
-                    if command.action == Action::List || command.hold.is_zero() { return Ok(()); }
-                    end = Some(Instant::now().checked_add(command.hold).ok_or("identity hold overflow")?);
+                    command.display.event(out, || json!({"event":"identity_initialized"}))?;
+                    if command.action == Action::List || command.hold.is_some_and(|hold| hold.is_zero()) { return Ok(()); }
+                    initialized = true;
+                    end = command.hold.map(|hold| Instant::now().checked_add(hold).ok_or("identity hold overflow")).transpose()?;
                 }
                 Progress::Lost { report, cause } => {
                     state.loss = Some(SourceLoss { report: report.into(), cause });
-                    row(out, json!({"event":"identity_source_lost","invalidated_egos":report.egos,"cause":format!("{:?}",state.loss.as_ref().map(|loss| &loss.cause))}))?;
+                    command.display.event(out, || json!({"event":"identity_source_lost","invalidated_egos":report.egos,"cause":format!("{:?}",state.loss.as_ref().map(|loss| &loss.cause))}))?;
                     return Err("identity monitor lost its original source".into());
                 }
-                Progress::WaitDeadline if end.is_some_and(|end| Instant::now() >= end) => return row(out, json!({"event":"identity_monitor_stopped","reason":"hold_elapsed"})),
+                Progress::WaitDeadline if end.is_some_and(|end| Instant::now() >= end) => return command.display.event(out, || json!({"event":"identity_monitor_stopped","reason":"hold_elapsed"})),
                 Progress::WaitDeadline => return Err("identity initialization/overall deadline".into()),
                 Progress::Unavailable(error) => return Err(error.into()),
                 Progress::Closed => return Err("identity monitor closed".into()),
@@ -525,10 +573,17 @@ async fn monitor(
         }
     }.await;
     let report = client.close();
-    finish_state(out, result, Ok(()), report, false, Some(state))
+    finish_state(
+        out,
+        result,
+        Ok(()),
+        report,
+        command.display.raw(),
+        Some(state),
+    )
 }
 async fn mutation(
-    command: &mut Command<'_>,
+    command: &mut Command,
     source: EndpointSource,
     hard: Instant,
     until: u64,
@@ -536,7 +591,7 @@ async fn mutation(
 ) -> Result<()> {
     let instance = Instance::new();
     let mut client = Client::new(&instance, source, command.limits)?;
-    let name = crate::argument::wire_bytes(&command.names[0])?;
+    let name = command.names[0].as_slice();
     let operation = match command.action {
         Action::Create => {
             let key = match command.imported.take() {
@@ -548,14 +603,12 @@ async fn mutation(
                     out,
                     Err("identity deadline before CREATE admission".into()),
                     client.close(),
-                    false,
+                    command.display.raw(),
                 );
             }
             client.create(name, key, until)?
         }
-        Action::Rename => {
-            client.rename(name, crate::argument::wire_bytes(&command.names[1])?, until)?
-        }
+        Action::Rename => client.rename(name, &command.names[1], until)?,
         Action::Delete => client.delete(name, until)?,
         _ => return Err("invalid identity mutation".into()),
     };
@@ -567,24 +620,31 @@ async fn mutation(
         &mut client,
         operation,
         hard,
-        command.private_keys,
+        (command.display, command.private_keys),
         out,
         &mut state,
     )
     .await;
     let report = client.close();
     let retirement = retire_mutation(&mut client, operation, &mut state).await;
-    finish_state(out, result, retirement, report, false, Some(state))
+    finish_state(
+        out,
+        result,
+        retirement,
+        report,
+        command.display.raw(),
+        Some(state),
+    )
 }
 async fn observe_mutation<'id>(
     client: &mut Client<'id>,
     operation: Operation<'id>,
     hard: Instant,
-    private_keys: bool,
+    (display, private_keys): (Display, bool),
     out: &mut impl Write,
     state: &mut Observation,
 ) -> Result<()> {
-    let interrupt = tokio::signal::ctrl_c();
+    let interrupt = interrupt();
     tokio::pin!(interrupt);
     loop {
         if Instant::now() >= hard {
@@ -605,16 +665,24 @@ async fn observe_mutation<'id>(
                             code,
                             material_present: created.is_some(),
                         });
-                        row(out, json!({"event":"identity_result","code":code}))?;
+                        display.event(out, || json!({"event":"identity_result","code":code}))?;
                         if code != 0 {
                             return Err(format!("identity service returned code {code}").into());
                         }
                         if let Some(key) = created {
-                            let public = json!({"event":"identity_created","public_key_hex":hexadecimal(&key.public_key()?)});
-                            if private_keys {
-                                keys::row(out, &public, &key)?;
-                            } else {
-                                row(out, public)?;
+                            match display {
+                                Display::Json => {
+                                    let public = json!({"event":"identity_created","public_key_hex":hexadecimal(&key.public_key()?)});
+                                    if private_keys {
+                                        keys::row(out, &public, &key)?;
+                                    } else {
+                                        row(out, public)?;
+                                    }
+                                }
+                                Display::Text { verbose: true, .. } => {
+                                    keys::text(out, None, &key, private_keys)?
+                                }
+                                Display::Text { .. } => {}
                             }
                         }
                         return Ok(());
@@ -630,9 +698,9 @@ async fn observe_mutation<'id>(
                             submission,
                             result_code,
                         });
-                        row(
+                        display.event(
                             out,
-                            json!({"event":"identity_local_end","reason":format!("{reason:?}"),"submission":format!("{submission:?}"),"result_code":result_code}),
+                            || json!({"event":"identity_local_end","reason":format!("{reason:?}"),"submission":format!("{submission:?}"),"result_code":result_code}),
                         )?;
                         return Err(
                             "identity operation ended without a normal service result".into()
@@ -759,30 +827,35 @@ pub(super) fn run(args: &mut [OsString], out: &mut impl Write) -> Result<()> {
         )?;
         return Ok(());
     }
-    let mut command = parse(args, imported, encrypted)?;
+    let (mut command, socket) = parse(args, imported, encrypted)?;
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?
-        .block_on(async {
-            let source = EndpointSource::unix(command.socket.clone());
-            let hard = Instant::now()
-                .checked_add(command.timeout)
-                .ok_or("identity native deadline overflow")?;
-            let now = source.clock().sample()?.now.as_micros();
-            let micros = u64::try_from(command.timeout.as_micros())?;
-            let until = now
-                .checked_add(micros)
-                .filter(|n| *n != u64::MAX)
-                .ok_or("identity deadline overflow")?;
-            if Instant::now() >= hard {
-                return Err("identity deadline before original source admission".into());
-            }
-            match command.action {
-                Action::Lookup | Action::Suffix | Action::Export | Action::Decrypt => {
-                    lookup(&command, source, hard, until, out).await
-                }
-                Action::List | Action::Monitor => monitor(&command, source, hard, out).await,
-                _ => mutation(&mut command, source, hard, until, out).await,
-            }
-        })
+        .block_on(execute(&mut command, EndpointSource::unix(socket), out))
+}
+
+async fn execute(
+    command: &mut Command,
+    source: EndpointSource,
+    out: &mut impl Write,
+) -> Result<()> {
+    let hard = Instant::now()
+        .checked_add(command.timeout)
+        .ok_or("identity native deadline overflow")?;
+    let now = source.clock().sample()?.now.as_micros();
+    let micros = u64::try_from(command.timeout.as_micros())?;
+    let until = now
+        .checked_add(micros)
+        .filter(|n| *n != u64::MAX)
+        .ok_or("identity deadline overflow")?;
+    if Instant::now() >= hard {
+        return Err("identity deadline before original source admission".into());
+    }
+    match command.action {
+        Action::Lookup | Action::Suffix | Action::Export | Action::Decrypt => {
+            lookup(command, source, hard, until, out).await
+        }
+        Action::List | Action::Monitor => monitor(command, source, hard, out).await,
+        _ => mutation(command, source, hard, until, out).await,
+    }
 }

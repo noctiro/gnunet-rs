@@ -4,7 +4,12 @@ This is the active contrib generic SET protocol, distinct from SETI and SETU. Th
 service owners. It performs no IO and takes entropy/compression through ports.
 
 Each local set has one typed element namespace. Its fingerprint is the official
-SHA-512 of native-order u16 size, native-order u16 element type and opaque bytes. Immutable payloads are shared by frozen operation/iteration views and lazy copies. A copy cookie selects the source membership at the connect, not prepare. Add admission prepares geometric metadata growth and checks the body and
+SHA-512 of native-order u16 size, native-order u16 element type and opaque bytes.
+Immutable payloads are shared by frozen operation and iteration views and lazy
+copies. The copy cookie becomes redeemable after the complete response write.
+Connect freezes the source membership for the new set. Iteration reads its own
+snapshot and ACK0 releases it without a terminal frame. Add admission prepares
+geometric metadata growth and checks the body and
 service quota before changing membership; duplicate content adds no payload.
 
 The union engine implements the old native-column 13-byte IBF, key derivation,
@@ -14,6 +19,11 @@ member decompression. The intersection engine implements the old count/xor,
 fragmented Bloom and DONE exchange with the original snapshot retained for FULL
 and REMOVED output, including both empty/nonempty roles. Actual ABI word order
 and u64 alignment are explicit; no profile is guessed from a received packet.
+
+Intersection IPC encodes element types and result sizes in network byte order.
+FULL rows carry the converged size. REMOVED rows carry the size after removing
+that element. A failure carries the last local size, starting with the frozen
+snapshot count from admission.
 
 Service handles are branded per original instance and independent of raw IPC
 request IDs. Pending offers use the CADET listener port and peer, not the
@@ -29,6 +39,11 @@ or applied local ownership action; it does not claim remote processing. Cancel
 suppresses original future output and retires its original owners, with no replay,
 private acknowledgement or renewed deadline. Clock-free shutdown retains actual
 retirement debts. A native caller must continue to report their terminals.
+
+Late CANCEL on a set and late REJECT on a listener are harmless after the
+original operation or offer retires. An ACCEPT whose offer is unavailable sends
+standard FAILURE only for its request ID. The reply holds that ID on its original
+set until settlement and does not allocate a peer operation.
 
 Resource limits bound local membership, accumulated union bodies, filters,
 rounds, records (including repeated input), original owners and output. UNION
@@ -99,21 +114,26 @@ terminal path even though it also settles peer_pending. Drained alone is not
 proof. Early close/unknown original sends cannot upgrade after later settlement. Final client DONE still uses the original peer retirement, pending output
 and same-client FIFO; no native Written is called a remote processing ACK.
 
-Normal default SYMMETRIC still prefers delta. Explicit FORCE_DELTA refuses an
-actually received full strategy, and FORCE_FULL refuses actually received IBF;
-contradictory local force flags are invalid. The peer operation request carries
-neither side's local result mode/strategy, so a local acceptor cannot compel an
-unmodified C evaluator to honour a policy it was never told. Such a strategy
-conflict fails, without pretending the opposite strategy met the caller's option. No additional restriction is applied to ordinary non-forced negotiation.
+SYMMETRIC prefers delta when the local client requires no minimum overlap.
+FORCE_DELTA refuses an incoming full transfer, and FORCE_FULL refuses an
+incoming IBF. Contradictory local force flags are invalid. Strategy and minimum
+overlap are local IPC options. If the peer chooses an incompatible strategy,
+the operation fails.
 
 Byzantine full transfer rejects an exact element already received from that
 remote operation with Replay before changing its record count, membership or
 result queue. The first receipt of a common original element remains legal;
 honest overlap is not classified through a fresh/total heuristic. A blocked
 first receipt is not marked remote. Ordinary full transfer keeps its existing
-repeated-element behavior under the configured record bound. This check does
-not prove the remote set's completeness or repair the C implementation's
-heuristic and result-reporting limitations.
+repeated-element behavior under the configured record bound. A nonzero
+Byzantine lower bound requires that many distinct original members be received
+before accepting FULL_DONE. Elements and incremental results can be sent
+before this terminal check. With this option, the evaluator requests the peer's
+full set. The acceptor verifies a full first leg or uses a reciprocal full
+request, including in ADDED mode. An acceptor with a positive bound fails an
+incoming delta exchange. The service fails the individual request before
+network work when the local snapshot is too small or FORCE_DELTA is combined
+with a positive bound.
 
 ### Unmodified C profiles and source qualification
 

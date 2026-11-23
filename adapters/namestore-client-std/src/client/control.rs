@@ -1,5 +1,5 @@
 //! One retained immutable NEXT/STOP control and exact whole-write credit.
-use super::{Client, ControlState, Mode, Origin, StreamMeta};
+use super::{Client, ControlState, Mode, Origin, StreamMeta, StreamStart};
 use crate::{
     Control, ControlKind, EndpointSource, Epoch, Error, Instance, Kind, Limits, LocalReason,
     Operation, Progress, SecretKey, ipc,
@@ -15,7 +15,7 @@ impl<'id> Client<'id> {
         source: EndpointSource,
         zone: Option<&SecretKey>,
         filter: u16,
-        monitor: Option<bool>,
+        start: StreamStart,
         until: u64,
         mut limits: Limits,
     ) -> Result<(Self, Operation<'id>), Error> {
@@ -23,38 +23,38 @@ impl<'id> Client<'id> {
         limits.reconnect = false;
         let mut this = Self::new(instance, source, limits)?;
         let key = zone.map(SecretKey::view).transpose()?;
-        let request = if monitor.is_some() {
-            ipc::Request::MonitorStart {
-                zone: key,
-                iterate_first: u32::from(monitor.unwrap_or(false)),
-                filter,
-            }
-        } else {
-            ipc::Request::IterateStart {
-                rid: this.rid()?,
-                zone: key,
-                filter,
-            }
+        let (request, kind, mode, follow) = match start {
+            StreamStart::Monitor {
+                iterate_first,
+                follow,
+            } => (
+                ipc::Request::MonitorStart {
+                    zone: key,
+                    iterate_first: u32::from(iterate_first),
+                    filter,
+                },
+                Kind::Monitor,
+                Mode::Monitor,
+                follow,
+            ),
+            StreamStart::Iterate => (
+                ipc::Request::IterateStart {
+                    rid: this.rid()?,
+                    zone: key,
+                    filter,
+                },
+                Kind::Iterator,
+                Mode::Iterator,
+                false,
+            ),
         };
-        let op = this.append(
-            request,
-            if monitor.is_some() {
-                Kind::Monitor
-            } else {
-                Kind::Iterator
-            },
-            zone.map(SecretKey::try_clone_secret),
-            until,
-        )?;
-        this.mode = if monitor.is_some() {
-            Mode::Monitor
-        } else {
-            Mode::Iterator
-        };
+        let op = this.append(request, kind, zone.map(SecretKey::try_clone_secret), until)?;
+        this.mode = mode;
         this.stream = Some(StreamMeta {
             operation: op,
             credit: 0,
             synced: false,
+            follow,
             stopping: false,
         });
         Ok((this, op))
@@ -104,16 +104,16 @@ impl<'id> Client<'id> {
             return Err(Fault::NotReady.into());
         }
         let rid = original.rid;
-        let until = until.min(original.expires);
-        let original_hard = original.hard;
+        let deadline = original.deadline;
+        let until = deadline.map_or(until, |deadline| until.min(deadline.expires));
         let now = self.admission_now()?;
         if until <= now || until == u64::MAX {
             return Err(Fault::Deadline.into());
         }
         let hard = Instant::now()
             .checked_add(Duration::from_micros(until - now))
-            .ok_or(Fault::Overflow)?
-            .min(original_hard);
+            .ok_or(Fault::Overflow)?;
+        let hard = deadline.map_or(hard, |deadline| hard.min(deadline.hard));
         let request = match (self.mode, kind) {
             (Mode::Iterator, ControlKind::Next { limit }) => {
                 ipc::Request::IterateNext { rid, limit }

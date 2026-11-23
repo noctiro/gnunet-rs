@@ -45,7 +45,7 @@ struct PrimeTest {
 }
 impl PrimeTest {
     fn new(candidate: Zeroizing<U1024>) -> Result<Self, Error> {
-        if candidate.bits() != 1024 || !candidate.bit_vartime(0) {
+        if candidate.bit_width() != 1024 || !candidate.bit_vartime(0) {
             return Err(Error::InvalidKey);
         }
         let minus_one = Zeroizing::new(candidate.wrapping_sub(&U1024::ONE));

@@ -106,6 +106,7 @@ struct Row<'a> {
     queued: bool,
     sent: usize,
     total: usize,
+    charge: usize,
 }
 #[derive(Clone, Copy)]
 struct Tag<'a> {
@@ -213,6 +214,7 @@ pub struct Client<'a> {
     clock: Arc<dyn RuntimeClock>,
     flags: u32,
     limits: Limits,
+    reply_limit: ipc::ReplyLimit,
     rows: Vec<Row<'a>>,
     epoch: Option<Epoch<'a>>,
     init: bool,
@@ -245,12 +247,13 @@ impl<'a> Client<'a> {
             || flags & !15 != 0
             || limits.requests == 0
             || limits.requests > 65536
-            || !(16..=65535).contains(&limits.frame_bytes)
-            || limits.source_bytes < 16
+            || limits.frame_bytes > usize::from(u16::MAX)
             || limits.io_slice_bytes == 0
         {
             return Err(Fault::InvalidInput.into());
         }
+        let reply_limit =
+            ipc::ReplyLimit::from_frame_bytes(limits.frame_bytes.min(limits.source_bytes))?;
         for d in [
             limits.request_timeout,
             limits.input_timeout,
@@ -290,6 +293,7 @@ impl<'a> Client<'a> {
             clock,
             flags,
             limits,
+            reply_limit,
             rows,
             epoch: None,
             init: false,
@@ -310,6 +314,11 @@ impl<'a> Client<'a> {
     /// Currently attached original source.
     pub const fn epoch(&self) -> Option<Epoch<'a>> {
         self.epoch
+    }
+    /// Payload capacity of a single answer on this configured connection.
+    #[must_use]
+    pub const fn reply_limit(&self) -> ipc::ReplyLimit {
+        self.reply_limit
     }
     fn serial(&mut self) -> Result<u64, Fault> {
         self.next = self.next.checked_add(1).ok_or(Fault::Overflow)?;
@@ -385,37 +394,48 @@ impl<'a> Client<'a> {
         if self.rows[i].reply.is_some() || self.rows[i].queued {
             return Err(Fault::Replay.into());
         }
-        if matches!(decision, ipc::Decision::Answer(_))
-            && self.flags & (ipc::PRE_RESOLUTION | ipc::POST_RESOLUTION) == 0
-        {
-            return Err(Fault::PermissionDenied.into());
+        if let ipc::Decision::Answer(dns) = decision {
+            if self.flags & (ipc::PRE_RESOLUTION | ipc::POST_RESOLUTION) == 0 {
+                return Err(Fault::PermissionDenied.into());
+            }
+            if dns.len() > self.reply_limit.answer_bytes() {
+                return Err(Fault::TooLarge.into());
+            }
         }
         let req = ipc::Request::Reply {
             id: self.rows[i].id,
             decision,
         };
         let n = req.encoded_len()?;
-        if n > self.limits.frame_bytes
-            || self
-                .bytes
-                .checked_add(n)
-                .is_none_or(|v| v > self.limits.source_bytes)
+        if self
+            .bytes
+            .checked_add(n)
+            .is_none_or(|v| v > self.limits.source_bytes)
         {
             return Err(Fault::Capacity.into());
         }
         let mut v = Vec::new();
         v.try_reserve_exact(n).map_err(|_| Fault::Capacity)?;
+        let charge = v.capacity();
+        let retained = self.bytes.checked_add(charge).ok_or(Fault::Overflow)?;
+        if retained > self.limits.source_bytes {
+            return Err(Fault::Capacity.into());
+        }
         v.resize(n, 0);
         req.encode(&mut v)?;
         self.rows[i].reply = Some(OwnedFrame::new(v));
         self.rows[i].total = n;
-        self.bytes += n;
+        self.rows[i].charge = charge;
+        self.bytes = retained;
         Ok(())
     }
     /// Resolve only this original callback. Canonical/native expiry is checked
     /// before admission; response queueing or whole-write asserts no IP delivery.
     pub fn reply(&mut self, token: Request<'a>, decision: ipc::Decision<'_>) -> Result<(), Error> {
         let i = self.index(token)?;
+        if self.rows[i].drain.is_some() || Instant::now() >= self.rows[i].hard {
+            return Err(Fault::Deadline.into());
+        }
         let now = match self.now() {
             Ok(n) => n,
             Err(e) => {
@@ -465,10 +485,15 @@ impl<'a> Client<'a> {
         }
     }
     fn expire(&mut self, now: u64) -> Result<Option<Request<'a>>, Error> {
-        for i in 0..self.rows.len() {
-            if self.rows[i].until <= now && self.rows[i].drain.is_none() {
-                if self.rows[i].queued {
-                    let token = self.rows[i].token;
+        let native_now = Instant::now();
+        let mut drop_ready = None;
+        // Quarantine every obsolete frame before letting unrelated output
+        // drain. A full reply budget must never leave a later stale answer
+        // eligible for its first native write.
+        for (i, row) in self.rows.iter_mut().enumerate() {
+            if row.until <= now && row.drain.is_none() {
+                if row.queued {
+                    let token = row.token;
                     let removed = self
                         .channel
                         .framing_mut()
@@ -477,28 +502,34 @@ impl<'a> Client<'a> {
                     if removed == 0 {
                         return Err(Fault::Deadline.into());
                     }
-                    self.rows[i].queued = false;
+                    row.queued = false;
                 }
-                if self.rows[i].total != 0 {
-                    self.bytes = self
-                        .bytes
-                        .checked_sub(self.rows[i].total)
-                        .ok_or(Fault::Conflict)?;
-                }
-                self.rows[i].reply = None;
-                self.rows[i].total = 0;
-                self.rows[i].sent = 0;
-                self.set_reply(i, ipc::Decision::Drop)?;
-                self.rows[i].drain = Some(
-                    Instant::now()
+                self.bytes = self.bytes.checked_sub(row.charge).ok_or(Fault::Conflict)?;
+                row.reply = None;
+                row.total = 0;
+                row.charge = 0;
+                row.sent = 0;
+                row.drain = Some(
+                    native_now
                         .checked_add(self.limits.drain_grace)
                         .ok_or(Fault::Overflow)?
-                        .min(self.rows[i].hard),
+                        .min(row.hard),
                 );
-                return Ok(Some(self.rows[i].token));
+            }
+            if row.drain.is_some() && !row.queued && row.reply.is_none() && drop_ready.is_none() {
+                drop_ready = Some(i);
             }
         }
-        Ok(None)
+        let Some(i) = drop_ready else {
+            return Ok(None);
+        };
+        match self.set_reply(i, ipc::Decision::Drop) {
+            Ok(()) => Ok(Some(self.rows[i].token)),
+            // Preserve the original drain bound and allow existing writes to
+            // release their capacity. A later turn mints no new deadline.
+            Err(Error::Protocol(Fault::Capacity)) => Ok(None),
+            Err(error) => Err(error),
+        }
     }
     fn prepare(&mut self) -> Result<(), Error> {
         let epoch = self.epoch.ok_or(Fault::NotReady)?;
@@ -574,7 +605,7 @@ impl<'a> Client<'a> {
                 if r.sent != r.total {
                     return Poll::Ready(Err(Fault::Conflict.into()));
                 }
-                self.bytes = self.bytes.checked_sub(r.total).ok_or(Fault::Conflict)?;
+                self.bytes = self.bytes.checked_sub(r.charge).ok_or(Fault::Conflict)?;
                 return Poll::Ready(Ok(Progress::Written(token)));
             }
         } else if p.complete {
@@ -629,6 +660,7 @@ impl<'a> Client<'a> {
             queued: false,
             sent: 0,
             total: 0,
+            charge: 0,
         });
         self.channel
             .framing_mut()
@@ -644,6 +676,9 @@ impl<'a> Client<'a> {
         }))
     }
     fn read(&mut self, cx: &mut Context<'_>) -> Poll<Result<Progress<'a>, Error>> {
+        if self.rows.len() >= self.limits.requests {
+            return Poll::Pending;
+        }
         let epoch = self.epoch.ok_or(Fault::NotReady)?;
         let p = match self
             .channel
@@ -793,3 +828,6 @@ impl<'a> Client<'a> {
         poll_fn(|cx| self.poll(cx, wait)).await
     }
 }
+
+#[cfg(test)]
+mod tests;

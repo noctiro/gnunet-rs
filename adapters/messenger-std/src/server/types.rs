@@ -410,18 +410,10 @@ pub struct Report {
     /// Provider jobs still pending at forced closure, before actual MQ fencing.
     pub stopped_signatures: usize,
 }
-/// Explicit caller-owned OS entropy descriptor. Opening is a real runtime action;
-/// this library never opens it implicitly or reads private key files.
-pub struct SystemEntropy(std::fs::File);
-impl SystemEntropy {
-    /// Open the OS entropy port at real process startup.
-    pub fn open() -> io::Result<Self> {
-        Ok(Self(std::fs::File::open("/dev/urandom")?))
-    }
-}
+/// Entropy supplied by the local operating system when a draw is requested.
+pub struct SystemEntropy;
 impl gnunet_crypto::Entropy for SystemEntropy {
     fn fill(&mut self, out: &mut [u8]) -> Result<(), Fault> {
-        use std::io::Read;
-        self.0.read_exact(out).map_err(|_| Fault::NotReady)
+        gnunet_native::entropy::fill(out).map_err(|_| Fault::Entropy)
     }
 }

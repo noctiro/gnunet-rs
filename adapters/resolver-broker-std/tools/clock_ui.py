@@ -1,11 +1,18 @@
 #!/usr/bin/env python3
 """Exact canonical source/waiter compile controls against Cargo's actual IPC rlib."""
-import argparse,json,pathlib,subprocess
-from common import sha,disjoint,rust_library
+import argparse,json,pathlib,subprocess,sys
+
+sys.dont_write_bytecode=True
+from common import sha,disjoint
+sys.path.insert(0,str(pathlib.Path(__file__).resolve().parents[3]/'tools'))
+from cargo_artifacts import CargoArtifacts
+from rust_toolchain import rust_channel
 
 def main():
- p=argparse.ArgumentParser();p.add_argument('--repo',type=pathlib.Path,required=True);p.add_argument('--artifacts',type=pathlib.Path,required=True);p.add_argument('--package-id',required=True);p.add_argument('--toolchain',default='1.99.1');p.add_argument('--output',type=pathlib.Path,required=True);a=p.parse_args();a.repo=a.repo.resolve();a.output=a.output.resolve();disjoint(a.output,a.repo);a.output.mkdir(parents=True)
- artifact_sha=sha(a.artifacts);rlib=rust_library(a.artifacts.read_text(),'gnunet_ipc_unix',a.repo/'adapters/ipc-unix/Cargo.toml',a.package_id);binary_sha=sha(rlib)
+ p=argparse.ArgumentParser();p.add_argument('--repo',type=pathlib.Path,required=True);p.add_argument('--artifacts',type=pathlib.Path,required=True);p.add_argument('--package-id',required=True);p.add_argument('--toolchain');p.add_argument('--output',type=pathlib.Path,required=True);a=p.parse_args();a.repo=a.repo.resolve();a.toolchain=rust_channel(a.repo,a.toolchain);a.output=a.output.resolve();disjoint(a.output,a.repo);a.output.mkdir(parents=True)
+ artifact_sha=sha(a.artifacts);artifacts=CargoArtifacts(a.artifacts.read_bytes())
+ rlib=artifacts.rlib('gnunet_ipc_unix',a.repo/'adapters/ipc-unix/Cargo.toml',package_id=a.package_id);binary_sha=sha(rlib)
+ dependency_args=artifacts.rustc_dependency_args()
  cases={
   'source_is_not_a_waiter':('E0599',"use gnunet_ipc_unix::clock::RuntimeClock;fn bad(source:&dyn RuntimeClock,cx:&mut std::task::Context<'_>){let _value=source.poll_changed(cx,0);}"),
   'arc_cannot_mutably_poll_subscription':('E0596',"use gnunet_ipc_unix::clock::ClockSubscription;fn bad(waiter:std::sync::Arc<dyn ClockSubscription>,cx:&mut std::task::Context<'_>){let _value=waiter.poll_changed(cx,0);}"),
@@ -15,7 +22,7 @@ def main():
  rows=[]
  for name,(expected,body)in cases.items():
   source=a.output/(name+'.rs');source.write_text('#![deny(warnings)]\n#![allow(dead_code,reason="Finite compile-only ownership control")]\n'+body+'\n')
-  argv=['rustc','+'+a.toolchain,'--edition=2024','--crate-type=lib','--error-format=json','--extern','gnunet_ipc_unix='+str(rlib),'-L','dependency='+str(rlib.parent),'-L','dependency='+str(rlib.parent/'deps'),str(source),'-o',str(a.output/(name+'.rlib'))]
+  argv=['rustc','+'+a.toolchain,'--edition=2024','--crate-type=lib','--error-format=json','--extern','gnunet_ipc_unix='+str(rlib),*dependency_args,str(source),'-o',str(a.output/(name+'.rlib'))]
   proc=subprocess.run(argv,capture_output=True,timeout=30);(a.output/(name+'.stderr')).write_bytes(proc.stderr);(a.output/(name+'.stdout')).write_bytes(proc.stdout)
   diagnostics=[json.loads(line)for line in proc.stderr.decode().splitlines()if line.startswith('{')];codes=[d['code']['code']for d in diagnostics if d.get('level')=='error'and d.get('code')]
   passed=(proc.returncode==0 and not codes)if expected is None else(proc.returncode!=0 and codes==[expected]);rows.append({'name':name,'expected':expected,'actual_codes':codes,'exit_code':proc.returncode,'passed':passed,'argv':argv,'source_sha256':sha(source)})

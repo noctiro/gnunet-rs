@@ -8,10 +8,10 @@ use std::{
     time::Duration,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-type TestError = Box<dyn Error>;
-struct Directory(PathBuf);
+pub(crate) type TestError = Box<dyn Error>;
+pub(crate) struct Directory(PathBuf);
 impl Directory {
-    fn new() -> Result<Self, TestError> {
+    pub(crate) fn new() -> Result<Self, TestError> {
         static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let serial = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let stamp = std::time::SystemTime::now()
@@ -35,7 +35,7 @@ impl Drop for Directory {
         let _cleanup = std::fs::remove_dir_all(&self.0);
     }
 }
-fn runtime() -> Result<tokio::runtime::Runtime, TestError> {
+pub(crate) fn runtime() -> Result<tokio::runtime::Runtime, TestError> {
     Ok(tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?)
@@ -43,7 +43,10 @@ fn runtime() -> Result<tokio::runtime::Runtime, TestError> {
 fn ipc_error(error: Failure) -> TestError {
     format!("actual local MQ failure: {error:?}").into()
 }
-async fn attach(ipc: &mut Ipc, listener: &LocalListener) -> Result<LocalStream, TestError> {
+pub(crate) async fn attach(
+    ipc: &mut Ipc,
+    listener: &LocalListener,
+) -> Result<LocalStream, TestError> {
     let mut accept = std::pin::pin!(listener.accept());
     let mut peer = None;
     let mut attached = false;
@@ -77,7 +80,7 @@ async fn attach(ipc: &mut Ipc, listener: &LocalListener) -> Result<LocalStream, 
     )
     .await?
 }
-fn new_ipc(directory: &Directory) -> Result<(Ipc, LocalListener, Instant), TestError> {
+pub(crate) fn new_ipc(directory: &Directory) -> Result<(Ipc, LocalListener, Instant), TestError> {
     let path = directory.0.join("s");
     let listener = LocalListener::bind(&path)?;
     let hard = Instant::now() + Duration::from_secs(30);

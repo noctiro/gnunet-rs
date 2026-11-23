@@ -1,5 +1,6 @@
 //! Unix descriptor transfer, daemonization and configured identity.
-use super::{Cause, early, finish, foreground, lifecycle, settings};
+use super::{Cause, early, finish};
+use gnunet_dht_service_host::startup::{self, ProcessSettings, Settings};
 use std::io;
 pub(super) fn run() -> Result<(), Cause> {
     use gnunet_program_host::{
@@ -72,7 +73,6 @@ pub(super) fn run() -> Result<(), Cause> {
         logger.refresh_process_after_fork();
     }
     let reports = Reporter::new(logger, clock.clone());
-    let cleanup = lifecycle::Cleanup::default();
     let result = (|| -> Result<(), Cause> {
         if let Some(notice) = notice {
             reports.warning(
@@ -88,7 +88,7 @@ pub(super) fn run() -> Result<(), Cause> {
             selected.configuration(),
         )?;
         clock.testing_skew(&config)?;
-        let settings = settings::Settings::read(&config)?;
+        let settings = Settings::read(&config)?;
         let user = configured_user(&config, b"dht")?
             .as_deref()
             .map(resolve_user)
@@ -111,7 +111,7 @@ pub(super) fn run() -> Result<(), Cause> {
         if reports.failed() {
             return Ok(());
         }
-        let bound = runtime.block_on(pending.finish_with_access(settings.access.into()))?;
+        let bound = runtime.block_on(pending.finish_with_access(settings.unix_access().into()))?;
         for error in bound.failures() {
             reports.warning(
                 "dht.listener.alternate",
@@ -127,15 +127,14 @@ pub(super) fn run() -> Result<(), Cause> {
                 .map(|control| control.register().map_err(|failure| failure.error))
                 .transpose()?
         };
-        runtime.block_on(foreground::run(
-            foreground::Inputs {
+        runtime.block_on(startup::serve_process(
+            ProcessSettings {
                 config: &config,
                 settings: &settings,
                 bound: &bound,
                 parent,
                 clock: clock.clone(),
-                reports: reports.clone(),
-                cleanup: cleanup.clone(),
+                reports: &reports,
             },
             async {
                 child.ready()?;
@@ -143,7 +142,7 @@ pub(super) fn run() -> Result<(), Cause> {
             },
         ))
     })();
-    let result = service::retain_diagnostic(cleanup.finish(result), reports.take_error());
+    let result = service::retain_diagnostic(result, reports.take_error());
     let result = child
         .finish(result)
         .map_err(|error| Box::new(error) as Cause);

@@ -19,6 +19,10 @@ const BLOCK: &[u8] =
     include_bytes!("../../../crates/gnunet-gnscrypto/tests/fixtures/pkey_ascii-block.bin");
 const QUERY: &[u8] =
     include_bytes!("../../../crates/gnunet-gnscrypto/tests/fixtures/pkey_ascii-query.bin");
+const ED_BLOCK: &[u8] =
+    include_bytes!("../../../crates/gnunet-gnscrypto/tests/fixtures/edkey_ascii-block.bin");
+const ED_QUERY: &[u8] =
+    include_bytes!("../../../crates/gnunet-gnscrypto/tests/fixtures/edkey_ascii-query.bin");
 fn check(value: bool, message: &'static str) -> io::Result<()> {
     if value {
         Ok(())
@@ -83,9 +87,16 @@ async fn frame(stream: &mut Stream) -> Result<Vec<u8>, Failure> {
     stream.read_exact(&mut bytes[4..]).await?;
     Ok(bytes)
 }
-async fn connect(path: &std::path::Path) -> Result<Stream, Failure> {
+async fn connect(
+    path: &std::path::Path,
+    service: &mut process::Service,
+) -> Result<Stream, Failure> {
+    #[cfg(windows)]
+    let _ = service;
     let until = tokio::time::Instant::now() + Duration::from_secs(5);
     loop {
+        #[cfg(unix)]
+        service.require_running()?;
         match Stream::connect(path).await {
             Ok(stream) => return Ok(stream),
             Err(error)
@@ -100,8 +111,8 @@ async fn connect(path: &std::path::Path) -> Result<Stream, Failure> {
         }
     }
 }
-async fn exchange(path: &std::path::Path) -> Result<(), Failure> {
-    let mut stream = connect(path).await?;
+async fn exchange(path: &std::path::Path, service: &mut process::Service) -> Result<(), Failure> {
+    let mut stream = connect(path, service).await?;
     let mut body = vec![0; 8];
     body.extend_from_slice(BLOCK);
     stream.write_all(&packet(433, 1, &body)?).await?;
@@ -144,7 +155,7 @@ async fn exchange(path: &std::path::Path) -> Result<(), Failure> {
         Ok(_) => return Err("malformed request did not retire its source".into()),
     }
     drop(stream);
-    let mut fresh = connect(path).await?;
+    let mut fresh = connect(path, service).await?;
     fresh.write_all(&packet(431, 6, QUERY)?).await?;
     check(
         frame(&mut fresh).await? == packet(432, 6, &[0; 8])?,
@@ -160,7 +171,7 @@ fn normal_local_cache_lookup_delete_and_parent_stop() -> Result<(), Failure> {
     let config = directory.0.join("namecache service.conf");
     let mut bytes = b"[namecache]\nUNIXPATH = ".to_vec();
     bytes.extend_from_slice(&gnunet_native::os_bytes::encode(path.as_os_str()));
-    bytes.extend_from_slice(b"\n[statistics]\nDISABLE = YES\n");
+    bytes.extend_from_slice(b"\n[namecache-rust]\nBACKEND = memory\n[statistics]\nDISABLE = YES\n");
     fs::write(&config, bytes)?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -169,7 +180,7 @@ fn normal_local_cache_lookup_delete_and_parent_stop() -> Result<(), Failure> {
     let result = runtime.block_on(async {
         tokio::time::timeout(Duration::from_secs(15), async {
             service.start(&directory, &config).await?;
-            exchange(&path).await?;
+            exchange(&path, &mut service).await?;
             service.stop().await?;
             match fs::symlink_metadata(&path) {
                 Err(error) if error.kind() == io::ErrorKind::NotFound => {}
@@ -177,6 +188,87 @@ fn normal_local_cache_lookup_delete_and_parent_stop() -> Result<(), Failure> {
                 Ok(_) => return Err("owned socket pathname survived service exit".into()),
             }
             Ok::<(), Failure>(())
+        })
+        .await?
+    });
+    let cleanup = runtime.block_on(service.retire());
+    match (result, cleanup) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+        (Err(error), Err(cleanup)) => {
+            Err(format!("{error}; independent child retirement: {cleanup}").into())
+        }
+    }
+}
+
+#[test]
+fn default_file_cache_survives_restart_and_preserves_deletion() -> Result<(), Failure> {
+    let directory = Directory::new()?;
+    fs::create_dir(directory.0.join("defaults"))?;
+    let path = directory.0.join("ipc");
+    let config = directory.0.join("namecache.conf");
+    let mut contents = b"[namecache]\nUNIXPATH = ".to_vec();
+    contents.extend_from_slice(&gnunet_native::os_bytes::encode(path.as_os_str()));
+    contents.extend_from_slice(b"\n[statistics]\nDISABLE = YES\n[PATHS]\nGNUNET_DATA_HOME = ");
+    contents.extend_from_slice(&gnunet_native::os_bytes::encode(directory.0.as_os_str()));
+    contents.push(b'\n');
+    fs::write(&config, contents)?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let mut service = process::Service::new()?;
+    let result = runtime.block_on(async {
+        tokio::time::timeout(Duration::from_secs(15), async {
+            service.start(&directory, &config).await?;
+            let mut client = connect(&path, &mut service).await?;
+            let mut stored = BLOCK.to_vec();
+            // The cache treats ciphertext as opaque and does not verify its signature.
+            stored[104..112].copy_from_slice(&(u64::MAX - 1).to_be_bytes());
+            let mut expired = ED_BLOCK.to_vec();
+            expired[104..112].copy_from_slice(&1_u64.to_be_bytes());
+            for (rid, block) in [(1, stored.as_slice()), (2, BLOCK), (6, expired.as_slice())] {
+                let mut body = vec![0; 8];
+                body.extend_from_slice(block);
+                client.write_all(&packet(433, rid, &body)?).await?;
+                check(
+                    frame(&mut client).await? == packet(434, rid, &1_i32.to_be_bytes())?,
+                    "file CACHE failed",
+                )?;
+            }
+            drop(client);
+            service.stop().await?;
+
+            service.start(&directory, &config).await?;
+            let mut client = connect(&path, &mut service).await?;
+            let mut expected = stored[104..112].to_vec();
+            expected.extend_from_slice(&stored);
+            client.write_all(&packet(431, 3, QUERY)?).await?;
+            check(
+                frame(&mut client).await? == packet(432, 3, &expected)?,
+                "latest ciphertext did not survive restart",
+            )?;
+            client.write_all(&packet(431, 7, ED_QUERY)?).await?;
+            check(
+                frame(&mut client).await? == packet(432, 7, &[0; 8])?,
+                "expired ciphertext was restored after restart",
+            )?;
+            client.write_all(&packet(1850, 4, QUERY)?).await?;
+            check(
+                frame(&mut client).await? == packet(1851, 4, &1_i32.to_be_bytes())?,
+                "file DELETE failed",
+            )?;
+            drop(client);
+            service.stop().await?;
+
+            service.start(&directory, &config).await?;
+            let mut client = connect(&path, &mut service).await?;
+            client.write_all(&packet(431, 5, QUERY)?).await?;
+            check(
+                frame(&mut client).await? == packet(432, 5, &[0; 8])?,
+                "deleted ciphertext returned after restart",
+            )?;
+            drop(client);
+            service.stop().await
         })
         .await?
     });

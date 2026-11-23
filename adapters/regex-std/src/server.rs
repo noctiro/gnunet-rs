@@ -1,5 +1,5 @@
 use crate::types::*;
-use gnunet_regex_service::{Admission, ClientId, Core, OutputId, Times};
+use gnunet_regex_service::{Admission, ClientId, Core, LocalAnnouncement, OutputId, Times};
 use gnunet_service_runtime::{
     accepted::{AcceptState, AcceptedConnection},
     clock::ClockSubscription,
@@ -7,7 +7,7 @@ use gnunet_service_runtime::{
     service::Listener,
 };
 use gnunet_types::Error as Fault;
-use gnunet_wire::official::regex::Request;
+use gnunet_wire::official::regex::{Request, StringBytes};
 use std::{
     future::{Future, poll_fn},
     pin::Pin,
@@ -54,6 +54,7 @@ impl Peer {
 /// through core_mut and must settle before the caller drops this allocation.
 pub struct Server {
     core: Core,
+    local: Option<LocalAnnouncement>,
     limits: Limits,
     ports: Ports,
     peers: Vec<Option<Peer>>,
@@ -93,6 +94,7 @@ impl Server {
         scratch.resize(limits.frame_bytes, 0);
         Ok(Self {
             core,
+            local: None,
             limits,
             ports,
             peers,
@@ -109,6 +111,35 @@ impl Server {
             physical_reported: false,
             report: Report::default(),
         })
+    }
+    /// Construct the distributed core's local publish mode without an MQ client.
+    pub fn publisher(
+        mut core: Core,
+        limits: Limits,
+        ports: Ports,
+        policy: StringBytes<'_>,
+        compression: u16,
+    ) -> Result<Self, Failure> {
+        let original = core.prepare_local_announcement(policy, compression)?;
+        let mut server = Self::new(core, limits, ports)?;
+        server.local = Some(original);
+        Ok(server)
+    }
+    /// Actual completed rounds for the original local publisher.
+    pub fn local_rounds(&self) -> Result<u64, Failure> {
+        let original = self
+            .local
+            .as_ref()
+            .ok_or(gnunet_regex_service::Error::Order)?;
+        Ok(self.core.local_rounds(original)?)
+    }
+    pub(crate) fn announce_local(&mut self) -> Result<(), Failure> {
+        let now = self.sample_times()?;
+        let original = self
+            .local
+            .as_ref()
+            .ok_or(gnunet_regex_service::Error::Order)?;
+        Ok(self.core.announce_local(original, now)?)
     }
     /// Original distributed state; projections confer no backend success.
     #[must_use]
@@ -286,6 +317,13 @@ impl Server {
     pub fn reap(&mut self, observe: &mut impl FnMut(Event)) -> Result<bool, Failure> {
         let mut changed = false;
         let mut first = None;
+        if self.shutdown
+            && let Some(original) = &self.local
+            && self.core.retire_local(original)?
+        {
+            self.local = None;
+            changed = true;
+        }
         for index in 0..self.peers.len() {
             if self.peers[index]
                 .as_ref()
@@ -311,6 +349,13 @@ impl Server {
         self.subscription = None;
         self.timer = None;
         let mut first = None;
+        if let Some(original) = &self.local {
+            match self.core.retire_local(original) {
+                Ok(true) => self.local = None,
+                Ok(false) => {}
+                Err(error) => first = Some(error.into()),
+            }
+        }
         for i in 0..self.peers.len() {
             if self.peers[i].is_some()
                 && let Err(error) = self.stop_index(i, CloseCause::Shutdown, &mut observe)
@@ -771,6 +816,9 @@ impl Server {
         wait: Option<Instant>,
         mut observe: impl FnMut(Event),
     ) -> Poll<Result<Progress, Failure>> {
+        if self.local.is_some() && !listeners.is_empty() {
+            return Poll::Ready(Err(Fault::InvalidInput.into()));
+        }
         match self.poll_inner(cx, listeners, wait, &mut observe) {
             Poll::Ready(Err(original)) => {
                 let result = match self.close_all(&mut observe) {

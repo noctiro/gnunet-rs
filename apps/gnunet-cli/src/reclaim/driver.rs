@@ -3,7 +3,8 @@ use super::*;
 use gnunet::types::Error as Fault;
 
 pub(super) async fn ego<W: Write>(
-    command: &Command,
+    ego: &[u8],
+    timeout: Duration,
     source: EndpointSource,
     window: Window,
     mut signal: Pin<&mut impl Future<Output = io::Result<()>>>,
@@ -13,11 +14,11 @@ pub(super) async fn ego<W: Write>(
     let mut lookup = Lookup::exact(
         &instance,
         source,
-        &command.ego,
+        ego,
         window.until,
         identity::Limits {
             reconnect: false,
-            initialization_timeout: command.timeout,
+            initialization_timeout: timeout,
             ..identity::Limits::default()
         },
     )?;

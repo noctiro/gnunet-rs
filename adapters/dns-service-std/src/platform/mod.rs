@@ -5,7 +5,12 @@ use std::{
 };
 #[cfg(target_os = "linux")]
 mod linux;
+#[cfg(all(test, not(target_os = "linux")))]
+#[path = "linux/control/rules.rs"]
+mod linux_rules;
 mod pump;
+#[cfg(any(target_os = "linux", test))]
+mod routing;
 #[cfg(target_os = "linux")]
 pub use linux::run;
 #[cfg(any(target_os = "macos", target_os = "freebsd"))]

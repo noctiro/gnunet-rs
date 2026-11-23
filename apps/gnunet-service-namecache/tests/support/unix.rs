@@ -3,7 +3,7 @@ use super::{Directory, Failure, check};
 use std::{
     io::Write,
     path::Path,
-    process::{Child, Command, Stdio},
+    process::{Child, Command, Output, Stdio},
     time::Duration,
 };
 pub struct Service(Option<Child>);
@@ -25,15 +25,28 @@ impl Service {
         self.0 = Some(command.spawn()?);
         Ok(())
     }
+    fn exited(&mut self) -> Result<Option<Output>, Failure> {
+        let child = self.0.as_mut().ok_or("missing original service child")?;
+        if child.try_wait()?.is_none() {
+            return Ok(None);
+        }
+        let child = self.0.take().ok_or("original child lost")?;
+        Ok(Some(child.wait_with_output()?))
+    }
+    pub fn require_running(&mut self) -> Result<(), Failure> {
+        if let Some(output) = self.exited()? {
+            return Err(format!(
+                "service exited before connection ({}): {}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr)
+            )
+            .into());
+        }
+        Ok(())
+    }
     async fn wait(&mut self) -> Result<(), Failure> {
         loop {
-            let child = self.0.as_mut().ok_or("missing original service child")?;
-            if child.try_wait()?.is_some() {
-                let output = self
-                    .0
-                    .take()
-                    .ok_or("original child lost")?
-                    .wait_with_output()?;
+            if let Some(output) = self.exited()? {
                 if !output.status.success() {
                     return Err(format!(
                         "service failed: {}",
@@ -61,6 +74,17 @@ impl Service {
         self.wait().await
     }
     pub async fn retire(&mut self) -> Result<(), Failure> {
+        if self.0.is_some()
+            && let Some(output) = self.exited()?
+            && !output.status.success()
+        {
+            return Err(format!(
+                "service exited before retirement ({}): {}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr)
+            )
+            .into());
+        }
         if let Some(child) = &mut self.0 {
             child.kill()?;
             tokio::time::timeout(Duration::from_secs(3), async {

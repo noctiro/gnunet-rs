@@ -22,8 +22,13 @@ type Pow4 = Pow<{ nlimbs(4096) }>;
 struct Secrets {
     share: Scalar,
     nonce: Zeroizing<U2048>,
-    beta: Zeroizing<U2048>,
+    beta: Option<Zeroizing<U2048>>,
     s: Zeroizing<U2048>,
+}
+impl Secrets {
+    fn beta(&self) -> Result<&U2048, Error> {
+        self.beta.as_deref().ok_or(Error::NotReady)
+    }
 }
 struct Fields {
     ciphertext: [u8; 516],
@@ -69,7 +74,6 @@ impl Fields {
 )]
 enum Work {
     Encrypt(EncryptWithWitnessJob),
-    Beta,
     Randomizer { attempts: u32 },
     H(Pow1),
     T1(Pow1),
@@ -129,7 +133,7 @@ impl FairProver {
             secrets: Some(Secrets {
                 share,
                 nonce: Zeroizing::new(U2048::ZERO),
-                beta: Zeroizing::new(U2048::ZERO),
+                beta: None,
                 s: Zeroizing::new(U2048::ZERO),
             }),
             fields: Fields::empty(),
@@ -141,6 +145,19 @@ impl FairProver {
     fn step(&mut self, entropy: &mut impl Entropy) -> Result<(), Error> {
         match &mut self.work {
             Work::Encrypt(job) => {
+                let secrets = self.secrets.as_mut().ok_or(Error::NotReady)?;
+                if secrets.beta.is_none() && job.has_sampled_randomizer() {
+                    let mut bytes = Zeroizing::new([0; 256]);
+                    entropy.fill(bytes.as_mut()).map_err(Error::Source)?;
+                    let beta = Zeroizing::new(U2048::from_be_slice(bytes.as_ref()));
+                    // z = beta + e*x cannot fit if beta alone exceeds the
+                    // field. Check the original draw before any power bits.
+                    if beta.bit_width() > 1024 {
+                        return Err(Error::Source(gnunet_types::Error::TooLarge));
+                    }
+                    secrets.beta = Some(beta);
+                    return Ok(());
+                }
                 if job.advance(entropy, 1)? == gnunet_paillier::Progress::Ready {
                     let witness = job.take_result()?;
                     if witness.modulus() != &self.modulus {
@@ -148,19 +165,9 @@ impl FairProver {
                     }
                     let (ciphertext, nonce) = witness.into_parts();
                     self.fields.ciphertext = ciphertext.to_wire();
-                    self.secrets.as_mut().ok_or(Error::NotReady)?.nonce =
-                        Zeroizing::new(U2048::from_be_slice(nonce.as_ref()));
-                    self.work = Work::Beta;
+                    secrets.nonce = Zeroizing::new(U2048::from_be_slice(nonce.as_ref()));
+                    self.work = Work::Randomizer { attempts: 0 };
                 }
-            }
-            Work::Beta => {
-                let mut bytes = Zeroizing::new([0; 256]);
-                entropy.fill(bytes.as_mut()).map_err(Error::Source)?;
-                // Preserve the original2048-bit beta draw in full. Reduction is
-                // used only in group arithmetic, never in the integer response.
-                self.secrets.as_mut().ok_or(Error::NotReady)?.beta =
-                    Zeroizing::new(U2048::from_be_slice(bytes.as_ref()));
-                self.work = Work::Randomizer { attempts: 0 };
             }
             Work::Randomizer { attempts } => {
                 *attempts = attempts.checked_add(1).ok_or(Error::Capacity)?;
@@ -191,7 +198,7 @@ impl FairProver {
                     let q = NonZero::new(Q.resize::<{ nlimbs(2048) }>())
                         .into_option()
                         .ok_or(Error::InvalidInput)?;
-                    let division = Zeroizing::new(secrets.beta.div_rem(&q));
+                    let division = Zeroizing::new(secrets.beta()?.div_rem(&q));
                     let exponent: Zeroizing<U1024> = Zeroizing::new(division.1.resize());
                     self.work = Work::T1(Pow::new(&G, &exponent, 1024, &self.group.p)?);
                 }
@@ -218,7 +225,7 @@ impl FairProver {
                     let n = NonZero::new(self.n)
                         .into_option()
                         .ok_or(Error::InvalidInput)?;
-                    let division = Zeroizing::new(secrets.beta.div_rem(&n));
+                    let division = Zeroizing::new(secrets.beta()?.div_rem(&n));
                     // Exact binomial identity; beta itself is retained unchanged.
                     let gm = Zeroizing::new(
                         self.n
@@ -239,7 +246,7 @@ impl FairProver {
                     let mut padded = [0; 256];
                     padded[192..].copy_from_slice(&digest);
                     let e = U2048::from_be_slice(&padded);
-                    self.fields.z = checked_response(&secrets.beta, &e, &secrets.share)?;
+                    self.fields.z = checked_response(secrets.beta()?, &e, &secrets.share)?;
                     self.work = Work::W(Pow::new(&secrets.nonce, &e, 512, &self.params2)?);
                 }
             }
@@ -343,7 +350,7 @@ fn checked_response(beta: &U2048, challenge: &U2048, share: &Scalar) -> Result<[
     let product = Zeroizing::new(challenge.concatenating_mul(&x));
     let beta: Zeroizing<U4096> = Zeroizing::new(beta.resize());
     let response = Zeroizing::new(product.wrapping_add(&beta));
-    if response.bits() > 1024 {
+    if response.bit_width() > 1024 {
         return Err(Error::Source(gnunet_types::Error::TooLarge));
     }
     let narrow: Zeroizing<U1024> = Zeroizing::new(response.resize());

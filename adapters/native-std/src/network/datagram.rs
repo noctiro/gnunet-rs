@@ -1,5 +1,19 @@
 //! Native socket errors stay separate from peer attribution and send receipts.
 use std::io;
+#[cfg(all(
+    feature = "socket-io",
+    any(
+        windows,
+        target_os = "linux",
+        target_os = "freebsd",
+        target_os = "macos"
+    )
+))]
+pub(super) mod local;
+#[cfg(all(windows, feature = "socket-io"))]
+pub(super) mod send_windows;
+#[cfg(feature = "socket-io")]
+pub(super) mod source;
 #[cfg(test)]
 mod tests;
 /// Whether one failed atomic UDP send can retire its intended endpoint while
@@ -42,6 +56,7 @@ pub fn isolated_datagram_send_error(error: &io::Error) -> bool {
 
 /// Whether one UDP receive can retire without declaring its shared source lost.
 /// An asynchronous error identifies neither a peer nor a successful earlier send.
+/// Windows TTL-expiration reports preserve that distinction and their raw code.
 pub fn isolated_datagram_receive_error(error: &io::Error) -> bool {
     if matches!(
         error.kind(),
@@ -58,7 +73,8 @@ pub fn isolated_datagram_receive_error(error: &io::Error) -> bool {
     }
     #[cfg(windows)]
     {
-        error.raw_os_error() == Some(windows_sys::Win32::Networking::WinSock::WSAEMSGSIZE)
+        use windows_sys::Win32::Networking::WinSock::{WSAEMSGSIZE, WSAENETRESET};
+        matches!(error.raw_os_error(), Some(WSAEMSGSIZE | WSAENETRESET))
     }
 }
 /// A genuine unavailable socket family/protocol/option, permitting another family.
@@ -119,8 +135,3 @@ pub fn suppress_udp_connection_resets(
     }
     Ok(())
 }
-
-#[cfg(windows)]
-mod send_windows;
-#[cfg(windows)]
-pub use send_windows::send_datagram_from;

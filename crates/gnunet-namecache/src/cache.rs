@@ -1,5 +1,5 @@
 //! Actual bounded volatile storage for opaque official encrypted blocks.
-use crate::Block;
+use crate::{Block, BlockInfo, InsertOutcome, lookup_response};
 use alloc::vec::Vec;
 use core::mem;
 use gnunet_types::Error;
@@ -28,18 +28,6 @@ impl Default for Limits {
         }
     }
 }
-/// Actual memory-cache result, separate from a wire/backend receipt.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum InsertOutcome {
-    /// A previously absent query now has a stored block.
-    Inserted,
-    /// Same or later expiration replaced the old block with the actual new bytes.
-    Replaced,
-    /// Equal expiration and identical bytes were already present.
-    AlreadyPresent,
-    /// An existing later-expiring version remains authoritative for lookup.
-    RetainedNewer,
-}
 /// Current resource use. Values include reserved metadata, not allocator headers.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Stats {
@@ -57,8 +45,7 @@ impl Stats {
     }
 }
 struct Entry {
-    query: [u8; 64],
-    expiration: AbsoluteTime,
+    info: BlockInfo,
     bytes: Vec<u8>,
 }
 /// Sorted, bounded query map. Payloads are never moved/copied during metadata
@@ -110,7 +97,7 @@ impl Cache {
         }
     }
     fn locate(&self, query: &[u8; 64]) -> Result<usize, usize> {
-        self.rows.binary_search_by_key(query, |r| r.query)
+        self.rows.binary_search_by_key(query, |r| r.info.query)
     }
     /// Lookup the greatest-expiration retained block, without signature checking
     /// or decryption. As in the reference SQL backend, expiration removal is an
@@ -131,18 +118,13 @@ impl Cache {
         if bytes.len() > self.limits.block_bytes {
             return Err(Error::TooLarge);
         }
-        let block = Block::decode(bytes)?;
-        let query = block.query()?;
-        let expiration = AbsoluteTime::from_micros(block.expiration()?);
-        let location = self.locate(&query);
+        let info = BlockInfo::decode(bytes)?;
+        let location = self.locate(&info.query);
         let previous = match location {
             Ok(i) => {
                 let old = &self.rows[i];
-                if old.expiration > expiration {
-                    return Ok(InsertOutcome::RetainedNewer);
-                }
-                if old.expiration == expiration && old.bytes.as_slice() == bytes {
-                    return Ok(InsertOutcome::AlreadyPresent);
+                if let Some(retained) = old.info.retained(&old.bytes, info, bytes) {
+                    return Ok(retained);
                 }
                 if old.bytes.capacity() >= bytes.len() {
                     // The complete replacement is already validated and its
@@ -151,7 +133,7 @@ impl Cache {
                     let old = &mut self.rows[i];
                     old.bytes.clear();
                     old.bytes.extend_from_slice(bytes);
-                    old.expiration = expiration;
+                    old.info = info;
                     return Ok(InsertOutcome::Replaced);
                 }
                 old.bytes.capacity()
@@ -183,11 +165,7 @@ impl Cache {
             return Err(Error::Capacity);
         }
         owned.extend_from_slice(bytes);
-        let entry = Entry {
-            query,
-            expiration,
-            bytes: owned,
-        };
+        let entry = Entry { info, bytes: owned };
         let result = match location {
             Ok(i) => {
                 self.rows[i] = entry;
@@ -212,6 +190,13 @@ impl Cache {
         self.block_bytes -= removed.bytes.capacity();
         true
     }
+    /// Walk the query keys eligible for explicit expiry without changing them.
+    pub fn expired_queries(&self, now: AbsoluteTime) -> impl Iterator<Item = &[u8; 64]> {
+        self.rows
+            .iter()
+            .filter(move |row| row.info.expiration < now)
+            .map(|row| &row.info.query)
+    }
     /// Actually discard blocks strictly older than caller-supplied trusted UTC.
     /// Equality stays valid, matching the official SQL expiration predicate.
     /// The caller chooses scheduling (SQLite hourly, PostgreSQL on cache calls).
@@ -219,7 +204,7 @@ impl Cache {
         let previous = self.rows.len();
         let mut removed = 0usize;
         self.rows.retain(|row| {
-            if row.expiration < now {
+            if row.info.expiration < now {
                 removed += row.bytes.capacity();
                 false
             } else {
@@ -236,18 +221,7 @@ impl Cache {
     /// for the native owner to reject/close, never a fabricated cache success.
     pub fn handle<'a>(&'a mut self, request: Request<'_>) -> Result<Response<'a>, Error> {
         match request {
-            Request::Lookup { rid, query } => match self.lookup(query)? {
-                Some(block) => Ok(Response::Lookup {
-                    rid,
-                    expiration: AbsoluteTime::from_micros(block.expiration()?),
-                    block: block.as_bytes(),
-                }),
-                None => Ok(Response::Lookup {
-                    rid,
-                    expiration: AbsoluteTime::UNIX_EPOCH,
-                    block: &[],
-                }),
-            },
+            Request::Lookup { rid, query } => lookup_response(rid, self.lookup(query)?),
             Request::Cache { rid, block, .. } => {
                 let result = match self.insert(block) {
                     Ok(_) => wire::OK,

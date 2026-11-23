@@ -511,6 +511,7 @@ impl Task {
                 cause: Cause::State("attached owner differs from original root mode"),
                 interruption: None,
                 namespace_cleanup: None,
+                file_failures: Vec::new(),
             })),
         };
         drop(guard);

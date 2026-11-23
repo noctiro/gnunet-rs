@@ -12,7 +12,7 @@ use tokio::time::{Instant, Sleep};
 pub(crate) struct Control {
     termination: Termination,
     hard: Instant,
-    timer: Pin<Box<Sleep>>,
+    timer: Option<Pin<Box<Sleep>>>,
     context: &'static str,
 }
 impl Control {
@@ -29,12 +29,20 @@ impl Control {
         Ok(Self {
             termination: Termination::new()?,
             hard,
-            timer: Box::pin(tokio::time::sleep_until(hard)),
+            timer: Some(Box::pin(tokio::time::sleep_until(hard))),
             context,
         })
     }
+    /// Continue watching the original native stop source after startup succeeds.
+    pub(crate) fn release_deadline(&mut self) {
+        self.timer = None;
+    }
     pub(crate) fn check(&mut self, cx: &mut Context<'_>) -> io::Result<()> {
-        if Instant::now() >= self.hard || self.timer.as_mut().poll(cx).is_ready() {
+        if self
+            .timer
+            .as_mut()
+            .is_some_and(|timer| Instant::now() >= self.hard || timer.as_mut().poll(cx).is_ready())
+        {
             return Err(io::Error::new(
                 io::ErrorKind::TimedOut,
                 format!("original {} deadline", self.context),

@@ -402,6 +402,65 @@ fn ordinary_outer_reliable_dv_keeps_original_scheduling_only_bound() -> Result<(
 }
 
 #[test]
+fn native_dv_reassembly_keeps_the_earliest_fragment_deadlines() -> Result<(), Error> {
+    let first_absolute = AbsoluteTime::from_micros(1_000_015);
+    let first_mono = MonoInstant(20);
+    for (completion, arrives_in_time) in [
+        (times(12), true),
+        (Times::new(MonoInstant(12), first_absolute), false),
+        (Times::new(first_mono, times(12).absolute()), false),
+    ] {
+        let mut h = Harness::new()?;
+        let payload = message(dv::BOX_TYPE, 8)?;
+        for (offset, arrival, until, absolute_until) in [
+            (0, times(10), first_mono, first_absolute),
+            (4, completion, MonoInstant(40), times(40).absolute()),
+        ] {
+            let mut fragment = [0; 36];
+            p2p::Fragment {
+                offset,
+                total: 8,
+                ack: [offset as u8; 16],
+                message_id: [4; 8],
+                body: &payload[usize::from(offset)..usize::from(offset) + 4],
+            }
+            .encode(&mut fragment)?;
+            let bytes = wire(WireRequest::Incoming {
+                flow_control: false,
+                flow_id: [0; 8],
+                validity: 1_000_000,
+                peer: h.carrier.0,
+                neighbour: [0; 32],
+                message: &fragment,
+            })?;
+            h.engine.receive_dv_at(
+                NativeInput {
+                    source: &h.source,
+                    owner: &h.comm,
+                    bytes: &bytes,
+                    until,
+                    absolute_until,
+                },
+                arrival,
+                &mut h.local,
+                &mut h.random,
+            )?;
+        }
+        match h.engine.dv_inbox() {
+            Some(packet) => check(
+                arrives_in_time
+                    && packet.bytes == payload
+                    && packet.until == first_mono
+                    && packet.absolute_until == Some(first_absolute),
+            )?,
+            None => check(!arrives_in_time)?,
+        }
+        check(h.engine.assemblies.is_empty())?;
+    }
+    Ok(())
+}
+
+#[test]
 fn boxed_response_preserves_real_signature_nonce_origin_and_original_queue() -> Result<(), Error> {
     let mut h = Harness::new()?;
     let peer = h.remote.identity();

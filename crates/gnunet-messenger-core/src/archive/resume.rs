@@ -2,8 +2,13 @@
 //! actual source supplies a real verified signature in that old scope. This is
 //! not a synthetic JOIN or an identity/source constructed by snapshot recovery.
 use super::*;
-impl<'id> Core<'id> {
-    pub(crate) fn rebind_historical(&mut self, r: Slot, node: Slot) -> Result<bool, Error> {
+impl<'id, const ROOMS: usize> Core<'id, ROOMS> {
+    pub(crate) fn rebind_historical(
+        &mut self,
+        r: Slot,
+        node: Slot,
+        history: Option<&CommittedRoomHistory<'_, '_>>,
+    ) -> Result<bool, Error> {
         if self.mode != Mode::Service {
             return Err(Error::Permission);
         }
@@ -12,7 +17,7 @@ impl<'id> Core<'id> {
         if !n.resume_pending {
             return Ok(true);
         }
-        let source = n.origin.require_live()?;
+        let source = n.origin.require_live(self.instance)?;
         self.check_source(source)?;
         let auth = n.auth.ok_or(Fault::Authentication)?;
         let slot = auth.session.ok_or(Fault::Authentication)?;
@@ -31,15 +36,18 @@ impl<'id> Core<'id> {
         // requirement. Preserve actual expiry/closing bounds elsewhere; valid
         // out-of-order or clock-rollback messages still get their real rebind
         // opportunity once this original in-scope parent is actually known.
-        let Some(parent) = row
-            .find_node(&n.parents[0])
-            .and_then(|s| row.nodes.get(s).ok())
-        else {
-            return Ok(false);
+        let known = if let Some(at) = row.find_node(&n.parents[0]) {
+            let parent = row.nodes.get(at)?;
+            parent.auth.is_some()
+                && (crate::graph::epoch_kind(parent.kind) || crate::graph::known(session, parent))
+        } else if let Some(history) = history {
+            history
+                .detached_sequence(&n.parents[0])?
+                .is_some_and(|sequence| crate::graph::knows_sequence(session, sequence))
+        } else {
+            false
         };
-        if parent.auth.is_none()
-            || !(crate::graph::epoch_kind(parent.kind) || crate::graph::known(session, parent))
-        {
+        if !known {
             return Ok(false);
         }
         self.reserve_events(1)?;

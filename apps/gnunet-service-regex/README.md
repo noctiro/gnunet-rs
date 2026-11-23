@@ -29,3 +29,31 @@ Search GETs remain persistent across safe readonly DHT reconnect with the same
 logical query. Local PUT whole-writing is observed once and never means remote
 storage; an uncertain PUT is not replayed. Original registration/STOP/PUT and
 partial-input native phase bounds remain finite and separate from search life.
+
+## Per-peer policy profiler
+
+The installed `gnunet-daemon-regexprofiler` uses the same REGEX compiler,
+PILS signer and DHT publisher. It publishes three rounds through the configured
+PILS and DHT endpoints and exits after draining the original operations.
+The local `gnunet-service-regex` listener is optional for this workflow.
+
+```ini
+[testbed]
+PEERID = 0
+
+[regexprofiler]
+POLICY_DIR = /absolute/path/to/policies
+REGEX_PREFIX = GNVPN-0001-PAD
+MAX_PATH_COMPRESSION = 8
+REANNOUNCE_PERIOD_MAX = 10 min
+```
+
+Run `gnunet-daemon-regexprofiler -c gnunet.conf` from the node's libexec
+directory. The peer index selects a zero-based entry in native directory
+order, as in the official helper. Use ordinary policy files in a stable
+directory. Each row contains a hexadecimal address prefix and may have a
+final group of single-digit alternatives such as `abc(0|1)`.
+The maximum delay defaults to ten minutes and must fit a positive 32-bit
+microsecond value. The first round starts when PILS and DHT are ready.
+Subsequent rounds use independent delays below the configured maximum and
+reuse the compiled policy. Local completion records whole DHT IPC writes.

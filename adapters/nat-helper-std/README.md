@@ -33,19 +33,22 @@ unauthenticated and establish no mapping, connectivity or peer identity.
 
 ## Unix resources and credentials
 
-Linux, macOS and FreeBSD 12+ share the runner. Raw input and full-header output
-open before an irreversible transition to the invoking real UID/GID. Linux also
-clears supplementary groups when effective root, all capability sets, keepcaps
-and ambient capabilities, then enables no_new_privs and verifies the IDs. BSD
+Linux, Android system images, OpenHarmony standard systems, macOS and FreeBSD
+12+ share the runner. Raw input and full-header output open before an
+irreversible transition to the invoking real UID/GID. Linux-kernel targets clear
+supplementary groups when effective root, all capability sets, keepcaps and
+ambient capabilities, then enable no_new_privs and verify the IDs. BSD
 uses its own ID and saved-ID contracts. A real UID-zero caller remains root.
 Any transition failure closes the captured sockets before processing input.
 
-Linux installs PDEATHSIG and rechecks its original parent. macOS and FreeBSD use
+Linux-kernel targets install PDEATHSIG and recheck the original parent.
+macOS and FreeBSD use
 bounded same-parent polling. Stop handlers store only an atomic flag; SIGPIPE is
 ignored so output failure remains observable. Controlled stop restores original
 output flags and handlers, retaining independent restoration failures.
 
-Linux and modern FreeBSD use network-order raw IPv4 lengths. macOS uses native
+Linux-kernel targets and modern FreeBSD use network-order raw IPv4 lengths.
+macOS uses native
 outer output length and normalizes only kernel-transformed receive fields before
 the shared network-order parser, including XNU's quoted TIME_EXCEEDED length.
 No checksum or malformed packet is repaired into success.

@@ -17,10 +17,9 @@ handler. Handler stdio is inherited. Decoded URI/pixel buffers are not logged.
 
 ## Configuration
 
-[QR configuration](CONFIGURATION.md) selects trusted native libraries, device,
-display and memory/time bounds. Windows requires explicit absolute libpng/ZBar
-DLL paths and an explicit device when using camera input. Unix may select the
-standard provider basenames through its trusted loader context.
+[QR configuration](CONFIGURATION.md) selects trusted native libraries, the
+camera device, display and resource limits. Windows requires absolute paths to
+the provider DLLs. On Unix, the trusted loader can select the standard providers.
 
 ## Ownership and cancellation
 

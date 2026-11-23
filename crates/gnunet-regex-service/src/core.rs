@@ -1,14 +1,15 @@
 //! Actual bounded announcement/search state. Host ports own only original IO.
 use crate::types::{Brand, Key};
 use crate::{
-    Admission, ClientId, Error, JobId, Limits, Metrics, OutputId, Reply, StateBlock, Times, Work,
+    Admission, ClientId, DHT_REPLICATION, Error, JobId, Limits, Metrics, OutputId, QueryKind,
+    Reply, SearchQuery, Times, Work,
 };
-use alloc::{sync::Arc, vec::Vec};
+use alloc::{collections::VecDeque, sync::Arc, vec::Vec};
 use gnunet_regex::{
     Automaton, Hash,
     accept::{AcceptBlock, AcceptMaterial},
 };
-use gnunet_wire::official::regex::{Request, SearchResult};
+use gnunet_wire::official::regex::{Request, SearchResult, StringBytes};
 const HOUR: u64 = 3_600_000_000;
 const DAY: u64 = 24 * HOUR;
 fn bytes(input: &[u8]) -> Result<Vec<u8>, Error> {
@@ -17,6 +18,16 @@ fn bytes(input: &[u8]) -> Result<Vec<u8>, Error> {
         .map_err(|_| Error::Capacity)?;
     v.extend_from_slice(input);
     Ok(v)
+}
+fn query_bytes(query: SearchQuery, input: &[u8]) -> Result<Vec<u8>, Error> {
+    let mut body = Vec::new();
+    if let Some(suffix) = query.suffix(input)? {
+        let size = suffix.len().checked_add(1).ok_or(Error::Capacity)?;
+        body.try_reserve_exact(size).map_err(|_| Error::Capacity)?;
+        body.extend_from_slice(suffix);
+        body.push(0);
+    }
+    Ok(body)
 }
 fn paths(input: &[[u8; 32]]) -> Result<Vec<[u8; 32]>, Error> {
     let mut v = Vec::new();
@@ -27,14 +38,23 @@ fn paths(input: &[[u8; 32]]) -> Result<Vec<[u8; 32]>, Error> {
 }
 struct Ann {
     dfa: Automaton,
-    frequency: u64,
+    cadence: Cadence,
     cycle: u64,
+    completed: u64,
     cursor: usize,
     stage: Stage,
     active: bool,
     due: Option<u64>,
     charge: usize,
 }
+enum Cadence {
+    Interval(u64),
+    Manual,
+}
+
+/// One original local publisher with no client MQ or wire request.
+pub struct LocalAnnouncement(ClientId);
+
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum Stage {
     State,
@@ -71,10 +91,7 @@ enum Role {
         record: usize,
         step: AnnStep,
     },
-    Search {
-        position: usize,
-        kind: u32,
-    },
+    Search,
     Retire,
 }
 enum Kind {
@@ -86,8 +103,7 @@ enum Kind {
         counted: bool,
     },
     Get {
-        key: Hash,
-        kind: u32,
+        query: SearchQuery,
         xquery: Vec<u8>,
         traversal: bool,
         counted: bool,
@@ -133,7 +149,7 @@ pub struct Core {
     clients: Vec<Client>,
     jobs: Vec<Job>,
     outputs: Vec<Output>,
-    seen: Vec<Seen>,
+    seen: VecDeque<Seen>,
     limits: Limits,
     now: Option<Times>,
     identity: Option<[u8; 32]>,
@@ -173,7 +189,7 @@ impl Core {
         outputs
             .try_reserve_exact(limits.outputs)
             .map_err(|_| Error::Capacity)?;
-        let mut seen = Vec::new();
+        let mut seen = VecDeque::new();
         seen.try_reserve_exact(limits.seen_results)
             .map_err(|_| Error::Capacity)?;
         Ok(Self {
@@ -261,7 +277,8 @@ impl Core {
         self.now = Some(now);
         Ok(())
     }
-    /// Bind one actually accepted original MQ. Tokens never survive another Core.
+    /// Allocate one original request owner. The IPC host calls this on MQ accept.
+    /// Tokens never survive another Core.
     pub fn attach(&mut self) -> Result<ClientId, Error> {
         if self.clients.len() == self.limits.clients {
             return Err(Error::Capacity);
@@ -275,6 +292,95 @@ impl Core {
             search: None,
         });
         Ok(id)
+    }
+    fn compile(
+        &self,
+        regex: StringBytes<'_>,
+        compression: u16,
+        cadence: Cadence,
+        due: Option<u64>,
+    ) -> Result<Ann, Error> {
+        if regex.bytes().len() > self.limits.input_bytes {
+            return Err(Error::Capacity);
+        }
+        let dfa = Automaton::compile(regex.bytes(), compression, self.limits.compiler)?;
+        let mut charge = 0usize;
+        for state in dfa.states() {
+            charge = charge
+                .checked_add(state.record().encoded_len()?)
+                .and_then(|n| n.checked_add(128))
+                .ok_or(Error::Capacity)?;
+        }
+        for index in 0..dfa.initial_count() {
+            charge = charge
+                .checked_add(dfa.initial(index).ok_or(Error::Order)?.encoded_len()?)
+                .and_then(|n| n.checked_add(128))
+                .ok_or(Error::Capacity)?;
+        }
+        let charge = charge
+            .checked_mul(2)
+            .and_then(|n| n.checked_add(dfa.language_expression().len()))
+            .ok_or(Error::Capacity)?;
+        if charge > self.limits.announcement_bytes {
+            return Err(Error::Capacity);
+        }
+        Ok(Ann {
+            dfa,
+            cadence,
+            cycle: 0,
+            completed: 0,
+            cursor: 0,
+            stage: Stage::State,
+            active: false,
+            due,
+            charge,
+        })
+    }
+    /// Retain a bounded compiled policy before any local publication round is due.
+    pub fn prepare_local_announcement(
+        &mut self,
+        regex: StringBytes<'_>,
+        compression: u16,
+    ) -> Result<LocalAnnouncement, Error> {
+        let announcement = self.compile(regex, compression, Cadence::Manual, None)?;
+        self.room(announcement.charge)?;
+        let client = self.attach()?;
+        let index = self.clients.len() - 1;
+        self.retained += announcement.charge;
+        self.clients[index].ann = Some(announcement);
+        Ok(LocalAnnouncement(client))
+    }
+    /// Start one idle local round with the existing automaton and exact owner.
+    pub fn announce_local(&mut self, local: &LocalAnnouncement, now: Times) -> Result<(), Error> {
+        self.time(now)?;
+        let index = self.index(&local.0)?;
+        let client = &mut self.clients[index];
+        if client.closing || client.close_requested {
+            return Err(Error::Closing);
+        }
+        let ann = client.ann.as_mut().ok_or(Error::Order)?;
+        if ann.active || ann.due.is_some() {
+            return Err(Error::Order);
+        }
+        ann.due = Some(now.monotonic);
+        Ok(())
+    }
+    /// Count fully locally submitted rounds for this publisher.
+    pub fn local_rounds(&self, local: &LocalAnnouncement) -> Result<u64, Error> {
+        let client = &self.clients[self.index(&local.0)?];
+        if client.closing || client.close_requested {
+            return Err(Error::Closing);
+        }
+        Ok(client.ann.as_ref().ok_or(Error::Order)?.completed)
+    }
+    /// Request retirement of the original local publisher and release it after
+    /// its exact backend debts quiesce. False retains the same handle for polling.
+    pub fn retire_local(&mut self, local: &LocalAnnouncement) -> Result<bool, Error> {
+        let index = self.index(&local.0)?;
+        if !self.clients[index].closing {
+            self.disconnect(&local.0)?;
+        }
+        self.release(&local.0)
     }
     /// Admit the actual original request. At most one of EACH type per MQ.
     /// An error authorizes no ACK; the host physically closes that source.
@@ -299,55 +405,27 @@ impl Core {
                 if self.clients[ci].ann.is_some() {
                     return Err(Error::Duplicate);
                 }
-                if regex.bytes().len() > self.limits.input_bytes {
-                    return Err(Error::Capacity);
-                }
-                let dfa = Automaton::compile(regex.bytes(), compression, self.limits.compiler)?;
-                let mut charge = 0usize;
-                for state in dfa.states() {
-                    charge = charge
-                        .checked_add(state.record().encoded_len()?)
-                        .and_then(|n| n.checked_add(128))
-                        .ok_or(Error::Capacity)?;
-                }
-                for index in 0..dfa.initial_count() {
-                    charge = charge
-                        .checked_add(dfa.initial(index).ok_or(Error::Order)?.encoded_len()?)
-                        .and_then(|n| n.checked_add(128))
-                        .ok_or(Error::Capacity)?;
-                }
-                charge = charge
-                    .checked_mul(2)
-                    .and_then(|n| n.checked_add(dfa.language_expression().len()))
-                    .ok_or(Error::Capacity)?;
-                if charge > self.limits.announcement_bytes {
-                    return Err(Error::Capacity);
-                }
-                self.charge(charge)?;
-                self.clients[ci].ann = Some(Ann {
-                    dfa,
-                    frequency: refresh_delay.as_micros(),
-                    cycle: 0,
-                    cursor: 0,
-                    stage: Stage::State,
-                    active: false,
-                    due: Some(now.monotonic),
-                    charge,
-                });
+                let announcement = self.compile(
+                    regex,
+                    compression,
+                    Cadence::Interval(refresh_delay.as_micros()),
+                    Some(now.monotonic),
+                )?;
+                self.charge(announcement.charge)?;
+                self.clients[ci].ann = Some(announcement);
                 Ok(Admission::Announce)
             }
             Request::Search { string } => {
                 if self.clients[ci].search.is_some() {
                     return Err(Error::Duplicate);
                 }
-                if string.bytes().len() > self.limits.input_bytes {
+                let string = string.bytes();
+                if string.len() > self.limits.input_bytes {
                     return Err(Error::Capacity);
                 }
-                let input = bytes(string.bytes())?;
-                let (position, key) = gnunet_regex::first_key(&input);
-                let mut xquery = bytes(&input[position..])?;
-                xquery.try_reserve_exact(1).map_err(|_| Error::Capacity)?;
-                xquery.push(0);
+                let query = SearchQuery::start(string)?;
+                let xquery = query_bytes(query, string)?;
+                let input = bytes(string)?;
                 self.room(
                     input
                         .len()
@@ -365,10 +443,9 @@ impl Core {
                     id: job,
                     client: id.clone(),
                     status: Status::Planned,
-                    role: Role::Search { position, kind: 22 },
+                    role: Role::Search,
                     kind: Kind::Get {
-                        key,
-                        kind: 22,
+                        query,
                         xquery,
                         traversal: false,
                         counted: false,
@@ -389,10 +466,12 @@ impl Core {
         self.identity = peer;
         for i in 0..self.clients.len() {
             if let Some(ann) = &mut self.clients[i].ann {
+                let requeue =
+                    matches!(ann.cadence, Cadence::Interval(_)) || ann.active || ann.due.is_some();
                 ann.active = false;
                 ann.cursor = 0;
                 ann.stage = Stage::State;
-                ann.due = Some(now.monotonic);
+                ann.due = requeue.then_some(now.monotonic);
             }
         }
         self.stop_where(|j| matches!(j.role, Role::Ann { .. }))?;
@@ -436,12 +515,11 @@ impl Core {
             .min()
     }
     fn record(ann: &Ann, index: usize) -> Result<gnunet_regex::Record<'_>, Error> {
-        if index < ann.dfa.states().len() {
-            Ok(ann.dfa.states()[index].record())
+        let states = ann.dfa.states();
+        if index < states.len() {
+            Ok(states.get(index).ok_or(Error::Order)?.record())
         } else {
-            ann.dfa
-                .initial(index - ann.dfa.states().len())
-                .ok_or(Error::Order)
+            ann.dfa.initial(index - states.len()).ok_or(Error::Order)
         }
     }
     fn pump(&mut self, ci: usize, now: Times) -> Result<(), Error> {
@@ -467,13 +545,15 @@ impl Core {
             ann.cursor = 0;
             ann.stage = Stage::State;
             ann.active = true;
-            ann.due = if ann.frequency == u64::MAX {
-                None
-            } else {
-                now.monotonic.checked_add(ann.frequency)
+            ann.due = match ann.cadence {
+                Cadence::Interval(frequency) if frequency != u64::MAX => {
+                    now.monotonic.checked_add(frequency)
+                }
+                _ => None,
             };
         }
         if ann.cursor == ann.dfa.states().len() + ann.dfa.initial_count() {
+            ann.completed = ann.completed.saturating_add(1);
             ann.active = false;
             return Ok(());
         }
@@ -574,19 +654,17 @@ impl Core {
                 key: *key,
                 kind: *kind,
                 options: if *kind == 23 { 3 } else { 1 },
-                replication: 5,
+                replication: DHT_REPLICATION,
                 expires: *expires,
                 block: body,
             },
-            Kind::Get {
-                key, kind, xquery, ..
-            } => Work::Get {
+            Kind::Get { query, xquery, .. } => Work::Get {
                 job: j.id.clone(),
                 client: j.client.clone(),
-                key: *key,
-                kind: *kind,
-                options: if *kind == 23 { 3 } else { 1 },
-                replication: 5,
+                key: *query.key(),
+                kind: query.kind().block_type(),
+                options: query.kind().options(),
+                replication: DHT_REPLICATION,
                 xquery,
             },
             Kind::Sign { peer, material, .. } => Work::Sign {
@@ -623,11 +701,16 @@ impl Core {
         else {
             return false;
         };
-        if *counted || !matches!(*kind, 22 | 23) {
+        if *counted {
             return false;
         }
+        let kind = match *kind {
+            22 => QueryKind::State,
+            23 => QueryKind::Accept,
+            _ => return false,
+        };
         *counted = true;
-        self.metrics.put_admitted(*kind, body.len());
+        self.metrics.put_admitted(kind, body.len());
         true
     }
     /// Only the actual original GET admission: it is not a result or completion.
@@ -671,7 +754,9 @@ impl Core {
             _ => 0,
         };
         self.retained -= size;
-        self.seen.retain(|s| s.job != job.id.0.sequence);
+        if matches!(job.kind, Kind::Get { .. }) {
+            self.seen.retain(|s| s.job != job.id.0.sequence);
+        }
         job
     }
     fn finish(&mut self, index: usize) -> Result<(), Error> {
@@ -713,6 +798,12 @@ impl Core {
             } else {
                 ann.cursor += 1;
                 ann.stage = Stage::State;
+                if matches!(ann.cadence, Cadence::Manual)
+                    && ann.cursor == ann.dfa.states().len() + ann.dfa.initial_count()
+                {
+                    ann.completed = ann.completed.saturating_add(1);
+                    ann.active = false;
+                }
             }
         }
         self.remove_job(index);
@@ -825,10 +916,11 @@ impl Core {
         if job.status != Status::Active {
             return Err(Error::Order);
         }
-        let Kind::Get { key, kind, .. } = &job.kind else {
+        let Kind::Get { query, .. } = &job.kind else {
             return Err(Error::Order);
         };
-        if *key != reply.key || *kind != reply.kind {
+        let query = *query;
+        if !query.matches_reply(&reply.key, reply.kind) {
             return Err(Error::Protocol(gnunet_types::Error::Malformed));
         }
         if reply.expires < now.absolute {
@@ -839,11 +931,6 @@ impl Core {
             return Err(Error::Closing);
         }
         let client = job.client.clone();
-        let Role::Search { position, .. } = job.role else {
-            return Err(Error::Order);
-        };
-        let key = *key;
-        let kind = *kind;
         if reply.block.len() > self.limits.block_bytes {
             return Err(Error::Capacity);
         }
@@ -851,34 +938,21 @@ impl Core {
         if self
             .seen
             .iter()
+            .rev()
             .any(|s| s.job == id.0.sequence && s.hash == digest)
         {
+            if query.kind() == QueryKind::Accept {
+                AcceptBlock::decode(reply.block)?.check_expiration(now.absolute)?;
+            }
             return Ok(());
         }
-        if self.seen.len() == self.limits.seen_results {
-            return Err(Error::Capacity);
-        }
-        if kind == 22 {
-            let state = StateBlock::decode(reply.block)?;
-            if state.key() != key {
-                return Err(Error::Protocol(gnunet_types::Error::Authentication));
-            }
+        if query.kind() == QueryKind::State {
             let search = self.clients[ci].search.as_ref().ok_or(Error::Order)?;
-            let next = if position == search.input.len() {
-                if state.accepting() {
-                    Some((key, position, 23))
-                } else {
-                    None
-                }
-            } else {
-                let found = state.longest(&search.input[position..])?;
-                // longest checked every edge of this actual validated state.
-                // Count the work even if later branch admission is refused.
-                self.metrics.edges_inspected(state.edge_count());
-                found.map(|e| (e.destination, position + e.label.len(), 22))
-            };
-            if let Some((key, position, kind)) = next {
-                self.branch(ci, key, position, kind)?;
+            let step = query.state(&search.input, reply.block)?;
+            // Count actual traversal even if later branch admission is refused.
+            self.metrics.edges_inspected(step.inspected);
+            if let Some(next) = step.next {
+                self.branch(ci, next)?;
             }
         } else {
             if reply
@@ -892,7 +966,7 @@ impl Core {
             if self.outputs.len() == self.limits.outputs {
                 return Err(Error::Capacity);
             }
-            let checked = AcceptBlock::decode(reply.block)?.verify(now.absolute, &key)?;
+            let checked = query.accept(reply.block, now.absolute)?;
             let charge = reply
                 .get_path
                 .len()
@@ -916,28 +990,29 @@ impl Core {
             // original query; duplicate/failing input grants no found result.
             self.metrics.accepting_found(reply.block.len());
         }
-        self.seen.push(Seen {
+        // Cache pressure only shortens duplicate history for these live GETs.
+        if self.seen.len() == self.limits.seen_results {
+            self.seen.pop_front();
+        }
+        self.seen.push_back(Seen {
             job: id.0.sequence,
             hash: digest,
         });
         Ok(())
     }
-    fn branch(&mut self, ci: usize, key: Hash, position: usize, kind: u32) -> Result<(), Error> {
+    fn branch(&mut self, ci: usize, query: SearchQuery) -> Result<(), Error> {
         let client = self.clients[ci].id.clone();
-        if self.jobs.iter().any(|j|j.client==client&&matches!((&j.kind,j.role),(Kind::Get{key:k,..},Role::Search{position:p,kind:t})if *k==key&&p==position&&t==kind)){return Ok(());}
+        if self.jobs.iter().any(|job| {
+            job.client == client
+                && matches!(&job.kind, Kind::Get { query: existing, .. } if *existing == query)
+        }) {
+            return Ok(());
+        }
         let search = self.clients[ci].search.as_ref().ok_or(Error::Order)?;
         if search.branches == self.limits.branches || self.normal_jobs() == self.limits.jobs {
             return Err(Error::Capacity);
         }
-        let mut xquery = if kind == 22 {
-            bytes(search.input.get(position..).ok_or(Error::Order)?)?
-        } else {
-            Vec::new()
-        };
-        if kind == 22 {
-            xquery.try_reserve_exact(1).map_err(|_| Error::Capacity)?;
-            xquery.push(0);
-        }
+        let xquery = query_bytes(query, &search.input)?;
         self.room(xquery.len())?;
         let id = JobId(self.key()?);
         self.retained += xquery.len();
@@ -951,12 +1026,11 @@ impl Core {
             id,
             client,
             status: Status::Planned,
-            role: Role::Search { position, kind },
+            role: Role::Search,
             kind: Kind::Get {
-                key,
-                kind,
+                query,
                 xquery,
-                traversal: kind == 22,
+                traversal: query.kind() == QueryKind::State,
                 counted: false,
             },
         });

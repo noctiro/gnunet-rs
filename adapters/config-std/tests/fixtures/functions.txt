@@ -4,8 +4,8 @@ parser|whitespace|1|5b735d0a696e6c696e65203d2076616c756520232072657461696e65640a
 parser|partial_error|-1|5b735d0a6669727374203d206f6b0a0a
 parser|option_no_section|-1|
 parser|semicolon|-1|
-parser|trailing_section_space|-1|
-parser|leading_section_space|-1|
+parser|trailing_section_space|1|5b735d0a78203d206e6f74206170706c6965640a0a
+parser|leading_section_space|1|5b735d0a78203d206e6f74206170706c6965640a0a
 parser|empty_section_key|1|5b5d0a203d2076616c75650a0a
 parser|missing_quote|1|5b735d0a79203d2062617265220a78203d2022756e7465726d696e617465640a0a
 parser|empty_header|1|5b735d0a78203d20310a0a
@@ -19,7 +19,9 @@ number|hex|-1|0
 number|empty|-1|0
 number|maximum|1|18446744073709551615
 size|mixed|1|3027
-size|legacy_tb|1|1024000000000
+size|decimal_tb|1|1000000000000
+size|decimal_pb|1|1000000000000000
+size|decimal_eb|1|1000000000000000000
 size|empty|1|0
 size|multiply_units|1|2097152000
 size|negative|1|18446744073709551615
@@ -42,3 +44,13 @@ expand|empty_set|1|2f7a
 expand|separators|1|2f636f6e6669675c66696c65
 expand|punctuation|1|24524f4f5421
 expand|doubled|1|242f636f6e666967
+expand|empty_end|1|616263
+expand|empty_alone|1|
+expand|empty_adjacent|1|2f636f6e666967
+expand|empty_repeated|1|78792f636f6e6669672f7a
+expand|unknown_then_known|1|24474e554e45545f434f4e4649475f4f5241434c455f4d495353494e472f2f636f6e666967
+expand|recursive_self|1|2453454c462f78
+expand|recursive_pair|1|24412f622f61
+expand|recursive_default|1|64666c742f64
+expand|recursive_twice|1|247b54574943457d3a247b54574943457d
+expand|recursive_environment|1|244f5241434c455f53454c465f454e562f65

@@ -137,9 +137,11 @@ versions are added. Service/rule slices are explicit caller-owned configuration.
 
 Active C has internal UDP host/network port/length inconsistencies, mutable
 remote tuple/hash mismatches, and ICMP AF switch/lookup defects. Rust preserves
-all official wire fields and platform AF profiles while building correct
-IP/transport bytes and coherent tuples. C's raw IPv4/IPv6 host AF values differ
-(Linuxv6=10, Darwinv6=30); AfProfile is explicit, with no invented negotiation. No undefined native struct layout or hash prefix is used as session authority.
+the official wire fields and builds checked IP/transport packets with coherent
+tuples. Each CADET channel binds the configured reply profile for its original
+peer identity. For an unassigned peer, the first admitted request with a
+supported IPv6 AF selects the reply representation. A channel uses the
+configured fallback until it can make that selection.
 
 Fragments, unsupported IP headers/types and oversized output receive actual
 shared packet/resource refusals. There is no private fragmentation protocol,

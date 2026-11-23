@@ -92,6 +92,16 @@ impl Ports {
     pub fn is_empty(self) -> Result<bool, Error> {
         Ok(self.intervals()?.len == 0)
     }
+
+    /// Disjoint inclusive bounds for this policy's admitted query ports.
+    pub fn ranges(self) -> Result<impl Iterator<Item = (u16, u16)>, Error> {
+        let ranges = self.intervals()?;
+        Ok(ranges
+            .values
+            .into_iter()
+            .take(ranges.len)
+            .map(|(first, last)| (first as u16, last as u16)))
+    }
 }
 
 /// One network/mask and port set. Address bits outside the mask are ignored.

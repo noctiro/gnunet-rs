@@ -1,6 +1,8 @@
-//! Standard Resolver SERVICE entry over the actual bounded Resolver/DNS stub.
+//! Standard Resolver SERVICE entry over native endpoints and one DNS backend.
 #![deny(unsafe_code)]
 use gnunet_program_host::{logging::Logger, policy::Level, service, shared_clock::SharedClock};
+use gnunet_resolver_host::MachineDiagnostic;
+use gnunet_service_runtime::BoundListeners;
 use std::{
     cell::RefCell,
     error::Error,
@@ -54,6 +56,33 @@ impl<'a> Diagnostics<'a> {
             level,
             message,
         )
+    }
+    fn machine_input(&self, diagnostic: &MachineDiagnostic) -> io::Result<()> {
+        self.message(
+            "resolver.machine",
+            Level::WARNING,
+            format_args!(
+                "resolver machine input {}: {}",
+                diagnostic.source, diagnostic.error
+            ),
+        )
+    }
+    fn ready(&self, bound: &BoundListeners) -> io::Result<()> {
+        for error in bound.failures() {
+            self.message(
+                "resolver.listener.alternate",
+                Level::WARNING,
+                format_args!("resolver alternate listener: {error}"),
+            )?;
+        }
+        self.message(
+            "resolver.ready",
+            Level::INFO,
+            format_args!("Resolver ready with its DNS backend and listeners"),
+        )?;
+        let mut output = io::stdout().lock();
+        writeln!(output, "READY resolver")?;
+        output.flush()
     }
     fn observe(&self, site: &'static str, level: Level, message: fmt::Arguments<'_>) {
         if self.failure.borrow().is_some() {

@@ -35,17 +35,21 @@ completion, the packet's WinDivert timestamp selects an immutable interface view
 from at most two complete observations. Both use the native
 `QueryPerformanceCounter` clock. A newly observed interface is eligible only for
 captures strictly after that view's clock sample; older captures use the previous
-view. An expired view, unknown index or exact observation boundary refuses that
-capture. Unchanged scans preserve the previous interval. Failed refreshes keep
-both old views intact, and a refused capture cannot acquire a later identity.
+view. An unknown index or exact observation boundary refuses that capture.
+Unchanged scans preserve the previous interval while advancing the last successful
+observation. Capture binding refuses observations five seconds after that sample;
+callers must refresh before this finite bound. A regressing clock or failed
+refresh cannot renew it. Failed refreshes keep both old views intact, and a
+refused capture cannot acquire a later identity.
 
 `CapturedAddress::reply` rechecks the frozen identity before returning a
 `ReplyAddress`. It preserves interface/subinterface indices and the original
 session identity.
 Replies reverse direction except for WinDivert's outbound-only loopback profile.
 Inbound routes retain an observed LUID, GUID, interface index and the calling
-thread's original compartment. `Session::send` rechecks that observation before native
-admission; it never substitutes the current interface behind a reused index.
+thread's original compartment. `Session::send` retains the original route through
+operation setup and rechecks it under the native handle's admission lock just
+before `WinDivertSendEx`.
 Outbound routes retain the original compartment, since WinDivert ignores their
 interface indices. Wintun shares the same native identity observation primitive,
 while retaining its separate adapter ownership and permanent retirement gate.
@@ -76,17 +80,38 @@ remain native qualification work.
 Shutdown, cancellation, filter close and I/O completion are independent
 observations. The original handle is removed from admission under a mutex
 before its one close attempt; later callbacks cannot operate on a numerically
-reused handle. If close won the race with completion, injection exposure may
-remain unknown. No API turns that uncertainty into an unsent-packet claim.
+reused handle. Before that close, the owner makes at most two nonblocking status
+queries, one for each still-registered original operation. Terminal results are
+saved for the original event callback, preserving a completed operation even if
+its callback runs after close. Each callback removes its exact original slot
+before publishing completion or releasing directional credit; close cannot query
+memory already returned to Rust. No duplicate filter handle or wait for pending
+I/O defers the actual close. Repeated close calls return the original native
+outcome without repeating these queries; a failed close is never retried.
 
-The DNS host isolates a refused original route to its own query. It also
-cancels an expired injection once and keeps its original loan until completion.
-Retirement is bounded by five seconds after the first cancellation or original
-hard deadline, whichever is earlier; failure
-to retire closes the source. Completion is polled before canonical-clock work,
-so an unavailable logical clock cannot strand an already admitted native loan.
-A whole injection observed after expiry is reported as accepted late; an error
-retains unknown exposure and its actual completion cause. Neither is replayed.
+`ERROR_IO_INCOMPLETE` leaves the operation's status unknown. If its original
+handle is closed before a terminal result can be obtained,
+`CompletionStatusUnavailable` retains the handle-admission refusal rather than
+synthesizing native cancellation. The event alone proves I/O retirement, not the
+result or injection exposure. Recovering a still-pending operation's result after
+original handle close remains separate work. No API turns that uncertainty into
+an unsent-packet claim.
+
+The DNS host isolates a refused original route to its own query. Its prestarted
+worker requests cancellation on the original injection. Packet admission and
+route refresh pause while that call is pending. The observation deadline is
+five seconds after the earlier of the cancellation request and the original
+hard deadline. Expiry closes the source. Completion is observed before
+canonical-clock work. A whole injection observed after expiry is recorded as
+accepted late. An error retains the original cause and uncertain exposure.
+
+At shutdown the DNS host transfers the original session, upstream socket
+reservations and pending requests to its prestarted worker. The worker runs
+native shutdown, cancellation and close off the reactor. The host uses one
+five-second observation window for native call results and completions. Expiry
+records unconfirmed shutdown, close or I/O separately. The worker retains its
+original owners through a delayed close. After detaching a request observer,
+the native wait retains its loans until the event signals completion.
 
 The DNS integration holds exclusive original upstream-port reservations until
 the filter is closed. An unconfirmed filter close quarantines that finite port

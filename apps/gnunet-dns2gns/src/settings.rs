@@ -18,7 +18,26 @@ impl Settings {
         let ipv6 = configuration
             .get(b"dns2gns", b"BIND_TO6")
             .ok_or("missing [DNS2GNS] BIND_TO6")?;
-        let ipv6 = std::str::from_utf8(ipv6)?.parse::<Ipv6Addr>()?;
+        let ipv6 = std::str::from_utf8(ipv6)?;
+        let (ip, scope) = match ipv6.split_once('%') {
+            Some((ip, scope)) => {
+                let scope = scope.parse::<std::num::NonZeroU32>()?;
+                let ip = ip.parse::<Ipv6Addr>()?;
+                if !ip.is_unicast_link_local() {
+                    return Err("[DNS2GNS] BIND_TO6 scope requires a link-local address".into());
+                }
+                (ip, scope.get())
+            }
+            None => {
+                let ip = ipv6.parse::<Ipv6Addr>()?;
+                if ip.is_unicast_link_local() {
+                    return Err(
+                        "[DNS2GNS] BIND_TO6 link-local address requires %<interface-index>".into(),
+                    );
+                }
+                (ip, 0)
+            }
+        };
         // Native code has a 53 fallback. The normal installed gns.conf instead
         // supplies its own PORT (15353); do not hardcode that installed value.
         let port = match configuration.get(b"dns2gns", b"PORT") {
@@ -27,7 +46,7 @@ impl Settings {
         };
         Ok(Self {
             ipv4: SocketAddrV4::new(ipv4, port),
-            ipv6: SocketAddrV6::new(ipv6, port, 0, 0),
+            ipv6: SocketAddrV6::new(ip, port, 0, scope),
             upstream: SocketAddr::new(upstream, 53),
         })
     }

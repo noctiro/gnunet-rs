@@ -5,7 +5,7 @@ use gnunet_program_host::{
     getopt::Options,
     helpers::{self, Filename, Target},
     logging::Logger,
-    program::{self, Defaults, Invocation, NlsDisabled, Preparation},
+    program::{self, Defaults, Invocation, Preparation},
     reporting::Reporter,
     shared_clock::SharedClock,
 };
@@ -126,7 +126,7 @@ pub fn run(action: Action, parent: Option<ParentControl>) -> Result<(), Failure>
         Action::Redirect => b"gnunet-dns-redirector".as_slice(),
     };
     let mut logger = Logger::new(binary, std::process::id(), false)?;
-    let prepared=program::prepare(config,Invocation{binary_name:binary,help:Some(b"Actual official DNS interception monitor/answer redirector. -i/-o choose monitor directions; -4/-6 replace only answer A/AAAA. Whole write is local only; no subscription ACK. Default finite5-minute window, Native stop and parent control close the original MQ; reconnect resubscribes flags without replay."),select_default_filename:true,defaults:Defaults::Native},options,std::env::args_os(),&program::Environment::capture(),&mut NlsDisabled,&mut logger,&clock,&mut io::stdout().lock(),&mut io::stderr().lock())?;
+    let prepared=program::prepare_installed(config,Invocation{binary_name:binary,help:Some(b"Actual official DNS interception monitor/answer redirector. -i/-o choose monitor directions; -4/-6 replace only answer A/AAAA. Whole write is local only; no subscription ACK. Default finite5-minute window, Native stop and parent control close the original MQ; reconnect resubscribes flags without replay."),select_default_filename:true,defaults:Defaults::Native},options,std::env::args_os(),&program::Environment::capture(),&mut logger,&clock,&mut io::stdout().lock(),&mut io::stderr().lock())?;
     let reporter = Reporter::new(logger, clock.clone());
     let prepared = match prepared {
         Preparation::Ready(p) => *p,

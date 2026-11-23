@@ -1,4 +1,10 @@
-//! Official local-network address shaping without OS-global state.
+//! Official local address shaping and native IPC socket address encoding.
+use gnunet_native::{
+    addresses::internet_address_families,
+    network::{SocketAddressHeader, socket_address_header, unix_address_layout},
+};
+use gnunet_types::Error;
+use gnunet_wire::official::nat::{Endian, Profile};
 #[cfg(unix)]
 use std::{
     ffi::OsString,
@@ -11,6 +17,31 @@ use std::{
     io,
     path::{Path, PathBuf},
 };
+
+mod socket_policy;
+pub use socket_policy::{SocketOpenError, SocketPolicy};
+
+/// Select the socket ABI used by GNUnet IPC and address signatures on this host.
+pub const fn native_sockaddr_profile() -> Result<Profile, Error> {
+    let Some(header) = socket_address_header() else {
+        return Err(Error::Unsupported);
+    };
+    let (ipv4, ipv6) = internet_address_families();
+    let unix_bytes = unix_address_layout().sockaddr_bytes;
+    let endian = if cfg!(target_endian = "little") {
+        Endian::Little
+    } else {
+        Endian::Big
+    };
+    match (header, ipv4, ipv6, unix_bytes) {
+        (SocketAddressHeader::NativeFamily, 2, 10, 110) => Ok(Profile::linux(endian)),
+        (SocketAddressHeader::NativeFamily, 2, 23, 110) => Ok(Profile::windows(endian)),
+        (SocketAddressHeader::LengthAndFamily, 2, 30, 106) => Ok(Profile::darwin(endian)),
+        (SocketAddressHeader::LengthAndFamily, 2, 28, 106) => Ok(Profile::freebsd(endian)),
+        _ => Err(Error::Unsupported),
+    }
+}
+
 fn native_path_fits(path: &Path) -> bool {
     #[cfg(unix)]
     {
@@ -19,6 +50,39 @@ fn native_path_fits(path: &Path) -> bool {
     #[cfg(windows)]
     {
         socket2::SockAddr::unix(path).is_ok()
+    }
+}
+
+#[cfg(all(
+    test,
+    any(
+        windows,
+        target_os = "linux",
+        target_os = "android",
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "freebsd"
+    )
+))]
+mod tests {
+    use super::{Endian, Profile, native_sockaddr_profile};
+
+    #[test]
+    fn nat_profile_matches_target_socket_abi() {
+        let order = if cfg!(target_endian = "little") {
+            Endian::Little
+        } else {
+            Endian::Big
+        };
+        #[cfg(windows)]
+        let expected = Profile::windows(order);
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        let expected = Profile::linux(order);
+        #[cfg(any(target_os = "macos", target_os = "ios"))]
+        let expected = Profile::darwin(order);
+        #[cfg(target_os = "freebsd")]
+        let expected = Profile::freebsd(order);
+        assert_eq!(native_sockaddr_profile(), Ok(expected));
     }
 }
 fn native_path(bytes: Vec<u8>) -> io::Result<PathBuf> {

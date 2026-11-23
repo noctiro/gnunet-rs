@@ -86,7 +86,7 @@ impl<'id, 'buf> Link<'id, 'buf> {
     ) -> Result<Self, Failure> {
         let data = connection.handshake_data().ok_or(Protocol::NotReady)?;
         let data = data
-            .downcast::<quinn::crypto::rustls::HandshakeData>()
+            .downcast::<crate::quic_tls::HandshakeData>()
             .map_err(|_| Protocol::Unsupported)?;
         let alpn = data.protocol.as_deref().ok_or(Protocol::Unsupported)?;
         let profile = profile::Connection::new_in(instance, alpn, now, loan, options)?;
@@ -146,7 +146,7 @@ impl<'id, 'buf> Link<'id, 'buf> {
     pub(crate) fn queue(
         &mut self,
         id: SendId,
-        bytes: &[u8],
+        bytes: Zeroizing<Vec<u8>>,
         hard: Instant,
         now: MonoInstant,
     ) -> Result<(), Failure> {
@@ -159,18 +159,13 @@ impl<'id, 'buf> Link<'id, 'buf> {
         if Instant::now() >= hard {
             return Err(Protocol::Deadline.into());
         }
-        gnunet_wire::official::Frame::decode(bytes)?;
+        gnunet_wire::official::Frame::decode(&bytes)?;
         if bytes.len() > profile::ADVERTISED_MTU {
             return Err(Protocol::TooLarge.into());
         }
-        let mut owned = Vec::new();
-        owned
-            .try_reserve_exact(bytes.len())
-            .map_err(|_| Protocol::Capacity)?;
-        owned.extend_from_slice(bytes);
         self.tx = Some(Sending {
             id,
-            bytes: Zeroizing::new(owned),
+            bytes,
             at: 0,
             hard,
         });

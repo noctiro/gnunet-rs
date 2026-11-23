@@ -109,8 +109,7 @@ impl Store {
         self.directory_sync = self.directory_sync.combine(self.namespace.sync()?);
         Ok(())
     }
-    /// Actual naming-barrier capability, separately from successful file sync.
-    /// Windows reports Unavailable rather than claiming directory durability.
+    /// Actual native naming-barrier result, separate from successful file sync.
     pub const fn directory_sync(&self) -> DirectorySync {
         self.directory_sync
     }

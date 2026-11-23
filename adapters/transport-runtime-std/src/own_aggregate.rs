@@ -42,14 +42,12 @@ impl<'a> HelloSignaturePlan<'a> {
         &self.offer
     }
     /// Recheck the actual native client's current identity, then admit and claim
-    /// synchronously before any driver poll can run. Builder errors and actual
-    /// NativeError values remain distinct until returned in the refused owner.
+    /// synchronously before any driver poll can run. Native refusal retains its cause.
     /// No Box or other allocation occurs here after native admission succeeds.
     pub fn admit<const O: usize>(
         self,
         candidate: &mut HelloCandidate,
         client: &mut NativeClient<'a, O>,
-        scratch: &mut [u8],
     ) -> HelloSignatureAdmission<'a> {
         if candidate.id() != &self.offer
             || candidate.authority() != self.offer.authority()
@@ -68,24 +66,13 @@ impl<'a> HelloSignaturePlan<'a> {
                 cause: Error::Stale.into(),
             };
         };
-        let expiry = candidate.expiry();
-        // The outer Result belongs to the pure builder. Its closure returns the
-        // native Result as its value, preserving any actual OS/configuration
-        // error rather than reducing it to a gnunet_types::Error.
-        let operation = match candidate.with_builder(scratch, |builder| {
-            Ok(client.sign_hello(builder, expiry, pc::KeyTarget::Exact(identity)))
-        }) {
-            Ok(Ok(operation)) => operation,
-            Ok(Err(cause)) => {
-                return HelloSignatureAdmission::RefusedPlan {
-                    original: self,
-                    cause,
-                };
-            }
+        let operation = match client.sign(candidate.signed_region(), pc::KeyTarget::Exact(identity))
+        {
+            Ok(operation) => operation,
             Err(cause) => {
                 return HelloSignatureAdmission::RefusedPlan {
                     original: self,
-                    cause: cause.into(),
+                    cause,
                 };
             }
         };

@@ -2,6 +2,9 @@
 //! No disk/store/load/commit or restart protection is implied. Only authentic
 //! Opened constructors can supply the private AEAD/signature/header context.
 use super::*;
+
+pub mod durable;
+
 const FRESH: u8 = 0;
 const LIVE: u8 = 1;
 const LOST: u8 = 2;
@@ -140,13 +143,13 @@ pub enum Reason {
 }
 /// Rejection preserves the original authenticated plaintext/Task for caller
 /// backpressure/reporting/drop. No row/watermark changes on any rejection.
-pub struct Denied<T> {
+pub struct Denied<T, R = Reason> {
     /// Actual local bounded cause.
-    pub reason: Reason,
+    pub reason: R,
     /// Original unchanged authenticated owner, erased on drop.
     pub value: T,
 }
-impl<T> fmt::Debug for Denied<T> {
+impl<T, R: fmt::Debug> fmt::Debug for Denied<T, R> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("DvReplayDenied")
             .field("reason", &self.reason)

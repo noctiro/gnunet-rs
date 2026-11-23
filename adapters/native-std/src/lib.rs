@@ -15,6 +15,10 @@ pub mod os_bytes;
 /// Platform cryptographic randomness with complete-buffer failure cleanup.
 pub mod entropy;
 
+/// Reentrant native Unix account and group database queries.
+#[cfg(unix)]
+pub mod accounts;
+
 /// Original directory owners and relative ordinary-file operations.
 #[cfg(any(unix, windows))]
 pub mod filesystem;
@@ -76,6 +80,10 @@ pub mod addresses;
 #[cfg(any(unix, windows))]
 pub mod network;
 
+/// Process-native Internet protocol and service name lookup.
+#[cfg(any(unix, windows))]
+pub mod internet_registry;
+
 /// Borrowed Windows AF_UNIX address and listener-state observations.
 #[cfg(windows)]
 pub mod local_socket;
@@ -87,6 +95,10 @@ pub mod local_path;
 /// Native Windows DNS-server configuration snapshots without DNS traffic.
 #[cfg(windows)]
 pub mod dns;
+
+/// Original Windows interface, address and route subscriptions with coalesced hints.
+#[cfg(windows)]
+pub mod network_change;
 
 /// Private Windows process-pipe endpoints and kernel peer observations.
 #[cfg(windows)]
@@ -112,16 +124,48 @@ pub use unix::{hostname, hostname_max_length, local_fqdn};
 /// Bounded native interface snapshots.
 pub mod interfaces;
 
+/// Original macOS DNS proxy UDP flows with bounded callback and buffer ownership.
+#[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "dns-proxy"))]
+pub mod dns_proxy;
+
 /// Scoped Darwin PF DNS state retirement under an explicit original deadline.
 #[cfg(target_os = "macos")]
 pub mod pf;
 
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
+/// Original FreeBSD PF state retirement by exact state and creator IDs.
+#[cfg(target_os = "freebsd")]
+pub mod pf_freebsd;
+
+/// Original BSD routing-socket notifications for PF interface scope observation.
+#[cfg(all(feature = "socket-io", any(target_os = "macos", target_os = "freebsd")))]
+pub mod pf_scope;
+
+#[cfg(any(
+    target_os = "linux",
+    target_os = "android",
+    target_os = "macos",
+    target_os = "freebsd"
+))]
 mod nat_helper_io;
 
 /// Raw NAT-helper descriptors and permanent credential boundary.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "android"))]
 pub mod nat_helper;
+
+/// Linux transparent UDP DNS metadata and exact-source reply sockets.
+#[cfg(target_os = "linux")]
+pub mod transparent_dns;
+
+#[cfg(target_os = "linux")]
+mod linux_netlink;
+
+/// Linux routing table operations for exact interface routes.
+#[cfg(target_os = "linux")]
+pub mod linux_routing;
+
+/// Linux network namespace ownership for isolated TESTING topologies.
+#[cfg(target_os = "linux")]
+pub mod netjail;
 
 /// Darwin/modern FreeBSD raw NAT-helper descriptors and credential boundary.
 #[cfg(any(target_os = "macos", target_os = "freebsd"))]

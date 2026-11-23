@@ -255,6 +255,58 @@ impl Journal {
     pub fn hello_profiles(&self) -> HelloProfiles {
         self.hello_profiles
     }
+    /// Import original included URLs as ordinary public MULTIPLE records, using
+    /// the same signature/time checks as the standalone PEERSTORE importer.
+    /// Exact existing public records cause no write; managed-origin matches
+    /// never suppress a public import. Each new store is independently durable.
+    /// Managed origins and quotas are preserved; failure does not roll back earlier stores. An
+    /// unknown publication remains fenced in this Journal's original deferred
+    /// transaction and must not be transparently retried.
+    pub fn import_hellos(
+        &mut self,
+        directory: Option<&super::bootstrap::Directory>,
+        now: gnunet_hello::AbsoluteTime,
+        mut observe: impl FnMut(&Path, super::bootstrap::SkipReason),
+    ) -> Result<super::bootstrap::Summary, super::bootstrap::Failure> {
+        use super::bootstrap::{Event, Import, Summary};
+        self.ready()?;
+        let mut summary = Summary::default();
+        for event in Import::open(directory, self.hello_profiles.discovery, now)? {
+            match event? {
+                Event::Included(included) => {
+                    let record = included.record();
+                    if self.snapshot.rows.iter().any(|stored| {
+                        let old = &stored.record;
+                        stored.origin == Origin::Public
+                            && old.peer.0 == record.peer
+                            && old.subsystem == super::bootstrap::SUBSYSTEM
+                            && old.key == super::bootstrap::KEY
+                            && old.value == record.value
+                            && old.expiry == record.expiry
+                    }) {
+                        self.ready()?;
+                        continue;
+                    }
+                    self.store(
+                        Record {
+                            peer: PeerId(record.peer),
+                            subsystem: copy_bytes(super::bootstrap::SUBSYSTEM)?,
+                            key: copy_bytes(super::bootstrap::KEY)?,
+                            value: copy_bytes(record.value)?,
+                            expiry: record.expiry,
+                        },
+                        false,
+                    )?;
+                    summary.stored += 1;
+                }
+                Event::Skipped { path, reason } => {
+                    observe(&path, reason);
+                    summary.skipped += 1;
+                }
+            }
+        }
+        Ok(summary)
+    }
     pub(super) fn records(&self) -> impl Iterator<Item = &Record> {
         self.snapshot.rows.iter().map(|s| &s.record)
     }

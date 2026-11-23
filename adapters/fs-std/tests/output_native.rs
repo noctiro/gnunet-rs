@@ -8,6 +8,7 @@ use gnunet_fs_host::{
     Buffers, CommitStage, Control, DirectorySync, FileIdentity, FileIdentityParts, Limits,
     OutputDir, Repository,
 };
+use gnunet_native::filesystem::Directory;
 use std::{
     fs, io,
     path::PathBuf,
@@ -37,11 +38,6 @@ impl Drop for Scratch {
         let _cleanup = fs::remove_dir_all(&self.0);
     }
 }
-#[cfg(unix)]
-const SYNC: DirectorySync = DirectorySync::Synchronized;
-#[cfg(windows)]
-const SYNC: DirectorySync = DirectorySync::Unavailable;
-
 #[test]
 fn authenticated_output_keeps_original_root_and_never_publishes_a_cancelled_prefix() -> Result {
     let scratch = Scratch::new()?;
@@ -71,7 +67,8 @@ fn authenticated_output_keeps_original_root_and_never_publishes_a_cancelled_pref
         Limits::default(),
         |_| Control::Continue,
     )?;
-    assert_eq!(read.directory_sync, Some(SYNC));
+    let barrier = Directory::open(&held.join("safe"))?.sync()?;
+    assert_eq!(read.directory_sync, Some(barrier));
     assert_eq!(fs::read(held.join("safe/data-λ.bin"))?, bytes);
     assert_eq!(fs::read_dir(&selected)?.count(), 0);
     assert!(
@@ -120,7 +117,8 @@ fn owned_directory_rejects_a_replacement_even_with_the_same_marker_bytes() -> Re
     let owner = [71; 32];
     let original = parent.create_owned_directory("selected", owner)?;
     let identity = original.identity()?;
-    assert_eq!(original.sync_directory()?, SYNC);
+    let barrier = Directory::open(&scratch.0.join("selected"))?.sync()?;
+    assert_eq!(original.sync_directory()?, barrier);
     drop(original);
     fs::rename(scratch.0.join("selected"), scratch.0.join("held"))?;
     let replacement = parent.create_owned_directory("selected", owner)?;

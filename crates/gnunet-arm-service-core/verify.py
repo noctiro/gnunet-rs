@@ -3,7 +3,11 @@
 import argparse,ast,hashlib,json,os,pathlib,re,shutil,subprocess,sys
 sys.dont_write_bytecode=True
 BASE=pathlib.Path(__file__).resolve().parent
-TOOLCHAIN='1.99.1'
+ARTIFACT_HELPER=BASE.parents[1]/'tools/cargo_artifacts.py'
+sys.path.insert(0,str(ARTIFACT_HELPER.parent))
+from cargo_artifacts import CargoArtifacts
+
+from rust_toolchain import rust_channel
 EXPECTED={'real_reap_is_not_lost_to_optional_resource_pressure', 'boundaries::native_epoch_exhaustion_rejects_admission_before_reserving_or_starting', 'boundaries::future_and_forever_duration_zero_saturating_restart_preserves_sentinel', 'real_timer_registration_firing_clock_regression_and_cancel_are_distinct', 'boundaries::listener_timer_native_and_output_max_cannot_block_actual_shutdown_cleanup', 'list_envelope_is_actual_snapshot_while_service_state_changes', 'source_self_stop_is_queued_then_generic_trigger_and_does_not_forge_eof', 'boundaries::actual_native_ack_and_final_term_ignore_output_and_attempt_counter_exhaustion', 'exact_source_backoff_origin_and_failed_scan_do_not_spin', 'shutdown_during_pending_spawn_really_requests_term_after_actual_admission', 'empty_configured_service_name_is_not_rejected_by_an_extra_private_policy', 'old_readiness_registration_cannot_launch_after_a_new_arm', 'boundaries::native_attempt_epoch_does_not_wrap_or_grant_duplicate_lease', 'boundaries::zero_client_storage_real_child_lifecycle_is_not_an_output_budget', 'startup_gate_waits_all_real_attempts_and_does_not_replay_service_snapshot', 'boundaries::exhausted_demand_records_consumed_registration_without_a_fake_starting_child', 'monitor_duplicates_deduplicate_and_queue1024_is_still_allowed', 'boundaries::child_generation_and_envelope_sequence_exhaustion_reject_before_reservation', 'native_failure_and_admission_are_distinct_from_unexecuted_effect', 'boundaries::frame65535_registry_is_allowed_65536_rejected_before_metadata_mutation', 'leased_arm_is_not_lost_when_spawn_changes_desired_readiness', 'boundaries::duplicate_monitor_needs_no_new_registration_epoch_when_counter_exhausted', 'boundaries::actual_reap_with_reserved_stop_reply_at_max_retires_child_and_client', 'self_stop_required_reservation_cannot_overwrite_another_clients_reused_slot', 'boundaries::startup_and_restart_cursor_never_skip_a_counter_exhausted_forced_service', 'old_native_attempt_cannot_ack_new_stop_of_same_child', 'every_parent_listener_close_is_acknowledged_before_any_child_term', 'wire_baseline_unknown_extension_reserved_list_and_snapshot', 'foreign_readiness_listener_timer_and_runtime_shutdown_leases_are_rejected', 'capacity_rejection_has_no_partial_start_or_native_authority', 'foreign_scopes_with_identical_slot_generations_cannot_authorize_other_owner', 'per_client_output_order_pinned_lease_and_stale_ticket', 'clean_exit_never_schedules_forced_restart_by_itself'}
 
 EXPECTED.add('boundaries::original_service_membership_survives_retirement_without_restoring_active_authority')
@@ -32,8 +36,8 @@ def normal_graph(meta,manifest):
  return seen
 
 def main():
- parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--repository',required=True,type=pathlib.Path);parser.add_argument('--output',required=True,type=pathlib.Path);parser.add_argument('--upstream',type=pathlib.Path);args=parser.parse_args()
- repo=args.repository.resolve();out=args.output.resolve();upstream=args.upstream.resolve() if args.upstream else None
+ parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--repository',required=True,type=pathlib.Path);parser.add_argument('--output',required=True,type=pathlib.Path);parser.add_argument('--upstream',type=pathlib.Path);parser.add_argument('--toolchain');args=parser.parse_args()
+ repo=args.repository.resolve();toolchain=rust_channel(repo,args.toolchain);out=args.output.resolve();upstream=args.upstream.resolve() if args.upstream else None
  roots=[repo,BASE]+([upstream] if upstream else [])
  for source in roots:assert not(out==source or out.is_relative_to(source) or source.is_relative_to(out)),'output overlaps input: '+str(source)
  out.mkdir(mode=0o700);commands=[];env=os.environ.copy();env['CARGO_BUILD_JOBS']='2';env['CARGO_TARGET_DIR']=str(out/'target')
@@ -52,7 +56,7 @@ def main():
  def discover():
   paths=files(BASE)
   for name in ['gnunet-types','gnunet-wire','gnunet-arm-core']:paths+=files(repo/'crates'/name)
-  paths += [repo/n for n in ['Cargo.toml','Cargo.lock','rust-toolchain.toml']]
+  paths += [repo/n for n in ['Cargo.toml','Cargo.lock','rust-toolchain.toml']]+[ARTIFACT_HELPER,ARTIFACT_HELPER.with_name('rust_toolchain.py')]
   return paths+source_paths
  before=snapshot(discover());(out/'inputs-before.json').write_text(json.dumps(before,indent=2)+'\n')
  rust=out/'rust';rust.mkdir()
@@ -67,7 +71,7 @@ def main():
  if '[lints.rust]' in actual_manifest:assert actual_manifest[actual_manifest.index('[lints.rust]'):].strip()==root_lints,'actual package lint policy differs'
  else:assert re.search(r'(?ms)^\[lints\]\s*\n\s*workspace\s*=\s*true\s*(?:\n|$)',actual_manifest),'actual package must inherit current root lints'
  (rust/'Cargo.toml').write_text(rendered);shutil.copy2(repo/'Cargo.lock',rust/'Cargo.lock')
- cargo=['cargo','+'+TOOLCHAIN]
+ cargo=['cargo','+'+toolchain]
  generated_meta=json.loads(run('generated-metadata',cargo+['metadata','--manifest-path',rust/'Cargo.toml','--offline','--format-version','1']).stdout)
  actual_meta=json.loads(run('production-metadata',cargo+['metadata','--manifest-path',BASE/'Cargo.toml','--offline','--locked','--no-deps','--format-version','1']).stdout)
  generated=next(p for p in generated_meta['packages'] if pathlib.Path(p['manifest_path']).resolve()==(rust/'Cargo.toml').resolve())
@@ -86,14 +90,17 @@ def main():
  run('clippy',cargo+['clippy','--all-targets']+shared)
  run('rustdoc',cargo+['doc','--no-deps']+shared,{'RUSTDOCFLAGS':'-D warnings'})
  for target in ['thumbv6m-none-eabi','thumbv7em-none-eabi']:run(target,cargo+['check','--target',target]+shared)
- libs=list((out/'target/debug/deps').glob('libgnunet_arm_service_core-*.rlib'));assert len(libs)==1,libs
+ build=run('ui-artifacts',cargo+['build','--lib','--message-format=json']+shared)
+ artifacts=CargoArtifacts(build.stdout)
+ library=artifacts.rlib('gnunet_arm_service_core',rust/'Cargo.toml')
+ dependency_args=artifacts.rustc_dependency_args()
  negative='''use gnunet_arm_service_core::Owner;\npub fn invalid(owner:&mut Owner<'_, '_, '_, '_>){if let Some(frame)=owner.frame(){owner.begin_shutdown(0);core::hint::black_box(frame.bytes);}}\n'''
  positive='''use gnunet_arm_service_core::Owner;\npub fn valid(owner:&mut Owner<'_, '_, '_, '_>){let mut copy=[0;64];if let Some(frame)=owner.frame(){let n=frame.bytes.len().min(copy.len());copy[..n].copy_from_slice(&frame.bytes[..n]);let ticket=frame.ticket;let _result=owner.release_frame(ticket);owner.begin_shutdown(0);}core::hint::black_box(copy);}\n'''
  for label,code,valid in [('borrow-negative',negative,False),('borrow-positive',positive,True)]:
   path=out/(label+'.rs');path.write_text(code)
-  result=run(label,['rustc','+'+TOOLCHAIN,'--edition=2024','--crate-type=lib','--crate-name',label.replace('-','_'),'--extern','gnunet_arm_service_core='+str(libs[0]),'-L','dependency='+str(out/'target/debug/deps'),'--out-dir',out,path],success=valid)
+  result=run(label,['rustc','+'+toolchain,'--edition=2024','--crate-type=lib','--crate-name',label.replace('-','_'),'--extern','gnunet_arm_service_core='+str(library),*dependency_args,'--out-dir',out,path],success=valid)
   if not valid:assert result.returncode!=0 and re.findall(r'error\[(E\d+)\]',result.stderr.decode())==['E0499'],result.stderr.decode()
- run('scope-ui',[sys.executable,'-B',BASE/'tools/ui.py','--target',out/'target','--output',out/'scope-ui'])
+ run('scope-ui',[sys.executable,'-B',BASE/'tools/ui.py','--artifacts',out/'ui-artifacts.stdout','--service-manifest',rust/'Cargo.toml','--core-manifest',repo/'crates/gnunet-arm-core/Cargo.toml','--toolchain',toolchain,'--output',out/'scope-ui'])
  assert json.loads((out/'scope-ui/result.json').read_text())['status']=='passed'
  after=snapshot(discover());assert before==after,'input contents or file sets changed'
  generated_after=snapshot(files(rust));assert generated_before==generated_after,'generated package inputs changed'

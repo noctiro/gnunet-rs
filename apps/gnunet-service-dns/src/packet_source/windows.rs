@@ -1,7 +1,7 @@
-//! Explicit trusted Wintun provisioning, separate from DNS interception policy.
-use crate::Failure;
+//! Explicit Windows WFP, WinDivert capture or Wintun device selection.
+use crate::{Failure, settings::duration};
 use gnunet_config::{Configuration, ProcessEnvironment};
-use gnunet_dns_service_host::PacketSource;
+use gnunet_dns_service_host::{PacketSource, WfpLimits};
 use gnunet_tun_host::{
     Action, AsyncTun, OwnedTun, Timing, Version,
     wintun::{Driver, RingCapacity},
@@ -10,7 +10,7 @@ use std::{
     error::Error,
     ffi::OsStr,
     fmt, io,
-    net::{Ipv4Addr, Ipv6Addr},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr},
     path::PathBuf,
     time::Duration,
 };
@@ -35,13 +35,15 @@ struct Wintun {
 }
 pub(crate) struct Settings(Backend);
 enum Backend {
-    Capture { dll: PathBuf },
+    WinDivert { dll: PathBuf },
+    Wfp(WfpLimits),
     Tun(Wintun),
 }
 impl Settings {
     pub fn label(&self) -> &'static str {
         match &self.0 {
-            Backend::Capture { .. } => "windivert",
+            Backend::WinDivert { .. } => "windivert",
+            Backend::Wfp(_) => "wfp",
             Backend::Tun(_) => "wintun",
         }
     }
@@ -53,18 +55,47 @@ impl Settings {
         if config.get(LOCAL, b"HELPER_BINARY").is_some() {
             return Err("HELPER_BINARY is only supported on Unix".into());
         }
-        if !skip_routing {
+        let default: &[u8] = if skip_routing {
+            b"WINTUN"
+        } else {
+            b"WINDIVERT"
+        };
+        let backend = config.get(LOCAL, b"WINDOWS_BACKEND").unwrap_or(default);
+        if backend.eq_ignore_ascii_case(b"WFP") {
+            if skip_routing {
+                return Err("WINDOWS_BACKEND=WFP requires SKIP_ROUTING_SETUP=NO".into());
+            }
+            if config.get(LOCAL, b"WINDIVERT_DLL").is_some()
+                || config.get(LOCAL, b"WINTUN_DLL").is_some()
+            {
+                return Err(
+                    "WINDOWS_BACKEND=WFP does not accept WINDIVERT_DLL or WINTUN_DLL".into(),
+                );
+            }
+            let defaults = WfpLimits::default();
+            return Ok(Self(Backend::Wfp(WfpLimits {
+                open_timeout: duration(config, b"NATIVE_OPEN_TIMEOUT", defaults.open_timeout)?,
+                ..defaults
+            })));
+        }
+        if backend.eq_ignore_ascii_case(b"WINDIVERT") {
+            if skip_routing {
+                return Err("WINDOWS_BACKEND=WINDIVERT requires SKIP_ROUTING_SETUP=NO".into());
+            }
             if config.get(LOCAL, b"WINDIVERT_DLL").is_none() {
                 return Err("Automatic Windows DNS interception requires an explicit trusted official WINDIVERT_DLL and an already installed WinDivert 2.2 driver".into());
             }
             if config.get(LOCAL, b"WINTUN_DLL").is_some() {
                 return Err("Automatic interception uses WINDIVERT_DLL; WINTUN_DLL requires SKIP_ROUTING_SETUP=YES".into());
             }
-            let dll = config.get_filename(LOCAL, b"WINDIVERT_DLL", &ProcessEnvironment)?;
-            if !dll.is_absolute() {
-                return Err("WINDIVERT_DLL must expand to an absolute path".into());
-            }
-            return Ok(Self(Backend::Capture { dll }));
+            let dll = config.get_absolute_filename(LOCAL, b"WINDIVERT_DLL", &ProcessEnvironment)?;
+            return Ok(Self(Backend::WinDivert { dll }));
+        }
+        if !backend.eq_ignore_ascii_case(b"WINTUN") {
+            return Err("WINDOWS_BACKEND must be WFP, WINDIVERT or WINTUN".into());
+        }
+        if !skip_routing {
+            return Err("WINDOWS_BACKEND=WINTUN requires SKIP_ROUTING_SETUP=YES".into());
         }
         if config.get(LOCAL, b"WINDIVERT_DLL").is_some() {
             return Err("WINDIVERT_DLL requires SKIP_ROUTING_SETUP=NO".into());
@@ -72,10 +103,7 @@ impl Settings {
         if config.get(LOCAL, b"WINTUN_DLL").is_none() {
             return Err("Windows DNS requires an explicit trusted official WINTUN_DLL".into());
         }
-        let dll = config.get_filename(LOCAL, b"WINTUN_DLL", &ProcessEnvironment)?;
-        if !dll.is_absolute() {
-            return Err("WINTUN_DLL must expand to an absolute path".into());
-        }
+        let dll = config.get_absolute_filename(LOCAL, b"WINTUN_DLL", &ProcessEnvironment)?;
         let capacity = config
             .get(LOCAL, b"WINTUN_RING_BYTES")
             .map(|_| config.get_size(LOCAL, b"WINTUN_RING_BYTES"))
@@ -153,22 +181,33 @@ fn configure(tun: &mut OwnedTun, addresses: &Addresses) -> io::Result<()> {
     }
     Ok(())
 }
+
+fn upstream_sockets(
+    upstream: &mut gnunet_dns_service_host::Upstream,
+    exit: IpAddr,
+) -> Result<gnunet_dnsstub_host::SocketReservations, Failure> {
+    let family = match exit {
+        IpAddr::V4(_) => gnunet_dnsstub_host::Family::V4,
+        IpAddr::V6(_) => gnunet_dnsstub_host::Family::V6,
+    };
+    Ok(upstream
+        .standard_owner_mut()
+        .ok_or("Windows capture requires actual standard UDP socket reservations")?
+        .reserve_sockets(family)?)
+}
+
 #[expect(
     unsafe_code,
     reason = "The operator selects an absolute official Wintun or WinDivert provider and trusts its ABI, dependencies and documented thread safety"
 )]
-pub(super) fn open<'id>(
+pub(super) async fn open<'id>(
     settings: Settings,
     upstream: &mut gnunet_dns_service_host::Upstream,
-    exit: std::net::IpAddr,
+    exit: IpAddr,
 ) -> Result<PacketSource<'id>, Failure> {
     let settings = match settings.0 {
-        Backend::Capture { dll } => {
-            let family = match exit {
-                std::net::IpAddr::V4(_) => gnunet_dnsstub_host::Family::V4,
-                std::net::IpAddr::V6(_) => gnunet_dnsstub_host::Family::V6,
-            };
-            let reservations = upstream.reserve_sockets(family)?;
+        Backend::WinDivert { dll } => {
+            let reservations = upstream_sockets(upstream, exit)?;
             // SAFETY: WINDIVERT_DLL explicitly selects the trusted official
             // thread-safe C ABI, including dependencies and callback destruction.
             let driver = unsafe { gnunet_native::windivert::Driver::load(&dll) }?;
@@ -177,6 +216,10 @@ pub(super) fn open<'id>(
                 reservations,
                 gnunet_native::windivert::Limits::default(),
             )?);
+        }
+        Backend::Wfp(limits) => {
+            let reservations = upstream_sockets(upstream, exit)?;
+            return Ok(PacketSource::wfp(reservations, limits).await?);
         }
         Backend::Tun(settings) => settings,
     };

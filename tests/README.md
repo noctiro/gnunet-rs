@@ -16,7 +16,7 @@ Run from the repository root using the pinned Rust toolchain.
 | `cargo xtask verify portable` | Core feature profiles and facade allocation tiers |
 | `cargo xtask verify runtime` | Focused IPC, service, storage, startup and recovery scenarios |
 | `cargo xtask verify test` | Native workspace with all features |
-| `cargo xtask verify embedded` | Cortex-M0/M4 compilation and no-allocation closure |
+| `cargo xtask verify embedded` | Cortex-M0, Cortex-M4 and RV32IMAC compilation and no-allocation checks |
 
 `cargo xtask verify` runs the source, tool, native and embedded checks.
 Workspace tests include the focused runtime tests. External C comparisons
@@ -61,7 +61,8 @@ groups, pushes to `main`, version tags and manual dispatch.
 | macOS Intel / ARM64 | `verify native` |
 | Windows x86_64 / ARM64 | `verify native` |
 | FreeBSD 14.5 / 15.1 x86_64 | The same native contract, plus Python controls, as an unprivileged VM user |
-| Cortex-M0 / M4 | Embedded compilation and no-allocation checks |
+| Cortex-M0 / Cortex-M4 / RV32IMAC | Embedded compilation and no-allocation checks |
+| Android, iOS and OpenHarmony standard | Isolated Rust SDK cross-compilation checks for the documented application ABIs |
 
 Source policies run once before native and reference jobs. The native matrix
 keeps `fail-fast: false`, so one platform failure does not cancel the others.
@@ -104,15 +105,22 @@ checkout or running services.
 
 ## Official C comparisons
 
-The component and normal STATISTICS groups require a clean, pinned GNUnet
-v0.29.1 checkout.
+The component group uses two clean, independently pinned GNUnet checkouts.
+`GNUNET_REFERENCE_SOURCE` supplies v0.29.1, commit
+`346358e26d4dcc2dc4f51bef5d52dca29c7d8165`, for protocol and STATISTICS
+comparisons. `GNUNET_CONFIG_REFERENCE_SOURCE` supplies commit
+`7e0f9c3640310fd406fcf32c271ab583ef83d6c9` for the configuration component.
+Each oracle checks its own revision; neither source substitutes for the other.
 
 ```sh
-GNUNET_REFERENCE_SOURCE=/path/to/pinned/gnunet cargo xtask verify reference
+GNUNET_REFERENCE_SOURCE=/path/to/gnunet-0.29.1 \
+GNUNET_CONFIG_REFERENCE_SOURCE=/path/to/pinned/configuration-source \
+cargo xtask verify reference
 ```
 
 This compares selected framing, crypto/data-format, configuration and STATISTICS
-boundaries. For normal C client/service execution, prepare the C build using the
+boundaries. Normal C client/service execution continues to use only the
+v0.29.1 source and its matching build receipt. Prepare the C build using the
 [reference guide](../tools/reference/README.md), then run:
 
 ```sh
@@ -122,6 +130,7 @@ cargo xtask verify daemon-reference
 ```
 
 The daemon group runs C client→Rust service and Rust client→C service, including
+absolute SET and selector GET through the standalone Rust `gnunet-statistics`,
 WATCH, persistence and selected restart/failure cases. Results identify their
 actual source, binary and reference inputs.
 
@@ -144,5 +153,5 @@ linker; native C dependencies can also need target-specific compiler settings.
 Run tests on the target platform.
 
 Release acceptance follows the [external release criteria](../spec/gnunet/external/RELEASE.md)
-and `cargo xtask check-conformance --strict`. Open implementation and qualification
-work remains in [implementation status](../IMPLEMENTATION_STATUS.md).
+and `cargo xtask check-conformance --strict`. Known product gaps are tracked in
+[implementation status](../IMPLEMENTATION_STATUS.md).

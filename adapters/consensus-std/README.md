@@ -30,9 +30,11 @@ ADD writes. No second complete encoded population is retained.
 `Reconcile` binds the original TaskId, SetId, OfferId and deadline to the SDK
 prepare/accept/commit owners. `OperationBound` reports the actual native operation
 and epoch; `OperationWritten` activates the core task. ADD_LOCAL, ADD_REMOTE and
-matching DONE/FAILURE drive results. HALF_DONE does not terminate a task. Partial
-union, leader and inventory results remain task-bound until DONE; failed tasks
-cannot publish them. Every native event and loss receipt remains observable.
+matching DONE/FAILURE drive results. HALF_DONE does not terminate a task. Union,
+inventory and leader membership changes remain task-bound until DONE. Incoming
+and outgoing reconciliation use the same
+[SET options](../../crates/gnunet-consensus/README.md#effects-and-retirement).
+Every native event and loss receipt remains observable.
 
 Future incoming contexts retain an offline original preparation. Options may be
 set before its first successful commit. Invalid or unclaimed offers are rejected

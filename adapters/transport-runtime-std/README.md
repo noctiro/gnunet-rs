@@ -17,13 +17,11 @@ admit a response, which the pure engine verifies again. Local service pressure
 leaves the original unclaimed request; result/output pressure retains the actual
 verified result. No accepted input or crypto side effect is replayed.
 
-Queue retirement cancels only its original logical operation. An already copied
-partial request drains through the original framed connection; its canceled
-reply is ignored. PILS physical loss or identity change first retires the old
-TRANSPORT clients, creates and queued outputs, cancels original signing operations,
-and then permits a verified replacement epoch. Same-key address announcements
-retain healthy clients. Owned native completion/loss notices keep their original
-cause and operation even after runtime retirement.
+Queue retirement cancels its original logical operation. An already copied
+partial request drains on the original framed connection. Its canceled reply
+is ignored. Physical PILS loss retires the TRANSPORT clients, creates and queued
+outputs before a replacement epoch can activate. Owned native completion and
+loss notices retain their original cause and operation through retirement.
 
 `new_local`/`foreground_local` provide the optional explicitly enabled local-key
 capability. Actual verified1831 plus a derived public-key match is required. Original snapshots are signed under the same identity/epoch borrow. No local key
@@ -35,14 +33,28 @@ public PEERSTORE IPC, accepts the original inherited TRANSPORT sockets and
 parent control stream, and observes shared native termination subscriptions.
 Windows materializes transferred sockets before runtime registration and verifies
 configured service identity against the current token. Unix foreground startup
-does not switch configured USERNAME; Unix credential matching remains unsupported
-in this composition. The state path is a new-format Rust journal, never a C sqlite
-path. It does not launch PILS, CORE or a communicator.
+does not switch configured USERNAME. Each endpoint applies its own TCP ACL and
+`UNIX_MATCH_UID`/`UNIX_MATCH_GID` policy. New local paths are owner-only unless
+GID matching applies, which permits group access. Inherited socket permissions
+are retained. Windows refuses Unix credential checks while TCP and unchecked
+local endpoints follow their configured access policies. The state path is a
+new-format Rust journal, never a C sqlite path. It does not launch PILS, CORE or
+a communicator.
 
-Foreground readiness callbacks are asynchronous and run only after a verified
-identity activates. The original shutdown future stays polled during notification;
+The asynchronous foreground readiness callback runs for the first verified
+identity activation. The original shutdown future stays polled during notification;
 stopping cancels that wait and retires the original runtime. Caller-owned status
 outboxes retain their original intent and partial submission across cancellation.
+An embedding host gives `foreground_service_with_lifecycle` one stop future and
+a nonzero drain budget. `PublicationStart::After` allows TRANSPORT to apply
+communicator address changes while FEED waits for both the host signal and
+three seconds without an effective address-set change. Each change restarts the
+monotonic interval. Stopping before the signal leaves the aggregate HELLO with
+PILS. `PublicationStart::Immediate` applies the interval without a host barrier
+and is the standalone default. Stop takes precedence over initial setup, listener
+polls, readiness polls and the publication signal. A synchronous storage call
+must return before stop can be observed. `ForegroundExit` reports whether
+readiness completed before retirement.
 
 The normal entry selects `[PILS] PROFILE` before creating the state directory or
 opening sockets. The default is `reference029` (`reference-0.29.1` is an alias). `deterministic` (`reference-deterministic`) selects the official conditional
@@ -69,14 +81,18 @@ wire address IDs are retained (the normal C add helper transmits0). The shared
 HELLO URI parser validates address syntax. Relative lifetime remains an original
 refresh hint; the address stays owned until its original delete/physical loss.
 
-The runtime retains a PublicationId, exact PILS identity/epoch and original
-OperationId after copying the current aggregate through the existing PILS client. Each local full write settles only that revision. A newer desired set remains dirty. FEED has no application ACK: an observed later mismatch creates a fresh current
-snapshot, never replays the retired body. Peer/key retirement cancels original
-publication ownership; an unfinished FEED cannot progress on a same-MQ different
-peer after observation, so that physical PILS MQ retires before another driver
-poll. Original notice delivery precedes reconnect/activation. The new epoch may
-explicitly publish its empty/current resource set under a new lease. A single
-communicator loss leaves the shared MQ and other communicators healthy.
+The runtime retains the publication ID, physical PILS epoch and original
+operation ID for each FEED. Each local full write settles its own revision. A
+newer desired set remains dirty. FEED has no application ACK. A later mismatch
+requests a fresh snapshot of the current resource set. Loss of the physical
+PILS epoch retires the original FEED and reconnects the service owners.
+
+A verified peer change on the same PILS epoch fences new local signing. The
+runtime settles already-admitted output and withdraws the old managed records
+before activating a replacement. Communicator streams and address leases keep
+their original owners.
+CORE streams reattach under the replacement identity. An already-admitted
+unsigned FEED retains its original FIFO position through the change.
 
 Rust PILS/Unix tests cover one-byte partial old FEED followed by a newer
 aggregate, another original communicator surviving withdrawal, original FEED loss
@@ -120,6 +136,7 @@ FEED, validation, service IO and timers. One original signing operation is activ
 at a time; bounded certificate slots and compact claim indices retain staged and
 current members without duplicating offer/value metadata. Purpose29 renews on its
 own finite deadline; a HELLO-only refresh reuses still-valid committed addresses. The common binary HELLO receipt also has a finite deadline for FOREVER forecasts.
+Purpose29 and the PEERSTORE HELLO run independently of the PILS FEED interval.
 
 Resource and physical-identity changes cancel original logical signing work
 before the next native-client poll. Copied frames keep their original MQ and must
@@ -137,15 +154,15 @@ or old socket ACKs. The foreground composition reports original publication
 observations. Rust Unix component tests exercise signing, mixed committed/
 staged publication, original-lease withdrawal, partial cancellation and shutdown. Fresh official C interoperability and complete Node acceptance remain separate.
 
-`begin_shutdown` stops admission and closes the original TRANSPORT/public
-PEERSTORE clients, then retains the same PILS physical/identity epoch and original
-partial frames. It drains a fresh empty aggregate behind them in FIFO order. `Progress::Drained` means the final empty set reached the local MQ as a full write;
-it does not claim service application or a remote ACK. Original Written notices
-are returned before that terminal progress. Dropping a waiting drive future
-preserves the drain state. Timeout, clock refusal or original epoch/peer loss
-fails the drain and retires owned operations without using a replacement identity. The formal foreground uses a canonical-clock 30-second shutdown budget and does
-not repoll its completed shutdown future. `close` remains immediate permanent
-retirement, including explicit abandonment of unfinished drain operations.
+`begin_shutdown` closes the original TRANSPORT and public PEERSTORE clients.
+The original publisher withdraws its managed records. A fresh empty FEED then
+follows any partial original FEED on the same physical PILS epoch. The closing
+owner can observe a derived peer change on that connection. It keeps the
+original withdrawal owner. `Progress::Drained` records the committed managed
+withdrawal and required local full writes. A PILS announcement is an independent
+observation. The runtime returns original write notices before its latched
+terminal result. Timeout, clock refusal or physical epoch loss before settlement
+fails the drain. `close` can end an unfinished drain immediately.
 
 ## Resource admission
 

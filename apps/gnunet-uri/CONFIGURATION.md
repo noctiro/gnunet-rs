@@ -10,11 +10,17 @@ tokenization and percent decoding are not performed. A configured
 command may include an argument separator when its own grammar requires one.
 
 ```ini
+[namestore]
+URI_IMPORT_EGO = my-zone
+
 [uri]
-gns = gnunet-namestore -e my-zone -u
+gns = gnunet-namestore -e 1a -u
 ```
 
-This example selects an existing local NAMESTORE identity named `my-zone`.
+The handler imports into the local IDENTITY ego `my-zone` with a one-year
+expiration. An explicit `-z my-zone` also selects the ego. Set the option in
+the configuration loaded by the handler. If the handler needs a non-default
+configuration file, include `-c CONFIG` in its command.
 Windows paths containing spaces must be quoted inside the configured command.
 Bare Windows executable names resolve through an immutable PATH/cwd snapshot;
 explicit paths use that snapshot's native root/drive rules. Creation passes an

@@ -1,22 +1,24 @@
 //! Official foreground startup with private-root disk preparation outside polling.
 use crate::{
     identity,
-    service::{Host, Limits, Progress, Report},
+    service::{Host, Limits},
 };
 use gnunet_config::{Configuration, ProcessEnvironment, ProjectData};
-use gnunet_pils::{HelloLimits, MasterKey, Profile, Service};
+use gnunet_pils::{HeapService, HelloLimits, MasterKey, Profile};
 use gnunet_service_runtime::{
-    Activation, BoundListeners, accepted::SocketEvent, clock::RuntimeClock,
-    credentials::UnixAccess, service::ShutdownMode, service_options,
+    clock::RuntimeClock, credentials::UnixAccess, service::ShutdownMode, service_options,
 };
 
 use std::{
     error::Error,
-    future::{Future, poll_fn},
-    io,
-    path::Path,
+    path::{Path, PathBuf},
     sync::Arc,
-    task::Poll,
+};
+
+mod foreground;
+pub use foreground::{
+    EmbeddedStartup, ForegroundExit, ForegroundFailure, foreground, foreground_embedded,
+    foreground_listening, foreground_listening_with_async_ready,
 };
 /// Maximum public announcement supported by the normal foreground owner.
 pub const ANNOUNCEMENT_BYTES: usize = 65535;
@@ -78,6 +80,7 @@ pub fn verify_configured_identity(config: &Configuration) -> Result<(), Box<dyn 
     #[cfg(unix)]
     {
         use gnunet_service_startup::{Identity, configured_user, resolve_user};
+        use std::io;
         if let Some(name) = configured_user(config, b"PILS")? {
             let plan = resolve_user(&name)?;
             let actual = Identity::current();
@@ -111,20 +114,32 @@ pub fn prepare(
     clock: Arc<dyn RuntimeClock>,
     limits: Limits,
 ) -> Result<Prepared, Box<dyn Error>> {
+    prepare_using(config, clock, limits, || {
+        config
+            .get_filename(b"PEER", b"PRIVATE_KEY", &ProcessEnvironment)
+            .map_err(Into::into)
+    })
+}
+
+fn prepare_using(
+    config: &Configuration,
+    clock: Arc<dyn RuntimeClock>,
+    limits: Limits,
+    keyfile: impl FnOnce() -> Result<PathBuf, Box<dyn Error>>,
+) -> Result<Prepared, Box<dyn Error>> {
     verify_configured_identity(config)?;
     limits.validate()?;
     let profile = Profile::configured(config.get(b"PILS", b"PROFILE"), None)?;
     let unix = unix_access(config)?;
     let options = service_options(config, b"PILS", ShutdownMode::Immediate)?;
     let copied = config.duplicate()?;
-    let keyfile = config.get_filename(b"PEER", b"PRIVATE_KEY", &ProcessEnvironment)?;
-    let (master, lease) = identity::load_or_create(&keyfile)?;
+    let (master, lease) = identity::load_or_create(&keyfile()?)?;
     let root = InitialRoot { master, lease };
     // Sample after actual durable preparation. Root's declaration order also
     // preserves secret-before-fence cleanup on an original clock refusal.
     let now = clock.sample()?.now.as_micros();
     let InitialRoot { master, lease } = root;
-    let service = Service::<ANNOUNCEMENT_BYTES>::new(
+    let service = HeapService::<ANNOUNCEMENT_BYTES>::new_heap(
         master,
         profile,
         now,
@@ -134,162 +149,9 @@ pub fn prepare(
             maximum_addresses: limits.addresses,
         },
     )?;
-    let host = Host::new(Box::new(service), lease, clock, limits, options, unix)?;
+    let host = Host::new_heap(service, lease, clock, limits, options, unix)?;
     Ok(Prepared {
         config: copied,
         host,
     })
-}
-/// Bind configured/inherited shared Unix/TCP listeners and explicitly drive the
-/// prepared native service on this task. Original socket/progress errors stay
-/// visible to the caller's synchronous observers. No C daemon, busy polling,
-/// implicit Resolver or per-peer worker is created. `ready` runs only after the
-/// private root is durable and all selected actual listeners are bound.
-pub async fn foreground(
-    prepared: Prepared,
-    activation: Activation,
-    ready: impl FnMut(&BoundListeners, [u8; 32]) -> io::Result<()>,
-    shutdown: impl Future<Output = io::Result<()>>,
-    observe_socket: impl FnMut(SocketEvent),
-    observe_progress: impl FnMut(&Progress) -> io::Result<()>,
-) -> Result<Report, Box<dyn Error>> {
-    verify_configured_identity(&prepared.config)?;
-    #[cfg(unix)]
-    let bound = BoundListeners::bind(&prepared.config, b"PILS", activation).await?;
-    #[cfg(windows)]
-    let bound = if activation.is_empty() {
-        BoundListeners::bind_configured(
-            &prepared.config,
-            b"PILS",
-            unix_access(&prepared.config)?.into(),
-        )
-        .await?
-    } else {
-        BoundListeners::from_activation(activation)?
-    };
-    run_listening(
-        prepared,
-        bound,
-        ready,
-        shutdown,
-        observe_socket,
-        observe_progress,
-    )
-    .await
-}
-/// Drive a genuine prepared host on actual caller-owned listeners. The standard
-/// process prepares TCP/activation before USERNAME and finishes new Unix paths
-/// after the transition. This entry never binds/reopens sockets, switches IDs,
-/// forks, loads private roots or invents a successful privilege/ready receipt.
-/// The caller must supply the listeners intended for this service; their inode
-/// guards stay owned until all actual host streams have closed.
-pub async fn foreground_listening(
-    prepared: Prepared,
-    bound: BoundListeners,
-    ready: impl FnMut(&BoundListeners, [u8; 32]) -> io::Result<()>,
-    shutdown: impl Future<Output = io::Result<()>>,
-    observe_socket: impl FnMut(SocketEvent),
-    observe_progress: impl FnMut(&Progress) -> io::Result<()>,
-) -> Result<Report, Box<dyn Error>> {
-    verify_configured_identity(&prepared.config)?;
-    run_listening(
-        prepared,
-        bound,
-        ready,
-        shutdown,
-        observe_socket,
-        observe_progress,
-    )
-    .await
-}
-#[derive(Debug)]
-struct ForegroundFailure {
-    original: Box<dyn Error>,
-    cleanup: Box<dyn Error>,
-}
-impl std::fmt::Display for ForegroundFailure {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{}; independent PILS cleanup observer failure: {}",
-            self.original, self.cleanup
-        )
-    }
-}
-impl Error for ForegroundFailure {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        Some(self.original.as_ref())
-    }
-}
-async fn run_listening(
-    prepared: Prepared,
-    bound: BoundListeners,
-    mut ready: impl FnMut(&BoundListeners, [u8; 32]) -> io::Result<()>,
-    shutdown: impl Future<Output = io::Result<()>>,
-    mut observe_socket: impl FnMut(SocketEvent),
-    mut observe_progress: impl FnMut(&Progress) -> io::Result<()>,
-) -> Result<Report, Box<dyn Error>> {
-    let Prepared {
-        config: _,
-        mut host,
-    } = prepared;
-    let outcome: Result<(), Box<dyn Error>> = async {
-        let peer = host
-            .identity()
-            .ok_or("PILS prepared owner is already closed")?;
-        ready(&bound, peer)?;
-        let listeners = bound.listeners();
-        let mut shutdown = std::pin::pin!(shutdown);
-        loop {
-            let result = {
-                let mut driving = std::pin::pin!(host.drive(&listeners, &mut observe_socket, None));
-                poll_fn(|cx| {
-                    if let Poll::Ready(result) = shutdown.as_mut().poll(cx) {
-                        return Poll::Ready(
-                            result
-                                .map(|()| None)
-                                .map_err(|error| Box::new(error) as Box<dyn Error>),
-                        );
-                    }
-                    driving.as_mut().poll(cx).map(|result| {
-                        result
-                            .map(Some)
-                            .map_err(|error| Box::new(error) as Box<dyn Error>)
-                    })
-                })
-                .await
-            };
-            match result {
-                Ok(None) => break Ok(()),
-                Ok(Some(progress)) => {
-                    if let Err(error) = observe_progress(&progress) {
-                        break Err(Box::new(error) as Box<dyn Error>);
-                    }
-                    if matches!(progress, Progress::Closed) {
-                        break Ok(());
-                    }
-                }
-                Err(error) => break Err(error),
-            }
-        }
-    }
-    .await;
-    host.close();
-    // Every cleanup event is from an already closed actual stream. Preserve
-    // observer failure too, while retaining an earlier original service cause.
-    let mut cleanup = Ok(());
-    while let Some(event) = host.next_event() {
-        if let Err(error) = observe_progress(&event)
-            && cleanup.is_ok()
-        {
-            cleanup = Err(Box::new(error) as Box<dyn Error>);
-        }
-    }
-    let report = host.report();
-    match (outcome, cleanup) {
-        (Ok(()), Ok(())) => Ok(report),
-        (Err(original), Ok(())) => Err(original),
-        (Ok(()), Err(cleanup)) => Err(cleanup),
-        (Err(original), Err(cleanup)) => Err(Box::new(ForegroundFailure { original, cleanup })),
-    }
 }

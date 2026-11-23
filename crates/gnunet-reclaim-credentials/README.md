@@ -1,11 +1,8 @@
 # Bounded RECLAIM credential helpers
 
-Pure callable Rust helpers for the ACTUAL v0.29.1 plugin build. Default is
-no_std/noalloc. `presentation(Credential, AttributeList) -> Result<Presentation,
-Failure>` is ready for the ticket core's original effect/provider completion:
-it returns a borrowed full JWT payload with the original credential ID and type;
-the caller's existing bounded Pool can make the one final owned copy. No source,
-operation, TTL, durability, signature validity or successful ticket is invented.
+Allocation-free Rust helpers for the GNUnet v0.29.1 RECLAIM credential plugins.
+`presentation(PresentationRequest)` returns the borrowed full JWT payload with
+the original credential identifier and type. The caller owns the result's storage.
 
 ## Reference plugin selection
 

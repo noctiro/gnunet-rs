@@ -524,6 +524,18 @@ impl<const R: usize, const N: usize, const C: usize, const W: usize, const E: us
         self.set_inner(request)
     }
 
+    /// Publish an absolute, nonpersistent observation from the local service owner.
+    ///
+    /// This uses the same row and notification admission as a client SET and
+    /// consumes no client slot. On error neither the value nor its watches change.
+    pub fn observe(&mut self, selector: Selector<'_>, value: u64) -> Result<SetOutcome, Error> {
+        self.set_inner(Set {
+            selector,
+            flags: 0,
+            value,
+        })
+    }
+
     fn set_inner(&mut self, request: Set<'_>) -> Result<SetOutcome, Error> {
         self.check_row_names(request.selector)?;
         let order = self.next_order()?;

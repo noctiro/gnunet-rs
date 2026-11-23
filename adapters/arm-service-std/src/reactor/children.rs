@@ -23,6 +23,7 @@ impl<'view, 'scope, 'spec, 'slots, 'bytes, C: Clock>
         &mut self,
         service: ServiceId<'scope>,
         mode: process::ControlMode,
+        #[cfg(windows)] profile: Option<gnunet_native::process::AccountProfile>,
     ) -> Result<SpawnResult, Error> {
         let index = self
             .state
@@ -41,13 +42,31 @@ impl<'view, 'scope, 'spec, 'slots, 'bytes, C: Clock>
         for i in 0..self.managed.len() {
             if self.managed.service_index(i) == Some(index) {
                 let id = self.managed.id(i).ok_or(Error::Mapping)?;
-                listeners.push(self.managed.descriptor(id).ok_or(Error::Mapping)?);
+                #[cfg(unix)]
+                let listener = self.managed.descriptor(id);
+                #[cfg(windows)]
+                let listener = self.managed.launch_source(id);
+                listeners.push(listener.ok_or(Error::Mapping)?);
+            }
+        }
+        #[cfg(windows)]
+        if profile.is_some() {
+            let activation_available = !listeners.is_empty();
+            if entry.bind != activation_available {
+                return Ok(SpawnResult::Refused {
+                    error: Some(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "cross-account startup does not match its managed listener configuration",
+                    )),
+                });
             }
         }
         process::spawn(
             process::Request {
                 context: self.launch,
                 recipe: &entry.recipe,
+                #[cfg(windows)]
+                profile,
                 mode,
                 listeners,
             },
@@ -58,6 +77,44 @@ impl<'view, 'scope, 'spec, 'slots, 'bytes, C: Clock>
             LaunchError::Capacity => Error::AdmissionCapacity,
             other => Error::Native(other),
         })
+    }
+    #[cfg(windows)]
+    fn prepare_account(
+        &mut self,
+        service: ServiceId<'scope>,
+        cx: &mut Context<'_>,
+    ) -> Result<Poll<io::Result<Option<gnunet_native::process::AccountProfile>>>, Error> {
+        let index = self
+            .state
+            .services
+            .iter()
+            .position(|id| *id == service)
+            .ok_or(Error::Mapping)?;
+        let entry = self.registry.services().get(index).ok_or(Error::Mapping)?;
+        let crate::registry::WindowsAccount::Dedicated { sid, credential } = &entry.account else {
+            return Ok(Poll::Ready(Ok(None)));
+        };
+        if self.state.shutdown_requested {
+            self.state.pending_account = None;
+            return Ok(Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "Windows service account preparation canceled by ARM shutdown",
+            ))));
+        }
+        if self.state.pending_account.is_none() {
+            match process::AccountPreparation::begin(sid, credential) {
+                Ok(preparation) => self.state.pending_account = Some(preparation),
+                Err(error) => return Ok(Poll::Ready(Err(error))),
+            }
+        }
+        let preparation = self.state.pending_account.as_mut().ok_or(Error::State)?;
+        match preparation.poll(cx) {
+            Poll::Pending => Ok(Poll::Pending),
+            Poll::Ready(result) => {
+                self.state.pending_account = None;
+                Ok(Poll::Ready(result.map(Some)))
+            }
+        }
     }
     pub(super) fn native(&mut self, cx: &mut Context<'_>) -> Result<bool, Error> {
         self.state.native_waiting = false;
@@ -92,14 +149,23 @@ impl<'view, 'scope, 'spec, 'slots, 'bytes, C: Clock>
                     return Err(Error::Mapping);
                 }
                 if self.state.spawn_outcome.is_none() {
-                    match self.spawn_service(
-                        service,
-                        if pipe {
-                            process::ControlMode::Pipe
-                        } else {
-                            process::ControlMode::Native
-                        },
-                    ) {
+                    let mode = if pipe {
+                        process::ControlMode::Pipe
+                    } else {
+                        process::ControlMode::Native
+                    };
+                    #[cfg(unix)]
+                    let launched = self.spawn_service(service, mode);
+                    #[cfg(windows)]
+                    let launched = match self.prepare_account(service, cx)? {
+                        Poll::Pending => {
+                            self.state.native_waiting = true;
+                            return Ok(false);
+                        }
+                        Poll::Ready(Ok(profile)) => self.spawn_service(service, mode, profile),
+                        Poll::Ready(Err(error)) => Ok(SpawnResult::Refused { error: Some(error) }),
+                    };
+                    match launched {
                         Ok(SpawnResult::Admitted(receipt)) => {
                             self.state.children.push(Child {
                                 core: child,
@@ -234,9 +300,21 @@ impl<'view, 'scope, 'spec, 'slots, 'bytes, C: Clock>
             });
         }
         let exit = process::exit(reap);
+        #[cfg(windows)]
+        let profile_diagnostic = reap
+            .profile
+            .filter(|outcome| *outcome != gnunet_native::process::ProfileRetirement::Unloaded)
+            .map(|outcome| Diagnostic::Profile {
+                child: reap.child.clone(),
+                outcome,
+            });
         let utc = self.utc()?;
         let report = self.owner.reaped(id, exit, utc)?;
         let _closures = report.resource_closures;
+        #[cfg(windows)]
+        if let Some(diagnostic) = profile_diagnostic {
+            self.state.diagnostic(diagnostic);
+        }
         self.state.children.remove(index);
         if self.state.next_child > index {
             self.state.next_child -= 1;

@@ -5,12 +5,16 @@ local/TCP framing. Protocol and cryptographic decisions live in `gnunet-pils`.
 
 ## Service
 
-The `service` feature exposes `service::Host` and
-`startup::{prepare,foreground,foreground_listening}`.
-`prepare` loads configuration and the private root outside socket polling.
-The caller owns listeners, the shared clock, stop policy and readiness.
-The [normal executable](../../apps/gnunet-service-pils/) has separate Unix and
-Windows startup entries around one foreground loop.
+The `service` feature exposes `startup::foreground_embedded` for an app-owned
+PILS service. Supply its configuration, shared clock, readiness callback and
+stop future. Configuration supplies an absolute `[PEER] PRIVATE_KEY` and, for
+a fresh local endpoint, an absolute `[PILS] UNIXPATH`. An explicit activation
+set supplies existing listeners. Fresh local endpoints default to owner access.
+
+`startup::prepare` performs durable private-root preparation.
+`startup::foreground_listening_with_async_ready` drives a prepared service on
+the caller's listeners. The [normal executable](../../apps/gnunet-service-pils/)
+uses this driver with its process startup, stop signals and readiness output.
 
 Every accepted MQ immediately subscribes to HELLO announcements. SIGN, DHKEM,
 legacy DH and FEED retain official request numbers and original-MQ FIFO ordering.
@@ -38,19 +42,25 @@ returns actual local activity without a background task.
 `load_existing` performs no creation or writer-lock acquisition.
 
 The namespace owner retains an original directory, persistent lock and complete
-native file identities. Files must be private regular single-link objects;
+native file identities. Startup adoption rechecks the held key and its relative
+name against the final readback's identity, extent, modification time and change
+time. Files must be private regular single-link objects;
 symlinks, malformed keys and changed names fail. Unix namespaces require the
 effective owner without group/other writes. Windows checks trusted ownership and
 native DACLs; key files require the process user and private data access.
 Namespace administration and hostile replacement remain caller exclusions.
 
-Creation writes and syncs a private staging file, publishes that original file,
-and reads it back through the held handle. An existing key is synced and reread
-without reopening it. Only initial absence permits generation. Interrupted writes
-are not retried; independent staging-cleanup errors remain visible. A failure
+Creation synchronizes and closes the private staging writer before publishing
+without replacing an existing key. Readback and the retained lease use the same
+original file through a separate read-only handle. Existing keys retain their
+original read-only handle through synchronization and reread. Windows uses a
+separate identity-bound sync handle and consumes its close before reread; Unix
+syncs the original read handle. Only initial absence permits generation. Publication
+errors retain the original native cause, attempted-publication, writer-close and
+staging-cleanup observations; interrupted writes are not retried. A failure
 returns no usable key/lease even when publication effects are uncertain.
-`KeyLease::directory_sync` reports the actual naming barrier separately from file
-sync: Windows reports `Unavailable`. No directory durability is fabricated.
+`KeyLease::directory_sync` reports the actual directory barrier separately from
+file synchronization. [Native directory barrier](../native-std/API.md#anchored-filesystem-operations)
 
 ## Profiles
 

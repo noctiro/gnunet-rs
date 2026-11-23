@@ -146,8 +146,22 @@ pub(crate) async fn open(
         settings.mode,
         settings.egress
     );
-    Ok((
-        Some(gnunet_exit_host::runtime::PacketSource::native(device)?),
-        description,
-    ))
+    #[cfg(target_os = "freebsd")]
+    let source = {
+        let mut io = gnunet_tun_host::AsyncTun::new(device)?;
+        if matches!(settings.mode, TunMode::Fresh | TunMode::Direct)
+            && let Err(error) = io.enable_freebsd_recovery()
+        {
+            crate::foreground::observe(
+                gnunet_exit_host::runtime::Event::TunLost(io.close()),
+                &stop.reports,
+                &stop.cleanup,
+            );
+            return Err(error.into());
+        }
+        gnunet_exit_host::runtime::PacketSource::Native(io)
+    };
+    #[cfg(not(target_os = "freebsd"))]
+    let source = gnunet_exit_host::runtime::PacketSource::native(device)?;
+    Ok((Some(source), description))
 }

@@ -23,7 +23,7 @@ gnunet-service-runtime.workspace = true
 gnunet-native.workspace = true
 gnunet-service-startup.workspace = true
 getrandom.workspace = true
-tokio = { workspace = true, features = ["rt", "net", "time"] }
+tokio = { workspace = true, features = ["macros", "rt", "net", "sync", "time"] }
 
 [dev-dependencies]
 gnunet-client.workspace = true

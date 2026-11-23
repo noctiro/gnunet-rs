@@ -1,6 +1,9 @@
 //! One-shot ordinary publication, sharing actual auto-share metadata/KSK plans.
-//! One explicit preparation worker is owned and joined; it never owns a socket.
+//! The preparation worker is joined and requests optional LOCs from the CLI's FS owner.
+mod location;
+pub(super) mod progress;
 pub(super) mod settings;
+mod standalone;
 use super::stop::StopEvents;
 use super::{
     publication_options,
@@ -12,10 +15,11 @@ use gnunet::fs_host::{
     ipc::EndpointSource,
     publication::{
         self as task, Task,
-        auto_prepare::{self, Policy, Prepared},
+        auto_prepare::{self, Annotations, MetadataArtifact, Policy, Prepared, RootKeywords},
     },
 };
 use serde_json::{Value, json};
+pub(crate) use standalone::run as run_official;
 use std::{
     error::Error,
     ffi::OsStr,
@@ -95,14 +99,7 @@ fn arguments(args: &[impl AsRef<OsStr>], mode: Mode) -> Result<Arguments, Box<dy
     }
     let interval = duration(positional.get(count))?;
     let source = PathBuf::from(positional[count - 1]);
-    let source_metadata = std::fs::symlink_metadata(&source)?;
-    if source_metadata.file_type().is_symlink()
-        || if mode.tree {
-            !source_metadata.is_dir()
-        } else {
-            !source_metadata.is_file()
-        }
-    {
+    if source_is_tree(&source)? != mode.tree {
         return Err(
             "publication source must be the selected regular file or directory, never a symlink"
                 .into(),
@@ -117,6 +114,13 @@ fn arguments(args: &[impl AsRef<OsStr>], mode: Mode) -> Result<Arguments, Box<dy
         metadata,
         publication,
     })
+}
+fn source_is_tree(source: &Path) -> Result<bool, Box<dyn Error>> {
+    let kind = std::fs::symlink_metadata(source)?.file_type();
+    if !kind.is_file() && !kind.is_dir() {
+        return Err("publication requires a regular file or directory".into());
+    }
+    Ok(kind.is_dir())
 }
 fn state_directory(selected: Option<PathBuf>) -> io::Result<PathBuf> {
     if let Some(path) = selected {
@@ -356,10 +360,9 @@ pub(super) fn run(
         .ok_or("publication native deadline overflow")?;
     out.deadline(hard);
     let store = EndpointSource::unix(std::mem::take(&mut args.store));
-    let fs = args
-        .fs
-        .take()
-        .map(|path| EndpointSource::unix_with_clock(path, store.clock()));
+    let fs = args.fs.take().map_or(FsAccess::None, |path| {
+        FsAccess::Index(EndpointSource::unix_with_clock(path, store.clock()))
+    });
     let deadline = target(&store, args.interval)?;
     let blocks = args.publication.select(store.clock().as_ref())?;
     let metadata = std::mem::take(&mut args.metadata).select()?;
@@ -371,14 +374,19 @@ pub(super) fn run(
         .into());
     }
     let execution = Execution {
-        args,
-        mode,
+        source: args.source,
+        state: args.state,
         hard,
         store,
         fs,
         deadline,
         blocks,
         metadata,
+        root_keywords: RootKeywords::default(),
+        creation_time: None,
+        style: Style::Json,
+        namespace: None,
+        verbose: 0,
     };
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -386,35 +394,83 @@ pub(super) fn run(
         .block_on(execute(execution, out))
 }
 struct Execution {
-    args: Arguments,
-    mode: Mode,
+    source: PathBuf,
+    state: Option<PathBuf>,
     hard: Instant,
     store: EndpointSource,
-    fs: Option<EndpointSource>,
+    fs: FsAccess,
     deadline: gnunet::types::AbsoluteTime,
     blocks: gnunet::fs_host::network::BlockOptions,
     metadata: MetadataSettings,
+    root_keywords: RootKeywords,
+    creation_time: Option<gnunet::types::AbsoluteTime>,
+    style: Style,
+    namespace: Option<(standalone::namespace::Authorization, Option<PathBuf>)>,
+    verbose: u32,
+}
+
+enum FsAccess {
+    None,
+    Index(EndpointSource),
+    Sign(EndpointSource),
+    IndexAndSign(EndpointSource),
+}
+
+impl FsAccess {
+    fn configured(endpoint: EndpointSource, indexed: bool, anonymity: u32) -> Self {
+        match (indexed, anonymity == 0) {
+            (false, false) => Self::None,
+            (true, false) => Self::Index(endpoint),
+            (false, true) => Self::Sign(endpoint),
+            (true, true) => Self::IndexAndSign(endpoint),
+        }
+    }
+
+    fn index(&self) -> Option<&EndpointSource> {
+        match self {
+            Self::Index(endpoint) | Self::IndexAndSign(endpoint) => Some(endpoint),
+            Self::None | Self::Sign(_) => None,
+        }
+    }
+
+    fn signer(&self) -> Option<&EndpointSource> {
+        match self {
+            Self::Sign(endpoint) | Self::IndexAndSign(endpoint) => Some(endpoint),
+            Self::None | Self::Index(_) => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Style {
+    Json,
+    Official,
 }
 async fn execute(
     execution: Execution,
     out: &mut super::Output<'_, impl Write>,
 ) -> Result<(), Box<dyn Error>> {
     let Execution {
-        args,
-        mode,
+        source,
+        state,
         hard,
         store,
         fs,
         deadline,
         blocks,
         metadata,
+        root_keywords,
+        creation_time,
+        style,
+        namespace,
+        verbose,
     } = execution;
     let manual_items = metadata.manual_items();
     let automatic_keywords = metadata.automatic_keywords_enabled();
     let format_extraction = metadata.format_extraction_enabled();
 
     let mut gate = Gate::new(hard)?;
-    let state = state_directory(args.state)?;
+    let state = state_directory(state)?;
     let mut failure = Failure {
         state: state.clone(),
         original: None,
@@ -426,48 +482,115 @@ async fn execute(
         task: None,
         output: None,
     };
+    let index = fs.index();
     let policy = Policy {
-        indexed: mode.indexed,
+        indexed: index.is_some(),
         metadata: gnunet::fs_host::extraction::Policy {
             extract: automatic_keywords,
+            creation_time,
             ..Default::default()
         },
         ..Policy::default()
     };
     let worker_state = state.clone();
+    let display_source = matches!(style, Style::Official).then(|| source.clone());
+    let verbose_source = (verbose != 0).then(|| source.clone());
+    let (reporter, updates) = progress::channel(verbose);
     let stop = Arc::clone(&gate.stop);
+    let (worker_signer, signing_owner) = fs
+        .signer()
+        .map(|source| location::Owner::new(source, blocks.expiration, deadline, hard))
+        .unzip();
     let (sender, mut receiver) = tokio::sync::oneshot::channel();
     let worker = std::thread::Builder::new()
         .name("gnunet-fs-prepare".into())
         .spawn(move || {
             let mut buffers = Buffers::new();
-            let result = auto_prepare::prepare_with_metadata(
-                &worker_state,
-                &args.source,
-                &mut buffers,
-                blocks,
-                task::Limits::default(),
-                policy,
+            let mut report = |event: task::plan::tree::Event<'_>| {
+                reporter
+                    .as_ref()
+                    .map_or(gnunet::fs_host::Control::Continue, |reporter| {
+                        reporter.report(event)
+                    })
+            };
+            let observer: task::plan::tree::Observer<'_> = (verbose != 0).then_some(&mut report);
+            let control = move |_| {
+                if stop.load(Ordering::Acquire) || Instant::now() >= hard {
+                    gnunet::fs_host::Control::Cancel
+                } else {
+                    gnunet::fs_host::Control::Continue
+                }
+            };
+            let annotations = Annotations {
                 metadata,
-                move |_| {
-                    if stop.load(Ordering::Acquire) || Instant::now() >= hard {
-                        gnunet::fs_host::Control::Cancel
-                    } else {
-                        gnunet::fs_host::Control::Continue
-                    }
-                },
-            );
+                root_keywords: &root_keywords,
+                observer,
+            };
+            let result = if let Some(signer) = worker_signer {
+                auto_prepare::prepare_with_locations(
+                    &worker_state,
+                    &source,
+                    &mut buffers,
+                    blocks,
+                    task::Limits::default(),
+                    policy,
+                    annotations,
+                    &mut |content| signer.sign(content),
+                    control,
+                )
+            } else {
+                auto_prepare::prepare_with_annotations(
+                    &worker_state,
+                    &source,
+                    &mut buffers,
+                    blocks,
+                    task::Limits::default(),
+                    policy,
+                    annotations,
+                    control,
+                )
+            };
             let _undelivered = sender.send(result);
         });
     let mut prepared: Option<Prepared> = None;
     match worker {
         Err(e) => failure.worker = Some(e),
         Ok(worker) => {
-            let result = poll_fn(|cx| {
-                gate.poll(cx);
-                std::pin::Pin::new(&mut receiver).poll(cx)
-            })
-            .await;
+            let mut warning = None;
+            let result = {
+                let stop = Arc::clone(&gate.stop);
+                let mut signer = std::pin::pin!(async {
+                    if let Some(owner) = signing_owner {
+                        owner.run(&stop, &mut warning).await;
+                    }
+                });
+                let mut preparation = std::pin::pin!(async {
+                    if let Some(source) = verbose_source.as_deref() {
+                        failure.output =
+                            progress::drain(updates, source, out, &mut gate).await.err();
+                    }
+                    poll_fn(|cx| {
+                        gate.poll(cx);
+                        std::pin::Pin::new(&mut receiver).poll(cx)
+                    })
+                    .await
+                });
+                let mut signer_finished = false;
+                poll_fn(|cx| {
+                    let result = preparation.as_mut().poll(cx);
+                    if !signer_finished {
+                        signer_finished = signer.as_mut().poll(cx).is_ready();
+                    }
+                    result
+                })
+                .await
+            };
+            if let Some(reason) = warning {
+                let _diagnostic = writeln!(
+                    io::stderr().lock(),
+                    "FS location signing unavailable, using CHK for remaining objects: {reason}"
+                );
+            }
             // A cancel/deadline does not detach the worker or abandon its local
             // journal. A non-preemptible filesystem syscall may delay this join.
             if worker.join().is_err() {
@@ -481,26 +604,33 @@ async fn execute(
         }
     }
     let mut summaries = Vec::<Value>::new();
+    let mut completed_tasks = 0usize;
     let mut content_uri = None;
+    let mut display_records = None;
     let mut expected_keywords = 0usize;
     let mut metadata_objects = 0usize;
     if let Some(mut prepared) = prepared {
         expected_keywords = prepared.keywords.len();
         metadata_objects = prepared.metadata.len();
-        content_uri = Some(prepared.content_uri.clone());
+        if matches!(style, Style::Json) {
+            content_uri = Some(prepared.content_uri.clone());
+        }
         // Enabled automatic metadata with no usable KSK is an explicit refusal,
         // never successful searchable publication via an empty placeholder.
         if automatic_keywords && expected_keywords == 0 {
             failure.original.get_or_insert_with(||"automatic metadata produced no representable keyword task; use -D for explicit content-only publication".into());
         }
+        if matches!(style, Style::Official) {
+            display_records = Some(prepared.metadata);
+        }
         if failure.original.is_none() && failure.worker.is_none() {
             let mut buffers = Buffers::new();
-            for (name, original, indexed) in
-                std::iter::once((Path::new("content"), &mut prepared.content, mode.indexed)).chain(
+            for (name, original, index) in
+                std::iter::once((Path::new("content"), &mut prepared.content, index)).chain(
                     prepared
                         .keywords
                         .iter_mut()
-                        .map(|k| (k.name.as_path(), &mut k.task, false)),
+                        .map(|k| (k.name.as_path(), &mut k.task, None)),
                 )
             {
                 poll_fn(|cx| {
@@ -511,12 +641,60 @@ async fn execute(
                 if gate.stop.load(Ordering::Acquire) {
                     break;
                 }
-                match run_task(original,&store,if indexed{fs.as_ref()}else{None},deadline,&mut gate,&mut buffers).await {
-                        Ok(outcome)=>summaries.push(json!({"task":name.to_str(),"task_bytes":crate::argument::native_bytes(name.as_os_str()),"accepted_puts":outcome.progress.recorded.accepted,
-                            "accepted_bytes":outcome.progress.recorded.bytes,"verified_puts":outcome.completed.as_ref().map(|c|c.verified.puts())})),
-                        Err(e)=>{failure.task=Some(e);break;}
+                match run_task(original, &store, index, deadline, &mut gate, &mut buffers).await {
+                    Ok(outcome) => {
+                        completed_tasks += 1;
+                        if matches!(style, Style::Json) {
+                            summaries.push(json!({"task":name.to_str(),"task_bytes":crate::argument::native_bytes(name.as_os_str()),"accepted_puts":outcome.progress.recorded.accepted,
+                                    "accepted_bytes":outcome.progress.recorded.bytes,"verified_puts":outcome.completed.as_ref().map(|c|c.verified.puts())}));
+                        }
                     }
+                    Err(e) => {
+                        failure.task = Some(e);
+                        break;
+                    }
+                }
             }
+        }
+    }
+    let all_tasks = completed_tasks == expected_keywords + 1;
+    let mut namespace_uri = None;
+    if all_tasks && let Some((namespace, graph_root)) = namespace {
+        let result = async {
+            let root = display_records
+                .as_ref()
+                .and_then(|records| {
+                    records
+                        .iter()
+                        .find(|record| record.relative.as_os_str().is_empty())
+                })
+                .ok_or("publication namespace has no prepared root")?;
+            let target = gnunet::fs::Uri::parse(&root.target, Default::default())?;
+            if !matches!(
+                target,
+                gnunet::fs::Uri::Content(_) | gnunet::fs::Uri::Location(_)
+            ) {
+                return Err::<_, Box<dyn Error>>(
+                    "publication namespace root is not a CHK or LOC URI".into(),
+                );
+            }
+            let uri = namespace.uri()?;
+            namespace
+                .publish_content(
+                    store,
+                    target,
+                    &root.wire,
+                    gnunet::fs_host::network::ublock::UblockOptions::new(deadline, blocks),
+                    graph_root.as_deref(),
+                    &mut gate,
+                )
+                .await?;
+            Ok(uri)
+        }
+        .await;
+        match result {
+            Ok(uri) => namespace_uri = Some(uri),
+            Err(error) => failure.original = Some(error),
         }
     }
     // Capture a hard observed by a synchronous verification callback before
@@ -530,7 +708,6 @@ async fn execute(
     failure.expired = gate.expired;
     failure.cancel_observed = gate.observed_cancel.load(Ordering::Acquire);
     failure.signal = gate.signal_error.take();
-    let all_tasks = summaries.len() == expected_keywords + 1;
     let success = all_tasks
         && failure.original.is_none()
         && failure.worker.is_none()
@@ -538,7 +715,15 @@ async fn execute(
         && !failure.stopped
         && failure.signal.is_none();
     out.cleanup()?;
-    let output=(||->io::Result<()>{
+    let output = if let Some(source) = display_source {
+        if success {
+            let records = display_records.ok_or("publication has no completed object directory")?;
+            official_receipt(out, &source, records, namespace_uri.as_deref())
+        } else {
+            Ok(())
+        }
+    } else {
+        (|| -> io::Result<()> {
             serde_json::to_writer(&mut *out,&json!({"event":if success{"fs_publication_complete"}else{"fs_publication_incomplete"},
                 "state_directory":state.to_str(),"state_directory_bytes":crate::argument::native_bytes(state.as_os_str()),"state_retained":true,"uri_bytes":content_uri,
                 "metadata_objects":metadata_objects,"manual_metadata_items":manual_items,"expected_keyword_tasks":expected_keywords,"automatic_keywords_enabled":automatic_keywords,"format_extraction_enabled":format_extraction,
@@ -546,9 +731,13 @@ async fn execute(
                 "completed_tasks":summaries,"searchability":"only the actually accepted selected keyword tasks; no global reachability proof",
                 "error":if success{None}else{Some(failure.to_string())},"task_facts":failure.task.as_ref().map(|e|format!("{e:?}"))}))
                 .map_err(io::Error::other)?;
-            writeln!(out)?;out.flush()
-        })().err();
-    failure.output = output;
+            writeln!(out)?;
+            out.flush()
+        })()
+    };
+    if let Err(error) = output {
+        failure.output.get_or_insert(error);
+    }
     poll_fn(|cx| {
         gate.poll(cx);
         Poll::Ready(())
@@ -565,4 +754,47 @@ async fn execute(
     } else {
         Err(Box::new(failure) as Box<dyn Error>)
     }
+}
+
+fn official_receipt(
+    out: &mut impl Write,
+    source: &Path,
+    records: Vec<MetadataArtifact>,
+    namespace_uri: Option<&[u8]>,
+) -> io::Result<()> {
+    for record in records {
+        official_object(out, source, &record.relative, &record.target)?;
+        if record.relative.as_os_str().is_empty()
+            && let Some(uri) = namespace_uri
+        {
+            official_namespace(out, uri)?;
+        }
+    }
+    out.flush()
+}
+
+fn official_namespace(out: &mut impl Write, uri: &[u8]) -> io::Result<()> {
+    out.write_all(b"Namespace URI is `")?;
+    out.write_all(uri)?;
+    out.write_all(b"'.\n")
+}
+
+fn official_object(
+    out: &mut impl Write,
+    source: &Path,
+    relative: &Path,
+    uri: &[u8],
+) -> io::Result<()> {
+    let path;
+    let selected = if relative.as_os_str().is_empty() {
+        source
+    } else {
+        path = source.join(relative);
+        &path
+    };
+    out.write_all(b"Publishing `")?;
+    out.write_all(&crate::argument::native_bytes(selected.as_os_str()))?;
+    out.write_all(b"' done.\nURI is `")?;
+    out.write_all(uri)?;
+    out.write_all(b"'.\n")
 }

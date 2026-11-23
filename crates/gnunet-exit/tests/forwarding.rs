@@ -6,10 +6,10 @@
     reason = "One focused pure model asserts NAT checksums, real response matching and original cleanup debt"
 )]
 use gnunet_exit::{
-    Address, AfProfile, Family,
-    engine::{Config, Effect, Engine, Limits, Target},
+    Address, AfProfile, Family, PeerProfiles,
+    engine::{Config, Effect, Engine, Limits, Service, Target},
     nat::{Entropy, Pool},
-    policy::{Policy, Prefix},
+    policy::{Endpoint, Policy, Prefix, Protocol},
 };
 use gnunet_types::{Error, MonoInstant};
 use gnunet_vpn::packet::{self, Packet};
@@ -56,7 +56,7 @@ fn replacing_tun_never_replays_a_leased_old_packet() -> Result<(), Error> {
             ipv6: None,
             services: &[],
             dns: false,
-            af: AfProfile::LINUX,
+            peer_profiles: &PeerProfiles::LINUX,
         },
         Limits::default(),
     )?;
@@ -94,6 +94,186 @@ fn replacing_tun_never_replays_a_leased_old_packet() -> Result<(), Error> {
     Ok(())
 }
 #[test]
+fn ipv6_replies_use_the_original_channels_admitted_af() -> Result<(), Error> {
+    let mut engine = Engine::new(
+        Config {
+            policy: Policy {
+                ipv4: false,
+                ipv6: true,
+                rules: gnunet_exit::policy::InternetRules::Ordered {
+                    rules: &[],
+                    default_allow: true,
+                },
+            },
+            ipv4: None,
+            ipv6: Some(Pool {
+                subnet: Prefix {
+                    address: Address::V6([0xfd, 0x19, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]),
+                    bits: 120,
+                },
+            }),
+            services: &[],
+            dns: false,
+            peer_profiles: &PeerProfiles::LINUX,
+        },
+        Limits::default(),
+    )?;
+    let source = engine.attached()?;
+    let tun = engine.tun_attached()?;
+    let darwin = engine.accept(
+        &source,
+        [7; 32],
+        Target::Internet(Family::V6),
+        MonoInstant(1),
+    )?;
+    let freebsd = engine.accept(
+        &source,
+        [8; 32],
+        Target::Internet(Family::V6),
+        MonoInstant(1),
+    )?;
+    let remote = Address::V6([0x20, 1, 0xd, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9]);
+    let request = PeerMessage::IcmpInternet {
+        destination: remote,
+        header: [128, 0, 0, 0, 0x12, 0x34, 0, 1],
+        payload: b"echo",
+    };
+    let mut wire = vec![0; request.encoded_len()?];
+    let mut entropy = ModelEntropy(1);
+    let profiles = [(&darwin, AfProfile::DARWIN), (&freebsd, AfProfile::FREEBSD)];
+    for (flow, profile) in profiles {
+        request.encode_with_profile(&mut wire, profile)?;
+        let input = engine.receive(flow, &wire, MonoInstant(2), &mut entropy)?;
+        let output = engine.tun_output().ok_or(Error::NotReady)?;
+        let packet = Packet::parse(output.bytes)?;
+        packet.validate_checksums()?;
+        assert_eq!(packet.destination(), remote);
+        let write = output.write;
+        engine.tun_written(&tun, &write)?;
+        let Some(Effect::Processed {
+            flow: ready,
+            input: receipt,
+        }) = engine.effect()
+        else {
+            return Err(Error::NotReady);
+        };
+        assert_eq!(&ready, flow);
+        assert_eq!(receipt, input);
+        engine.acknowledged(&input)?;
+    }
+    for (flow, profile) in profiles {
+        let tuple = engine.info(flow)?.tuple.ok_or(Error::NotReady)?;
+        let reply = [129, 0, 0, 0, 0x12, 0x34, 0, 1, b'e', b'c', b'h', b'o'];
+        let packet = ip(remote, tuple.local.address, 58, &reply)?;
+        assert_eq!(&engine.from_tun(&tun, &packet, MonoInstant(3))?, flow);
+        let output = engine.peer_output().ok_or(Error::NotReady)?;
+        assert_eq!(&output.flow, flow);
+        assert!(matches!(
+            PeerMessage::decode_with_profile(output.bytes, profile)?,
+            PeerMessage::IcmpReply { af, header, payload: b"echo" }
+                if af == profile.ipv6 && header[0] == 129
+        ));
+        let write = output.write;
+        engine.peer_written(&source, &write)?;
+    }
+    assert_eq!(
+        engine.receive(&darwin, &wire, MonoInstant(4), &mut entropy),
+        Err(Error::Unsupported)
+    );
+    assert!(!engine.info(&freebsd)?.closing);
+    Ok(())
+}
+
+#[test]
+fn named_ipv6_errors_follow_the_configured_original_peer_identity() -> Result<(), Error> {
+    let peers = [([7; 32], AfProfile::DARWIN), ([8; 32], AfProfile::FREEBSD)];
+    let profiles = PeerProfiles::new(AfProfile::LINUX, peers)?;
+    let endpoint = Address::V6([0x20, 1, 0xd, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9]);
+    let port = [0x37; 64];
+    let services = [Service {
+        port,
+        protocol: Protocol::Udp,
+        target: Endpoint {
+            address: endpoint,
+            port: 53,
+        },
+    }];
+    let mut engine = Engine::new(
+        Config {
+            policy: Policy {
+                ipv4: false,
+                ipv6: false,
+                rules: gnunet_exit::policy::InternetRules::Ordered {
+                    rules: &[],
+                    default_allow: false,
+                },
+            },
+            ipv4: None,
+            ipv6: Some(Pool {
+                subnet: Prefix {
+                    address: Address::V6([0xfd, 0x19, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]),
+                    bits: 120,
+                },
+            }),
+            services: &services,
+            dns: false,
+            peer_profiles: &profiles,
+        },
+        Limits::default(),
+    )?;
+    let source = engine.attached()?;
+    let tun = engine.tun_attached()?;
+    let first = engine.accept(&source, peers[0].0, Target::Service(port), MonoInstant(1))?;
+    let second = engine.accept(&source, peers[1].0, Target::Service(port), MonoInstant(1))?;
+    let request = message(PeerMessage::UdpService {
+        source: 0,
+        destination: 53,
+        payload: b"question",
+    })?;
+    assert_eq!(PeerMessage::exit_request_af(&request)?, None);
+    let mut entropy = ModelEntropy(1);
+    for flow in [&first, &second] {
+        let input = engine.receive(flow, &request, MonoInstant(2), &mut entropy)?;
+        let write = engine.tun_output().ok_or(Error::NotReady)?.write;
+        engine.tun_written(&tun, &write)?;
+        assert!(matches!(
+            engine.effect(),
+            Some(Effect::Processed { flow: done, input: ready }) if &done == flow && ready == input
+        ));
+        engine.acknowledged(&input)?;
+    }
+    for (flow, profile) in [(&first, peers[0].1), (&second, peers[1].1)] {
+        let tuple = engine.info(flow)?.tuple.ok_or(Error::NotReady)?;
+        let mut icmp = [0; 56];
+        icmp[0] = 1;
+        let quote_bytes = packet::quote(
+            tuple.local.address,
+            tuple.remote.address,
+            packet::UDP,
+            Some((tuple.local.port, tuple.remote.port)),
+            &mut icmp[8..],
+        )?;
+        let bytes = ip(
+            endpoint,
+            tuple.local.address,
+            packet::ICMPV6,
+            &icmp[..8 + quote_bytes],
+        )?;
+        assert_eq!(&engine.from_tun(&tun, &bytes, MonoInstant(3))?, flow);
+        let output = engine.peer_output().ok_or(Error::NotReady)?;
+        assert_eq!(&output.flow, flow);
+        assert!(matches!(
+            PeerMessage::decode_with_profile(output.bytes, profile)?,
+            PeerMessage::IcmpReply { af, header, payload }
+                if af == profile.ipv6 && header[0] == 1 && payload.is_empty()
+        ));
+        let write = output.write;
+        engine.peer_written(&source, &write)?;
+    }
+    Ok(())
+}
+
+#[test]
 fn udp_tcp_icmp_dns_and_original_packet_retirement() -> Result<(), Error> {
     let config = Config {
         policy: Policy {
@@ -118,7 +298,7 @@ fn udp_tcp_icmp_dns_and_original_packet_retirement() -> Result<(), Error> {
         }),
         services: &[],
         dns: true,
-        af: AfProfile::LINUX,
+        peer_profiles: &PeerProfiles::LINUX,
     };
     let mut engine = Engine::new(config, Limits::default())?;
     let source = engine.attached()?;

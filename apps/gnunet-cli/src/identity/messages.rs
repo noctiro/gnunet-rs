@@ -210,13 +210,22 @@ pub(super) fn encrypt(args: &mut [OsString], out: &mut impl Write) -> Result<()>
     if keys::extract(args)?.is_some() {
         return Err("IDENTITY encryption takes a public recipient, not private key import".into());
     }
-    validate(&message, false)?;
     let recipient = args
         .get(1)
         .and_then(|value| value.to_str())
         .ok_or("missing standard typed recipient public key")?;
     let recipient = ZoneKey::from_ztld(recipient)?;
     let timeout = timeout(args.get(3..).ok_or("missing IDENTITY message")?)?;
+    encrypt_message(&recipient, &message, timeout, out)
+}
+
+pub(super) fn encrypt_message(
+    recipient: &ZoneKey,
+    message: &[u8],
+    timeout: Duration,
+    out: &mut impl Write,
+) -> Result<()> {
+    validate(message, false)?;
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?
@@ -224,7 +233,7 @@ pub(super) fn encrypt(args: &mut [OsString], out: &mut impl Write) -> Result<()>
             let hard = Instant::now()
                 .checked_add(timeout)
                 .ok_or("IDENTITY native bound overflow")?;
-            let signal = tokio::signal::ctrl_c();
+            let signal = super::interrupt();
             tokio::pin!(signal);
             let stopped = Cell::new(false);
             let mut guard = Guard {
@@ -245,8 +254,8 @@ pub(super) fn encrypt(args: &mut [OsString], out: &mut impl Write) -> Result<()>
             let encrypted = poll_fn(|cx| {
                 let mut original = || guard.check(cx);
                 Poll::Ready(crypt::encrypt(
-                    &recipient,
-                    &message,
+                    recipient,
+                    message,
                     &mut entropy,
                     &mut original,
                 ))

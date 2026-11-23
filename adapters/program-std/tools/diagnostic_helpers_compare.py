@@ -2,12 +2,15 @@
 """Normal common_logging helper operations and actual Rust byte/value results.
 No C hex2b, malformed time/base32, arbitrary-pointer or nonterminated Unix case.
 """
-import argparse,json,os,re,shutil,subprocess,time
+import argparse,json,os,re,shutil,subprocess,time,sys
 from pathlib import Path
 from _common import sha,local_snapshot,require_disjoint_output,require_lint_contract
 from normal_reference import load,compile_probe
 from logging_compare import date_boundary
 BASE=Path(__file__).resolve().parents[1]
+sys.dont_write_bytecode=True
+sys.path.insert(0,str(BASE.parents[1]/"tools"))
+from rust_toolchain import rust_channel
 def save(p,v):p.write_text(json.dumps(v,indent=2)+'\n')
 def canonical(data,pid,before,after,cfile):
  rows=[];dates=[]
@@ -27,7 +30,7 @@ def canonical(data,pid,before,after,cfile):
 def main():
  p=argparse.ArgumentParser()
  for key in ['repo','source','reference','rust','output']:p.add_argument('--'+key,type=Path,required=True)
- p.add_argument('--toolchain',default='1.99.1');a=p.parse_args();env=os.environ.copy();env['CARGO_TARGET_DIR']=str(BASE/'target');metadata_cmd=['cargo','+'+a.toolchain,'metadata','--manifest-path',str(BASE/'Cargo.toml'),'--offline','--locked','--all-features','--format-version','1'];md=json.loads(subprocess.check_output(metadata_cmd,env=env));_,inputs=local_snapshot(md,BASE,BASE/'tools');inputs[str(a.rust.resolve())]=sha(a.rust);policy=require_lint_contract(BASE,a.repo,md);r,normal=load(a.reference,a.source,a.repo);roots=[Path(row['manifest_path']).parent for row in md['packages']if row['source']is None];out=require_disjoint_output(a.output,[BASE,a.repo,a.source,a.reference.resolve().parent,Path(r['build']),Path(r['prefix']),*roots]);out.mkdir();result={'status':'not-run'};observed=[]
+ p.add_argument('--toolchain');a=p.parse_args();a.toolchain=rust_channel(a.repo.resolve(),a.toolchain);env=os.environ.copy();env['CARGO_TARGET_DIR']=str(BASE/'target');metadata_cmd=['cargo','+'+a.toolchain,'metadata','--manifest-path',str(BASE/'Cargo.toml'),'--offline','--locked','--all-features','--format-version','1'];md=json.loads(subprocess.check_output(metadata_cmd,env=env));_,inputs=local_snapshot(md,BASE,BASE/'tools');inputs[str(a.rust.resolve())]=sha(a.rust);policy=require_lint_contract(BASE,a.repo,md);r,normal=load(a.reference,a.source,a.repo);roots=[Path(row['manifest_path']).parent for row in md['packages']if row['source']is None];out=require_disjoint_output(a.output,[BASE,a.repo,a.source,a.reference.resolve().parent,Path(r['build']),Path(r['prefix']),*roots]);out.mkdir();result={'status':'not-run'};observed=[]
  try:
   c=out/'normal-diagnostic-helpers';compiled=compile_probe(BASE/'reference/diagnostic_helpers.c',c,r);save(out/'compile.json',compiled);rust=out/'rust-diagnostic-helpers';shutil.copy2(a.rust,rust);binaries={str(c):sha(c),str(rust):sha(rust)};db=json.loads(Path(r['compile_commands']['path']).read_text());selected=[v for v in db if v['file'].endswith('/common_logging.c')]
   if len(selected)!=1:raise ValueError('normal common TU ambiguous')

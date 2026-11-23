@@ -20,6 +20,10 @@ enum Mode {
     Iterator,
     Monitor,
 }
+pub(crate) enum StreamStart {
+    Iterate,
+    Monitor { iterate_first: bool, follow: bool },
+}
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum Origin<'id> {
     Request {
@@ -36,6 +40,7 @@ struct StreamMeta<'id> {
     operation: Operation<'id>,
     credit: u64,
     synced: bool,
+    follow: bool,
     stopping: bool,
 }
 struct ControlState<'id> {
@@ -63,6 +68,11 @@ impl ControlState<'_> {
         }
     }
 }
+#[derive(Clone, Copy)]
+struct OperationDeadline {
+    expires: u64,
+    hard: Instant,
+}
 struct State<'id> {
     operation: Operation<'id>,
     rid: u32,
@@ -70,8 +80,7 @@ struct State<'id> {
     zone: Option<SecretKey>,
     source: Option<OwnedFrame>,
     len: usize,
-    expires: u64,
-    hard: Instant,
+    deadline: Option<OperationDeadline>,
     retirement: Option<Instant>,
     epoch: Option<Epoch<'id>>,
     queued: bool,
@@ -117,6 +126,7 @@ pub struct Client<'id> {
     closed: bool,
     yield_due: bool,
     read_first: bool,
+    input_hard: Option<Instant>,
     alarm: Option<Pin<Box<Deadline>>>,
     alarm_at: Option<u64>,
     native_alarm: Option<Pin<Box<Sleep>>>,
@@ -158,6 +168,7 @@ impl<'id> Client<'id> {
             closed: false,
             yield_due: false,
             read_first: false,
+            input_hard: None,
             alarm: None,
             alarm_at: None,
             native_alarm: None,
@@ -270,8 +281,10 @@ impl<'id> Client<'id> {
             zone,
             source: Some(OwnedFrame::new(std::mem::take(&mut *encoded))),
             len,
-            expires: until,
-            hard,
+            deadline: Some(OperationDeadline {
+                expires: until,
+                hard,
+            }),
             retirement: None,
             epoch: None,
             queued: false,
@@ -540,7 +553,7 @@ impl<'id> Client<'id> {
         }
         state.retirement = Some(
             Instant::now()
-                .min(state.hard)
+                .min(state.deadline.ok_or(Fault::Conflict)?.hard)
                 .checked_add(self.limits.retirement_grace)
                 .ok_or(Fault::Overflow)?,
         );
@@ -605,6 +618,7 @@ impl<'id> Client<'id> {
         self.alarm_at = None;
         self.native_alarm = None;
         self.native_at = None;
+        self.input_hard = None;
         Loss {
             epoch,
             operations,

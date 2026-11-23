@@ -1,0 +1,29 @@
+[package]
+name = "gnunet-node-sdk"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["rlib", "staticlib"]
+
+[dependencies]
+gnunet-config.workspace = true
+gnunet-node-host.workspace = true
+gnunet-service-runtime.workspace = true
+gnunet-vpn.workspace = true
+gnunet-vpn-host.workspace = true
+tokio = { workspace = true, features = ["rt", "net", "sync", "time"] }
+
+[target.'cfg(target_os = "ios")'.dependencies]
+block2.workspace = true
+gnunet-native = { workspace = true, features = ["dns-proxy"] }
+gnunet-service-dns = { path = "../../apps/gnunet-service-dns", features = ["apple-dns-proxy"] }
+
+[dev-dependencies]
+gnunet-regex.workspace = true
+gnunet-wire.workspace = true
+
+[lints]
+workspace = true

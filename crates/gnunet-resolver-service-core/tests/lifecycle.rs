@@ -92,6 +92,76 @@ fn setup() -> Result<(Memory<255, 64>, Stub), Error> {
     stub.add_dns_ip("127.0.0.1")?;
     Ok((memory, stub))
 }
+
+#[test]
+fn restart_requires_settled_stop_and_fences_tokens_and_state() -> Result<(), Error> {
+    use gnunet_resolver_service_core::owner::Effect as CoreEffect;
+
+    let (mut memory, _) = setup()?;
+    let (mut core, mut staging, mut snapshot) = memory.views(1)?;
+    core.inner
+        .load_machine_files(&mut staging.inner, b"192.0.2.40 old-host\n", b"")?;
+    assert_eq!(core.cache().host_count(), 1);
+    let original = core.connect()?;
+    let lookup = core
+        .request(
+            &mut staging,
+            original,
+            Request::forward(WireId([1; 4]), Family::V4, b"a.example")?,
+            MonoInstant(0),
+            utc(0),
+            |_| Ok(1),
+            &TEXT,
+        )?
+        .ok_or(Error::NotReady)?;
+    let original_effect = core.inner.take_effect()?.ok_or(Error::NotReady)?;
+    assert!(matches!(
+        core.inner.effect(original_effect)?,
+        CoreEffect::StartQuery(_)
+    ));
+    assert_eq!(core.inner.restart(&mut staging.inner), Err(Error::NotReady));
+
+    core.inner.shutdown(&mut staging.inner)?;
+    let stop = core.inner.take_effect()?.ok_or(Error::NotReady)?;
+    assert!(matches!(core.inner.effect(stop)?, CoreEffect::Stop));
+    assert_eq!(core.inner.restart(&mut staging.inner), Err(Error::NotReady));
+    core.inner.release_effect(stop)?;
+    core.inner.restart(&mut staging.inner)?;
+    assert_eq!(core.cache().host_count(), 0);
+    assert_eq!(core.cache().live_bytes(), 0);
+    assert!(!core.inner.owns_client(original));
+    assert!(!core.inner.owns_lookup(lookup));
+    assert_eq!(
+        core.inner.copy_logical_state_to(&mut snapshot.inner),
+        Err(Error::InvalidInput)
+    );
+
+    let new_client = core.connect()?;
+    let new_lookup = core
+        .request(
+            &mut staging,
+            new_client,
+            Request::forward(WireId([1; 4]), Family::V4, b"a.example")?,
+            MonoInstant(1),
+            utc(0),
+            |_| Ok(1),
+            &TEXT,
+        )?
+        .ok_or(Error::NotReady)?;
+    assert!(core.inner.owns_lookup(new_lookup));
+    assert!(!core.inner.owns_lookup(lookup));
+    let new_effect = core.inner.take_effect()?.ok_or(Error::NotReady)?;
+    assert!(matches!(
+        core.inner.effect(original_effect),
+        Err(Error::StaleGeneration)
+    ));
+    assert!(matches!(
+        core.inner.effect(new_effect)?,
+        CoreEffect::StartQuery(_)
+    ));
+    Ok(())
+}
+
 fn bind<'a>(
     c: &mut Core<'a>,
     s: &mut Stage<'a>,
@@ -495,6 +565,85 @@ fn cname_ignores_record_owner_for_redirect_restarts_deadline_and_retires_old_gen
         c.malformed_dns(old.lookup, token),
         Err(Error::StaleGeneration)
     );
+    Ok(())
+}
+#[test]
+fn network_change_retries_the_original_expanded_name_after_cname() -> Result<(), Error> {
+    use gnunet_resolver_service_core::storage::TextScratch;
+
+    let (mut memory, mut stub) = setup()?;
+    let (mut c, mut s, _baseline) = memory.views(1)?;
+    c.set_search(&mut s, Some(b"lan.example"))?;
+    let client = c.connect()?;
+    c.request(
+        &mut s,
+        client,
+        Request::forward(WireId([4; 4]), Family::V4, b"q")?,
+        MonoInstant(0),
+        utc(0),
+        |_| Ok(1),
+        &TEXT,
+    )?;
+    let original = query(&mut c)?;
+    assert_eq!(original.hostname.bytes(), b"q.lan.example");
+    let original_token = bind(&mut c, &mut s, &mut stub, original, 0)?;
+    send(
+        &mut c,
+        &mut s,
+        original,
+        original_token,
+        &[ptr(b"\x07foreign\0", b"\x06target\x07private\0", 5)?],
+        1_000_000,
+    )?;
+    assert!(matches!(c.take_effect(), Some(Effect::CancelQuery(t)) if t == original_token));
+    let continued = query(&mut c)?;
+    let continued_token = bind(&mut c, &mut s, &mut stub, continued, 1)?;
+
+    c.request(
+        &mut s,
+        client,
+        Request::forward(WireId([5; 4]), Family::V4, b"q")?,
+        MonoInstant(2_000_000),
+        utc(2_000_000),
+        |_| Ok(1),
+        &TEXT,
+    )?;
+    let cached = query(&mut c)?;
+    let cached_token = bind(&mut c, &mut s, &mut stub, cached, 2)?;
+    assert_eq!(continued.hostname.bytes(), b"target.private");
+    assert_eq!(cached.hostname.bytes(), b"target.private");
+
+    c.inner.replace_upstreams(&mut s.inner, true)?;
+    stub.replace_servers(&["127.0.0.2:53".parse().map_err(|_| Error::Malformed)?])?;
+    let mut native = [0; 255];
+    let mut work = [0; 255];
+    let mut wire_name = [0; 255];
+    let mut text = TextScratch {
+        native: &mut native,
+        work: &mut work,
+        wire_name: &mut wire_name,
+    };
+    for (slot, (old, token)) in [(continued, continued_token), (cached, cached_token)]
+        .into_iter()
+        .enumerate()
+    {
+        assert_eq!(
+            c.malformed_dns(old.lookup, token),
+            Err(Error::StaleGeneration)
+        );
+        assert!(c.inner.resume_upstream_lookup(
+            MonoInstant(3_000_000),
+            &TEXT,
+            &mut |_| Ok(1),
+            &mut text,
+        )?);
+        let retried = query(&mut c)?;
+        assert_eq!(retried.lookup, old.lookup);
+        assert_eq!(retried.deadline, old.deadline);
+        assert_eq!(retried.hostname.bytes(), b"q.lan.example");
+        assert_ne!(retried.bytes()[..2], old.bytes()[..2]);
+        bind(&mut c, &mut s, &mut stub, retried, slot as u32)?;
+    }
     Ok(())
 }
 #[test]

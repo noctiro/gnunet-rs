@@ -3,8 +3,9 @@ use crate::{Group, Peer, Random, Rank, Sampler};
 use alloc::vec::Vec;
 use core::{fmt, mem::size_of};
 use gnunet_types::Error;
-use gnunet_wire::official::rps::{ClientRequest, ClientResponse, PeerMessage};
-const MAX_PULL_PEERS: usize = (gnunet_wire::official::cadet::MAX_APPLICATION_MESSAGE_SIZE - 8) / 32;
+use gnunet_wire::official::rps::{
+    ClientRequest, ClientResponse, MAX_PULL_REPLY_PEERS, MAX_VIEW_REPLY_PEERS, PeerMessage,
+};
 
 /// An external non-movable lifetime brand for one service.
 #[derive(Debug, Default)]
@@ -82,7 +83,7 @@ pub struct Limits {
     pub clients: usize,
     /// Known/probing peers in each group.
     pub peers_per_group: usize,
-    /// Largest requested view target and peer-list response.
+    /// Largest requested local view target and local IPC view response.
     pub view: usize,
     /// Largest independent history sampler size.
     pub sampler: usize,
@@ -118,7 +119,7 @@ impl Limits {
             || self.groups > 65_536
             || self.clients > 65_536
             || self.peers_per_group > 1_048_576
-            || self.view > 2047
+            || self.view > MAX_VIEW_REPLY_PEERS
             || self.effects > 1_048_576
             || config.view_size == 0
             || config.view_size > self.view
@@ -370,19 +371,36 @@ struct Stage<'i> {
     brand: &'i Instance,
     next: u64,
     effects: Vec<Effect<'i>>,
+    payload_bytes: usize,
     views: Vec<(Client<'i>, Option<u32>)>,
     max_effects: usize,
     max_bytes: usize,
-    temporary: usize,
+    state_budget: usize,
 }
+const PROBE_EFFECTS: usize = 3;
+
+fn effect_table_bytes(count: usize) -> Result<usize, Error> {
+    count
+        .checked_mul(size_of::<Effect<'_>>())
+        .ok_or(Error::Overflow)
+}
+
 impl<'i> Stage<'i> {
     fn push(&mut self, action: Action<'i>) -> Result<EffectId<'i>, Error> {
         if self.effects.len() >= self.max_effects {
             return Err(Error::Capacity);
         }
         let serial = self.next;
-        self.next = serial.checked_add(1).ok_or(Error::Overflow)?;
+        let next = serial.checked_add(1).ok_or(Error::Overflow)?;
+        let payload_bytes = add(self.payload_bytes, action.bytes()?)?;
         reserve(&mut self.effects, 1)?;
+        if add(
+            add(bytes(&self.effects)?, bytes(&self.views)?)?,
+            payload_bytes,
+        )? > self.max_bytes
+        {
+            return Err(Error::Capacity);
+        }
         let id = EffectId {
             brand: self.brand,
             serial,
@@ -392,13 +410,22 @@ impl<'i> Stage<'i> {
             action,
             admitted: false,
         });
-        if self.bytes()? > self.max_bytes {
-            return Err(Error::Capacity);
-        }
+        self.next = next;
+        self.payload_bytes = payload_bytes;
         Ok(id)
     }
-    fn peer_closing(&self, group: GroupId<'i>, peer: Peer) -> bool {
-        self.effects.iter().any(|effect|matches!(effect.action,Action::ClosePeer { group:g,peer:p } if g == group && p == peer))
+    fn probe(&mut self, group: GroupId<'i>, peer: Peer) -> Result<EffectId<'i>, Error> {
+        self.push(Action::Connect { group, peer })?;
+        self.push(Action::PeerSend {
+            group,
+            peer,
+            message: PeerOutput::CheckLive,
+        })?;
+        self.push(Action::PeerSend {
+            group,
+            peer,
+            message: PeerOutput::PullRequest,
+        })
     }
     fn copy_peers(&self, peers: &[Peer]) -> Result<Vec<Peer>, Error> {
         let minimum = peers
@@ -415,10 +442,20 @@ impl<'i> Stage<'i> {
         Ok(out)
     }
     fn bytes(&self) -> Result<usize, Error> {
-        self.effects.iter().try_fold(
+        add(
             add(bytes(&self.effects)?, bytes(&self.views)?)?,
-            |sum, effect| add(sum, effect.action.bytes()?),
+            self.payload_bytes,
         )
+    }
+    fn sync_state(&mut self, state: &State<'i>) -> Result<(), Error> {
+        self.max_bytes = self
+            .state_budget
+            .checked_sub(state.bytes()?)
+            .ok_or(Error::Capacity)?;
+        if self.bytes()? > self.max_bytes {
+            return Err(Error::Capacity);
+        }
+        Ok(())
     }
 }
 
@@ -448,13 +485,6 @@ impl<'i> Service<'i> {
         random: &mut impl Random,
     ) -> Result<Self, Error> {
         limits.validate(config)?;
-        let minimum = add(
-            Sampler::minimum_bytes(config.sampler_size)?,
-            add(size_of::<State<'i>>(), size_of::<Effect<'i>>())?,
-        )?;
-        if minimum > limits.retained_bytes {
-            return Err(Error::Capacity);
-        }
         let main = GroupId { brand, serial: 1 };
         let state = Self::new_state(main, main_hash, config, now, random)?;
         let mut groups = Vec::new();
@@ -530,38 +560,51 @@ impl<'i> Service<'i> {
             .ok_or(Error::StaleGeneration)
     }
     fn stage(&self) -> Stage<'i> {
+        let available = self
+            .limits
+            .retained_bytes
+            .saturating_sub(self.retained_bytes().unwrap_or(usize::MAX));
         Stage {
             brand: self.brand,
             next: self.next,
             effects: Vec::new(),
+            payload_bytes: 0,
             views: Vec::new(),
             max_effects: self.limits.effects - self.effects.len(),
-            temporary: 0,
-            max_bytes: self
-                .limits
-                .retained_bytes
-                .saturating_sub(self.retained_bytes().unwrap_or(usize::MAX)),
+            max_bytes: available,
+            state_budget: available,
         }
     }
     fn stage_for(&self, state: &State<'i>, temporary: usize) -> Result<Stage<'i>, Error> {
-        let extra = add(state.bytes()?, temporary)?;
-        self.budget(extra)?;
         let mut stage = self.stage();
-        stage.temporary = temporary;
-        stage.max_bytes = stage.max_bytes.checked_sub(extra).ok_or(Error::Capacity)?;
+        stage.state_budget = stage
+            .state_budget
+            .checked_sub(temporary)
+            .ok_or(Error::Capacity)?;
+        stage.sync_state(state)?;
         Ok(stage)
     }
-    fn sync_stage(&self, state: &State<'i>, stage: &mut Stage<'i>) -> Result<(), Error> {
-        self.budget(add(add(state.bytes()?, stage.bytes()?)?, stage.temporary)?)?;
-        stage.max_bytes = self
-            .limits
-            .retained_bytes
-            .checked_sub(add(
-                add(self.retained_bytes()?, state.bytes()?)?,
-                stage.temporary,
-            )?)
-            .ok_or(Error::Capacity)?;
-        Ok(())
+    fn candidate_fits(
+        &self,
+        stage: &Stage<'i>,
+        bytes_to_add: usize,
+        effects_to_add: usize,
+    ) -> Result<bool, Error> {
+        let effects = add(stage.effects.len(), effects_to_add)?;
+        if effects > stage.max_effects {
+            return Ok(false);
+        }
+        let count = add(self.effects.len(), effects)?;
+        let queue = if count > self.effects.capacity() {
+            effect_table_bytes(count)?
+        } else {
+            0
+        };
+        let staged_effects = effect_table_bytes(effects.saturating_sub(stage.effects.capacity()))?;
+        Ok(add(
+            add(stage.bytes()?, bytes_to_add)?,
+            add(queue, staged_effects)?,
+        )? <= stage.max_bytes)
     }
     fn budget(&self, extra: usize) -> Result<(), Error> {
         if add(self.retained_bytes()?, extra)? > self.limits.retained_bytes {
@@ -621,12 +664,7 @@ impl<'i> Service<'i> {
         }
         // Old immutable originals remain owned while a new metadata table is
         // reserved. No allocation error can strand a grown live table.
-        self.budget(add(
-            extra,
-            required
-                .checked_mul(size_of::<Effect<'i>>())
-                .ok_or(Error::Overflow)?,
-        )?)?;
+        self.budget(add(extra, effect_table_bytes(required)?)?)?;
         let mut queue = Vec::new();
         reserve(&mut queue, required)?;
         self.budget(add(extra, bytes(&queue)?)?)?;
@@ -796,7 +834,7 @@ impl<'i> Service<'i> {
         Ok(Terminal { effect, completion })
     }
     fn notify_view(&self, state: &State<'i>, stage: &mut Stage<'i>) -> Result<(), Error> {
-        self.sync_stage(state, stage)?;
+        stage.sync_state(state)?;
         for client in &self.clients {
             if client.group != state.id {
                 continue;
@@ -854,7 +892,7 @@ impl<'i> Service<'i> {
         )?)?;
         reserve(&mut state.view, 1)?;
         state.view.push(peer);
-        self.sync_stage(state, stage)?;
+        stage.sync_state(state)?;
         self.notify_stream(state.id, peer, stage)?;
         Ok(true)
     }
@@ -873,7 +911,7 @@ impl<'i> Service<'i> {
             size_of::<PeerState<'i>>(),
         )?)?;
         let index = peer_index(state, peer, self.limits.peers_per_group)?;
-        self.sync_stage(state, stage)?;
+        stage.sync_state(state)?;
         let was_online = state.peers[index].online;
         state.peers[index].online = true;
         state.peers[index].probing_until = None;
@@ -903,15 +941,29 @@ impl<'i> Service<'i> {
         if peer == self.local {
             return Ok(());
         }
-        self.budget(add(
-            add(state.bytes()?, stage.bytes()?)?,
-            size_of::<PeerState<'i>>(),
-        )?)?;
-        if self.peer_closing(state.id, peer) || stage.peer_closing(state.id, peer) {
+        if self.peer_closing(state.id, peer) {
             return Err(Error::WouldBlock);
         }
+        self.stage_discovery(state, peer, now, stage, seed, from_pull)
+    }
+    fn stage_discovery(
+        &self,
+        state: &mut State<'i>,
+        peer: Peer,
+        now: u64,
+        stage: &mut Stage<'i>,
+        seed: bool,
+        from_pull: bool,
+    ) -> Result<(), Error> {
+        if add(
+            add(state.bytes()?, stage.bytes()?)?,
+            size_of::<PeerState<'i>>(),
+        )? > stage.state_budget
+        {
+            return Err(Error::Capacity);
+        }
         let index = peer_index(state, peer, self.limits.peers_per_group)?;
-        self.sync_stage(state, stage)?;
+        stage.sync_state(state)?;
         state.peers[index].seed_pending |= seed && !state.peers[index].seeded;
         state.peers[index].pull_discovered |= from_pull;
         if state.peers[index].online || state.peers[index].probing_until.is_some() {
@@ -920,20 +972,7 @@ impl<'i> Service<'i> {
         let until = now
             .checked_add(state.config.probe_timeout)
             .ok_or(Error::Overflow)?;
-        stage.push(Action::Connect {
-            group: state.id,
-            peer,
-        })?;
-        stage.push(Action::PeerSend {
-            group: state.id,
-            peer,
-            message: PeerOutput::CheckLive,
-        })?;
-        let pull = stage.push(Action::PeerSend {
-            group: state.id,
-            peer,
-            message: PeerOutput::PullRequest,
-        })?;
+        let pull = stage.probe(state.id, peer)?;
         state.peers[index].probing_until = Some(until);
         state.peers[index].pull = Some((pull, false));
         state.peers[index].pull_until = Some(until);
@@ -1027,10 +1066,10 @@ impl<'i> Service<'i> {
             }
             PeerMessage::PullRequest => {
                 let mut peers = stage.copy_peers(&state.view)?;
-                if peers.len() > MAX_PULL_PEERS {
+                if peers.len() > MAX_PULL_REPLY_PEERS {
                     crate::sampler::shuffle(&mut peers, random)?;
                 }
-                peers.truncate(MAX_PULL_PEERS);
+                peers.truncate(MAX_PULL_REPLY_PEERS);
                 stage.push(Action::PeerSend {
                     group,
                     peer,
@@ -1044,7 +1083,7 @@ impl<'i> Service<'i> {
         self.commit_group(index, state, stage, now)
     }
     fn validate_pull_reply(&self, index: usize, peer: Peer, peers: &[Peer]) -> Result<(), Error> {
-        if peers.len() > self.limits.view || peers.len() > MAX_PULL_PEERS {
+        if peers.len() > MAX_PULL_REPLY_PEERS {
             return Err(Error::TooLarge);
         }
         if !self.groups[index]
@@ -1072,23 +1111,41 @@ impl<'i> Service<'i> {
             .ok_or(Error::StaleGeneration)?;
         sender.pull = None;
         sender.pull_until = None;
-        for candidate in peers {
-            if *candidate == self.local
-                || (sender_gone && *candidate == peer)
-                || self.peer_closing(state.id, *candidate)
-                || stage.peer_closing(state.id, *candidate)
+        // PULL handling can stage channel opens, but never a ClosePeer. A
+        // round's staged closes are a different turn and cannot overlap this.
+        let pending_close = self.effects.iter().any(
+            |effect| matches!(effect.action, Action::ClosePeer { group, .. } if group == state.id),
+        );
+        for &candidate in peers {
+            if candidate == self.local
+                || (sender_gone && candidate == peer)
+                || (pending_close && self.peer_closing(state.id, candidate))
             {
                 continue;
             }
-            let existing = state
-                .peers
-                .iter()
-                .find(|entry| entry.peer == *candidate)
-                .is_some_and(|entry| entry.online);
-            if existing {
-                unique(&mut state.pulls, *candidate, self.limits.peers_per_group)?;
-            } else {
-                self.discover_in(state, *candidate, now, stage, false, true)?;
+            let existing = state.peers.iter().position(|entry| entry.peer == candidate);
+            if let Some(index) = existing {
+                if state.peers[index].online {
+                    if state.pulls.len() < self.limits.peers_per_group
+                        && !state.pulls.contains(&candidate)
+                        && self.candidate_fits(stage, size_of::<Peer>(), 0)?
+                    {
+                        unique(&mut state.pulls, candidate, self.limits.peers_per_group)?;
+                        stage.sync_state(state)?;
+                    }
+                    continue;
+                }
+                if state.peers[index].probing_until.is_some() {
+                    state.peers[index].pull_discovered = true;
+                    continue;
+                }
+            } else if state.peers.len() >= self.limits.peers_per_group {
+                continue;
+            }
+            // A new discovery schedules a connect, CHECK_LIVE and PULL. A full
+            // local budget drops this hint, not the correlated wire reply.
+            if self.candidate_fits(stage, size_of::<PeerState<'i>>(), PROBE_EFFECTS)? {
+                self.stage_discovery(state, candidate, now, stage, false, true)?;
             }
         }
         Ok(())
@@ -1551,9 +1608,7 @@ impl<'i> Service<'i> {
                             .any(|entry| entry.peer == peer && entry.online)
                         {
                             self.insert_view(&mut state, peer, &mut stage)?;
-                        } else if !self.peer_closing(group, peer)
-                            && !stage.peer_closing(group, peer)
-                        {
+                        } else if !self.peer_closing(group, peer) && !expired.contains(&peer) {
                             self.discover_in(&mut state, peer, now, &mut stage, true, false)?;
                         }
                     }
@@ -1746,6 +1801,47 @@ mod tests {
                 &mut random,
                 &mut rank
             ),
+            Err(Error::Replay)
+        );
+        Ok(())
+    }
+    #[test]
+    fn pull_reply_larger_than_view_is_consumed_with_a_bounded_candidate_table() -> Result<(), Error>
+    {
+        let mut brand = Instance::new();
+        let mut random = Entropy(0);
+        let mut rank = TestRank(false);
+        let mut service = Service::new(
+            &mut brand,
+            [1; 32],
+            [2; 64],
+            Config {
+                view_size: 1,
+                ..Config::default()
+            },
+            Limits {
+                view: 1,
+                peers_per_group: 2,
+                ..Limits::default()
+            },
+            0,
+            &mut random,
+        )?;
+        written(&mut service)?;
+        let group = service.main_group();
+        let sender = [3; 32];
+        service.discover(group, sender, 0, &mut random, &mut rank)?;
+        written(&mut service)?;
+        let reply = PeerMessage::PullReply {
+            peers: &[[4; 32], [5; 32], [6; 32]],
+        };
+        service.peer_message(group, sender, reply, 1, &mut random, &mut rank)?;
+        assert_eq!(service.groups[0].view, [sender]);
+        assert_eq!(service.groups[0].peers.len(), 2);
+        assert_eq!(service.groups[0].peers[1].peer, [4; 32]);
+        assert_eq!(service.pending_effects(), 3);
+        assert_eq!(
+            service.peer_message(group, sender, reply, 1, &mut random, &mut rank),
             Err(Error::Replay)
         );
         Ok(())

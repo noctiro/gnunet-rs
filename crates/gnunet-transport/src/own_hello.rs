@@ -61,6 +61,7 @@ impl HelloCandidate {
         now: u64,
         bounds: PublicationBounds,
         maximum_records: usize,
+        profile: SignatureProfile,
     ) -> Result<Self, Error> {
         let expiry = AbsoluteTime::from_micros(
             now.checked_add(HELLO_TTL)
@@ -87,7 +88,7 @@ impl HelloCandidate {
                 expiry,
             );
             (
-                placeholder.signed_payload(SignatureProfile::Gnunet029)?,
+                placeholder.signed_payload(profile)?,
                 builder.address_bytes().len(),
             )
         };
@@ -134,8 +135,7 @@ impl HelloCandidate {
     pub fn matches(&self, set: &Publication<'_>, authority: &Authority) -> bool {
         self.live && self.id.set == *set.id() && self.id.authority == *authority
     }
-    /// Exact original80B purpose7 bytes for verification/correlation only.
-    /// Actual native admission uses `with_builder` and the existing sign_hello.
+    /// Exact original 80-byte purpose-7 region shared by signing and verification.
     pub fn signed_region(&self) -> &[u8; 80] {
         &self.region
     }

@@ -69,7 +69,7 @@ def main():
         base[name] = str(directory)
     inputs = [ROOT / "src/lib.rs", ROOT / "src/listeners.rs", ROOT / "src/path.rs", *sorted((ROOT / "src/path").rglob("*.rs")), ROOT / "Cargo.toml", ROOT / "src/activation.rs",
               *sorted((ROOT / "src/activation").rglob("*.rs")),
-              ROOT / "examples/activation_probe.rs",
+              ROOT / "examples/runtime_activation_probe.rs",
               Path(__file__).resolve(), ROOT / "README.md",
               ROOT / "tests/activation_abi.c"]
     before = {str(p.relative_to(ROOT)): digest(p) for p in inputs}

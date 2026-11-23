@@ -9,8 +9,8 @@ use std::{
 };
 
 fn matches(pattern: &[u8], name: &[u8]) -> bool {
-    // Keep the original glob_match backtracking, including the trailing-star
-    // boundary behavior. Only '*' is special; '?' and backslash are literal.
+    // Backtracking may consume the final byte through '*'. Only '*' is special;
+    // '?' and backslash are literal.
     let (mut text, mut pat) = (0usize, 0usize);
     let mut backtrack = None;
     loop {
@@ -27,10 +27,10 @@ fn matches(pattern: &[u8], name: &[u8]) -> bool {
             let Some((saved_text, saved_pat)) = backtrack else {
                 return false;
             };
-            text = saved_text + 1;
-            if text >= name.len() {
+            if saved_text == name.len() {
                 return false;
             }
+            text = saved_text + 1;
             pat = saved_pat;
         }
     }
@@ -213,10 +213,18 @@ mod tests {
         assert!(matches(b"*.conf", b"a.conf"));
         assert!(matches(b"*.conf", b".conf"));
         assert!(matches(b"*.conf", b".hidden.conf"));
-        assert!(!matches(b"*", b"anything"));
+        assert!(matches(b"*", b"anything"));
         assert!(matches(b"*", b""));
         assert!(matches(b"a*", b"a"));
-        assert!(!matches(b"a*", b"ab"));
+        assert!(matches(b"a*", b"ab"));
+        assert!(matches(b"abc*", b"abc"));
+        assert!(matches(b"a*c", b"abc"));
+        assert!(matches(b"*b*", b"abc"));
+        assert!(matches(b"**", b"abc"));
+        assert!(matches(b"**", b""));
+        assert!(!matches(b"a*", b""));
+        assert!(!matches(b"x*", b"abc"));
+        assert!(!matches(b"*x", b"abc"));
         assert!(!matches(b"?.conf", b"a.conf"));
         assert!(matches(b"?.conf", b"?.conf"));
     }

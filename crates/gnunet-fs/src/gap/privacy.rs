@@ -4,7 +4,7 @@
 //! Permissions are local admission evidence, never peer processing, end-to-end
 //! statistical anonymity, generated dummy traffic or an extra wire field.
 use super::{Entropy, Neighbor, Path, Route, SendKind, SendRetired, Transmit};
-use core::{cell::Cell, fmt, ptr};
+use core::{cell::Cell, fmt, num::NonZeroU16, ptr};
 use gnunet_types::Error;
 use gnunet_wire::official::{MessageType, fs::BlockType, message_type as mt};
 
@@ -78,6 +78,7 @@ enum Key<'id> {
     Query {
         route: Route<'id>,
         neighbor: Neighbor<'id>,
+        previous_attempts: Option<NonZeroU16>,
     },
     Reply {
         route: Route<'id>,
@@ -101,12 +102,17 @@ impl<'id> Requirement<'id> {
     pub(super) fn query(
         route: Route<'id>,
         neighbor: Neighbor<'id>,
+        previous_attempts: Option<NonZeroU16>,
         class: Class,
         level: u32,
         relay: bool,
     ) -> Self {
         Self {
-            key: Key::Query { route, neighbor },
+            key: Key::Query {
+                route,
+                neighbor,
+                previous_attempts,
+            },
             class,
             level: Some(level),
             relay,
@@ -163,6 +169,14 @@ impl<'id> Requirement<'id> {
         match self.key {
             Key::Query { .. } => None,
             Key::Reply { path, .. } => Some(path),
+        }
+    }
+    pub(super) const fn previous_attempts(self) -> Option<NonZeroU16> {
+        match self.key {
+            Key::Query {
+                previous_attempts, ..
+            } => previous_attempts,
+            Key::Reply { .. } => None,
         }
     }
     /// Exact observed public application shape.
@@ -987,6 +1001,27 @@ impl<'id, 'slots> Policy<'id, 'slots> {
     #[must_use]
     pub fn quiesced(&self) -> bool {
         self.stopping && self.claim.is_none() && self.intents.iter().all(|s| s.record.is_none())
+    }
+
+    /// Reopen after the last original permit retires. Neither prior credits
+    /// nor revoked permits carry over to the next generation.
+    pub fn restart(&mut self) -> Result<(), Error> {
+        if !self.stopping {
+            return Err(Error::Conflict);
+        }
+        if !self.quiesced() {
+            return Err(Error::WouldBlock);
+        }
+        let epoch = self.epoch.checked_add(1).ok_or(Error::Overflow)?;
+        self.epoch = epoch;
+        self.owner.epoch.set(epoch);
+        self.owner.now.set(None);
+        self.last_now = None;
+        self.next_age = None;
+        self.age = 0;
+        self.report = Report::default();
+        self.stopping = false;
+        Ok(())
     }
 }
 impl Drop for Policy<'_, '_> {

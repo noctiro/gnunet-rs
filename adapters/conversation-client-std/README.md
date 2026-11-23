@@ -92,6 +92,6 @@ once. Exhaustion is explicit, with no historical CID or live call eviction. Acco
 outstanding Audio capacities. Shared CLIENT port/clock internals, allocator/OS
 overhead and arbitrary caller copies are separate; no RSS claim is made.
 
-This source candidate was formatted and source-reviewed only. Normal tools and devices
-must explicitly compose these owners with their own selected identity/GNS/media
-sources and independent cleanup.
+Tools and devices compose these owners with their selected identity, GNS and
+media sources and independent cleanup. See the central
+[implementation status](../../IMPLEMENTATION_STATUS.md) for pending qualification.

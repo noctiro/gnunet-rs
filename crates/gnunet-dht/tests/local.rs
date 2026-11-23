@@ -317,6 +317,57 @@ fn duplicate_cache_expiry_is_maximum_and_time_does_not_resurrect_evicted_data() 
     assert!(o.take_output().is_none());
     Ok(())
 }
+
+#[test]
+fn cache_pressure_evicts_old_values_and_oversized_put_still_completes_live_get() -> Result<(), Error>
+{
+    use gnunet_dht::service::Outcome;
+    use gnunet_wire::official::dht::ipc::ResultMessage;
+
+    let mut instance = Instance::new();
+    let mut owner = LocalOwner::new(
+        &mut instance,
+        Limits {
+            cache_records: 2,
+            cache_bytes: 8,
+            ..Limits::default()
+        },
+    )?;
+    let client = owner.connect()?;
+    let key = [8; 64];
+    let mut scratch = [];
+    let mut blocks = blocks(&mut scratch);
+    let values: [(&[u8], u64); 3] = [(b"old0", 100), (b"old1", 120), (b"new", 150)];
+    for (data, expiry) in values {
+        assert_eq!(
+            owner.ingest(client, &put(&key, data, expiry, 8)?, 1, &mut blocks)?,
+            Outcome::Cached
+        );
+    }
+    assert_eq!(owner.snapshot().cache_records, 2);
+    assert_eq!(owner.snapshot().cache_bytes, 7);
+    owner.ingest(client, &get(&key, 1, 8)?, 1, &mut blocks)?;
+    let first = owner.take_output().ok_or(Error::NotFound)?;
+    let second = owner.take_output().ok_or(Error::NotFound)?;
+    assert_eq!(ResultMessage::decode(first.bytes())?.payload, b"new");
+    assert_eq!(ResultMessage::decode(second.bytes())?.payload, b"old1");
+    assert!(owner.take_output().is_none());
+
+    let other = [9; 64];
+    owner.ingest(client, &get(&other, 2, 8)?, 1, &mut blocks)?;
+    assert_eq!(
+        owner.ingest(client, &put(&other, b"oversized", 160, 8)?, 1, &mut blocks)?,
+        Outcome::UncachedPut
+    );
+    let delivered = owner.take_output().ok_or(Error::NotFound)?;
+    assert_eq!(
+        ResultMessage::decode(delivered.bytes())?.payload,
+        b"oversized"
+    );
+    assert_eq!(owner.snapshot().cache_records, 2);
+    assert_eq!(owner.snapshot().cache_bytes, 7);
+    Ok(())
+}
 #[test]
 fn opaque_unknown_traffic_is_distinct_from_validated_cache_and_installed_invalid_data()
 -> Result<(), Error> {

@@ -18,12 +18,60 @@ graph nodes or rely on another message to wake an earlier ciphertext.
   delivery acknowledgement. History and other live rooms remain available.
   Settled-job DESTROY retains its actual local whole-write report before close.
 - One handle identity per shared MQ. `change_identity` draws replacement HPKE keys, emits old-session-signed KEY in every active room, and commits the selected owner only after matching session transitions. Stale drafts and histories keep original public attribution. Explicit secret-owner retirement is bounded and refuses active dependencies.
-- Automatic full-room epoch distribution over ANNOUNCEMENT/APPEAL/ACCESS, genuine provider/signature/HMAC/HPKE/AEAD operations; explicit epoch entropy, announcement, appeal, access, revolution and GROUP proposal operations. State changes still require input/provider checks. The active official AUTHORIZATION wire omits MAC16: no zero MAC or Verified result is invented.
+- Automatic full-room epoch distribution over ANNOUNCEMENT/APPEAL/ACCESS and key distribution for admitted GROUP proposals. Explicit epoch entropy, announcement, appeal, access, authorization, revolution and GROUP proposal operations use the same providers. AUTHORIZATION reconstructs its producer tag and checks the carried HMAC before key release. State changes require the original source, membership, group/event and provider checks.
 - Optional NAMESTORE epoch lookup, encrypted HPKE/epoch storage, whole-zone finite monitor, original native operation/epoch/RID/zone comparison and fixed room/source/public snapshot. Explicit caller RecordSecret64 is independent of IDENTITY private hashes. Flags0 records restore historical Revoked capability directly; they grant no future send or old membership. Native result codes and record metadata remain available as actual `RecordProgress`, never fsync/publication receipts. Initial/rotated own recipient keys are genuinely sealed and submitted after the member transition. Epoch stores are explicitly callable; a watch applies records for the room/source snapshot captured at watch admission.
 - Actual NAMESTORE room entry/details advertisement with explicit zone/label/flags/expiration, shared `record_text` codec reexport, and independent finite original-query GNS room-entry/details discovery. Discovery stops physically on its first loss/refusal/retry/expiry and never replays retained native intent. `enter_advertised` prepares the ENTRY. The selected GNS service owns GNS validation; this wrapper does not claim to authenticate zone blocks itself.
-- Fixed original logical and native hard targets, hard wake registration before canonical coherence, no-clock shutdown/cancel, bounded round-robin/provider/decrypt work and retained input backpressure, exact first loss plus independent native/record/core cleanup facts. Explicit reconnect restores retained room intent through fresh sources and operations. Old user SEND/STORE and uncertain physical bytes remain failed or retired. Caller must retire ordinary terminal receipts to release finite capacity.
+- Fixed original logical and native hard targets, hard wake registration before canonical coherence, no-clock shutdown/cancel, bounded round-robin/provider/decrypt work and retained input backpressure, exact first loss plus independent native/record/core cleanup facts. Explicit reconnect restores retained room intent through fresh sources and operations. Old user SEND/STORE and uncertain physical bytes remain failed or retired. Caller must retire caller-owned terminal receipts to release finite capacity.
 
 Usage contract: create the external native `Instance` owners and EndpointSource values from the existing process Resolver/CLIENT/RuntimeClock. All configured ports must share the same clock Arc. Supply an owned IDENTITY SecretKey (or explicit public anonymous identity), entropy E, and only if local encrypted records are desired an explicit opaque RecordSecret. Poll `Api::progress`, consume state/IO observations, retire terminal operation rows, and use `can_reconnect`/`reconnect` after consuming a recoverable loss. NAMESTORE monitors are finite original snapshots: stop/start a fresh monitor after adding/reopening rooms or changing zone identity; old replies cannot be adopted by replacements. Crypto and cached historical keys are owned/zeroizing; diagnostics redact sensitive content.
+
+## Protocol progress
+
+With automatic epoch work enabled, `Limits::group_keys` controls whether the
+driver proposes groups in private rooms. It defaults to true. The setting
+governs proposal initiation. An already admitted proposal uses its original
+protocol lifetime, which also caps later jobs' native deadlines.
+
+Required causal and key-control references are fetched independently of optional
+history traversal. Each dependency uses its original source/hash and first
+deadline. Repeated notifications and terminal-job retirement do not start an
+automatic replacement GET. Once Core owns a received frame, semantic
+backpressure does not retain the physical notification and block dependency
+responses behind it.
+
+A local Missing response to a whole-written GET may prepare one signed
+REQUEST for the same hash under the original deadline. Both explicit history
+reads and required dependency reads can use this fallback. If a required
+dependency is missing during synchronization, the current member signs from
+its last authenticated bound message while ordinary sends keep waiting for
+the new frontier. The original GET completion reports the local result; it
+does not acknowledge a successful remote lookup.
+
+An independent Missing notice from the native daemon can ask the same active
+member to sign a REQUEST without completing any GET or reporting local
+absence. Duplicate notices for a live source and hash share the first
+deadline. Source retirement, a membership change or expiry discards pending
+fallbacks that have not yet been prepared.
+
+Historical key controls retain their exact authenticated epoch and membership.
+Ordinary sending waits for actual same-source SYNC and bounded authenticated
+frontier validation. A local write or raw SYNC cursor does not complete this
+barrier. Newer graph observations may need another readonly SYNC within the
+same original lifetime; old controls are never resubmitted. Late parent keys
+advance through bounded derivation work before fresh key generation is allowed.
+Consuming a historical control's terminal receipt retains its internal lease
+until that same-bound proof settles or its physical source retires. A public
+required-reference request keeps its caller-owned terminal receipt and charges
+the dependency lane; retire that receipt to return its capacity.
+
+At least four API jobs and four Core operations per client room are required
+to admit paired LEAVE/CLOSE and PRIVATE/TRANSCRIPT work before either effect.
+Two API job slots provide separate shared SYNC and dependency retrieval
+capacity, with fair room scheduling. A required GET and its subsequent
+signed REQUEST use the dependency slot in turn, as do native Missing hints.
+Ordinary work and optional history reads cannot consume either slot.
+
+## Source recovery
 
 A preallocated, byte-charged ledger retains bounded OPEN and distinct door
 intent with the existing room identity/history. Unconfirmed intent keeps its
@@ -35,6 +83,12 @@ record-watch setup. Every physical attempt/effect keeps a finite fixed bound;
 backoff never extends it. Whole-ledger metadata scanning is bounded, and the
 work budget counts new operations. Waiting for JOIN does not self-wake.
 
+A fresh source submits a new JOIN before fetching graph dependencies. Only its
+matching signed self-echo and whole local write enable those reads; replayed
+historical JOINs do not establish the new source's session. Authenticated SYNC
+proof still gates new ordinary sends. Bootstrap uses the
+original opening budget, including while causal parents are missing.
+
 Old SEND/STORE and old source receipts are never submitted again or relabelled
 successful. Consumed terminal operation slots are reclaimed before reconnect;
 diagnostics remain bounded with explicit omitted counts. Explicit room quiesce,
@@ -42,7 +96,14 @@ forget, cancel and close remove the corresponding recovery intent. The normal
 command continues an established membership task through eligible losses while
 observing the same unique input owner for EOF/Stop.
 
-boundaries: this is a high-level CLIENT candidate, not the distinct native Messenger SERVICE/CADET relay/foreground/REST layer. There is no private storage/fsync implementation or automatic new identity/key-file provisioning. The native daemon IPC profile remains explicit and independent from the local signed-body producer, recipient short-body/padding encoders and raw identifier creator. `Api::new_profiled` takes bounded `Profiles`; `LayoutNeeded` retains the exact original notification/source/deadline until `provide_layout` supplies its grammar. See [LAYOUTS.md](LAYOUTS.md). None of these declarations replaces original source/hash/signature/AEAD checks. The official missing AUTH MAC remains a interoperability limitation.
+`Api::new_profiled` takes bounded `Profiles` for native daemon IPC, signed bodies,
+recipient padding and identifier order. `LayoutNeeded` retains the original
+notification/source/deadline until `provide_layout` supplies its grammar. See
+[LAYOUTS.md](LAYOUTS.md). Layout selection preserves source, signature and AEAD
+checks. The [AUTHORIZATION contract](../../crates/gnunet-messenger/README.md#authorization-constraint)
+separates Rust key recovery from the selected C receiver defect.
+
+## Subscription intent
 
 KEEP_ALIVE discourse intent is retained independently of old native SENDs. The generic `send`/`send_bounded(Body::Subscription)` path and the subscription
 helpers share one bounded ledger, using the existing rooms × subscriptions limit

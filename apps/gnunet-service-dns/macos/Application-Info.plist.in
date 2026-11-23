@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleIdentifier</key><string>@BUNDLE_ID@</string>
+  <key>CFBundleName</key><string>GNUnet DNS</string>
+  <key>CFBundleExecutable</key><string>gnunet-dns-control</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleVersion</key><string>@BUNDLE_VERSION@</string>
+  <key>CFBundleShortVersionString</key><string>@BUNDLE_VERSION@</string>
+  <key>LSMinimumSystemVersion</key><string>15.0</string>
+  <key>NSPrincipalClass</key><string>NSApplication</string>
+  <key>GNUnetDNSProviderIdentifier</key><string>@PROVIDER_ID@</string>
+  <key>GNUnetDNSProviderVersion</key><string>@BUNDLE_VERSION@</string>
+</dict>
+</plist>

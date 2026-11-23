@@ -12,7 +12,10 @@ impl<'c, 'slots, 'p, E: Entropy, const O: usize> Server<'c, 'slots, 'p, E, O> {
         }
         let allowed = match address {
             PeerAddress::Tcp(a) => self.ports.options.access.allows(a.ip()),
-            PeerAddress::Unix => self.ports.unix.allows(&connection)?,
+            PeerAddress::Unix => self
+                .ports
+                .unix
+                .admits(&connection, |event| observe(Event::Socket(event))),
         };
         if !allowed {
             drop(connection);
@@ -92,9 +95,19 @@ impl<'c, 'slots, 'p, E: Entropy, const O: usize> Server<'c, 'slots, 'p, E, O> {
                 .core
                 .room_profiled(key, None, self.layouts.room(&key))?,
         };
-        let count = self.core.retained_messages(room)?.count();
+        let count = self
+            .core
+            .retained_messages(room)?
+            .try_fold(0, |count, message| message.map(|_| count + 1))?;
         if count > self.messages.iter().filter(|m| m.is_none()).count() {
             return Err(Fault::Capacity.into());
+        }
+        let mut historical = Vec::new();
+        historical
+            .try_reserve_exact(count)
+            .map_err(|_| Fault::Capacity)?;
+        for message in self.core.retained_messages(room)? {
+            historical.push(*message?.hash());
         }
         let signer = match self.core.attach_source(
             room,
@@ -112,11 +125,6 @@ impl<'c, 'slots, 'p, E: Entropy, const O: usize> Server<'c, 'slots, 'p, E, O> {
                 return Err(e.into());
             }
         };
-        let mut historical = Vec::new();
-        historical
-            .try_reserve_exact(count)
-            .map_err(|_| Fault::Capacity)?;
-        historical.extend(self.core.retained_messages(room)?.map(|m| *m.hash()));
         for hash in historical {
             let i = self
                 .messages
@@ -146,11 +154,18 @@ impl<'c, 'slots, 'p, E: Entropy, const O: usize> Server<'c, 'slots, 'p, E, O> {
     pub(super) fn bind_app(
         &mut self,
         row: usize,
-        key: Hash,
+        input: AdmissionInput,
         public: Option<wire::PublicKey<'_>>,
-        door: [u8; 32],
-        enter: bool,
     ) -> Result<(), Error> {
+        let (key, until, route) = match input {
+            AdmissionInput::Open(input) => (input.key, input.until, AdmissionRoute::Open(None)),
+            AdmissionInput::Entry { key, target, until } => {
+                (key, until, AdmissionRoute::Entry(EntryRoute::new(target)))
+            }
+        };
+        if Instant::now() >= until {
+            return Err(Fault::Deadline.into());
+        }
         let (r, prior_public) = {
             let a = self.apps[row].as_ref().ok_or(Fault::Stale)?;
             (
@@ -180,40 +195,11 @@ impl<'c, 'slots, 'p, E: Entropy, const O: usize> Server<'c, 'slots, 'p, E, O> {
             (None, Some(p)) => *p.as_bytes(),
             (None, None) => *self.core.service_anonymous_public()?,
         };
-        let target = if enter {
-            let request = self.apps[row]
-                .as_ref()
-                .and_then(|app| app.entry_input)
-                .ok_or(Fault::Conflict)?;
-            let target = match request.target {
-                Some(target) => target,
-                None => {
-                    let target = self.resolve_entry(door)?;
-                    self.apps[row]
-                        .as_mut()
-                        .ok_or(Fault::Stale)?
-                        .entry_input
-                        .as_mut()
-                        .ok_or(Fault::Conflict)?
-                        .target = Some(target);
-                    target
-                }
-            };
-            Some(target)
-        } else {
-            None
-        };
-        let local = self.current_peer().ok_or(Fault::NotReady)?;
-        let resolved_door = match target {
-            Some(target) => target.door(local),
-            None => local,
-        };
         let room_index = self.ensure_room(key)?;
         let room = self.rooms[room_index].as_ref().ok_or(Fault::Stale)?.room;
-        let (_, group, feed) = self.core.room_flags(room)?;
-        // Personal private feeds may be joined with ENTRY. Only an OPEN
-        // attempts to host a listening port and is forbidden for this room kind.
-        if !enter && feed && !group {
+        if matches!(route, AdmissionRoute::Open(_))
+            && !self.core.room_capabilities(room)?.allows_open()
+        {
             return Err(Fault::Unsupported.into());
         }
         let source = self.core.attach_source(
@@ -222,18 +208,18 @@ impl<'c, 'slots, 'p, E: Entropy, const O: usize> Server<'c, 'slots, 'p, E, O> {
             padding::Decode::Absent,
             Some(public),
         )?;
-        let mut selected = self.core.historical_member_id(room, &public)?;
-        if public != *self.core.service_anonymous_public()? {
-            for (member, _, id, phase) in self.core.members(room)? {
-                if phase == core::SessionPhase::Active
-                    && self.core.member_public(member)? == &public
-                {
-                    selected = Some(id);
-                    break;
+        let result = (|| -> Result<(), Error> {
+            let mut selected = self.core.historical_member_id(room, &public)?;
+            if public != *self.core.service_anonymous_public()? {
+                for (member, _, id, phase) in self.core.members(room)? {
+                    if phase == core::SessionPhase::Active
+                        && self.core.member_public(member)? == &public
+                    {
+                        selected = Some(id);
+                        break;
+                    }
                 }
             }
-        }
-        let result = (|| -> Result<(), Error> {
             if let Some(id) = selected {
                 self.core.bind_service_client(source, public, id)?;
             } else {
@@ -254,19 +240,6 @@ impl<'c, 'slots, 'p, E: Entropy, const O: usize> Server<'c, 'slots, 'p, E, O> {
                     return Err(Fault::Capacity.into());
                 }
             }
-            let until = if enter {
-                self.apps[row]
-                    .as_ref()
-                    .and_then(|app| app.entry_input)
-                    .ok_or(Fault::Conflict)?
-                    .until
-            } else {
-                self.apps[row]
-                    .as_ref()
-                    .and_then(|app| app.open_input)
-                    .ok_or(Fault::Conflict)?
-                    .until
-            };
             if Instant::now() >= until {
                 return Err(Fault::Deadline.into());
             }
@@ -275,25 +248,20 @@ impl<'c, 'slots, 'p, E: Entropy, const O: usize> Server<'c, 'slots, 'p, E, O> {
             app.rooms.push(Lease {
                 room,
                 source,
-                phase: if enter {
-                    LeasePhase::Entering
-                } else {
-                    LeasePhase::Opening
-                },
-                door: resolved_door,
-                entry_local: matches!(target, Some(EntryTarget::Local)),
-                entry: None,
+                phase: LeasePhase::Admitting(InitialAdmission {
+                    route,
+                    next: InitialNotice::MemberId,
+                    until,
+                }),
                 pending_entry: None,
                 pending_open: None,
-                id_written: false,
                 counted: false,
                 bootstrap: 0,
                 proposed_id: None,
                 proposal_until: None,
                 sync_until: None,
-                until,
             });
-            if !enter {
+            if matches!(route, AdmissionRoute::Open(_)) {
                 self.rooms[room_index].as_mut().ok_or(Fault::Stale)?.hosting = true;
             }
             Ok(())
@@ -305,35 +273,34 @@ impl<'c, 'slots, 'p, E: Entropy, const O: usize> Server<'c, 'slots, 'p, E, O> {
         }
         result
     }
-    pub(super) fn room_reply(&mut self, row: usize, index: usize, kind: u8) -> Result<(), Error> {
-        let (room, source, door, entry_local) = {
+    pub(super) fn room_reply(
+        &mut self,
+        row: usize,
+        index: usize,
+        kind: RoomReply,
+    ) -> Result<(), Error> {
+        let (room, source) = {
             let l = self.apps[row]
                 .as_ref()
                 .ok_or(Fault::Stale)?
                 .rooms
                 .get(index)
                 .ok_or(Fault::Stale)?;
-            (l.room, l.source, l.door, l.entry_local)
+            (l.room, l.source)
         };
-        // Only ENTRY reports its selected door. OPEN/CLOSE/SYNC identify this
-        // service, independently of the remote door used to enter the room.
-        let door = if kind == 2 && !entry_local {
-            door
-        } else {
-            if !self.identity_ready() {
-                return Err(Fault::WouldBlock.into());
-            }
-            self.current_peer().ok_or(Fault::NotReady)?
-        };
+        if !self.identity_ready() {
+            return Err(Fault::WouldBlock.into());
+        }
+        let door = self.current_peer().ok_or(Fault::NotReady)?;
         self.room_reply_at(row, source, room, door, kind, None)
     }
-    fn room_reply_at(
+    pub(super) fn room_reply_at(
         &mut self,
         row: usize,
         source: Source<'c>,
         room: Room<'c>,
         door: [u8; 32],
-        kind: u8,
+        kind: RoomReply,
         until: Option<Instant>,
     ) -> Result<(), Error> {
         let (key, previous, epoch, door) = self.room_fields(room, &door)?;
@@ -344,15 +311,15 @@ impl<'c, 'slots, 'p, E: Entropy, const O: usize> Server<'c, 'slots, 'p, E, O> {
             epoch: &epoch,
         };
         let response = match kind {
-            1 => Response::Open(fields),
-            2 => Response::Entry(fields),
-            3 => Response::Close(fields),
-            _ => Response::Sync(fields),
+            RoomReply::Open => Response::Open(fields),
+            RoomReply::Entry => Response::Entry(fields),
+            RoomReply::Close => Response::Close(fields),
+            RoomReply::Sync => Response::Sync(fields),
         };
         self.notice_before(
             row,
             response,
-            if kind == 3 {
+            if matches!(kind, RoomReply::Close) {
                 WrittenAction::Detach(source)
             } else {
                 WrittenAction::None
@@ -448,7 +415,7 @@ impl<'c, 'slots, 'p, E: Entropy, const O: usize> Server<'c, 'slots, 'p, E, O> {
         if self.limits.local_request {
             for app in self.apps.iter().flatten() {
                 for lease in &app.rooms {
-                    if lease.room == room && lease.phase != LeasePhase::Closing {
+                    if lease.room == room && !lease.phase.is_closing() {
                         recipients.push(Destination::App {
                             client: app.client.serial,
                             source: lease.source,
@@ -488,97 +455,145 @@ impl<'c, 'slots, 'p, E: Entropy, const O: usize> Server<'c, 'slots, 'p, E, O> {
                 .frame()
                 .ok_or(Fault::NotReady)?,
         )?;
-        let request = Request::decode(input.expose())?;
+        let request = core::LocalRequest::decode(input.expose())?;
         // The socket already passed SERVICE admission. Official reconnects
         // may start directly with OPEN/ENTRY; CREATE is only an idempotent
         // control message. All request-specific checks below still apply.
         self.apps[row].as_mut().ok_or(Fault::Stale)?.has_request = true;
         match request {
-            Request::Create => {}
-            Request::Destroy => {
+            core::LocalRequest::Create => {}
+            core::LocalRequest::Destroy => {
                 self.close_app(row, CloseCause::Shutdown, observe);
                 return Ok(true);
             }
-            Request::Open { room, public_key } | Request::Entry { room, public_key } => {
-                let enter = matches!(request, Request::Entry { .. });
-                if enter
-                    && self.apps[row]
-                        .as_ref()
-                        .ok_or(Fault::Stale)?
-                        .entry_input
-                        .is_none()
-                {
-                    let until = self.apps[row]
-                        .as_ref()
-                        .and_then(|app| app.input_until)
-                        .ok_or(Fault::Conflict)?;
-                    let target = self.current_peer().map(|local| {
-                        if *room.door == [0; 32] || *room.door == local {
-                            EntryTarget::Local
-                        } else {
-                            EntryTarget::Remote(*room.door)
-                        }
-                    });
-                    self.apps[row].as_mut().ok_or(Fault::Stale)?.entry_input = Some(EntryInput {
-                        key: *room.key,
-                        door: *room.door,
-                        target,
-                        until,
-                    });
-                }
-                if !enter
-                    && self.apps[row]
-                        .as_ref()
-                        .ok_or(Fault::Stale)?
-                        .open_input
-                        .is_none()
-                {
-                    let until = self.apps[row]
-                        .as_ref()
-                        .and_then(|app| app.input_until)
-                        .ok_or(Fault::Conflict)?;
-                    self.apps[row].as_mut().ok_or(Fault::Stale)?.open_input = Some(OpenInput {
-                        key: *room.key,
-                        until,
-                    });
-                }
-                if self.shutdown.is_some() {
-                    return Err(Fault::Closed.into());
-                }
-                if !self.identity_ready() {
+            core::LocalRequest::AdmitRoom(request) => {
+                if !self.process_app_join(row, request, observe)? {
                     return Ok(false);
                 }
-                let active = self.app_room(row, room.key).ok().filter(|index| {
+            }
+            core::LocalRequest::Room(request) => {
+                let (index, command) = request.scope(|key| self.app_room(row, key))?.into_parts();
+                self.process_room_command(row, index, command, observe)?;
+            }
+        }
+        if let Some(app) = self.apps[row].as_mut() {
+            app.io.release_frame();
+            app.input_until = None;
+            app.entry_input = None;
+            app.open_input = None;
+        }
+        Ok(true)
+    }
+    fn process_app_join(
+        &mut self,
+        row: usize,
+        request: core::LocalRoomAdmission<'_>,
+        observe: &mut impl FnMut(Event),
+    ) -> Result<bool, Error> {
+        let (room, public_key, entry) = match request {
+            core::LocalRoomAdmission::Open { room, public_key } => (room, public_key, None),
+            core::LocalRoomAdmission::Entry(entry) => {
+                (entry.room(), entry.public_key(), Some(entry))
+            }
+        };
+        let enter = entry.is_some();
+        if enter
+            && self.apps[row]
+                .as_ref()
+                .ok_or(Fault::Stale)?
+                .entry_input
+                .is_none()
+        {
+            let until = self.apps[row]
+                .as_ref()
+                .and_then(|app| app.input_until)
+                .ok_or(Fault::Conflict)?;
+            let target = entry
+                .zip(self.current_peer())
+                .map(|(entry, local)| entry.target(local));
+            self.apps[row].as_mut().ok_or(Fault::Stale)?.entry_input = Some(EntryInput {
+                key: *room.key,
+                door: *room.door,
+                target,
+                until,
+            });
+        }
+        if !enter
+            && self.apps[row]
+                .as_ref()
+                .ok_or(Fault::Stale)?
+                .open_input
+                .is_none()
+        {
+            let until = self.apps[row]
+                .as_ref()
+                .and_then(|app| app.input_until)
+                .ok_or(Fault::Conflict)?;
+            self.apps[row].as_mut().ok_or(Fault::Stale)?.open_input = Some(OpenInput {
+                key: *room.key,
+                until,
+            });
+        }
+        if self.shutdown.is_some() {
+            return Err(Fault::Closed.into());
+        }
+        if !self.identity_ready() {
+            return Ok(false);
+        }
+        let active = self.app_room(row, room.key).ok().filter(|index| {
+            self.apps[row]
+                .as_ref()
+                .is_some_and(|app| app.rooms[*index].phase.is_active())
+        });
+        if let Some(index) = active {
+            let admitted = if enter {
+                self.admit_entry(row, index, public_key, observe)?
+            } else {
+                self.admit_open(row, index, public_key, observe)?
+            };
+            if !admitted {
+                return Ok(false);
+            }
+        } else {
+            let input = if enter {
+                let (request, target) = self.resolve_entry(row)?;
+                AdmissionInput::Entry {
+                    key: request.key,
+                    target,
+                    until: request.until,
+                }
+            } else {
+                AdmissionInput::Open(
                     self.apps[row]
                         .as_ref()
-                        .is_some_and(|app| app.rooms[*index].phase == LeasePhase::Active)
-                });
-                if let Some(index) = active {
-                    let admitted = if enter {
-                        self.admit_entry(row, index, public_key, observe)?
-                    } else {
-                        self.admit_open(row, index, public_key, observe)?
-                    };
-                    if !admitted {
-                        return Ok(false);
-                    }
-                } else {
-                    self.bind_app(row, *room.key, public_key, *room.door, enter)?;
-                }
-            }
-            Request::Close { room } => {
-                let index = self.app_room(row, room.key)?;
-                if self.apps[row].as_ref().ok_or(Fault::Stale)?.rooms[index].phase
-                    == LeasePhase::Closing
+                        .and_then(|app| app.open_input)
+                        .ok_or(Fault::Conflict)?,
+                )
+            };
+            self.bind_app(row, input, public_key)?;
+        }
+        Ok(true)
+    }
+    fn process_room_command(
+        &mut self,
+        row: usize,
+        index: usize,
+        command: core::LocalRoomCommand<'_>,
+        observe: &mut impl FnMut(Event),
+    ) -> Result<(), Error> {
+        match command {
+            core::LocalRoomCommand::Close { .. } => {
+                if self.apps[row].as_ref().ok_or(Fault::Stale)?.rooms[index]
+                    .phase
+                    .is_closing()
                 {
                     return Err(Fault::Replay.into());
                 }
-                self.room_reply(row, index, 3)?;
+                self.room_reply(row, index, RoomReply::Close)?;
                 self.apps[row].as_mut().ok_or(Fault::Stale)?.rooms[index].phase =
                     LeasePhase::Closing;
             }
-            Request::Sync { room } => {
-                let index = self.app_room(row, room.key)?;
+            core::LocalRoomCommand::Sync { .. } => {
                 let until = self.until()?;
                 let l = &mut self.apps[row].as_mut().ok_or(Fault::Stale)?.rooms[index];
                 if l.sync_until.is_some() {
@@ -586,48 +601,25 @@ impl<'c, 'slots, 'p, E: Entropy, const O: usize> Server<'c, 'slots, 'p, E, O> {
                 }
                 l.sync_until = Some(until);
             }
-            Request::Get { key, hash } => {
-                let index = self.app_room(row, key)?;
+            core::LocalRoomCommand::Get { hash, .. } => {
                 self.get(row, index, *hash)?;
             }
-            Request::Send { key, message } => {
-                let index = self.app_room(row, key)?;
+            core::LocalRoomCommand::Send(send) => {
                 let app = self.apps[row].as_ref().ok_or(Fault::Stale)?;
                 let l = &app.rooms[index];
-                if l.phase != LeasePhase::Active {
+                if !l.phase.is_active() {
                     return Err(Fault::NotReady.into());
                 }
                 let (room, source) = (l.room, l.source);
+                let message = send.encoded();
                 let layout = self
                     .layouts
                     .application(&self.core, source, message.expose())?;
-                let header = wire::envelope::Envelope::decode(message.expose())?.header()?;
-                let parsed = wire::message::Message::decode_with_profiles(
-                    message.expose(),
-                    layout.body_profile(header.kind)?,
-                    layout.padding,
-                    padding::Decode::Absent,
-                )?;
-                let kind = parsed.header().kind;
-                if !kind.is_known()
-                    || matches!(
-                        kind,
-                        Kind::INFO | Kind::PEER | Kind::MISS | Kind::MERGE | Kind::CONNECTION
-                    )
-                {
-                    return Err(Fault::PermissionDenied.into());
+                let send = send.decode(layout)?;
+                if send.kind() == Kind::GROUP && !self.limits.group_keys {
+                    return Ok(());
                 }
-                if kind == Kind::GROUP && !self.limits.group_keys {
-                    self.apps[row]
-                        .as_mut()
-                        .ok_or(Fault::Stale)?
-                        .io
-                        .release_frame();
-                    return Ok(true);
-                }
-                if parsed.hash_input().len() + 68 + 3 > carrier::MAX_RAW {
-                    return Err(Fault::TooLarge.into());
-                }
+                let parsed = send.for_carrier(core::carrier::MAX_FRAME_BYTES)?;
                 let hash = core::crypto::signature::message_hash(parsed);
                 let known = self.core.service_attribution(room, &hash).is_ok();
                 if !known && self.messages.iter().all(Option::is_some) {
@@ -663,405 +655,7 @@ impl<'c, 'slots, 'p, E: Entropy, const O: usize> Server<'c, 'slots, 'p, E, O> {
                 });
             }
         }
-        if let Some(app) = self.apps[row].as_mut() {
-            app.io.release_frame();
-            app.input_until = None;
-            app.entry_input = None;
-            app.open_input = None;
-        }
-        Ok(true)
-    }
-    fn resolve_entry(&self, raw: [u8; 32]) -> Result<EntryTarget, Error> {
-        let local = self.current_peer().ok_or(Fault::NotReady)?;
-        Ok(if raw == [0; 32] || raw == local {
-            EntryTarget::Local
-        } else {
-            EntryTarget::Remote(raw)
-        })
-    }
-    fn admit_open(
-        &mut self,
-        row: usize,
-        index: usize,
-        public: Option<wire::PublicKey<'_>>,
-        observe: &mut impl FnMut(Event),
-    ) -> Result<bool, Error> {
-        let app = self.apps[row].as_ref().ok_or(Fault::Stale)?;
-        let request = app.open_input.ok_or(Fault::Conflict)?;
-        let (_, group, feed) = self.core.room_flags(app.rooms[index].room)?;
-        let refusal = if Instant::now() >= request.until {
-            Some(Fault::Deadline)
-        } else if public.is_some_and(|p| app.public != Some(*p.as_bytes())) {
-            Some(Fault::Conflict)
-        } else if feed && !group {
-            Some(Fault::Unsupported)
-        } else {
-            None
-        };
-        if let Some(reason) = refusal {
-            self.fail_open_input(row, reason.into(), observe);
-            return Ok(true);
-        }
-        if app.rooms[index].pending_open.is_some() {
-            return Ok(false);
-        }
-        let room = app.rooms[index].room;
-        let room_index = self.room_index(room)?;
-        let port = self.rooms[room_index].as_ref().ok_or(Fault::Stale)?.port;
-        self.apps[row].as_mut().ok_or(Fault::Stale)?.rooms[index].pending_open =
-            Some(PendingOpen { request, port });
-        self.rooms[room_index].as_mut().ok_or(Fault::Stale)?.hosting = true;
-        Ok(true)
-    }
-    fn open_step(
-        &mut self,
-        row: usize,
-        index: usize,
-        observe: &mut impl FnMut(Event),
-    ) -> Result<bool, Error> {
-        let lease = &self.apps[row].as_ref().ok_or(Fault::Stale)?.rooms[index];
-        let Some(pending) = lease.pending_open else {
-            return Ok(false);
-        };
-        let (room, source, phase) = (lease.room, lease.source, lease.phase);
-        let result = (|| -> Result<bool, Error> {
-            if phase != LeasePhase::Active {
-                return Err(Fault::Closed.into());
-            }
-            if Instant::now() >= pending.request.until {
-                return Err(Fault::Deadline.into());
-            }
-            if !self.identity_ready() {
-                return Ok(false);
-            }
-            let door = self.current_peer().ok_or(Fault::NotReady)?;
-            let Some(port) = self.hosting_port(room, pending.request.until)? else {
-                return Ok(false);
-            };
-            if let Some(original) = pending.port {
-                if port != original {
-                    return Err(Fault::StaleGeneration.into());
-                }
-            } else {
-                self.apps[row].as_mut().ok_or(Fault::Stale)?.rooms[index]
-                    .pending_open
-                    .as_mut()
-                    .ok_or(Fault::Conflict)?
-                    .port = Some(port);
-                return Ok(true);
-            }
-            if !self.cadet.port_announced(port)? {
-                return Ok(false);
-            }
-            self.room_reply_at(row, source, room, door, 1, Some(pending.request.until))?;
-            self.apps[row].as_mut().ok_or(Fault::Stale)?.rooms[index].pending_open = None;
-            self.statistics.opened(false);
-            Ok(true)
-        })();
-        match result {
-            Err(error) if busy(&error) => Ok(false),
-            Err(error) => {
-                self.fail_open(row, index, error, observe);
-                Ok(true)
-            }
-            result => result,
-        }
-    }
-    // Additional doors are independent of the already active membership. One
-    // complete input can wait behind one pending entry; neither budget is renewed.
-    fn admit_entry(
-        &mut self,
-        row: usize,
-        index: usize,
-        public: Option<wire::PublicKey<'_>>,
-        observe: &mut impl FnMut(Event),
-    ) -> Result<bool, Error> {
-        let app = self.apps[row].as_ref().ok_or(Fault::Stale)?;
-        let request = app.entry_input.ok_or(Fault::Conflict)?;
-        let refusal = if Instant::now() >= request.until {
-            Some(Fault::Deadline)
-        } else if public.is_some_and(|p| app.public != Some(*p.as_bytes())) {
-            Some(Fault::Conflict)
-        } else {
-            None
-        };
-        if let Some(reason) = refusal {
-            self.fail_entry_input(row, reason.into(), observe);
-            return Ok(true);
-        }
-        if app.rooms[index].pending_entry.is_some() {
-            return Ok(false);
-        }
-        let target = match request.target {
-            Some(target) => target,
-            None => {
-                let target = self.resolve_entry(request.door)?;
-                self.apps[row]
-                    .as_mut()
-                    .ok_or(Fault::Stale)?
-                    .entry_input
-                    .as_mut()
-                    .ok_or(Fault::Conflict)?
-                    .target = Some(target);
-                target
-            }
-        };
-        self.apps[row].as_mut().ok_or(Fault::Stale)?.rooms[index].pending_entry =
-            Some(PendingEntry {
-                request,
-                target,
-                source: None,
-            });
-        Ok(true)
-    }
-    // A real existing room+door route is shared. A new route is owned in the
-    // original bounded tunnel table before any later work or error can return.
-    fn start_entry(
-        &mut self,
-        room: Room<'c>,
-        door: [u8; 32],
-        until: Instant,
-    ) -> Result<Option<Source<'c>>, Error> {
-        if Instant::now() >= until {
-            return Err(Fault::Deadline.into());
-        }
-        if let Some(tunnel) = self
-            .tunnels
-            .iter()
-            .flatten()
-            .find(|t| t.room == room && t.peer == door && !t.closing && !t.remote_closed)
-        {
-            return Ok(Some(tunnel.source));
-        }
-        if self.cadet.pending_transmit().is_some() {
-            return Ok(None);
-        }
-        let target = self
-            .tunnels
-            .iter()
-            .position(Option::is_none)
-            .ok_or(Fault::Capacity)?;
-        let key = *self.core.room_key(room)?;
-        let port = carrier::port(&key, self.layouts.relay(&door));
-        if Instant::now() >= until {
-            return Err(Fault::Deadline.into());
-        }
-        let source = self.core.attach_source(
-            room,
-            SourceRole::Peer(door),
-            padding::Decode::Required,
-            None,
-        )?;
-        let opened = if Instant::now() >= until {
-            Err(Fault::Deadline.into())
-        } else {
-            self.cadet.open(door, port).map_err(Error::from)
-        };
-        let channel = match opened {
-            Ok(channel) => channel,
-            Err(original) => {
-                self.drain_events();
-                if let Err(error) = self.core.source_stopped(source) {
-                    self.remember(error.into());
-                }
-                return Err(original);
-            }
-        };
-        self.tunnels[target] = Some(Tunnel {
-            room,
-            source,
-            channel,
-            peer: door,
-            compatible: false,
-            info_queued: false,
-            closing: false,
-            remote_closed: false,
-            bootstrap: 0,
-            until,
-        });
-        // room_step queues the original INFO using this same retained tunnel.
-        Ok(Some(source))
-    }
-    fn entry_step(
-        &mut self,
-        row: usize,
-        index: usize,
-        observe: &mut impl FnMut(Event),
-    ) -> Result<bool, Error> {
-        let lease = &self.apps[row].as_ref().ok_or(Fault::Stale)?.rooms[index];
-        let Some(pending) = lease.pending_entry else {
-            return Ok(false);
-        };
-        let (room, source, phase) = (lease.room, lease.source, lease.phase);
-        let result = (|| -> Result<bool, Error> {
-            if phase != LeasePhase::Active {
-                return Err(Fault::Closed.into());
-            }
-            if Instant::now() >= pending.request.until {
-                return Err(Fault::Deadline.into());
-            }
-            if let EntryTarget::Local = pending.target {
-                if !self.identity_ready() {
-                    return Ok(false);
-                }
-                let peer = self.current_peer().ok_or(Fault::NotReady)?;
-                let _assignment = self.core.service_client(source)?;
-                self.room_reply_at(row, source, room, peer, 2, Some(pending.request.until))?;
-                self.apps[row].as_mut().ok_or(Fault::Stale)?.rooms[index].pending_entry = None;
-                self.statistics.opened(true);
-                return Ok(true);
-            }
-            let EntryTarget::Remote(resolved) = pending.target else {
-                return Err(Fault::Conflict.into());
-            };
-            let Some(target) = pending.source else {
-                let Some(target) = self.start_entry(room, resolved, pending.request.until)? else {
-                    return Ok(false);
-                };
-                self.apps[row].as_mut().ok_or(Fault::Stale)?.rooms[index]
-                    .pending_entry
-                    .as_mut()
-                    .ok_or(Fault::Conflict)?
-                    .source = Some(target);
-                return Ok(true);
-            };
-            let tunnel = self
-                .tunnels
-                .iter()
-                .flatten()
-                .find(|t| t.source == target && t.room == room && t.peer == resolved)
-                .ok_or(Fault::Closed)?;
-            if tunnel.closing || tunnel.remote_closed {
-                return Err(Fault::Closed.into());
-            }
-            if !tunnel.compatible {
-                return Ok(false);
-            }
-            self.room_reply_at(row, source, room, resolved, 2, Some(pending.request.until))?;
-            self.apps[row].as_mut().ok_or(Fault::Stale)?.rooms[index].pending_entry = None;
-            self.statistics.opened(true);
-            Ok(true)
-        })();
-        match result {
-            // Backpressure keeps the exact request and original deadline.
-            Err(error) if busy(&error) => Ok(false),
-            Err(error) => {
-                self.fail_entry(row, index, error, observe);
-                Ok(true)
-            }
-            result => result,
-        }
-    }
-    pub(super) fn entry_steps(&mut self, observe: &mut impl FnMut(Event)) -> Result<bool, Error> {
-        for n in 0..self.apps.len() {
-            let row = (self.app_cursor + n) % self.apps.len();
-            let (count, cursor) = self.apps[row]
-                .as_ref()
-                .map_or((0, 0), |app| (app.rooms.len(), app.entry_cursor));
-            for n in 0..count {
-                let index = (cursor + n) % count;
-                if self.open_step(row, index, observe)? || self.entry_step(row, index, observe)? {
-                    self.apps[row].as_mut().ok_or(Fault::Stale)?.entry_cursor = (index + 1) % count;
-                    self.app_cursor = (row + 1) % self.apps.len();
-                    return Ok(true);
-                }
-            }
-        }
-        Ok(false)
-    }
-    pub(super) fn leases(&mut self) -> Result<bool, Error> {
-        for row in 0..self.apps.len() {
-            let n = self.apps[row].as_ref().map_or(0, |a| a.rooms.len());
-            for index in 0..n {
-                let (room, phase, door, local_entry, entry, id_written, until) = {
-                    let l = &self.apps[row].as_ref().ok_or(Fault::Stale)?.rooms[index];
-                    (
-                        l.room,
-                        l.phase,
-                        l.door,
-                        l.entry_local,
-                        l.entry,
-                        l.id_written,
-                        l.until,
-                    )
-                };
-                if !matches!(phase, LeasePhase::Opening | LeasePhase::Entering) {
-                    continue;
-                }
-                let door = if phase == LeasePhase::Opening || local_entry {
-                    if !self.identity_ready() {
-                        continue;
-                    }
-                    self.current_peer().ok_or(Fault::NotReady)?
-                } else {
-                    door
-                };
-                let ready = if phase == LeasePhase::Opening {
-                    match self.hosting_port(room, until)? {
-                        Some(port) => self.cadet.port_announced(port)?,
-                        None => false,
-                    }
-                } else if local_entry {
-                    let source = self.apps[row].as_ref().ok_or(Fault::Stale)?.rooms[index].source;
-                    let _assignment = self.core.service_client(source)?;
-                    true
-                } else {
-                    if let Some(source) = entry {
-                        self.tunnels.iter().flatten().any(|t| {
-                            t.source == source
-                                && t.room == room
-                                && t.peer == door
-                                && t.compatible
-                                && !t.closing
-                                && !t.remote_closed
-                        })
-                    } else {
-                        let until = self.apps[row].as_ref().ok_or(Fault::Stale)?.rooms[index].until;
-                        if let Some(source) = self.start_entry(room, door, until)? {
-                            self.apps[row].as_mut().ok_or(Fault::Stale)?.rooms[index].entry =
-                                Some(source);
-                            return Ok(true);
-                        }
-                        false
-                    }
-                };
-                if !ready {
-                    continue;
-                }
-                if !id_written {
-                    let source = self.apps[row].as_ref().ok_or(Fault::Stale)?.rooms[index].source;
-                    let (_, id) = self.core.service_client(source)?;
-                    let key = *self.core.room_key(room)?;
-                    self.notice_before(
-                        row,
-                        Response::MemberId {
-                            key: &key,
-                            id: &id,
-                            reset: 0,
-                        },
-                        WrittenAction::None,
-                        Some(until),
-                    )?;
-                    self.apps[row].as_mut().ok_or(Fault::Stale)?.rooms[index].id_written = true;
-                    return Ok(true);
-                }
-                let source = self.apps[row].as_ref().ok_or(Fault::Stale)?.rooms[index].source;
-                self.room_reply_at(
-                    row,
-                    source,
-                    room,
-                    door,
-                    if phase == LeasePhase::Opening { 1 } else { 2 },
-                    Some(until),
-                )?;
-                self.apps[row].as_mut().ok_or(Fault::Stale)?.rooms[index].phase =
-                    LeasePhase::Active;
-                self.apps[row].as_mut().ok_or(Fault::Stale)?.rooms[index].counted = true;
-                self.statistics.opened(phase == LeasePhase::Entering);
-                return Ok(true);
-            }
-        }
-        Ok(false)
+        Ok(())
     }
     pub(super) fn app_output(
         &mut self,
@@ -1426,19 +1020,26 @@ mod tests {
                         target: Some(EntryTarget::Local),
                         until,
                     });
-                    server.bind_app(row, key, None, door, true)?;
+                    server.bind_app(
+                        row,
+                        AdmissionInput::Entry {
+                            key,
+                            target: EntryTarget::resolve(door, peer),
+                            until,
+                        },
+                        None,
+                    )?;
                     let source = server.apps[row].as_ref().ok_or(Fault::Stale)?.rooms[0].source;
                     assert_eq!(
                         server.core.service_client(source)?.0,
                         *server.core.service_anonymous_public()?
                     );
-                    assert!(server.leases()?); // Actual MemberId notice.
-                    assert!(server.leases()?); // Actual ENTRY reply admission.
+                    assert!(server.leases(&mut |_| {})?); // Actual MemberId notice.
+                    assert!(server.leases(&mut |_| {})?); // Actual ENTRY reply admission.
                     let lease = &server.apps[row].as_ref().ok_or(Fault::Stale)?.rooms[0];
-                    assert!(lease.phase == LeasePhase::Active);
-                    assert!(lease.entry_local);
-                    assert_eq!(lease.door, peer);
-                    assert_eq!(lease.until, until);
+                    assert!(lease.phase.is_active());
+                    let notice = lease.pending_entry;
+                    assert!(notice.is_none());
                     assert_eq!(lease.source, source);
                 }
                 let room = server.apps[0].as_ref().ok_or(Fault::Stale)?.rooms[0].room;
@@ -1454,7 +1055,7 @@ mod tests {
                 server.apps[2].as_mut().ok_or(Fault::Stale)?.open_input =
                     Some(OpenInput { key, until });
                 assert!(matches!(
-                    server.bind_app(2, key, None, peer, false),
+                    server.bind_app(2, AdmissionInput::Open(OpenInput { key, until }), None),
                     Err(Error::Protocol(Fault::Unsupported))
                 ));
                 assert!(server.apps[2].as_ref().is_some_and(|a| a.rooms.is_empty()));
@@ -1475,7 +1076,7 @@ mod tests {
                 })?);
                 assert!(failed);
                 let lease = &server.apps[0].as_ref().ok_or(Fault::Stale)?.rooms[0];
-                assert!(lease.phase == LeasePhase::Active && lease.pending_open.is_none());
+                assert!(lease.phase.is_active() && lease.pending_open.is_none());
                 assert!(
                     server.apps[0]
                         .as_ref()
@@ -1509,14 +1110,10 @@ mod tests {
                 let source = server.apps[0].as_ref().ok_or(Fault::Stale)?.rooms[0].source;
                 server.apps[0].as_mut().ok_or(Fault::Stale)?.rooms[0].pending_entry =
                     Some(PendingEntry {
-                        request: EntryInput {
-                            key,
-                            door: peer,
-                            target: Some(EntryTarget::Local),
-                            until,
-                        },
-                        target: EntryTarget::Local,
-                        source: None,
+                        key,
+                        requested_door: peer,
+                        until,
+                        route: EntryRoute::new(EntryTarget::resolve(peer, peer)),
                     });
                 let replacement = gnunet_pils::Service::<4096>::new(
                     gnunet_pils::MasterKey::from_seed([8; 32]),
@@ -1539,10 +1136,7 @@ mod tests {
                 assert!(server.entry_steps(&mut |_| {})?);
                 let app = server.apps[0].as_ref().ok_or(Fault::Stale)?;
                 assert_eq!(app.rooms[0].source, source);
-                assert!(
-                    app.rooms[0].phase == LeasePhase::Active
-                        && app.rooms[0].pending_entry.is_none()
-                );
+                assert!(app.rooms[0].phase.is_active() && app.rooms[0].pending_entry.is_none());
                 assert!(
                     app.controls
                         .iter()

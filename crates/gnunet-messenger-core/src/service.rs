@@ -3,6 +3,16 @@
 use crate::{engine::Core, state::*, *};
 use gnunet_crypto::hash512;
 use gnunet_types::Error as Fault;
+
+mod bootstrap;
+mod history;
+mod local_history;
+mod request;
+pub use bootstrap::ServiceBootstrap;
+pub use history::ServiceHistoryItem;
+pub use local_history::ServiceLocalOriginal;
+pub use request::{ServiceRequestAuthority, ServiceRequestOriginal};
+
 /// Read-only current graph frontier for actual daemon IPC responses; this is
 /// local state metadata, not a transport/publication acknowledgement.
 #[derive(Clone, Copy)]
@@ -39,7 +49,7 @@ impl core::fmt::Debug for ServiceAttribution<'_> {
         f.write_str("ServiceAttribution([REDACTED])")
     }
 }
-impl<'id> Core<'id> {
+impl<'id, const ROOMS: usize> Core<'id, ROOMS> {
     pub(crate) fn check_service_role(&self, role: SourceRole) -> Result<(), Error> {
         if let SourceRole::ServiceSigner(peer) = role
             && (self.mode != Mode::Service || self.local_peer != Some(peer))
@@ -82,7 +92,7 @@ impl<'id> Core<'id> {
         if room
             .nodes
             .iter()
-            .any(|(_, n)| n.origin.live() == Some(source))
+            .any(|(_, n)| n.origin.live(self.instance) == Some(source))
         {
             return Err(Fault::NotReady.into());
         }
@@ -170,86 +180,6 @@ impl<'id> Core<'id> {
             epoch: row.current_epoch,
         })
     }
-    /// Exact original auth snapshot, with bounded successor traversal. It works
-    /// for verified opaque PRIVATE/SECRET outer messages without decrypting them.
-    /// Unknown/awaiting signatures remain NotReady and cannot be relayed as verified.
-    pub fn service_attribution(
-        &self,
-        room: Room<'id>,
-        hash: &Hash,
-    ) -> Result<ServiceAttribution<'id>, Error> {
-        if self.mode != Mode::Service {
-            return Err(Error::Permission);
-        }
-        let r = self.check_room(room)?;
-        let row = self.rooms.get(r)?;
-        let node = row.nodes.get(row.find_node(hash).ok_or(Fault::NotFound)?)?;
-        let auth = node.auth.ok_or(Fault::NotReady)?;
-        if !node.epoch_indexed {
-            return Err(Fault::NotReady.into());
-        }
-        if let Some(peer) = auth.peer {
-            let sender = hash512(&peer);
-            return Ok(ServiceAttribution {
-                source: node.origin.live(),
-                sender,
-                context: sender,
-                member: None,
-                peer: true,
-                epoch: node.epoch,
-            });
-        }
-        let original = auth.session.ok_or(Fault::NotReady)?;
-        let mut latest = original;
-        let mut ended = false;
-        for _ in 0..self.limits.sessions_per_room {
-            match row.sessions.get(latest)?.successor {
-                Some(next) => latest = next,
-                None => {
-                    ended = true;
-                    break;
-                }
-            }
-        }
-        if !ended {
-            return Err(Fault::Malformed.into());
-        }
-        let id = row.sessions.get(latest)?.id;
-        let digest = hash512(&id);
-        let mut context = row.key;
-        for (value, part) in context.iter_mut().zip(digest) {
-            *value ^= part;
-        }
-        Ok(ServiceAttribution {
-            source: node.origin.live(),
-            sender: hash512(&auth.public),
-            context,
-            member: Some(self.member_id(r, original)),
-            peer: false,
-            epoch: node.epoch,
-        })
-    }
-    /// Whether a local client has this authentic original message's history
-    /// right. No current Contact.key is substituted for an old author snapshot.
-    pub fn service_may_read(&self, source: Source<'id>, hash: &Hash) -> Result<bool, Error> {
-        let (public, id) = self.service_client(source)?;
-        let row = self.rooms.get(source.room)?;
-        let node = row.nodes.get(row.find_node(hash).ok_or(Fault::NotFound)?)?;
-        let current = row.sessions.iter().find_map(|(_, m)| {
-            (m.public == public && m.id == id && m.phase != SessionPhase::Completed && !m.archived)
-                .then_some(m)
-        });
-        let Some(current) = current else {
-            return Ok(false);
-        };
-        Ok(crate::graph::epoch_kind(node.kind)
-            || row.sessions.iter().any(|(_, old)| {
-                old.contact == current.contact
-                    && old.lineage == current.lineage
-                    && old.generation <= current.generation
-                    && crate::graph::known(old, node)
-            }))
-    }
     /// Authorize an actual peer REQUEST's original verified member session
     /// against the requested retained original node. This is only a history
     /// read decision, never a source or signature constructor.
@@ -269,7 +199,7 @@ impl<'id> Core<'id> {
         if req.kind != wire::envelope::Kind::REQUEST {
             return Err(Error::Permission);
         }
-        if !matches!(req.body(self.profile)?, wire::body::Body::Request { hash } if hash == target)
+        if !matches!(req.body(&self.frames)?, wire::body::Body::Request { hash } if hash == target)
         {
             return Err(Error::AttributionConflict);
         }
@@ -298,7 +228,7 @@ impl<'id> Core<'id> {
         if room
             .operations
             .iter()
-            .any(|(_, o)| o.binding.source == source)
+            .any(|(_, o)| o.binding.source == source.slot)
         {
             return Err(Fault::NotReady.into());
         }
@@ -328,20 +258,6 @@ impl<'id> Core<'id> {
         }
         Ok(selected)
     }
-    /// Actual current-session sender relation for the official SENT flag.
-    /// Historical ownership and current Contact aliases do not manufacture it.
-    pub fn service_is_sender(&self, source: Source<'id>, hash: &Hash) -> Result<bool, Error> {
-        let Some(member) = self.service_member(source)? else {
-            return Ok(false);
-        };
-        let room = self.rooms.get(source.room)?;
-        let node = room
-            .nodes
-            .get(room.find_node(hash).ok_or(Fault::NotFound)?)?;
-        Ok(node
-            .auth
-            .is_some_and(|a| a.peer.is_none() && a.session == Some(member.slot)))
-    }
     /// Commit only the private original Wire frame produced by a successful
     /// complete_signature for this same local signer Binding. No input bytes
     /// or transport notification can be injected through this entry point.
@@ -352,6 +268,32 @@ impl<'id> Core<'id> {
         binding: Binding<'id>,
         now: u64,
     ) -> Result<Hash, Error> {
+        self.service_commit_local(binding, now, None)
+    }
+
+    /// Commit a verified original local MISS for the exact observed remote
+    /// PEER announcement. Acceptance and withdrawal occur together; the usual
+    /// graph completion runs later.
+    ///
+    /// # Errors
+    /// Rejects stale routing evidence or a changed signature predecessor,
+    /// defers while earlier room work is queued, and requires an original
+    /// prepared MISS for a remote peer from the current local signer.
+    pub fn service_commit_route_loss(
+        &mut self,
+        binding: Binding<'id>,
+        expected: &Hash,
+        now: u64,
+    ) -> Result<Hash, Error> {
+        self.service_commit_local(binding, now, Some(expected))
+    }
+
+    fn service_commit_local(
+        &mut self,
+        binding: Binding<'id>,
+        now: u64,
+        route_loss: Option<&Hash>,
+    ) -> Result<Hash, Error> {
         self.check_source(binding.source)?;
         let op = self.check_binding(binding)?;
         let role = self
@@ -360,26 +302,40 @@ impl<'id> Core<'id> {
             .sources
             .get(binding.source.slot)?
             .role;
-        if self.mode != Mode::Service
-            || !matches!(role,SourceRole::ServiceSigner(p) if self.local_peer==Some(p))
-        {
+        let SourceRole::ServiceSigner(peer) = role else {
+            return Err(Error::Permission);
+        };
+        if self.mode != Mode::Service || self.local_peer != Some(peer) {
             return Err(Error::Permission);
         }
         if op.phase != OperationPhase::Prepared || op.deadline <= now {
             return Err(Fault::StaleGeneration.into());
         }
-        if !matches!(
-            &op.job,
-            Job::Wire {
-                purpose: NativePurpose::Send,
-                encoding: Encoding::PeerMessage,
-                frame: Some(_),
-                ..
-            }
-        ) {
+        let Job::Wire {
+            purpose: NativePurpose::Send,
+            encoding: Encoding::PeerMessage,
+            frame: Some(frame),
+            ..
+        } = &op.job
+        else {
             return Err(Fault::NotReady.into());
-        }
+        };
         self.reserve_events(3)?;
+        let sender = hash512(&peer);
+        let meta = ReceiveMeta {
+            epoch: binding.epoch,
+            flags: 4,
+            requested: false,
+            sender_hash: Some(sender),
+            context: Some(sender),
+        };
+        let original = self.work.expose(frame)?;
+        let admission = match route_loss {
+            Some(expected) => {
+                self.receive_route_loss_check(binding.source, meta, original, &peer, expected)?
+            }
+            None => self.receive_check(binding.source, meta, original)?,
+        };
         let (input, charge) = {
             let op = self
                 .rooms
@@ -389,55 +345,33 @@ impl<'id> Core<'id> {
             let Job::Wire { frame, .. } = &mut op.job else {
                 return Err(Fault::Conflict.into());
             };
-            let input = frame.take().ok_or(Fault::NotReady)?;
-            let charge = op.charged_bytes;
-            op.charged_bytes = 0;
-            (input, charge)
+            (frame.take().ok_or(Fault::NotReady)?, op.charged_bytes)
         };
-        self.release(charge)?;
-        let peer = self.local_peer.ok_or(Fault::NotReady)?;
-        let sender = hash512(&peer);
-        let meta = ReceiveMeta {
-            epoch: binding.epoch,
-            flags: 4,
-            requested: false,
-            sender_hash: Some(sender),
-            context: Some(sender),
-        };
-        let result = match self.receive_check(binding.source, meta, &input) {
-            Ok(admission) => self.receive_commit(binding.source, meta, input, admission),
-            Err(error) => Err(RejectedInput { error, input }),
-        };
+        let result =
+            self.receive_retained_service_commit(binding.source, meta, input, admission, charge);
+        // History insertion does not change the already checked operation row.
+        let op = self
+            .rooms
+            .get_mut(binding.source.room)?
+            .operations
+            .get_mut(binding.operation.slot)?;
         match result {
             Ok(hash) => {
-                let op = self
-                    .rooms
-                    .get_mut(binding.source.room)?
-                    .operations
-                    .get_mut(binding.operation.slot)?;
+                op.charged_bytes = 0;
                 op.phase = OperationPhase::Complete;
-                self.event(Event::OperationChanged(
-                    binding.operation,
-                    OperationPhase::Complete,
-                ))?;
+                self.events.vacant()?.insert(QueuedEvent::OperationChanged {
+                    room: binding.source.room,
+                    operation: binding.operation.slot,
+                    phase: OperationPhase::Complete,
+                });
                 Ok(hash)
             }
-            Err(rejected) => {
-                // No intervening mutation/observer exists. Returning the same
-                // reserved charge cannot allocate; retain the original frame
-                // for caller retry or explicit original operation retirement.
-                self.charge(charge)?;
-                let op = self
-                    .rooms
-                    .get_mut(binding.source.room)?
-                    .operations
-                    .get_mut(binding.operation.slot)?;
+            Err((error, input)) => {
                 let Job::Wire { frame, .. } = &mut op.job else {
                     return Err(Fault::Conflict.into());
                 };
-                *frame = Some(rejected.input);
-                op.charged_bytes = charge;
-                Err(rejected.error)
+                *frame = Some(input);
+                Err(error)
             }
         }
     }
@@ -453,7 +387,7 @@ impl<'id> Core<'id> {
     /// Retire only this actual app's per-room SERVICE lease after its original
     /// CLOSE response has actually fully written, and all original operations
     /// are already retired. The shared accepted MQ may remain live for other
-    /// rooms; this explicitly does not claim a physical source_stopped event.
+    /// rooms. Unverified inputs are discarded; authenticated history remains.
     pub fn release_service_client(&mut self, source: Source<'id>) -> Result<(), Error> {
         self.check_source(source)?;
         let room = self.rooms.get(source.room)?;
@@ -463,10 +397,11 @@ impl<'id> Core<'id> {
         if room
             .operations
             .iter()
-            .any(|(_, o)| o.binding.source == source)
+            .any(|(_, o)| o.binding.source == source.slot)
         {
             return Err(Fault::NotReady.into());
         }
+        self.reclaim_source_inputs(source, 0)?;
         self.rooms
             .get_mut(source.room)?
             .sources

@@ -103,8 +103,8 @@ async fn actual_direct_peer(bind: SocketAddr, ipc: Ipc) -> Test {
     let (bservice, bcommunicator) = connection_pair(ipc, &scratch.0.join("b.sock")).await?;
     sa.admit(aservice)?;
     sb.admit(bservice)?;
-    let asocket = DatagramSocket::bind(bind)?;
-    let bsocket = DatagramSocket::bind(bind)?;
+    let asocket = DatagramSocket::bind(bind, Default::default())?;
+    let bsocket = DatagramSocket::bind(bind, Default::default())?;
     let atarget = bsocket.local_address();
     let btarget = asocket.local_address();
     let mut policy = asocket.profile().sender_policy();

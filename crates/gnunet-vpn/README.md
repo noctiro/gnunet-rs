@@ -73,6 +73,11 @@ wire's u16 limit. Too-large policy is permanent error, not endless Capacity retr
 or private fragmentation. `build_parts` adds a noalloc fixed-header+borrowed-tail
 packet builder so receive conversion needs no temporary maximum-size segment.
 
+`forward_tun_with_policy` checks the packet tuple against the original flow or
+lease target before retaining bytes. A policy refusal creates no flow and does
+not renew an existing one. `flow_peer` observes the original selected or bound
+identity without preparing a CADET open or authorizing a source.
+
 Service flows offer the exact descriptor port (first two bytes replaced by BE
 port). Internet flows offer genuine `DiscoveryRequest` to an external policy
 provider. `select_exit` requires that original admitted job and cannot pretend a
@@ -81,20 +86,21 @@ retirement even after selection. No stopped DHT branch is called. `OpenRequest`
 then identifies the standard gateway/service port and expected peer. Admission
 preflights exist for routing/discovery/open/packet effects. `open_queued` records
 native create admission, not connection success. `bind_peer` must receive
-end-to-end CADET source evidence for that expected peer, never a queued
-create or plaintext claim. It also receives the endpoint AF profile;
-local IPC and peer profiles are separate. Buffered AF metadata normalizes once
-before any prepared peer effect, allowing explicit Linux2/10↔Darwin2/30 sources
-without guessing packet lengths. Prepared/native bytes never change or reseal.
+end-to-end CADET source evidence for that expected peer. The bound source owns
+its transmit AF profile. Buffered packets retain their address family and
+write the endpoint's AF value immediately before their first prepared effect.
+Prepared bytes remain immutable through rejection, retry and native completion.
 
 ## Peer channels
 
 `prepare_peer` takes oldest buffered flow data and permits one original peer
 attempt per flow, preserving first TCP START before DATA. `receive_peer` accepts
 only the exact original Peer and correct reply direction, rewrites original
-reverse addresses/ports, and constructs a checksum-correct raw TUN packet. Reply zero ports retain the original tuple. ICMP replies/errors are translated
-only over the active C-supported type contract, with explicit reconstructed IP+8
-quotes. Capacity/WouldBlock retains caller input unchanged; permanent malformed
+reverse addresses/ports, and constructs a checksum-correct raw TUN packet. Reply
+zero ports retain the original tuple. An authenticated ICMP reply carries its own
+AF field. The decoder recognizes the official numeric values on all four
+platforms and reconstructs the quote from the original tuple. Capacity/WouldBlock
+retains caller input unchanged; permanent malformed
 input requests source close and grants no fake receive_done. A Delivery
 is eligible only after its original whole TUN packet actually writes. Semantic
 `receive_done` does not prove that the native CADET ACK itself wrote.

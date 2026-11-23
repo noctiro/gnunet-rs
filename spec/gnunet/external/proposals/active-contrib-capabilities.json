@@ -19,10 +19,6 @@
     "whole_capability_implemented": false,
     "wire_source_present": true
   },
-  "active_build_review": {
-    "path": "/private/tmp/gnunet-contrib-active-gaps-source-20261102-lz8fmyho/report.json",
-    "sha256": "1478e345c604586da6754cf9990976f48e78ced717e4253e17c7fce8819e4b56"
-  },
   "consensus": {
     "DHT_selected_registry_source_present": true,
     "SDK_drop_retires_original_epoch_source_present": true,
@@ -32,11 +28,6 @@
     "contested_confirmation_payload_exclusion_source_present": true,
     "core_native_SDK_service_installed": true,
     "installed_BLOCK24_25_source_present": true,
-    "limited_current_source_review": {
-      "path": "/private/tmp/gnunet-CONSENSUS-grading-final-current-source-review-20261103-hutfw39r/review.json",
-      "sha256": "ab5a22275d4fdcaecf7da8cdd071f1e0b03d347399c07c2dde0dcdb82bb0ddcc"
-    },
-    "limited_current_source_review_is_historical": true,
     "native_SDK_source_present": true,
     "native_SET_bridge_source_present": true,
     "native_SET_ready_and_local_queue_rescan_source_present": true,
@@ -81,10 +72,6 @@
   },
   "current_source_review": {
     "commits_ahead": 7,
-    "handoff": {
-      "path": "/private/tmp/gnunet-official-target-current-source-review-20261103-f9x4kzme/handoff.json",
-      "sha256": "733df77f687d5008dfd1f9ad64e28fb53c288af9b326436a90be6e92350ff8dc"
-    },
     "highest_observed_version_tag": "v0.29.1",
     "historical_receipts_rebound": false,
     "observed_HEAD": "14698f19848af867f48a04521e274abd55972075",
@@ -170,7 +157,6 @@
     "scan_frontdoor_source_present": true,
     "shared_URI_dispatch_refactor_pending": false,
     "shared_URI_dispatch_source_present": true,
-    "source_stage": "/private/tmp/gnunet-QR-native-frontdoor-source-20261103-p4telans",
     "whole_capability_implemented": false
   },
   "reference_revision": "346358e26d4dcc2dc4f51bef5d52dca29c7d8165",

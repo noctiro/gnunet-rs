@@ -5,7 +5,7 @@
 )]
 use gnunet_cadet_host as cadet;
 use gnunet_exit::{
-    AfProfile,
+    PeerProfiles,
     engine::{Config, Engine, Limits as CoreLimits, Target},
     policy::{InternetRules, Policy},
 };
@@ -30,7 +30,7 @@ fn quiescent_engine_with_original_quarantine_cannot_bind_a_new_epoch()
             ipv6: None,
             services: &[],
             dns: true,
-            af: AfProfile::native(),
+            peer_profiles: &PeerProfiles::NATIVE,
         },
         limits,
     )?;

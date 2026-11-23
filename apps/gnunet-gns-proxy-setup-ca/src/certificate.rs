@@ -1,9 +1,9 @@
-//! Real CA generation uses the existing Rust AWS-LC-backed certificate provider.
+//! Generate and encode one local P-256 proxy CA with a checked lifetime.
 use crate::{Cause, budget::Budget};
 use base64ct::{Base64, Encoding};
+use gnunet_tls_crypto_host::certificate::P256Key;
 use rcgen::{
-    BasicConstraints, CertificateParams, DistinguishedName, DnType, DnValue, IsCa, KeyPair,
-    KeyUsagePurpose, PKCS_ECDSA_P256_SHA256,
+    BasicConstraints, CertificateParams, DistinguishedName, DnType, DnValue, IsCa, KeyUsagePurpose,
 };
 use zeroize::Zeroizing;
 
@@ -39,14 +39,14 @@ pub(super) async fn generate(budget: &Budget) -> Result<Generated, Cause> {
         KeyUsagePurpose::CrlSign,
     ];
     params.use_authority_key_identifier_extension = true;
-    let key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256)?;
+    let key = P256Key::generate()?;
     budget.check().await?;
-    let certificate = params.self_signed(&key)?;
+    let certificate = key.self_signed_with(params)?;
     budget.check().await?;
-    let private_der = Zeroizing::new(key.serialize_der());
+    let private_der = key.pkcs8()?;
     let generated = Generated {
         certificate: pem("CERTIFICATE", certificate.der().as_ref())?,
-        private_key: pem("PRIVATE KEY", &private_der)?,
+        private_key: pem("PRIVATE KEY", private_der.as_bytes())?,
     };
     if generated.certificate.len() > 16 * 1024 || generated.private_key.len() > 16 * 1024 {
         return Err("generated CA exceeds the local PEM profile".into());

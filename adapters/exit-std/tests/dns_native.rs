@@ -7,7 +7,7 @@
 use gnunet_cadet::service as carrier;
 use gnunet_cadet_host::{self as cadet, server as carrier_host};
 use gnunet_exit::{
-    AfProfile,
+    PeerProfiles,
     engine::{Config, Engine, Limits as CoreLimits},
     nat::Entropy,
     policy::Policy,
@@ -184,7 +184,7 @@ fn actual_packed_dns_queries_complete_before_one_outer_ack_and_close() -> Result
                         ipv6: None,
                         services: &[],
                         dns: true,
-                        af: AfProfile::native(),
+                        peer_profiles: &PeerProfiles::NATIVE,
                     },
                     CoreLimits {
                         flows: 2,

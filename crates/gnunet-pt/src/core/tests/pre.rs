@@ -24,12 +24,20 @@ fn answer(wire_id: [u8; 2]) -> Vec<u8> {
 }
 
 fn advertise(core: &mut Core<'_>) -> Result<(), Error> {
-    let key = EddsaPrivateKey::from_seed([0x19; 32]);
+    let discovery = core.begin_discovery(UNTIL, NOW)?;
+    advertise_peer(core, discovery, 0x19)
+}
+
+fn advertise_peer<'a>(
+    core: &mut Core<'a>,
+    discovery: Discovery<'a>,
+    seed: u8,
+) -> Result<(), Error> {
+    let key = EddsaPrivateKey::from_seed([seed; 32]);
     let peer = *key.public_key().as_bytes();
     let region = exit::Advertisement::signed_region(peer, UNTIL);
     let signature = key.sign(exit::PURPOSE, &region)?;
     let block = exit::Advertisement::encode_signed(peer, UNTIL, signature.as_bytes(), NOW)?;
-    let discovery = core.begin_discovery(UNTIL, NOW)?;
     core.advertisement(
         discovery,
         &exit::discovery_key(),
@@ -74,7 +82,7 @@ fn admission_reserves_reply_capacity_before_exposing_a_query() -> Result<(), Err
         limits(PACKET, PACKET + packet.len() - 1),
         FAMILIES,
     )?;
-    let source = core.attached(Stage::Pre)?;
+    let source = core.attached(Stage::Pre, ReplyLimit::MAXIMUM)?;
     assert_eq!(
         core.admit(source, ID, &packet, UNTIL, NOW),
         Err(Error::Capacity)
@@ -82,6 +90,24 @@ fn admission_reserves_reply_capacity_before_exposing_a_query() -> Result<(), Err
     assert_eq!(core.pending(), 0);
     assert!(core.next_work(NOW)?.is_none());
     Ok(())
+}
+
+#[test]
+fn pre_reply_exceeding_source_capacity_drains_as_a_drop() -> Result<(), Error> {
+    let instance = Instance::new();
+    let mut core = Core::new(&instance, limits(PACKET, 2 * PACKET), FAMILIES)?;
+    let source = core.attached(Stage::Pre, ReplyLimit::from_frame_bytes(PACKET + 15)?)?;
+    advertise(&mut core)?;
+    let tunnel = open(&mut core, NOW)?;
+    let request = core.admit(source, ID, &query([0x12, 0x34]), UNTIL, NOW)?;
+    let id = send(&mut core, NOW)?;
+    if !core.response(tunnel, &answer(id), NOW)?
+        || !matches!(core.next_work(NOW)?, Some(Work::Reply {request: actual, decision: Decision::Drop, ..}) if request == actual)
+    {
+        return Err(Error::Conflict);
+    }
+    core.reply_queued(request)?;
+    core.reply_written(source, request)
 }
 
 #[test]
@@ -94,7 +120,7 @@ fn maximum_replies_fit_concurrently_and_reservations_survive_channel_replacement
     let instance = Instance::new();
     let budget = 2 * (query([0; 2]).len() + PACKET);
     let mut core = Core::new(&instance, limits(PACKET, budget), FAMILIES)?;
-    let source = core.attached(Stage::Pre)?;
+    let source = core.attached(Stage::Pre, ReplyLimit::MAXIMUM)?;
     advertise(&mut core)?;
     let tunnel = open(&mut core, NOW)?;
     let first = core.admit(source, [1; 8], &query([0x12, 0x34]), UNTIL, NOW)?;
@@ -184,8 +210,8 @@ fn a_ready_reply_precedes_new_vpn_allocation_work() -> Result<(), Error> {
         limits(PACKET, query([0; 2]).len() + PACKET + 2 * post.len()),
         FAMILIES,
     )?;
-    let pre_source = core.attached(Stage::Pre)?;
-    let post_source = core.attached(Stage::Post)?;
+    let pre_source = core.attached(Stage::Pre, ReplyLimit::MAXIMUM)?;
+    let post_source = core.attached(Stage::Post, ReplyLimit::MAXIMUM)?;
     advertise(&mut core)?;
     let tunnel = open(&mut core, NOW)?;
     let ready = core.admit(pre_source, ID, &query([0x12, 0x34]), UNTIL, NOW)?;
@@ -198,5 +224,244 @@ fn a_ready_reply_precedes_new_vpn_allocation_work() -> Result<(), Error> {
     assert!(
         matches!(core.next_work(NOW)?, Some(Work::Allocate { request, .. }) if request == pending)
     );
+    Ok(())
+}
+
+#[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "Retiring an original unsent query must not consume real CADET send credit"
+)]
+fn unsent_preparation_keeps_credit_after_cancel_expiry_or_source_replacement() -> Result<(), Error>
+{
+    for retirement in 0..3 {
+        let instance = Instance::new();
+        let mut core = Core::new(&instance, limits(PACKET, 2 * PACKET), FAMILIES)?;
+        let mut source = core.attached(Stage::Pre, ReplyLimit::MAXIMUM)?;
+        advertise(&mut core)?;
+        let tunnel = open(&mut core, NOW)?;
+        let request = core.admit(source, ID, &query([0x12, 0x34]), NOW + 1, NOW)?;
+        let Some(Work::Send { attempt, .. }) = core.next_work(NOW)? else {
+            return Err(Error::NotReady);
+        };
+
+        if retirement == 2 {
+            core.source_stopped(source)?;
+            source = core.attached(Stage::Pre, ReplyLimit::MAXIMUM)?;
+        } else {
+            if retirement == 0 {
+                core.cancel(request)?;
+            } else {
+                core.expire(NOW + 1)?;
+            }
+            assert!(matches!(core.next_work(NOW + 1)?, Some(Work::Reply {
+                request: actual,
+                decision: Decision::Drop,
+                ..
+            }) if actual == request));
+            core.reply_queued(request)?;
+            core.reply_written(source, request)?;
+        }
+        assert_eq!(core.send_queued(attempt), Err(Error::Stale));
+        let successor = core.admit(source, ID, &query([0x56, 0x78]), UNTIL, NOW + 1)?;
+        assert!(
+            matches!(core.next_work(NOW + 1)?, Some(Work::Send {
+            request: actual,
+            tunnel: original,
+            ..
+        }) if actual == successor && original == tunnel),
+            "retirement case {retirement} lost real unconsumed credit"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "Check retry accounting at actual admission across tunnel replacement"
+)]
+fn only_an_admitted_send_spends_the_original_request_attempt() -> Result<(), Error> {
+    let instance = Instance::new();
+    let mut limits = limits(PACKET, 2 * PACKET);
+    limits.attempts = 1;
+    let mut core = Core::new(&instance, limits, FAMILIES)?;
+    let source = core.attached(Stage::Pre, ReplyLimit::MAXIMUM)?;
+    advertise(&mut core)?;
+    let first = open(&mut core, NOW)?;
+    let original = core.admit(source, ID, &query([0x12, 0x34]), UNTIL, NOW)?;
+    let Some(Work::Send { attempt, .. }) = core.next_work(NOW)? else {
+        return Err(Error::NotReady);
+    };
+    core.channel_credit(first, 0, NOW)?;
+    assert_eq!(core.send_queued(attempt), Err(Error::NotReady));
+    core.tunnel_stopped(first, NOW)?;
+    assert_eq!(core.send_queued(attempt), Err(Error::Stale));
+
+    let now = NOW + limits.retry;
+    let replacement = open(&mut core, now)?;
+    let Some(Work::Send {
+        attempt: next,
+        request,
+        tunnel,
+        expires,
+        ..
+    }) = core.next_work(now)?
+    else {
+        return Err(Error::NotReady);
+    };
+    assert_ne!(next, attempt);
+    assert_ne!(replacement, first);
+    assert_eq!((request, tunnel, expires), (original, replacement, UNTIL));
+    core.send_queued(next)?;
+    core.tunnel_stopped(replacement, now)?;
+    assert!(matches!(core.next_work(now)?, Some(Work::Reply {
+        request,
+        decision: Decision::Drop,
+        expires: UNTIL,
+        ..
+    }) if request == original));
+    Ok(())
+}
+
+#[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "Prepared queries must retain identity and obey the original native send window"
+)]
+fn preparation_preserves_packet_identity_and_cannot_restore_revoked_credit() -> Result<(), Error> {
+    let instance = Instance::new();
+    let mut core = Core::new(&instance, limits(PACKET, 4 * PACKET), FAMILIES)?;
+    let source = core.attached(Stage::Pre, ReplyLimit::MAXIMUM)?;
+    advertise(&mut core)?;
+    let tunnel = open(&mut core, NOW)?;
+    core.channel_credit(tunnel, 2, NOW)?;
+    let first = core.admit(source, [1; 8], &query([0x12, 0x34]), UNTIL, NOW)?;
+    let second = core.admit(source, [2; 8], &query([0x56, 0x78]), UNTIL, NOW)?;
+    let Some(Work::Send {
+        attempt,
+        request,
+        message,
+        ..
+    }) = core.next_work(NOW)?
+    else {
+        return Err(Error::NotReady);
+    };
+    assert_eq!(request, first);
+    let prepared = message.to_vec();
+    let Some(Work::Send {
+        attempt: repeated,
+        request,
+        message,
+        ..
+    }) = core.next_work(NOW)?
+    else {
+        return Err(Error::NotReady);
+    };
+    assert_eq!((repeated, request), (attempt, first));
+    assert_eq!(message, prepared);
+    core.send_queued(attempt)?;
+    core.send_written(attempt)?;
+
+    let Some(Work::Send {
+        attempt, request, ..
+    }) = core.next_work(NOW)?
+    else {
+        return Err(Error::NotReady);
+    };
+    assert_eq!(request, second, "one original native credit remains");
+    core.channel_credit(tunnel, 0, NOW)?;
+    assert_eq!(core.send_queued(attempt), Err(Error::NotReady));
+    assert!(core.next_work(NOW)?.is_none());
+    core.cancel(second)?;
+    assert!(matches!(core.next_work(NOW)?, Some(Work::Reply {
+        request,
+        decision: Decision::Drop,
+        ..
+    }) if request == second));
+    core.reply_queued(second)?;
+    core.reply_written(source, second)?;
+
+    let third = core.admit(source, [3; 8], &query([0x9a, 0xbc]), UNTIL, NOW)?;
+    assert!(
+        core.next_work(NOW)?.is_none(),
+        "cancel cannot invent credit"
+    );
+    core.channel_credit(tunnel, 1, NOW)?;
+    assert!(matches!(core.next_work(NOW)?, Some(Work::Send { request, .. }) if request == third));
+    Ok(())
+}
+
+#[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "A parked original query must not block another exit"
+)]
+fn zero_credit_parks_only_the_original_tunnel() -> Result<(), Error> {
+    let instance = Instance::new();
+    let mut core = Core::new(&instance, limits(PACKET, 4 * PACKET), FAMILIES)?;
+    let source = core.attached(Stage::Pre, ReplyLimit::MAXIMUM)?;
+    let discovery = core.begin_discovery(UNTIL, NOW)?;
+    advertise_peer(&mut core, discovery, 0x19)?;
+    advertise_peer(&mut core, discovery, 0x29)?;
+    open(&mut core, NOW)?;
+    open(&mut core, NOW)?;
+
+    let first = core.admit(source, [1; 8], &query([0x12, 0x34]), UNTIL, NOW)?;
+    let Some(Work::Send {
+        attempt, tunnel, ..
+    }) = core.next_work(NOW)?
+    else {
+        return Err(Error::NotReady);
+    };
+    core.channel_credit(tunnel, 0, NOW)?;
+    let second = core.admit(source, [2; 8], &query([0x56, 0x78]), UNTIL, NOW)?;
+    let Some(Work::Send {
+        attempt: later,
+        request,
+        tunnel: other,
+        ..
+    }) = core.next_work(NOW)?
+    else {
+        return Err(Error::NotReady);
+    };
+    assert_eq!(request, second);
+    assert_ne!(other, tunnel);
+    core.send_queued(later)?;
+    core.channel_credit(tunnel, 1, NOW)?;
+    assert!(matches!(
+        core.next_work(NOW)?,
+        Some(Work::Send { attempt: original, request, .. }) if original == attempt && request == first
+    ));
+    Ok(())
+}
+
+#[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "The final distinct channel-local DNS ID must keep its real credit until queue admission"
+)]
+fn the_final_prepared_wire_id_remains_admissible() -> Result<(), Error> {
+    let instance = Instance::new();
+    let mut core = Core::new(&instance, limits(PACKET, 2 * PACKET), FAMILIES)?;
+    let source = core.attached(Stage::Pre, ReplyLimit::MAXIMUM)?;
+    advertise(&mut core)?;
+    let tunnel = open(&mut core, NOW)?;
+    let exit = core.tunnel(tunnel)?;
+    core.exits[exit].next_id = u32::from(u16::MAX);
+    core.admit(source, ID, &query([0x12, 0x34]), UNTIL, NOW)?;
+    let Some(Work::Send {
+        attempt, message, ..
+    }) = core.next_work(NOW)?
+    else {
+        return Err(Error::NotReady);
+    };
+    assert_eq!(&message[4..6], &u16::MAX.to_be_bytes());
+    assert!(
+        matches!(core.next_work(NOW)?, Some(Work::Send { attempt: original, .. }) if original == attempt)
+    );
+    core.send_queued(attempt)?;
+    core.send_written(attempt)?;
+    assert!(core.response(tunnel, &answer(u16::MAX.to_be_bytes()), NOW)?);
     Ok(())
 }

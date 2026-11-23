@@ -1,0 +1,26 @@
+[Unit]
+Description=GNUnet peer
+After=network.target
+
+[Service]
+Type=notify
+NotifyAccess=main
+User=gnunet
+Group=gnunet
+UMask=0077
+StateDirectory=gnunet-node
+StateDirectoryMode=0700
+RuntimeDirectory=gnunet-node
+RuntimeDirectoryMode=0700
+ExecStart=@GNUNET_EXECUTABLE@ --systemd \
+    --state-directory ${STATE_DIRECTORY} \
+    --ipc-directory ${RUNTIME_DIRECTORY} \
+    --bootstrap-data-directory @GNUNET_BOOTSTRAP_DATA@ \
+    --outbound-tcp
+TimeoutStartSec=45s
+TimeoutStopSec=30s
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target

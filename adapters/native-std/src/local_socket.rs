@@ -1,4 +1,6 @@
 //! Windows AF_UNIX observations of the caller's original live socket.
+#[cfg(feature = "socket-io")]
+use socket2::SockAddr;
 use std::{
     io,
     mem::{offset_of, size_of},
@@ -28,6 +30,16 @@ impl Address {
             Self::Path(path) => Some(path),
         }
     }
+}
+
+/// Encode a Windows AF_UNIX filesystem name using the Winsock UTF-8 path format.
+#[cfg(feature = "socket-io")]
+pub fn named_address(path: &Path) -> io::Result<SockAddr> {
+    let text = path
+        .to_str()
+        .filter(|value| !value.is_empty() && !value.as_bytes().contains(&0))
+        .ok_or(io::ErrorKind::InvalidInput)?;
+    SockAddr::unix(text)
 }
 #[derive(Clone, Copy)]
 enum End {

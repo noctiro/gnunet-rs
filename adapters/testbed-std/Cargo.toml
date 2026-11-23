@@ -8,9 +8,12 @@ license.workspace = true
 [dependencies]
 gnunet-testbed.workspace = true
 gnunet-config.workspace = true
+gnunet-crypto.workspace = true
 gnunet-types.workspace = true
 gnunet-native.workspace = true
+gnunet-wire.workspace = true
 socket2 = { workspace = true, features = ["all"] }
+tokio = { workspace = true, features = ["io-util", "macros", "process", "rt", "sync", "time"] }
 zeroize = { workspace = true, features = ["alloc"] }
 
 [lints]

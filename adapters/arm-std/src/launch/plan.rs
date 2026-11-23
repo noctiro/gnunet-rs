@@ -77,29 +77,74 @@ pub(super) fn prepare(
         push(b" ")?;
         push(postfix)?;
     }
-    #[cfg(unix)]
-    let argv = super::parse_command(&command, maximum_arguments)?;
-    #[cfg(windows)]
-    let argv = {
-        let mut fixed = Vec::new();
-        if let Some(filename) = filename {
-            fixed.push("-c".into());
-            fixed.push(filename.into_os_string());
-        }
-        if daemonize {
-            fixed.push("-d".into());
-        }
-        gnunet_service_runtime::process::compose_arguments(
-            prefix.as_deref().unwrap_or_default(),
-            binary.as_os_str(),
-            &fixed,
-            postfix.as_deref().unwrap_or_default(),
-            maximum_arguments,
-        )?
-    };
+    let mut fixed = Vec::new();
+    if let Some(filename) = filename {
+        fixed.push("-c".into());
+        fixed.push(filename.into_os_string());
+    }
+    if daemonize {
+        fixed.push("-d".into());
+    }
+    let argv = gnunet_service_runtime::process::compose_arguments(
+        prefix.as_deref().unwrap_or_default(),
+        binary.as_os_str(),
+        &fixed,
+        postfix.as_deref().unwrap_or_default(),
+        maximum_arguments,
+    )?;
     Ok(Some(CommandPlan {
         command,
         argv,
         daemonize,
     }))
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use gnunet_config::ProcessEnvironment;
+    use std::{ffi::OsStr, io, os::unix::ffi::OsStrExt};
+
+    #[test]
+    fn bootstrap_preserves_literal_native_paths_with_wrapper_options() -> Result<(), LaunchError> {
+        let binary = b"/example prefix/gnunet-arm-\xff\\service";
+        let configuration = b"/example config/options \xff\".conf";
+        let mut config = Configuration::default();
+        for (key, value) in [
+            (b"BINARY".as_slice(), binary.as_slice()),
+            (b"CONFIG", configuration),
+            (b"PREFIX", b"wrapper --label \"two words\""),
+            (b"OPTIONS", b"--option \"quoted value\""),
+        ] {
+            config.set_value(b"arm", key, Some(value))?;
+        }
+        let plan = prepare(
+            &config,
+            &ProcessEnvironment,
+            &mut LibexecContext::Native,
+            4096,
+            16,
+        )?
+        .ok_or(LaunchError::InvalidInput)?;
+        let expected: &[&[u8]] = &[
+            b"wrapper",
+            b"--label",
+            b"two words",
+            binary,
+            b"-c",
+            configuration,
+            b"-d",
+            b"--option",
+            b"quoted value",
+        ];
+        if !plan
+            .argv
+            .iter()
+            .map(|value| value.as_os_str())
+            .eq(expected.iter().map(|value| OsStr::from_bytes(value)))
+        {
+            return Err(io::Error::other("ARM bootstrap argument boundaries changed").into());
+        }
+        Ok(())
+    }
 }

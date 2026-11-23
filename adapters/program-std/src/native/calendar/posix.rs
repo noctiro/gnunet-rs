@@ -1,5 +1,5 @@
 //! Reentrant native POSIX calendar conversion and byte formatting.
-use super::super::{cstring, wide_micros};
+use super::super::{cstring, widen_time_component};
 use super::WallTime;
 use std::{io, mem::MaybeUninit};
 /// Native calendar fields and their microsecond display value.
@@ -25,13 +25,18 @@ pub(crate) fn wall_time() -> io::Result<WallTime> {
     // SAFETY: the preceding successful call filled the output.
     let time = unsafe { time.assume_init() };
     Ok(WallTime {
-        seconds: time.tv_sec,
-        micros: wide_micros(time.tv_usec),
+        seconds: widen_time_component(time.tv_sec),
+        micros: widen_time_component(time.tv_usec),
     })
 }
+
+fn checked_seconds<Native: TryFrom<i64>>(seconds: i64) -> io::Result<Native> {
+    Native::try_from(seconds).map_err(|_| io::Error::from_raw_os_error(libc::EOVERFLOW))
+}
+
 impl Calendar {
     pub(crate) fn new(seconds: i64, micros: i64, utc: bool) -> io::Result<Self> {
-        let value: libc::time_t = seconds;
+        let value: libc::time_t = checked_seconds(seconds)?;
         let mut out = MaybeUninit::uninit();
         #[expect(
             unsafe_code,

@@ -31,6 +31,15 @@ pub enum Error {
         /// Actual returned native code.
         code: i32,
     },
+    /// Original GStreamer error domain and code.
+    Gstreamer {
+        /// Original pipeline operation.
+        operation: &'static str,
+        /// GLib quark of the original GError.
+        domain: u32,
+        /// Native error code within that domain.
+        code: i32,
+    },
     /// Actual POSIX loader diagnostic. Bounded text is retained directly because
     /// dlerror supplies text, not a Rust error object or reliable errno.
     Loader {
@@ -79,6 +88,14 @@ impl fmt::Display for Error {
                 operation,
                 code,
             } => write!(f, "{provider} {operation}: native code {code}"),
+            Self::Gstreamer {
+                operation,
+                domain,
+                code,
+            } => write!(
+                f,
+                "GStreamer {operation}: error domain {domain}, code {code}"
+            ),
             Self::Loader {
                 operation,
                 detail,
@@ -102,5 +119,20 @@ impl std::error::Error for Error {
             Self::Cleanup { original, .. } => Some(original.as_ref()),
             _ => None,
         }
+    }
+}
+
+#[cfg(any(unix, windows))]
+pub(crate) fn retain_cleanup<T>(
+    original: Result<T, Error>,
+    cleanup: Result<(), Error>,
+) -> Result<T, Error> {
+    match (original, cleanup) {
+        (result, Ok(())) => result,
+        (Ok(_), Err(cleanup)) => Err(cleanup),
+        (Err(original), Err(cleanup)) => Err(Error::Cleanup {
+            original: Box::new(original),
+            cleanup: Box::new(cleanup),
+        }),
     }
 }

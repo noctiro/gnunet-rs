@@ -55,6 +55,7 @@ fn observe(reports: &Reporter, event: Event) {
 #[derive(Debug, Default)]
 struct Failures {
     original: Option<Failure>,
+    storage: Option<server::Error>,
     resolver: Option<Failure>,
     resolver_drain: Option<Failure>,
     statistics: Option<producer::Failure>,
@@ -66,6 +67,7 @@ struct Failures {
 impl Failures {
     fn finish(self) -> Result<(), Failure> {
         if self.original.is_none()
+            && self.storage.is_none()
             && self.resolver.is_none()
             && self.resolver_drain.is_none()
             && self.statistics.is_none()
@@ -82,8 +84,9 @@ impl std::fmt::Display for Failures {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "NAMECACHE original={:?}; Resolver drain={:?}; Resolver cleanup={:?}; statistics={:?}; statistics cleanup={:?}; output={:?}; publisher={:?}; handler metrics={:?}",
+            "NAMECACHE original={:?}; storage={:?}; Resolver drain={:?}; Resolver cleanup={:?}; statistics={:?}; statistics cleanup={:?}; output={:?}; publisher={:?}; handler metrics={:?}",
             self.original,
+            self.storage,
             self.resolver_drain,
             self.resolver,
             self.statistics,
@@ -98,6 +101,7 @@ impl std::error::Error for Failures {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         self.original
             .as_deref()
+            .or(self.storage.as_ref().map(|e| e as &dyn std::error::Error))
             .or(self.resolver_drain.as_deref())
             .or(self.resolver.as_deref())
             .or(self
@@ -273,21 +277,28 @@ pub(super) async fn run(
     )?;
     // Retain and configure the same original Resolver context explicitly. The
     // standard SERVICE has no second PROGRAM scheduler or listener set.
-    let initialized = (|| -> Result<_, Failure> {
+    let (backend, persistence) = if settings.directory.is_some() {
+        ("files", "yes")
+    } else {
+        ("volatile-memory", "no")
+    };
+    let initialized: Result<_, Failure> = async {
         context.connect(config.duplicate()?)?;
         let signals = Signals::new(parent)?;
-        let cache = Cache::new(settings.core)?;
-        let server = Server::new(
-            cache,
-            settings.native,
-            server::Ports {
-                options: settings.options.clone(),
-                unix: settings.unix,
-                clock: runtime_clock.clone(),
-            },
-        )?;
+        let ports = server::Ports {
+            options: settings.options.clone(),
+            unix: settings.unix,
+            clock: runtime_clock.clone(),
+        };
+        let server = match &settings.directory {
+            Some(path) => {
+                Server::new_persistent(path.clone(), settings.core, settings.native, ports).await?
+            }
+            None => Server::new(Cache::new(settings.core)?, settings.native, ports)?,
+        };
         Ok((signals, server))
-    })();
+    }
+    .await;
     let (mut signals, server) = match initialized {
         Ok(value) => value,
         Err(original) => {
@@ -336,7 +347,7 @@ pub(super) async fn run(
         {
             let mut out = io::stdout().lock();
             writeln!(out,
-                "READY namecache wire=0.29.1 backend=volatile-memory restart-persistence=no entries={entries} block-bytes={block_bytes} metadata-bytes={metadata_bytes} workers=0",
+                "READY namecache wire=0.29.1 backend={backend} restart-persistence={persistence} entries={entries} block-bytes={block_bytes} metadata-bytes={metadata_bytes}",
             )?;
             out.flush()?;
         }
@@ -371,10 +382,18 @@ pub(super) async fn run(
     }.await;
     // Physical app MQ close precedes diagnostic cleanup and listener release;
     // it never needs a new clock sample or a healthy logging destination.
+    owners
+        .server
+        .close_all(&mut |event| observe(&reports, event));
+    errors.storage = owners
+        .server
+        .finish_storage(|event| observe(&reports, event))
+        .await
+        .err();
     let stopped = owners.server.shutdown(|event| observe(&reports, event));
     errors.original = outcome.err();
     errors.metrics = Some(owners.server.metrics());
-    if errors.original.is_some() || reports.failed() {
+    if errors.original.is_some() || errors.storage.is_some() || reports.failed() {
         if let Some(statistics) = &mut owners.statistics
             && let Err(error) = statistics.abort()
         {
@@ -466,7 +485,7 @@ pub(super) async fn run(
     drop(context);
     errors.output = {
         let mut out = io::stdout().lock();
-        writeln!(out,"STOPPED namecache backend=volatile-memory local={:?} cache={:?} handler-metrics={:?} publisher={:?} workers=0 restart-persistence=no",stopped.report,stopped.cache,errors.metrics,errors.publisher).and_then(|()|out.flush()).err()
+        writeln!(out,"STOPPED namecache backend={backend} local={:?} cache={:?} handler-metrics={:?} publisher={:?} restart-persistence={persistence}",stopped.report,stopped.cache,errors.metrics,errors.publisher).and_then(|()|out.flush()).err()
     };
     errors.finish()
 }

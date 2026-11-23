@@ -1,7 +1,7 @@
 //! Actual inline CORE effect sink and bounded peer/application coordination.
 use super::loose::{Loose, Waiting};
 use super::observations::ChannelObservations;
-use super::types::{ChannelBuffers, Error, Limits, Refusal, Report, Signing};
+use super::types::{ChannelBuffers, DiscoveryOwner, Error, Limits, Refusal, Report, Signing};
 use crate::{connection as bridge, server};
 use gnunet_cadet::{
     connection::{self, Book, Frame, Outcome, Reset},
@@ -19,12 +19,39 @@ use gnunet_wire::official::cadet_peer::{ChannelMessage, PathPeers, PeerMessage};
 use std::time::Duration;
 use tokio::time::Instant;
 
+mod channel;
+mod discovery;
+
+#[cfg(test)]
+#[path = "state/tests.rs"]
+mod tests;
+
+#[derive(Clone, Copy)]
+enum SignedReset<'node, 'book> {
+    Idle,
+    Needed {
+        previous: Option<controller::Generation<'node>>,
+    },
+    Opening {
+        previous: Option<controller::Generation<'node>>,
+        route: connection::Route<'book>,
+    },
+}
+impl SignedReset<'_, '_> {
+    fn pending(self) -> bool {
+        !matches!(self, Self::Idle)
+    }
+}
+
 pub(super) struct Tunnel<'node, 'store, 'book> {
     pub(super) peer: Option<[u8; 32]>,
     pub(super) owner: Option<Controller<'node, 'store, 'book>>,
     pub(super) free: Option<controller::Stores<'store>>,
     numbers: Option<peer::Numbers>,
     route: Option<connection::Route<'book>>,
+    repair: Option<discovery::Repair<'book>>,
+    repair_after: MonoInstant,
+    reset: SignedReset<'node, 'book>,
     used: MonoInstant,
     ratchet_generation: Option<controller::Generation<'node>>,
     ratchet_at: MonoInstant,
@@ -35,6 +62,7 @@ pub(super) struct Channel<'app, 'node, 'store, 'bytes> {
     observations: Option<ChannelObservations>,
     free: Option<ChannelBuffers<'store, 'bytes>>,
     tunnel: usize,
+    crypto_generation: Option<controller::Generation<'node>>,
     open: Option<(app::Open<'app>, MonoInstant)>,
     open_hard: Option<Instant>,
     binding: Option<app::Binding<'app, 'node>>,
@@ -115,6 +143,7 @@ pub(super) struct State<'node, 'book, 'server, 'app, 'appstore, 'appbytes, 'stor
     cursor: usize,
     class: u8,
     next_tick: MonoInstant,
+    next_repair: u64,
 }
 fn fixed<T>(size: usize, make: impl FnMut() -> T) -> Result<Vec<T>, ProtocolError> {
     let mut result = Vec::new();
@@ -146,6 +175,9 @@ impl<'node, 'book, 'server, 'app, 'appstore, 'appbytes, 'store, 'bytes, E: Entro
                 free: Some(free),
                 numbers: None,
                 route: None,
+                repair: None,
+                repair_after: now,
+                reset: SignedReset::Idle,
                 used: now,
                 ratchet_generation: None,
                 ratchet_at: now,
@@ -162,6 +194,7 @@ impl<'node, 'book, 'server, 'app, 'appstore, 'appbytes, 'store, 'bytes, E: Entro
                 observations: None,
                 free: Some(free),
                 tunnel: 0,
+                crypto_generation: None,
                 open: None,
                 open_hard: None,
                 binding: None,
@@ -199,6 +232,7 @@ impl<'node, 'book, 'server, 'app, 'appstore, 'appbytes, 'store, 'bytes, E: Entro
             cursor: 0,
             class: 0,
             next_tick: now,
+            next_repair: 1,
         })
     }
     pub(super) fn peer_statistics(&self) -> gnunet_cadet::statistics::Snapshot {
@@ -268,12 +302,15 @@ impl<'node, 'book, 'server, 'app, 'appstore, 'appbytes, 'store, 'bytes, E: Entro
             now,
         )?;
         self.tunnels[index].numbers = Some(peer::Numbers::new(&self.server.local_peer(), &peer)?);
+        self.tunnels[index].repair = None;
+        self.tunnels[index].repair_after = now;
         self.tunnels[index].owner = Some(owner);
         self.tunnels[index].peer = Some(peer);
         self.tunnels[index].used = now;
         self.tunnels[index].closing = false;
         self.tunnels[index].ratchet_generation = None;
         self.tunnels[index].ratchet_at = now;
+        self.tunnels[index].reset = SignedReset::Idle;
         self.report.tunnels = self.report.tunnels.saturating_add(1);
         Ok(index)
     }
@@ -286,6 +323,38 @@ impl<'node, 'book, 'server, 'app, 'appstore, 'appbytes, 'store, 'bytes, E: Entro
         let peer = self.tunnels[index]
             .peer
             .ok_or(ProtocolError::StaleGeneration)?;
+        self.refresh_reset(index)?;
+        if self.tunnels[index].reset.pending()
+            && let Some(route) = book
+                .select(peer)
+                .or(self.tunnels[index].route.filter(|route| {
+                    book.route_info(*route)
+                        .is_ok_and(|info| info.phase != connection::Phase::Retired)
+                }))
+        {
+            // A reset CREATE is locally initiated even when its usable path
+            // came from an incoming connection through a relay. Preserve the
+            // complete endpoint identities; the CORE sender is only first hop.
+            let original = book.route_peers(route)?;
+            let mut path = [[0; 32]; P];
+            let count = original.len();
+            if count > P || count < 2 {
+                return Err(ProtocolError::Malformed);
+            }
+            if original.first() == Some(&self.server.local_peer()) {
+                path[..count].copy_from_slice(original);
+            } else if original.last() == Some(&self.server.local_peer()) {
+                for (target, source) in path[..count].iter_mut().zip(original.iter().rev()) {
+                    *target = *source;
+                }
+            } else {
+                return Err(ProtocolError::Authentication);
+            }
+            if path[count - 1] != peer {
+                return Err(ProtocolError::Authentication);
+            }
+            return self.ensure_path(index, book, &path[..count], now, None);
+        }
         if book.select(peer).is_some() {
             return Ok(true);
         }
@@ -299,7 +368,7 @@ impl<'node, 'book, 'server, 'app, 'appstore, 'appbytes, 'store, 'bytes, E: Entro
             return Ok(false);
         }
         let path = [self.server.local_peer(), peer];
-        self.ensure_path(index, book, &path, now)
+        self.ensure_path(index, book, &path, now, None)
     }
     fn ensure_path<const P: usize>(
         &mut self,
@@ -307,31 +376,45 @@ impl<'node, 'book, 'server, 'app, 'appstore, 'appbytes, 'store, 'bytes, E: Entro
         book: &mut Book<'book, '_, '_, P>,
         path: &[[u8; 32]],
         now: MonoInstant,
+        deadline: Option<MonoInstant>,
     ) -> Result<bool, ProtocolError> {
         let peer = self.tunnels[index]
             .peer
             .ok_or(ProtocolError::StaleGeneration)?;
-        if book.select(peer).is_some() {
+        self.refresh_reset(index)?;
+        let requested_reset = self.tunnels[index].reset.pending();
+        if !requested_reset && book.select(peer).is_some() {
             return Ok(true);
         }
-        if self.tunnels[index].route.is_some_and(|r| {
+        let previous_route = match self.tunnels[index].reset {
+            SignedReset::Opening { route, .. } => Some(route),
+            SignedReset::Needed { .. } => None,
+            SignedReset::Idle => self.tunnels[index].route,
+        };
+        if previous_route.is_some_and(|r| {
             book.route_info(r)
                 .is_ok_and(|i| i.phase != connection::Phase::Retired)
         }) {
+            return Ok(false);
+        }
+        if requested_reset && book.available_routes() == 0 {
             return Ok(false);
         }
         let owner = self.tunnels[index]
             .owner
             .as_ref()
             .ok_or(ProtocolError::StaleGeneration)?;
-        let reset = owner.scope().local() > peer && owner.snapshot().confirmed.is_none();
+        let reset =
+            requested_reset || owner.scope().local() > peer && owner.snapshot().confirmed.is_none();
         let sign_slot = if reset {
-            Some(
-                self.signs
-                    .iter()
-                    .position(Option::is_none)
-                    .ok_or(ProtocolError::Capacity)?,
-            )
+            let Some(slot) = self.signs.iter().position(Option::is_none) else {
+                return if requested_reset {
+                    Ok(false)
+                } else {
+                    Err(ProtocolError::Capacity)
+                };
+            };
+            Some(slot)
         } else {
             None
         };
@@ -358,17 +441,36 @@ impl<'node, 'book, 'server, 'app, 'appstore, 'appbytes, 'store, 'bytes, E: Entro
             connection::Authentication::Unsigned
         };
         let cid = connection::fresh_connection(&mut self.entropy)?;
-        let opened = book.open(PathPeers::new(path), cid, authentication, now)?;
+        let expires = match deadline {
+            Some(deadline) => deadline,
+            None => MonoInstant(
+                now.0
+                    .checked_add(self.limits.opening_micros)
+                    .ok_or(ProtocolError::Overflow)?,
+            ),
+        };
+        let opened = book.open_with_deadline(
+            PathPeers::new(path),
+            cid,
+            authentication,
+            now,
+            Some(expires),
+        )?;
         self.tunnels[index].route = Some(opened.route);
+        if requested_reset {
+            let previous = match self.tunnels[index].reset {
+                SignedReset::Needed { previous } | SignedReset::Opening { previous, .. } => {
+                    previous
+                }
+                SignedReset::Idle => return Err(ProtocolError::Conflict),
+            };
+            self.tunnels[index].reset = SignedReset::Opening {
+                previous,
+                route: opened.route,
+            };
+        }
         if let (Some(slot), Some(request)) = (sign_slot, opened.sign) {
-            self.signs[slot] = Some(Signing {
-                request,
-                expires: MonoInstant(
-                    now.0
-                        .checked_add(self.limits.opening_micros)
-                        .ok_or(ProtocolError::Overflow)?,
-                ),
-            });
+            self.signs[slot] = Some(Signing { request, expires });
         }
         Ok(false)
     }
@@ -382,7 +484,44 @@ impl<'node, 'book, 'server, 'app, 'appstore, 'appbytes, 'store, 'bytes, E: Entro
             && snapshot.candidate.is_none()
             && (snapshot.confirmed.is_none() || snapshot.traffic_paused)
         {
-            let _event = owner.request(owner.scope(), now, &mut self.entropy)?;
+            let event = owner.request(owner.scope(), now, &mut self.entropy)?;
+            self.control_event(index, event)?;
+        }
+        Ok(())
+    }
+    fn control_event(
+        &mut self,
+        index: usize,
+        event: controller::Event<'node>,
+    ) -> Result<(), ProtocolError> {
+        if matches!(event, controller::Event::NeedSignedReset)
+            && matches!(self.tunnels[index].reset, SignedReset::Idle)
+        {
+            let previous = self.tunnels[index]
+                .owner
+                .as_ref()
+                .ok_or(ProtocolError::NotReady)?
+                .snapshot()
+                .confirmed;
+            self.tunnels[index].reset = SignedReset::Needed { previous };
+        }
+        self.refresh_reset(index)
+    }
+    fn refresh_reset(&mut self, index: usize) -> Result<(), ProtocolError> {
+        let previous = match self.tunnels[index].reset {
+            SignedReset::Idle => return Ok(()),
+            SignedReset::Needed { previous } | SignedReset::Opening { previous, .. } => previous,
+        };
+        let snapshot = self.tunnels[index]
+            .owner
+            .as_ref()
+            .ok_or(ProtocolError::NotReady)?
+            .snapshot();
+        if snapshot.confirmed.is_some()
+            && snapshot.confirmed != previous
+            && !snapshot.traffic_paused
+        {
+            self.tunnels[index].reset = SignedReset::Idle;
         }
         Ok(())
     }
@@ -612,6 +751,7 @@ impl<'node, 'book, 'server, 'app, 'appstore, 'appbytes, 'store, 'bytes, E: Entro
         record.owner = Some(peer);
         record.observations = Some(ChannelObservations::new(address, allocation));
         record.tunnel = tunnel;
+        record.crypto_generation = None;
         record.binding = Some(binding);
         record.closing = false;
         record.lost = false;
@@ -804,24 +944,14 @@ impl<'node, 'book, 'server, 'app, 'appstore, 'appbytes, 'store, 'bytes, E: Entro
             return Ok(true);
         }
         if let Some(index) = self.channel_index(held.tunnel, channel) {
-            let record = &mut self.channels[index];
-            let owner = record
-                .owner
-                .as_mut()
-                .ok_or(ProtocolError::StaleGeneration)?;
-            let expected = (owner.ack().0, owner.phase());
-            let before = owner.available_send();
-            let result = owner.receive(owner.scope(), message, held.route.connection(), now);
-            if let Some(observations) = &mut record.observations {
-                observations.input(
-                    message,
-                    expected,
-                    (before, owner.available_send()),
-                    owner.phase(),
-                    &result,
-                    now,
-                );
-            }
+            let result = self.channels[index].receive(
+                index,
+                &self.pending,
+                book,
+                message,
+                held.route.connection(),
+                now,
+            );
             match result {
                 Ok(_) => {
                     self.tunnels[held.tunnel].used = now;
@@ -829,7 +959,9 @@ impl<'node, 'book, 'server, 'app, 'appstore, 'appbytes, 'store, 'bytes, E: Entro
                     Ok(true)
                 }
                 Err(reason @ (ProtocolError::Capacity | ProtocolError::WouldBlock)) => {
-                    owner.discarded_receive_capacity(owner.scope(), message);
+                    if let Some(owner) = &self.channels[index].owner {
+                        owner.discarded_receive_capacity(owner.scope(), message);
+                    }
                     self.fail(remote, Some(channel), reason);
                     self.clear_held();
                     Ok(true)
@@ -948,6 +1080,7 @@ impl<'node, 'book, 'server, 'app, 'appstore, 'appbytes, 'store, 'bytes, E: Entro
             .map(|tunnel| ChannelObservations::new(owner.address(), tunnel.scope().allocation()));
         let c = &mut self.channels[slot];
         c.tunnel = tunnel;
+        c.crypto_generation = None;
         c.owner = Some(owner);
         c.observations = observations;
         c.open = Some((
@@ -962,8 +1095,8 @@ impl<'node, 'book, 'server, 'app, 'appstore, 'appbytes, 'store, 'bytes, E: Entro
         c.closing = false;
         c.lost = false;
         self.report.channels = self.report.channels.saturating_add(1);
-        let _ready = self.ensure_route(tunnel, book, now)?;
         self.drive_initial(tunnel, now)?;
+        let _ready = self.ensure_route(tunnel, book, now)?;
         Ok(true)
     }
     fn application(&mut self, now: MonoInstant) -> Result<bool, ProtocolError> {
@@ -1207,12 +1340,25 @@ impl<'node, 'book, 'server, 'app, 'appstore, 'appbytes, 'store, 'bytes, E: Entro
         let Some(route) = book.select(remote) else {
             return Ok(false);
         };
-        if self.tunnels[tunnel]
+        let Some(snapshot) = self.tunnels[tunnel]
             .owner
             .as_ref()
-            .is_none_or(|t| t.snapshot().confirmed.is_none() || t.snapshot().traffic_paused)
-        {
+            .map(Controller::snapshot)
+        else {
             return Ok(false);
+        };
+        let Some(generation) = snapshot.confirmed.filter(|_| !snapshot.traffic_paused) else {
+            return Ok(false);
+        };
+        if !self.channels[index].closing
+            && self.channels[index].crypto_generation != Some(generation)
+        {
+            self.channels[index]
+                .owner
+                .as_mut()
+                .ok_or(ProtocolError::NotReady)?
+                .tunnel_up(now)?;
+            self.channels[index].crypto_generation = Some(generation);
         }
         if !book.payload_capacity(
             route,
@@ -1506,7 +1652,7 @@ impl<'node, 'book, 'server, 'app, 'appstore, 'appbytes, 'store, 'bytes, E: Entro
                     open.channel(),
                     Some((
                         super::Discovery {
-                            open,
+                            owner: DiscoveryOwner::Open(open),
                             peer: scope.peer(),
                             expires,
                         },
@@ -1557,120 +1703,17 @@ impl<'node, 'book, 'server, 'app, 'appstore, 'appbytes, 'store, 'bytes, E: Entro
         }
         None
     }
-    fn discovery_index(&self, wanted: super::Discovery<'app>) -> Option<usize> {
-        self.channels.iter().position(|c| {
-            !c.closing
-                && c.open == Some((wanted.open, wanted.expires))
-                && c.owner
-                    .as_ref()
-                    .is_some_and(|o| o.address().remote_peer == wanted.peer)
-                && self
-                    .server
-                    .channel_info(wanted.open.channel())
-                    .is_ok_and(|info| info.phase == app::Phase::Opening)
-        })
-    }
-    pub(super) fn discovery_hard(&self, wanted: super::Discovery<'app>) -> Option<Instant> {
-        self.channels[self.discovery_index(wanted)?].open_hard
-    }
-    pub(super) fn discovery_needed<const P: usize>(
-        &self,
-        book: &Book<'book, '_, '_, P>,
-        after: Option<app::Open<'app>>,
-    ) -> Option<super::Discovery<'app>> {
-        let start = match after {
-            None => 0,
-            Some(open) => {
-                self.channels
-                    .iter()
-                    .position(|c| c.open.is_some_and(|(o, _)| o == open))?
-                    + 1
-            }
-        };
-        self.channels[start..].iter().find_map(|c| {
-            let (open, expires) = c.open?;
-            // The actual application MQ can retire this original open before
-            // service_channel gets its next fair turn to mark c.closing. Keep
-            // this projection consistent with discovery_index/discovery_hard;
-            // a completed GET stop must not make that old open look new again.
-            if !self
-                .server
-                .channel_info(open.channel())
-                .is_ok_and(|info| info.phase == app::Phase::Opening)
-            {
-                return None;
-            }
-            let owner = c.owner.as_ref()?;
-            let peer = owner.address().remote_peer;
-            let routing = self.tunnels[c.tunnel].route.is_some_and(|r| {
-                book.route_info(r)
-                    .is_ok_and(|i| i.phase != connection::Phase::Retired)
-            });
-            (!c.closing
-                && !routing
-                && book.select(peer).is_none()
-                && book.current_neighbor(peer).is_none())
-            .then_some(super::Discovery {
-                open,
-                peer,
-                expires,
-            })
-        })
-    }
-    pub(super) fn expire_discovery(
-        &mut self,
-        wanted: super::Discovery<'app>,
-    ) -> Result<(), ProtocolError> {
-        let i = self
-            .discovery_index(wanted)
-            .ok_or(ProtocolError::StaleGeneration)?;
-        self.channels[i].closing = true;
-        self.fail(wanted.peer, None, ProtocolError::Deadline);
-        Ok(())
-    }
-    pub(super) fn admit_discovery<const P: usize>(
-        &mut self,
-        wanted: super::Discovery<'app>,
-        path: &[[u8; 32]],
-        book: &mut Book<'book, '_, '_, P>,
-        now: MonoInstant,
-    ) -> Result<bool, ProtocolError> {
-        let i = self
-            .discovery_index(wanted)
-            .ok_or(ProtocolError::StaleGeneration)?;
-        if self.closing
-            || now >= wanted.expires
-            || self.channels[i]
-                .open_hard
-                .is_none_or(|hard| Instant::now() >= hard)
-        {
-            return Err(ProtocolError::Deadline);
-        }
-        if path.len() < 2
-            || path.len() > P
-            || path.first() != Some(&self.server.local_peer())
-            || path.last() != Some(&wanted.peer)
-            || path.iter().enumerate().any(|(i, p)| path[..i].contains(p))
-        {
-            return Err(ProtocolError::InvalidInput);
-        }
-        if book.current_neighbor(path[1]).is_none() {
-            return Err(ProtocolError::NotReady);
-        }
-        let tunnel = self.channels[i].tunnel;
-        let ready = self.ensure_path(tunnel, book, path, now)?;
-        let admitted = ready
-            || self.tunnels[tunnel].route.is_some_and(|r| {
-                book.route_info(r)
-                    .is_ok_and(|info| info.phase != connection::Phase::Retired)
-            });
-        if admitted {
-            self.drive_initial(tunnel, now)?;
-        }
-        Ok(admitted)
-    }
     pub(super) fn native_deadline(&self) -> Option<Instant> {
-        self.loose.native_deadline()
+        self.loose
+            .native_deadline()
+            .into_iter()
+            .chain(self.tunnels.iter().filter_map(|tunnel| {
+                tunnel
+                    .repair
+                    .filter(|repair| repair.route.is_some())
+                    .map(|repair| repair.hard)
+            }))
+            .min()
     }
     pub(super) fn next_deadline(&self) -> Option<MonoInstant> {
         let mut result = Some(
@@ -1683,6 +1726,9 @@ impl<'node, 'book, 'server, 'app, 'appstore, 'appbytes, 'store, 'bytes, E: Entro
                 && let Some(at) = o.next_deadline()
             {
                 result = Some(result.map_or(at, |r| r.min(at)));
+            }
+            if let Some(repair) = t.repair.filter(|repair| repair.route.is_some()) {
+                result = Some(result.map_or(repair.expires, |r| r.min(repair.expires)));
             }
         }
         for c in &self.channels {
@@ -1826,6 +1872,7 @@ impl<'node, 'book, 'server, 'app, 'appstore, 'appbytes, 'store, 'bytes, E: Entro
                                     Some(owner.into_stores().map_err(|r| r.reason)?);
                                 self.tunnels[i].peer = None;
                                 self.tunnels[i].numbers = None;
+                                self.tunnels[i].repair = None;
                                 for u in &mut self.used {
                                     if u.is_some_and(|u| u.tunnel == scope.allocation()) {
                                         *u = None;
@@ -1841,21 +1888,24 @@ impl<'node, 'book, 'server, 'app, 'appstore, 'appbytes, 'store, 'bytes, E: Entro
                             .as_mut()
                             .ok_or(ProtocolError::NotReady)?
                             .tick(scope, now)?;
-                        if self
-                            .channels
-                            .iter()
-                            .any(|c| c.owner.is_some() && c.tunnel == i)
+                        if self.tunnels[i].reset.pending()
+                            || self
+                                .channels
+                                .iter()
+                                .any(|c| c.owner.is_some() && c.tunnel == i)
                         {
-                            let _ready = self.ensure_route(i, book, now)?;
                             self.drive_initial(i, now)?;
+                            let _ready = self.ensure_route(i, book, now)?;
+                        }
+                        if self.drive_repair(i, book, now)? {
+                            worked = true;
+                            break;
                         }
                         if self.output_control(i, book, now)? {
                             worked = true;
                             break;
                         }
-                        if let Some(route) = book.keepalive_due(now)
-                            && book.route_info(route)?.expected_peer == self.tunnels[i].peer
-                        {
+                        if let Some(route) = book.keepalive_due_for(scope.peer(), now) {
                             match self.tunnels[i]
                                 .owner
                                 .as_mut()
@@ -1978,7 +2028,9 @@ impl<
                     owner.tick(owner.scope(), now)?;
                     match input.message() {
                         PeerMessage::KeyExchange { .. } | PeerMessage::KeyExchangeAuth { .. } => {
-                            owner.control(owner.scope(), input, now, &mut self.entropy)?;
+                            let event =
+                                owner.control(owner.scope(), input, now, &mut self.entropy)?;
+                            self.control_event(index, event)?;
                         }
                         PeerMessage::Encrypted { .. } => {
                             if self.held.is_some() {

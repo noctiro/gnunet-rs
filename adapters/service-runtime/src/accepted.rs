@@ -14,7 +14,7 @@ use std::{
     task::{Context, Poll},
 };
 
-/// Actual accept failure or fatal initialization after a real socket was accepted.
+/// Actual native failure before admitting a service client.
 #[derive(Debug)]
 pub enum AcceptError {
     /// Native/std/mio acceptance or reactor registration failed before this port
@@ -23,19 +23,21 @@ pub enum AcceptError {
     /// The original accepted socket has already been dropped/closed. Primary
     /// native error and any earlier nonfatal diagnostics remain observable.
     Initialization(InitializationError),
+    /// The original connection's configured local admission check failed.
+    Credentials(io::Error),
 }
 impl AcceptError {
     /// Original accept or initialization errno, preserved across socket cleanup.
     pub fn io_error(&self) -> &io::Error {
         match self {
-            Self::Accept(error) => error,
+            Self::Accept(error) | Self::Credentials(error) => error,
             Self::Initialization(error) => &error.error,
         }
     }
     /// Actual OS EMFILE condition. Descriptor values have no artificial ceiling.
     #[must_use]
     pub fn is_emfile(&self) -> bool {
-        network::is_descriptor_limit(self.io_error())
+        !matches!(self, Self::Credentials(_)) && network::is_descriptor_limit(self.io_error())
     }
 }
 impl fmt::Display for AcceptError {
@@ -43,13 +45,14 @@ impl fmt::Display for AcceptError {
         match self {
             Self::Accept(e) => e.fmt(f),
             Self::Initialization(e) => e.fmt(f),
+            Self::Credentials(e) => write!(f, "local peer admission: {e}"),
         }
     }
 }
 impl std::error::Error for AcceptError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::Accept(e) => Some(e),
+            Self::Accept(e) | Self::Credentials(e) => Some(e),
             Self::Initialization(e) => Some(e),
         }
     }
@@ -60,8 +63,8 @@ impl std::error::Error for AcceptError {
 pub enum SocketEvent {
     /// A nonfatal CLOEXEC or TCP_NODELAY failure; the stream remains usable.
     Diagnostic(network::Diagnostic),
-    /// A native/std accept error, or fatal initialization of an already closed
-    /// accepted socket. Initialization retains earlier diagnostics in order.
+    /// A native accept, initialization or credential failure. Initialization
+    /// retains earlier diagnostics in order.
     /// This observation supplies no implicit logging level: service.c suspends
     /// silently on a raw accept EMFILE, whereas other accept errors warn.
     Failed(AcceptError),
@@ -273,6 +276,49 @@ mod tests {
         let stream = tokio::net::TcpStream::connect(listener.local_addr()?).await?;
         let (peer, _) = listener.accept().await?;
         Ok((stream, peer))
+    }
+    #[test]
+    fn credential_failure_rejects_one_stream_without_suspending_accept() -> io::Result<()> {
+        runtime()?.block_on(async {
+            let listener =
+                tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await?;
+            let endpoint = listener.local_addr()?;
+            let mut first = tokio::net::TcpStream::connect(endpoint).await?;
+            let (stream, _) = listener.accept().await?;
+            let connection = Connection::from_tcp(stream);
+            let access = crate::credentials::UnixAccess {
+                match_uid: true,
+                match_gid: false,
+            };
+            let mut failure = None;
+            assert!(!access.admits(&connection, |event| failure = Some(event)));
+            let Some(SocketEvent::Failed(AcceptError::Credentials(error))) = failure else {
+                return Err(io::Error::other("missing native credential failure"));
+            };
+            #[cfg(unix)]
+            assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+            #[cfg(windows)]
+            assert_eq!(error.kind(), io::ErrorKind::Unsupported);
+            drop(connection);
+            let mut byte = [0];
+            assert_eq!(first.read(&mut byte).await?, 0);
+
+            #[cfg(unix)]
+            {
+                let mut state = AcceptState::default();
+                let error = AcceptError::Credentials(io::Error::from_raw_os_error(libc::EMFILE));
+                assert!(
+                    matches!(state.failed(error), SocketEvent::Failed(error) if !error.is_emfile())
+                );
+                assert!(state.ready());
+            }
+            let mut second = tokio::net::TcpStream::connect(endpoint).await?;
+            let (mut next, _) = listener.accept().await?;
+            second.write_all(b"q").await?;
+            next.read_exact(&mut byte).await?;
+            assert_eq!(byte, *b"q");
+            Ok(())
+        })
     }
     #[test]
     fn tcp_initialization_returns_original_usable_socket() -> io::Result<()> {

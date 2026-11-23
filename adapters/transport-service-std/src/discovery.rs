@@ -645,9 +645,8 @@ impl<'id> Provider<'id> {
         }
         Ok(())
     }
-    /// Retire all old Engine demands without changing the actual candidate
-    /// source or inventing END/SYNC. Native cancellation/terminal debt drains
-    /// under the original operation/source bounds on subsequent polls.
+    /// Retire discovery demands from the previous local identity. Subsequent
+    /// polls drain cancellations under each original source and deadline.
     pub fn retire_all(&mut self) {
         for p in &mut self.peers {
             p.desired = false;

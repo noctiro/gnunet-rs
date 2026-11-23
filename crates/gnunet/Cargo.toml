@@ -9,6 +9,7 @@ license.workspace = true
 workspace = true
 
 [features]
+direct-peer = ["dep:gnunet-direct-peer"]
 transport-quic = ["dep:gnunet-transport-quic"]
 official-quic-communicator = ["std", "transport-quic", "dep:gnunet-quic-communicator-host"]
 official-http3-communicator = ["official-quic-communicator", "gnunet-quic-communicator-host/h3-profile"]
@@ -184,6 +185,7 @@ official-program = ["official-config", "official-client", "official-service", "d
 statistics-store = ["std", "dep:gnunet-statistics-store"]
 
 [dependencies]
+gnunet-direct-peer = { workspace = true, optional = true }
 gnunet-secretsharing-host = { workspace = true, optional = true }
 gnunet-uri-host = { workspace = true, optional = true }
 gnunet-qr-host = { workspace = true, optional = true }

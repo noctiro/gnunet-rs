@@ -11,46 +11,35 @@ use std::{
     time::Duration,
 };
 use tokio::io::AsyncReadExt;
-trait BorrowedCaseAdapter {
-    fn queue(&mut self, bytes: &[u8]) -> Result<(), gnunet_types::Error>;
-}
-impl BorrowedCaseAdapter for Framed {
-    fn queue(&mut self, bytes: &[u8]) -> Result<(), gnunet_types::Error> {
-        self.queue_owned(bytes.to_vec())
-    }
-}
 #[tokio::test(flavor = "current_thread")]
 async fn actual_bounded_prefix_reclaims_remaining_budget_without_changing_original_fifo()
 -> Result<(), Box<dyn std::error::Error>> {
     let (connection, mut peer) = crate::test_support::pair().await?;
-    socket2::SockRef::from(&connection).set_send_buffer_size(1024)?;
-    socket2::SockRef::from(&peer).set_recv_buffer_size(1024)?;
     let mut io = Framed::new(connection, 65535)?;
     let mut first = vec![0x5a; 65535];
     first[..4].copy_from_slice(&[255, 255, 0, 99]);
-    io.queue(&first)?;
-    poll_fn(|cx| io.poll_write(cx)).await?;
-    peer.readable().await?;
-    let mut prefix = Vec::new();
-    let mut buffer = [0; 8192];
-    loop {
-        match peer.try_read(&mut buffer) {
-            Ok(0) => return Err("early EOF".into()),
-            Ok(n) => prefix.extend_from_slice(&buffer[..n]),
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
-            Err(e) => return Err(e.into()),
-        }
-    }
-    assert!(
-        prefix.len() >= 4 && prefix.len() < first.len(),
-        "bounded original native prefix required, got {}",
-        prefix.len()
-    );
+    io.queue_owned(first.clone())?;
     let next = [0, 4, 0, 100];
-    io.queue(&next)?;
-    let mut suffix = vec![0; first.len() + next.len() - prefix.len()];
+    assert_eq!(
+        io.queue_owned(next.to_vec()),
+        Err(gnunet_types::Error::WouldBlock),
+        "the original frame must consume the complete byte budget"
+    );
+    // The production write quantum bounds the prefix independently of native
+    // TCP buffer sizing and receive-window update timers.
+    let progress = poll_fn(|cx| io.poll_write_status(cx)).await?;
+    assert!(
+        progress.bytes >= next.len() && progress.bytes < first.len(),
+        "bounded original native prefix required, got {}",
+        progress.bytes
+    );
+    assert_eq!(progress.completed_frames, 0);
+    // Reclaim the positive write before the peer consumes any bytes. Admission
+    // depends on remaining wire bytes, not peer delivery or whole-frame release.
+    io.queue_owned(next.to_vec())?;
+    let mut actual = vec![0; first.len() + next.len()];
     {
-        let read = async { peer.read_exact(&mut suffix).await };
+        let read = async { peer.read_exact(&mut actual).await };
         tokio::pin!(read);
         tokio::time::timeout(
             Duration::from_secs(3),
@@ -65,8 +54,7 @@ async fn actual_bounded_prefix_reclaims_remaining_budget_without_changing_origin
         )
         .await??;
     }
-    prefix.extend(suffix);
     first.extend(next);
-    assert_eq!(prefix, first);
+    assert_eq!(actual, first);
     Ok(())
 }

@@ -9,7 +9,7 @@ gnunet-ipc-unix.workspace = true
 gnunet-client.workspace = true
 gnunet-types.workspace = true
 gnunet-config.workspace = true
-gnunet-unix-communicator-host.workspace = true
+gnunet-unix-communicator-host = { workspace = true, features = ["embedded-config"] }
 gnunet-pils.workspace = true
 gnunet-client-host.workspace = true
 gnunet-program-host = { workspace = true, features = ["resolver-broker"] }

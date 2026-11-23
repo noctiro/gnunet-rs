@@ -54,8 +54,9 @@ pub struct Api<'a, E: crypto::Entropy, const N: usize = 65524> {
     pub(crate) reconnect_delay: Duration,
     pub(crate) reconnect_not_before: Option<tokio::time::Instant>,
     pub(crate) leases: Vec<Lease<'a>>,
+    pub(crate) history_requests: Vec<crate::dependencies::Fetch<'a>>,
     pub(crate) control: Option<Control<'a>>,
-    pub(crate) held_work: Vec<Work<'a>>,
+    pub(crate) held_work: Vec<Work<'a, domain::OwnedBytes>>,
     pub(crate) held_notification: Option<HeldNotification<'a>>,
     pub(crate) pending_loss: Option<Loss<'a>>,
     pub(crate) epoch: Option<native::Epoch<'a>>,
@@ -70,6 +71,7 @@ pub struct Api<'a, E: crypto::Entropy, const N: usize = 65524> {
     pub(crate) cleanup: Vec<(Room<'a>, domain::Error)>,
     pub(crate) retire_next: Option<Operation<'a>>,
     pub(crate) room_cursor: usize,
+    pub(crate) frontier_cursor: usize,
     pub(crate) decrypt_cursor: usize,
     pub(crate) decrypt_remaining: usize,
     pub(crate) next_job: u64,
@@ -174,6 +176,7 @@ impl<'a, E: crypto::Entropy, const N: usize> Api<'a, E, N> {
         let rooms = reserve(limits.core.rooms)?;
         let memberships = reserve(limits.operations)?;
         let leases = reserve(limits.operations)?;
+        let history_requests = reserve(limits.operations)?;
         let count = limits
             .core
             .events
@@ -224,6 +227,7 @@ impl<'a, E: crypto::Entropy, const N: usize> Api<'a, E, N> {
             reconnect_delay: Duration::from_millis(100),
             reconnect_not_before: None,
             leases,
+            history_requests,
             control: None,
             held_work,
             held_notification: None,
@@ -240,6 +244,7 @@ impl<'a, E: crypto::Entropy, const N: usize> Api<'a, E, N> {
             cleanup,
             retire_next: None,
             room_cursor: 0,
+            frontier_cursor: 0,
             decrypt_cursor: 0,
             decrypt_remaining: 0,
             next_job: 0,
@@ -451,13 +456,7 @@ impl<'a, E: crypto::Entropy, const N: usize> Api<'a, E, N> {
         if !self.ready() || self.pending_loss.is_some() || self.domain_blocked {
             return Err(Fault::NotReady.into());
         }
-        if self
-            .leases
-            .len()
-            .checked_add(self.reservations)
-            .ok_or(Fault::Overflow)?
-            >= self.limits.operations
-        {
+        if self.free_jobs() == 0 {
             return Err(Fault::WouldBlock.into());
         }
         self.next_job.checked_add(1).ok_or(Fault::Overflow)?;
@@ -483,6 +482,8 @@ impl<'a, E: crypto::Entropy, const N: usize> Api<'a, E, N> {
             return Err(Fault::Capacity.into());
         }
         let serial = self.next_job.checked_add(1).ok_or(Fault::Overflow)?;
+        let span = span.capped_at(self.core.operation_deadline(operation)?)?;
+        self.bind_frontier(room, source, epoch, operation, span, &intent)?;
         self.leases.push(Lease {
             layout: None,
             operation,
@@ -515,6 +516,10 @@ impl<'a, E: crypto::Entropy, const N: usize> Api<'a, E, N> {
             .iter()
             .position(|l| l.operation == operation)
             .ok_or(Fault::StaleGeneration)?;
+        if self.frontier_holds(operation) && self.defer_frontier_retirement(operation)? {
+            self.wake_domain();
+            return Ok(());
+        }
         if self.rooms.iter().any(|r| {
             r.source.is_some()
                 && (r.close_after == Some(operation)
@@ -693,6 +698,7 @@ impl<'a, E: crypto::Entropy, const N: usize> Api<'a, E, N> {
         self.stop(StopCause::Closed, false, None)
     }
     pub(crate) fn wake_domain(&mut self) {
+        self.wake_frontiers();
         self.scan_remaining = self.rooms.len();
         self.subscription_scan_remaining = self.subscriptions.len();
         self.domain_blocked = false;
@@ -718,10 +724,17 @@ impl<'a, E: crypto::Entropy, const N: usize> Api<'a, E, N> {
             (limits.operations, core::mem::size_of::<Lease<'a>>()),
             (
                 limits.operations,
+                core::mem::size_of::<crate::dependencies::Fetch<'a>>(),
+            ),
+            (
+                limits.operations,
                 core::mem::size_of::<crate::recovery::Membership<'a>>(),
             ),
             (limits.identities, core::mem::size_of::<Signer>()),
-            (limits.operations, core::mem::size_of::<Work<'a>>()),
+            (
+                limits.operations,
+                core::mem::size_of::<Work<'a, domain::OwnedBytes>>(),
+            ),
             (2, core::mem::size_of::<SensitiveBuffer<N>>()),
             (observations, core::mem::size_of::<domain::Event<'a>>()),
             (cleanup, core::mem::size_of::<(Room<'a>, domain::Error)>()),
@@ -750,11 +763,18 @@ impl<'a, E: crypto::Entropy, const N: usize> Api<'a, E, N> {
             ),
             (self.leases.capacity(), core::mem::size_of::<Lease<'a>>()),
             (
+                self.history_requests.capacity(),
+                core::mem::size_of::<crate::dependencies::Fetch<'a>>(),
+            ),
+            (
                 self.memberships.capacity(),
                 core::mem::size_of::<crate::recovery::Membership<'a>>(),
             ),
             (self.signers.capacity(), core::mem::size_of::<Signer>()),
-            (self.held_work.capacity(), core::mem::size_of::<Work<'a>>()),
+            (
+                self.held_work.capacity(),
+                core::mem::size_of::<Work<'a, domain::OwnedBytes>>(),
+            ),
             (
                 self.buffers.capacity(),
                 core::mem::size_of::<SensitiveBuffer<N>>(),
@@ -840,6 +860,17 @@ impl<'a, E: crypto::Entropy, const N: usize> Api<'a, E, N> {
                 let exposure = match report.submission {
                     native::Submission::Unsent => Exposure::Unsent,
                     native::Submission::Partial { bytes, total } => {
+                        let observed = l
+                            .binding
+                            .filter(|_| total == l.frame_len)
+                            .ok_or(domain::Error::Protocol(Fault::Conflict))
+                            .and_then(|binding| {
+                                self.core.observe_retired_write_prefix(binding, bytes)
+                            });
+                        if let Err(error) = observed {
+                            self.cleanup.push((l.room, error));
+                            self.fenced = true;
+                        }
                         Exposure::Partial { bytes, total }
                     }
                 };
@@ -861,13 +892,23 @@ impl<'a, E: crypto::Entropy, const N: usize> Api<'a, E, N> {
             self.observations.push(event);
         }
         for room in &mut self.rooms {
+            room.frontier_required |= room.frontier.is_some();
+            match self.core.frontier_sync_required(room.room) {
+                Ok(required) => room.frontier_required |= required,
+                Err(error) => {
+                    self.cleanup.push((room.room, error));
+                    self.fenced = true;
+                }
+            }
             if let Some(source) = room.source.take() {
                 let result = if cancelled {
                     self.core.source_cancelled(source)
                 } else {
                     self.core.source_stopped(source)
                 };
-                if let Err(error) = result {
+                if let Err(error) = result.and_then(|()| {
+                    crate::dependencies::retire_stopped(&mut self.core, room.room, source)
+                }) {
                     self.cleanup.push((room.room, error));
                     self.fenced = true;
                 }
@@ -881,6 +922,7 @@ impl<'a, E: crypto::Entropy, const N: usize> Api<'a, E, N> {
             room.pending_identity = None;
             room.identity_operation = None;
             room.replacement_key = None;
+            room.frontier = None;
             while let Some(event) = self.core.pop_event() {
                 self.observations.push(event);
             }
@@ -888,6 +930,7 @@ impl<'a, E: crypto::Entropy, const N: usize> Api<'a, E, N> {
         while let Some(event) = self.core.pop_event() {
             self.observations.push(event);
         }
+        self.history_requests.clear();
         Loss {
             layout,
             control,

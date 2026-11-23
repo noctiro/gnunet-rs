@@ -1,5 +1,5 @@
 //! Original PILS epochs, CORE sessions and one explicitly retired Resolver.
-use super::{ForegroundPolicy, ForegroundResources, PilsFeed};
+use super::{ForegroundPolicy, ForegroundResources, PilsFeed, until_stop};
 use crate::{Host, HostError, Limits, Report};
 use gnunet_client_host::Endpoint;
 use gnunet_config::ProcessEnvironment;
@@ -188,7 +188,11 @@ async fn epochs(
             )?;
             let result: Result<Selection<Result<Epoch, HostError>>, Box<dyn StdError>> = async {
                 host.set_unix_access(unix_access)?;
-                ready(bound, host.identity())?;
+                let announce = async { ready(bound, host.identity()) };
+                let Some(announced) = until_stop(announce, shutdown.as_mut()).await? else {
+                    return Ok(Selection::Stopped);
+                };
+                announced?;
                 if let Some(original) = notification.take() {
                     match services(
                         tokio::time::timeout(Duration::from_secs(10), original),
@@ -300,6 +304,13 @@ pub(super) async fn run_foreground(
         bound,
         policy,
     } = resources;
+    let mut shutdown = std::pin::pin!(shutdown);
+    if until_stop(std::future::ready(()), shutdown.as_mut())
+        .await?
+        .is_none()
+    {
+        return Ok(Report::default());
+    }
     let key_path = config.get_filename(b"PEER", b"PRIVATE_KEY", &ProcessEnvironment)?;
     let master = gnunet_pils_host::identity::load_existing(&key_path)?;
     let native = gnunet_resolver_broker::native_profile()?;
@@ -328,7 +339,7 @@ pub(super) async fn run_foreground(
                 clock,
             },
             ready,
-            shutdown,
+            shutdown.as_mut(),
             observe,
             notification,
             &mut total,

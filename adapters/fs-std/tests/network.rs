@@ -115,6 +115,114 @@ fn reply(kind: BlockType, block: &[u8]) -> Result<Vec<u8>, gnunet_types::Error> 
     response.encode(&mut bytes)?;
     Ok(bytes)
 }
+
+#[test]
+fn named_partial_download_reuses_verified_data_and_indices_and_honors_delete() -> TestResult {
+    use gnunet_fs_host::{IncompleteOutput, OutputDir};
+    use std::{fs, num::NonZeroU32};
+
+    async fn requested(
+        stream: &mut UnixStream,
+        blocks: &Blocks,
+    ) -> Result<[u8; 64], Box<dyn std::error::Error>> {
+        let wire = request(stream).await?.ok_or("missing download request")?;
+        let Request::Search(search) = Request::decode(&wire)? else {
+            return Err("expected a download search".into());
+        };
+        let (kind, block) = blocks
+            .get(&search.query)
+            .ok_or("unexpected download query")?;
+        assert_eq!(*kind, search.block_type);
+        stream.write_all(&reply(*kind, block)?).await?;
+        Ok(search.query)
+    }
+
+    let temp = Temp::new()?;
+    let mut data = vec![17; BLOCK_BYTES * 2 + 23];
+    data[BLOCK_BYTES..BLOCK_BYTES * 2].fill(29);
+    data[BLOCK_BYTES * 2..].fill(47);
+    let (content, blocks) = tree(&data)?;
+    let first = gnunet_fs::content::encode_data(
+        &data[..BLOCK_BYTES],
+        &mut vec![0; BLOCK_BYTES + gnunet_fs::content::TAG_BYTES],
+    )?
+    .key()
+    .query;
+    let mut output = OutputDir::open(&temp.0)?;
+    let mut buffers = Buffers::new();
+    tokio::runtime::Builder::new_current_thread().enable_all().build()?.block_on(async {
+        let socket = temp.0.join("resume.sock");
+        let listener = UnixListener::bind(&socket)?;
+        for (filename, policy) in [("discard", IncompleteOutput::Delete), ("keep", IncompleteOutput::Keep)] {
+            let source = EndpointSource::unix(socket.clone());
+            let transfer = DownloadOptions {queries_per_connection: 8, request_parallelism: NonZeroU32::MIN, ..options(&source, 3_000_000)?};
+            let pull = output.download_resumable(filename, source, content, &mut buffers, transfer, policy, |progress| {
+                if progress.plaintext_bytes < BLOCK_BYTES as u64 { Control::Continue } else { Control::Cancel }
+            });
+            let server = async {
+                let (mut stream, _) = listener.accept().await?;
+                assert_eq!(requested(&mut stream, &blocks).await?, content.query);
+                assert_eq!(requested(&mut stream, &blocks).await?, first);
+                assert!(request(&mut stream).await?.is_none());
+                Ok::<_, Box<dyn std::error::Error>>(())
+            };
+            let (stopped, served) = timeout(Duration::from_secs(4), async { tokio::join!(pull, server) }).await?;
+            served?;
+            assert!(matches!(stopped, Err(gnunet_fs_host::Error::Transfer(error)) if matches!(*error, Error::Cancelled(_))));
+        }
+        assert!(!temp.0.join("discard").exists());
+        let path = temp.0.join("keep");
+        let partial = fs::read(&path)?;
+        assert_eq!(&partial[..BLOCK_BYTES], &data[..BLOCK_BYTES]);
+        let index = BLOCK_BYTES * 3;
+        let (kind, ciphertext) = blocks.get(&content.query).ok_or("missing original index")?;
+        assert_eq!(*kind, BlockType::IBLOCK);
+        let mut plain_index = [0; 3 * gnunet_fs::content::CHK_BYTES];
+        gnunet_fs::content::open_index(gnunet_fs::content::NodeRef::root(content).key(), ciphertext, &mut plain_index)?;
+        assert_eq!(&partial[index..], &plain_index);
+        let source = EndpointSource::unix(socket);
+        let transfer = DownloadOptions {queries_per_connection: 8, ..options(&source, 3_000_000)?};
+        let pull = output.download_resumable("keep", source, content, &mut buffers, transfer, IncompleteOutput::Keep, |_|Control::Continue);
+        let server = async {
+            let (mut stream, _) = listener.accept().await?;
+            let next = requested(&mut stream, &blocks).await?;
+            let last = requested(&mut stream, &blocks).await?;
+            assert_ne!(next, last);
+            assert!([next,last].into_iter().all(|query| query != first && query != content.query));
+            assert!(request(&mut stream).await?.is_none());
+            Ok::<_, Box<dyn std::error::Error>>(())
+        };
+        let (read, served) = timeout(Duration::from_secs(4), async { tokio::join!(pull, server) }).await?;
+        served?;
+        assert_eq!(read?.verified.content(), content);
+        assert_eq!(fs::read(&path)?, data);
+
+        // Completed plaintext can be reauthenticated without an available MQ.
+        let source = EndpointSource::unix(temp.0.join("offline.sock"));
+        let transfer = options(&source, 1_000_000)?;
+        let read = output.download_resumable("keep", source, content, &mut buffers, transfer, IncompleteOutput::Delete, |_|Control::Continue).await?;
+        assert_eq!(read.verified.content(), content);
+        assert_eq!(fs::read(&path)?, data);
+
+        let unrelated = temp.0.join("already-there");
+        fs::write(&unrelated, b"unrelated file")?;
+        let source = EndpointSource::unix(temp.0.join("resume.sock"));
+        let transfer = DownloadOptions { queries_per_connection: 8, request_parallelism: NonZeroU32::MIN, ..options(&source, 3_000_000)? };
+        let pull = output.download_resumable("already-there", source, content, &mut buffers, transfer, IncompleteOutput::Delete, |_| Control::Continue);
+        let server = async {
+            let (mut stream, _) = listener.accept().await?;
+            assert_eq!(requested(&mut stream, &blocks).await?, content.query);
+            assert_eq!(requested(&mut stream, &blocks).await?, first);
+            assert!(request(&mut stream).await?.is_none());
+            Ok::<_, Box<dyn std::error::Error>>(())
+        };
+        let (result, served) = timeout(Duration::from_secs(4), async { tokio::join!(pull, server) }).await?;
+        served?;
+        assert!(result.is_err());
+        assert_eq!(fs::read(unrelated)?, b"unrelated file");
+        Ok(())
+    })
+}
 async fn serve(
     listener: UnixListener,
     blocks: Blocks,
@@ -149,6 +257,70 @@ async fn serve(
         }
     }
     Ok(connections)
+}
+
+#[test]
+fn sibling_requests_overlap_and_reverse_replies_keep_authenticated_file_order() -> TestResult {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?
+        .block_on(async {
+            let temp = Temp::new()?;
+            let socket = temp.0.join("fs.sock");
+            let listener = UnixListener::bind(&socket)?;
+            let mut data = vec![3; 3 * BLOCK_BYTES + 17];
+            data[BLOCK_BYTES..2 * BLOCK_BYTES].fill(9);
+            data[3 * BLOCK_BYTES..].fill(12);
+            let (content, blocks) = tree(&data)?;
+            let server = async {
+                let (mut stream, _) = listener.accept().await?;
+                let frame = request(&mut stream).await?.ok_or("missing root lookup")?;
+                assert!(matches!(Request::decode(&frame)?, Request::Search(search)
+                    if search.query == content.query && search.block_type == BlockType::IBLOCK));
+                let (kind, root) = blocks.get(&content.query).ok_or("missing test root")?;
+                stream.write_all(&reply(*kind, root)?).await?;
+                let mut queries = Vec::new();
+                // All three distinct siblings must be sent before any is answered.
+                for _ in 0..3 {
+                    let frame = request(&mut stream)
+                        .await?
+                        .ok_or("missing sibling lookup")?;
+                    let Request::Search(search) = Request::decode(&frame)? else {
+                        return Err("wrong sibling request".into());
+                    };
+                    assert_eq!(search.block_type, BlockType::DBLOCK);
+                    assert!(!queries.contains(&search.query));
+                    queries.push(search.query);
+                }
+                for query in queries.into_iter().rev() {
+                    let (kind, block) = blocks.get(&query).ok_or("missing sibling block")?;
+                    stream.write_all(&reply(*kind, block)?).await?;
+                }
+                assert!(request(&mut stream).await?.is_none());
+                Ok::<_, Box<dyn std::error::Error>>(())
+            };
+            let source = EndpointSource::unix(socket);
+            let policy = DownloadOptions {
+                request_parallelism: std::num::NonZeroU32::new(4)
+                    .ok_or(gnunet_types::Error::Malformed)?,
+                queries_per_connection: 8,
+                ..options(&source, 5_000_000)?
+            };
+            let mut output = Vec::new();
+            let mut buffers = Buffers::new();
+            let transfer = buffers.download(source, content, &mut output, None, policy, |_| {
+                Control::Continue
+            });
+            let (result, server) = timeout(Duration::from_secs(3), async {
+                tokio::join!(transfer, server)
+            })
+            .await?;
+            let result = result?;
+            server?;
+            assert_eq!(result.progress.blocks, 5);
+            assert_eq!(output, data);
+            Ok(())
+        })
 }
 
 #[test]

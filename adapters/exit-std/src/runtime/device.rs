@@ -19,6 +19,21 @@ impl<'cfg, 'id, 'slots, E: Entropy> Driver<'cfg, 'id, 'slots, E> {
         }
         Ok(false)
     }
+    /// Offer recovery after an original managed FreeBSD interface disappears.
+    /// The old checkpoint and route observations remain independently owned.
+    #[cfg(target_os = "freebsd")]
+    pub fn retire_missing_freebsd(
+        &mut self,
+        observe: &mut impl FnMut(Event<'id>),
+    ) -> Result<bool, Error> {
+        if let Some(PacketSource::Native(io)) = self.tun.as_mut()
+            && let Some(loss) = io.retire_missing_freebsd()?
+        {
+            self.tun_loss(loss, observe)?;
+            return Ok(true);
+        }
+        Ok(false)
+    }
     /// Attach an explicitly prepared replacement after the original TUN loss.
     /// The caller verifies its addresses/routes/DAD before admission. Original
     /// CADET owners, DNS jobs, flow deadlines and old-flow cleanup stay intact;

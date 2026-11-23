@@ -1,5 +1,5 @@
 //! Actual original IPC/PILS/SET cooperative state; no spawned task or private RPC.
-use super::{Control, Wait, check, pils_cause, poll_pils};
+use super::{Control, Wait, check, input::Input, pils_cause, poll_pils};
 use crate::{
     Bounds, Bridge, Error, Progress, ServerLimits, SessionReport,
     core::{self, Completion, EffectId, PayloadValidation, Validator},
@@ -7,7 +7,7 @@ use crate::{
 use gnunet_pils_host::client as pils;
 use gnunet_service_runtime::{
     clock::RuntimeClock,
-    framing::{Class, Framed, OwnedFrame, ReadStep},
+    framing::{Class, OwnedFrame, ReadStep},
 };
 use gnunet_set_client_host as set;
 use gnunet_types::Error as Fault;
@@ -39,7 +39,7 @@ pub(super) struct Admission<'pils, 'a> {
     pub identity: gnunet_pils::client::Identity<'pils>,
 }
 pub(super) struct State<'id, 'pils, 'a> {
-    io: Framed<()>,
+    io: Input,
     bridge: Bridge<'id, 'pils>,
     pils: &'a mut pils::Client<'pils, 1>,
     clock: Arc<dyn RuntimeClock>,
@@ -49,8 +49,6 @@ pub(super) struct State<'id, 'pils, 'a> {
     identity: gnunet_pils::client::Identity<'pils>,
     report: SessionReport,
     wait: Option<Wait>,
-    partial: Option<Wait>,
-    input_bytes: usize,
     held_now: Option<u64>,
     output: Option<Output<'id>>,
     class: usize,
@@ -61,7 +59,7 @@ pub(super) struct State<'id, 'pils, 'a> {
 }
 impl<'id, 'pils, 'a> State<'id, 'pils, 'a> {
     pub fn new(
-        io: Framed<()>,
+        io: Input,
         bridge: Bridge<'id, 'pils>,
         pils: &'a mut pils::Client<'pils, 1>,
         admission: Admission<'pils, 'a>,
@@ -92,8 +90,6 @@ impl<'id, 'pils, 'a> State<'id, 'pils, 'a> {
             identity,
             report,
             wait,
-            partial: None,
-            input_bytes: 0,
             held_now: None,
             output: None,
             class: 0,
@@ -112,6 +108,7 @@ impl<'id, 'pils, 'a> State<'id, 'pils, 'a> {
     }
     fn guard(&self) -> Result<u64, Error> {
         if self
+            .io
             .partial
             .as_ref()
             .is_some_and(|wait| Instant::now() >= wait.bounds.hard)
@@ -120,6 +117,7 @@ impl<'id, 'pils, 'a> State<'id, 'pils, 'a> {
         }
         let now = check(self.clock.as_ref(), self.original, self.control)?;
         if self
+            .io
             .partial
             .as_ref()
             .is_some_and(|wait| Instant::now() >= wait.bounds.hard || now >= wait.bounds.expires)
@@ -249,7 +247,7 @@ impl<'id, 'pils, 'a> State<'id, 'pils, 'a> {
                 });
             }
             Progress::CloseClient { effect, .. } => {
-                self.io.retire();
+                self.io.framed.retire();
                 self.ipc_closed = true;
                 let terminal = self.bridge.complete_client(effect, Completion::Retired)?;
                 self.terminal(terminal);
@@ -300,7 +298,7 @@ impl<'id, 'pils, 'a> State<'id, 'pils, 'a> {
             return Ok(false);
         }
         let now = self.guard()?;
-        if let Some(bytes) = self.io.frame() {
+        if let Some(bytes) = self.io.framed.frame() {
             let origin = *self.held_now.get_or_insert(now);
             let result = match ClientRequest::decode(bytes)? {
                 ClientRequest::Insert { element_type, data } => {
@@ -315,51 +313,35 @@ impl<'id, 'pils, 'a> State<'id, 'pils, 'a> {
                 Err(Error::Protocol(Fault::WouldBlock | Fault::NotReady)) => return Ok(false),
                 Err(error) => return Err(error),
             }
-            self.io.release_frame();
-            self.partial = None;
+            self.io.framed.release_frame();
+            self.io.partial = None;
             self.held_now = None;
-            self.input_bytes = 0;
+            self.io.bytes = 0;
             return Ok(true);
         }
-        if let Some(wait) = &mut self.partial {
-            wait.poll(cx)?;
-        }
+        self.io.poll_deadline(cx)?;
         // The shared check/provider above can spend real time; no fresh syscall
         // is allowed after its unchanged native hard or known source loss.
         self.guard()?;
-        let before = Instant::now();
-        match self.io.poll_read(cx) {
+        match self
+            .io
+            .poll_read(cx, &self.clock, self.original, self.limits.partial_input)
+        {
             Poll::Pending => Ok(false),
-            Poll::Ready(Err(error)) => Err(error.into()),
+            Poll::Ready(Err(error)) => Err(error),
             Poll::Ready(Ok(ReadStep::Eof)) => {
                 if self.bridge.session().outcome().client_done_written {
                     self.ipc_closed = true;
-                    self.io.retire();
+                    self.io.framed.retire();
                     Ok(true)
                 } else {
                     Err(Fault::Closed.into())
                 }
             }
-            Poll::Ready(Ok(ReadStep::Progress { bytes, .. })) => {
-                self.input_bytes = self.input_bytes.checked_add(bytes).ok_or(Fault::Overflow)?;
-                if bytes != 0 && self.partial.is_none() {
-                    let now = self.clock.sample()?.now.as_micros();
-                    let micros = u64::try_from(self.limits.partial_input.as_micros())
-                        .map_err(|_| Fault::Overflow)?;
-                    let expires = now
-                        .checked_add(micros)
-                        .ok_or(Fault::Overflow)?
-                        .min(self.original.expires);
-                    let hard = before
-                        .checked_add(self.limits.partial_input)
-                        .ok_or(Fault::Overflow)?
-                        .min(self.original.hard);
-                    self.partial = Some(Wait::new(self.clock.clone(), Bounds { expires, hard })?);
-                }
-                Ok(true)
-            }
+            Poll::Ready(Ok(ReadStep::Progress { .. })) => Ok(true),
         }
     }
+
     fn output(&mut self, cx: &mut Context<'_>) -> Result<bool, Error> {
         let Some(output) = self.output.as_ref() else {
             return Ok(false);
@@ -371,8 +353,9 @@ impl<'id, 'pils, 'a> State<'id, 'pils, 'a> {
         let output = self.output.as_mut().ok_or(Fault::NotReady)?;
         if !output.queued {
             let bytes = output.bytes.take().ok_or(Fault::NotReady)?;
-            self.io.reserve(bytes.len(), Class::Ordinary)?;
+            self.io.framed.reserve(bytes.len(), Class::Ordinary)?;
             self.io
+                .framed
                 .enqueue_owned(OwnedFrame::new(bytes), (), Class::Ordinary)
                 .map_err(|error| error.reason)?;
             output.queued = true;
@@ -384,7 +367,7 @@ impl<'id, 'pils, 'a> State<'id, 'pils, 'a> {
         if !self.bridge.session().effect_io_allowed(id) {
             return Err(Fault::Cancelled.into());
         }
-        let step = match self.io.poll_write(cx) {
+        let step = match self.io.framed.poll_write(cx) {
             Poll::Pending => return Ok(false),
             Poll::Ready(result) => result?,
         };
@@ -419,7 +402,7 @@ impl<'id, 'pils, 'a> State<'id, 'pils, 'a> {
         Ok(true)
     }
     fn close_output(&mut self) {
-        self.io.retire();
+        self.io.framed.retire();
         self.ipc_closed = true;
         if let Some(output) = &self.output {
             self.report.pending_output_bytes = output.written;
@@ -465,7 +448,7 @@ impl<'id, 'pils, 'a> State<'id, 'pils, 'a> {
                 .unwrap_or(start)
         });
         self.wait = None;
-        self.partial = None;
+        self.io.partial = None;
         let why = self.report.primary.as_ref().map_or_else(
             || {
                 self.control
@@ -545,8 +528,8 @@ impl<'id, 'pils, 'a> State<'id, 'pils, 'a> {
         self.report.retired_input_bytes = self
             .report
             .retired_input_bytes
-            .saturating_add(self.input_bytes);
-        self.input_bytes = 0;
+            .saturating_add(self.io.bytes);
+        self.io.bytes = 0;
         self.report.physical_closed =
             self.ipc_closed && self.pils_closed && self.bridge.physical_retired();
         std::mem::take(&mut self.report)

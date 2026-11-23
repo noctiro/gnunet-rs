@@ -18,7 +18,14 @@ impl Drop for Directory {
     }
 }
 
-fn fixture() -> io::Result<(Directory, Controls, String)> {
+struct Fixture {
+    directory: Directory,
+    controls: Controls,
+    interface: String,
+    scope: Scope,
+}
+
+fn fixture() -> io::Result<Fixture> {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -92,9 +99,9 @@ esac
     )?;
     fs::set_permissions(&program, fs::Permissions::from_mode(0o700))?;
     let runner = Runner::leased(&lock)?;
-    Ok((
+    Ok(Fixture {
         directory,
-        Controls {
+        controls: Controls {
             lock,
             lease,
             program,
@@ -102,10 +109,10 @@ esac
             state: State::Installed,
             label,
             canonical,
-            scope: Some(Scope::new(native)),
         },
         interface,
-    ))
+        scope: Scope::new(native)?,
+    })
 }
 
 #[test]
@@ -130,16 +137,17 @@ fn read_only_observation_refuses_replacement_policy_and_keeps_the_original_scope
         .enable_all()
         .build()?
         .block_on(async {
-            let (directory, mut controls, interface) = fixture()?;
+            let Fixture {
+                directory,
+                mut controls,
+                interface,
+                scope,
+            } = fixture()?;
             let user = nix::unistd::geteuid();
             let current = controls
                 .observe(&interface, Instant::now() + ALLOWANCE)
                 .await?;
-            controls
-                .scope
-                .as_ref()
-                .ok_or_else(|| io::Error::other("original observation scope lost"))?
-                .require_same(&current)?;
+            scope.require_same(&current)?;
             fs::write(directory.0.join("rules"), b"pass all\n")?;
             if controls
                 .observe(&interface, Instant::now() + ALLOWANCE)
@@ -175,7 +183,12 @@ fn canceled_observation_keeps_its_original_child_for_stop_and_reap() -> io::Resu
         .enable_all()
         .build()?
         .block_on(async {
-            let (directory, mut controls, interface) = fixture()?;
+            let Fixture {
+                directory,
+                mut controls,
+                interface,
+                ..
+            } = fixture()?;
             fs::write(directory.0.join("block"), b"")?;
             {
                 let mut waiting =
@@ -218,7 +231,12 @@ fn probe_output_failure_fences_the_caller_before_original_child_retirement() -> 
         .enable_all()
         .build()?
         .block_on(async {
-            let (directory, mut controls, interface) = fixture()?;
+            let Fixture {
+                directory,
+                mut controls,
+                interface,
+                ..
+            } = fixture()?;
             fs::write(directory.0.join("info"), vec![b'x'; 32769])?;
             if controls
                 .observe(&interface, Instant::now() + ALLOWANCE)

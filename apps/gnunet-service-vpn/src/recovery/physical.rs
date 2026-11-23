@@ -51,7 +51,7 @@ impl Controller {
             Ok(()) => {
                 self.report.restart_attempts = self.report.restart_attempts.saturating_add(1);
                 self.report.installed = self.report.installed.saturating_add(1);
-                self.installed = Some(vpn.device_epoch());
+                self.installed = vpn.device_epoch();
                 Poll::Ready(Ok(true))
             }
             Err(WintunPhysicalFailure::Retained {

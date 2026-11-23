@@ -4,7 +4,7 @@ use crate::{manager::Failure, server::Mode};
 use gnunet_program_host::{
     logging::Logger,
     policy::Level,
-    program::{self, Defaults, Invocation, NlsDisabled, Preparation},
+    program::{self, Defaults, Invocation, Preparation},
     reporting::Reporter,
     shared_clock::SharedClock,
 };
@@ -55,7 +55,7 @@ unsafe fn run(mode: Mode) -> Result<ExitCode, Failure> {
     )?;
     let name = binary(mode);
     let mut logger = Logger::new(name.as_bytes(), std::process::id(), false)?;
-    let prepared = program::prepare(
+    let prepared = program::prepare_installed(
         config,
         Invocation {
             binary_name: name.as_bytes(),
@@ -64,7 +64,7 @@ unsafe fn run(mode: Mode) -> Result<ExitCode, Failure> {
             defaults: Defaults::Native,
         },
         Default::default(), std::env::args_os(), &program::Environment::capture(),
-        &mut NlsDisabled, &mut logger, &clock,
+        &mut logger, &clock,
         &mut io::stdout().lock(), &mut io::stderr().lock(),
     )?;
     let prepared = match prepared {

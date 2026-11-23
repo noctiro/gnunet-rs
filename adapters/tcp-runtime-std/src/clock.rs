@@ -4,7 +4,10 @@ use gnunet_crypto::EddsaPublicKey;
 use gnunet_service_runtime::clock::{ClockSubscription, RuntimeClock};
 use gnunet_tcp_communicator_core::session::Time;
 use gnunet_tcp_communicator_host::Clock;
-use gnunet_types::Error;
+use gnunet_types::{
+    Error,
+    monotime::{IssueError, Window},
+};
 use std::{
     path::PathBuf,
     sync::Arc,
@@ -38,8 +41,7 @@ pub struct ClockPort {
     subscription: Option<Box<dyn ClockSubscription>>,
     revision: u64,
     store: epoch::Store,
-    last: u64,
-    end: u64,
+    window: Window,
     last_time: Option<Time>,
     fault: Option<Failure>,
     refused: bool,
@@ -55,8 +57,7 @@ impl ClockPort {
             subscription: Some(subscription),
             revision: 0,
             store,
-            last: 0,
-            end: 0,
+            window: Window::resume(0).map_err(Failure::Clock)?,
             last_time: None,
             fault: None,
             refused: false,
@@ -133,9 +134,9 @@ impl ClockPort {
             .loaded()
             .map_err(Failure::History)?
             .map_or(0, |s| s.reserved);
+        let window = Window::resume(reserved).map_err(Failure::Clock)?;
         let epoch = self.store.begin(peer).map_err(Failure::History)?;
-        self.last = reserved;
-        self.end = reserved;
+        self.window = window;
         Ok(epoch)
     }
     /// Last actual successful sample, for retiring already-destroyed sessions only.
@@ -185,22 +186,13 @@ impl Clock for ClockPort {
         if let Err(error) = self.store.loaded() {
             return Err(self.refuse(Failure::History(error)));
         }
-        let wanted = match self.last.checked_add(1) {
-            Some(v) => sample.now.as_micros().max(v),
-            None => return Err(self.refuse(Failure::Clock(Error::Overflow))),
+        let signed = match self.window.issue(sample.now, |first| {
+            self.store.reserve(first.get(), 1_000_000)
+        }) {
+            Ok(time) => time.get(),
+            Err(IssueError::Sequence(error)) => return Err(self.refuse(Failure::Clock(error))),
+            Err(IssueError::Reserve(error)) => return Err(self.refuse(Failure::History(error))),
         };
-        let signed = if wanted > self.end {
-            match self.store.reserve(wanted, 1_000_000) {
-                Ok((first, end)) => {
-                    self.end = end;
-                    first
-                }
-                Err(e) => return Err(self.refuse(Failure::History(e))),
-            }
-        } else {
-            wanted
-        };
-        self.last = signed;
         let time = Time {
             now: sample.now.as_micros(),
             signed,

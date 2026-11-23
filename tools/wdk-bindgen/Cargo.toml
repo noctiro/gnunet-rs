@@ -1,0 +1,24 @@
+[package]
+name = "gnunet-wdk-bindgen"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.100.0"
+license = "MPL-2.0"
+publish = false
+
+[workspace]
+
+[dependencies]
+# Binding generator changes require rechecking the supported SDK layouts.
+bindgen = { version = "=0.72.1", default-features = false, features = ["runtime"] }
+object = { version = "0.41.0", default-features = false, features = ["pe", "read_core", "std", "unaligned"] }
+serde_json = "1.0.154"
+sha2 = { version = "0.11.1", default-features = false }
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"

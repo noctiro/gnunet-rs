@@ -1,0 +1,116 @@
+name: OpenHarmony native SDK
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native:
+    name: Build OpenHarmony native SDK
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      GNUNET_OHOS_BUILD_JOBS: '2'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Read the OpenHarmony Rust targets
+        id: targets
+        shell: bash
+        run: |
+          targets=$(sh platform/openharmony/build-sdk.sh --rust-targets)
+          printf 'targets=%s\n' "$(paste -sd, - <<< "$targets")" >> "$GITHUB_OUTPUT"
+      - uses: ./.github/actions/setup-rust
+        with:
+          targets: ${{ steps.targets.outputs.targets }}
+      - name: Read the pinned SDK release
+        id: release
+        shell: bash
+        run: |
+          profile=platform/openharmony/sdk-release.json
+          digest=$(jq -er '.sha256 | select(test("^[0-9a-f]{64}$"))' "$profile")
+          api=$(jq -er '.api | tostring | select(test("^[1-9][0-9]*$"))' "$profile")
+          printf 'sha256=%s\napi=%s\n' "$digest" "$api" >> "$GITHUB_OUTPUT"
+          printf 'OHOS_NATIVE=%s/gnunet-openharmony/native\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+          printf 'OHOS_SDK_ARCHIVE=%s/gnunet-openharmony/sdk.tar.gz\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+      - name: Restore the SDK archive
+        id: sdk-cache
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: ${{ env.OHOS_SDK_ARCHIVE }}
+          key: openharmony-public-sdk-${{ steps.release.outputs.sha256 }}
+      - name: Verify the SDK archive and extract the native component
+        shell: bash
+        env:
+          SDK_CACHE_HIT: ${{ steps.sdk-cache.outputs.cache-hit }}
+          SDK_SHA256: ${{ steps.release.outputs.sha256 }}
+          SDK_API: ${{ steps.release.outputs.api }}
+        run: |
+          umask 077
+          work=$(mktemp -d "$RUNNER_TEMP/gnunet-openharmony-extract.XXXXXXXX")
+          trap 'rm -rf -- "$work"' EXIT
+          profile=platform/openharmony/sdk-release.json
+          archive="$OHOS_SDK_ARCHIVE"
+          if [[ "$SDK_CACHE_HIT" != true ]]; then
+            mkdir -p "$(dirname "$archive")"
+            url=$(jq -er '.archive | select(startswith("https://"))' "$profile")
+            curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
+              --connect-timeout 15 --max-time 600 --retry 2 "$url" -o "$archive"
+          fi
+          checksum=$(sha256sum < "$archive")
+          if [[ "${checksum%% *}" != "$SDK_SHA256" ]]; then
+            printf 'OpenHarmony SDK archive SHA-256 mismatch\n' >&2
+            exit 1
+          fi
+          tar --extract --gzip --file "$archive" --directory "$work" \
+            --no-same-owner --no-same-permissions --no-anchored --wildcards 'linux/native-*.zip'
+          shopt -s nullglob
+          components=("$work"/linux/native-*.zip)
+          [[ "${#components[@]}" -eq 1 ]]
+          unzip -q "${components[0]}" 'native/*' -d "$work"
+          version=$(jq -er '.version | strings' "$profile")
+          jq -e --arg version "$version" --arg api "$SDK_API" \
+            '.version == $version and (.apiVersion | tostring) == $api' "$work/native/oh-uni-package.json"
+          mv "$work/native" "$OHOS_NATIVE"
+      - name: Cache the verified SDK archive
+        if: steps.sdk-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: ${{ env.OHOS_SDK_ARCHIVE }}
+          key: ${{ steps.sdk-cache.outputs.cache-primary-key }}
+      - name: Release archive storage before building
+        shell: bash
+        run: rm -- "$OHOS_SDK_ARCHIVE"
+      - name: Link the N-API module for each supported ABI
+        id: sdk
+        shell: bash
+        run: |
+          package=$(sh platform/openharmony/build-sdk.sh)
+          test -n "$package"
+          files=(
+            Index.ets
+            LICENSE
+            NOTICE.md
+            THIRD_PARTY_LICENSES.txt
+            oh-package.json5
+            build-profile.json5
+            hvigorfile.ts
+            src/main/module.json5
+            src/main/ets/workers/GnNodeWorker.ets
+            src/main/cpp/types/libgnunet_node/index.d.ts
+            src/main/cpp/types/libgnunet_node/oh-package.json5
+          )
+          for file in "${files[@]}"; do
+            test -f "$package/$file"
+          done
+          printf 'path=%s\n' "$package" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: gnunet-openharmony-source-har-api${{ steps.release.outputs.api }}
+          path: ${{ steps.sdk.outputs.path }}
+          if-no-files-found: error
+          retention-days: 7

@@ -1,4 +1,5 @@
 //! POSIX directory descriptors; no reconstructed child paths or symlink fallback.
+use super::CreateDirectoryError;
 use crate::DirectorySync;
 use nix::{
     errno::Errno,
@@ -17,7 +18,7 @@ const FLAGS: OFlag = OFlag::O_RDONLY
     .union(OFlag::O_DIRECTORY)
     .union(OFlag::O_NOFOLLOW)
     .union(OFlag::O_CLOEXEC);
-fn leaf(name: &OsStr) -> io::Result<()> {
+pub(super) fn leaf(name: &OsStr) -> io::Result<()> {
     let bytes = name.as_bytes();
     if bytes.is_empty()
         || bytes.len() > 255
@@ -144,6 +145,18 @@ impl Directory {
             FLAGS,
             Mode::empty(),
         )?)))
+    }
+    /// Exclusively create an ordinary child with normal inherited permissions.
+    /// The caller excludes namespace changes through the subsequent open.
+    ///
+    /// # Errors
+    /// Reports creation failures separately from failures to open a new entry.
+    pub fn create_directory(&self, name: &OsStr) -> Result<Self, CreateDirectoryError> {
+        leaf(name).map_err(CreateDirectoryError::Create)?;
+        mkdirat(&self.0, name, Mode::S_IRWXU | Mode::S_IRWXG | Mode::S_IRWXO)
+            .map_err(|error| CreateDirectoryError::Create(error.into()))?;
+        self.open_directory(name)
+            .map_err(CreateDirectoryError::OpenCreated)
     }
     /// Create one owner-only child directory, refusing an existing name.
     /// A later open/metadata failure can leave the new directory present.

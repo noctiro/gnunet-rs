@@ -150,7 +150,7 @@ impl State {
         {
             return Err(Error::InvalidInput);
         }
-        let profile = native_profile()?;
+        let profile = gnunet_service_runtime::network::native_sockaddr_profile()?;
         let mut rows = Vec::new();
         rows.try_reserve_exact(configuration.interfaces)
             .map_err(|_| Error::Capacity)?;
@@ -228,27 +228,6 @@ impl State {
             .min()
     }
 }
-fn endian() -> Endian {
-    if cfg!(target_endian = "little") {
-        Endian::Little
-    } else {
-        Endian::Big
-    }
-}
-fn native_profile() -> Result<Profile, Error> {
-    if cfg!(target_os = "linux") {
-        Ok(Profile::linux(endian()))
-    } else if cfg!(target_os = "macos") {
-        Ok(Profile::darwin(endian()))
-    } else if cfg!(target_os = "freebsd") {
-        Ok(Profile::freebsd(endian()))
-    } else if cfg!(windows) {
-        Ok(Profile::windows(endian()))
-    } else {
-        Err(Error::Unsupported)
-    }
-}
-
 fn address_hash(address: SocketAddr, profile: Profile) -> Result<[u8; 64], Error> {
     let address = match address {
         SocketAddr::V4(address) => Address::V4 {

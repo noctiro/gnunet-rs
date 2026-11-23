@@ -71,6 +71,138 @@ fn cancel_head(c: &mut Resolver<'_>, stub: &mut DnsStub<8, 271, 1>) -> Result<()
     stub.resolve_cancel(token)?;
     c.release_effect(t)
 }
+
+#[test]
+fn native_dns_owns_exact_any_phase_and_emits_original_terminal_response() -> Result<(), Error> {
+    let mut memory = Memory::<1024, 8192>::new([2, 2, 1, 2, 4, 8], 32, 8192)?;
+    let (mut core, mut scratch, _) = memory.raw_views(1)?;
+    let client = core.connect()?;
+    let blocked = core.connect()?;
+    let ready = |candidate| candidate != blocked;
+    core.load_machine_files(&mut scratch, b"192.0.2.8 static-test\n", b"")?;
+    let mut native = [0; 1024];
+    let mut work = [0; 1024];
+    let mut wire = [0; 255];
+    // Repeat the DNS transaction ID to verify the native generation matters.
+    let mut random = |_| Ok(1);
+    let mut eval = Evaluation {
+        mono: MonoInstant(1),
+        utc: AbsoluteTime::from_micros(1),
+        idna: &AsciiFixture,
+        random: &mut random,
+        text: TextScratch {
+            native: &mut native,
+            work: &mut work,
+            wire_name: &mut wire,
+        },
+    };
+    let other_wire = WireId([1, 3, 2, 4]);
+    core.request(
+        &mut scratch,
+        blocked,
+        Request::forward(other_wire, Family::V4, b"static-test")?,
+        &mut eval,
+    )?;
+    let wire_id = WireId([4, 3, 2, 1]);
+    let lookup = core
+        .request(
+            &mut scratch,
+            client,
+            Request::forward(wire_id, Family::Any, b"q")?,
+            &mut eval,
+        )?
+        .ok_or(Error::NotReady)?;
+    let ticket = core
+        .take_effect_with_output(ready)?
+        .ok_or(Error::NotReady)?;
+    let Effect::StartQuery(query) = core.effect(ticket)? else {
+        return Err(Error::Conflict);
+    };
+    assert_eq!(query.kind, 1);
+    let id = [query.bytes[0], query.bytes[1]];
+    let first = core.query_admitted_native(&mut scratch, ticket)?;
+    assert_eq!(core.lookup_stub(lookup)?, None);
+    core.release_effect(ticket)?;
+    let ipv4 = [record(&[127, 0, 0, 1], 1_000)?];
+    let packet = Packet::new(id, 0, &[], &ipv4, &[], &[]);
+    assert_eq!(
+        core.native_dns_result(&mut scratch, first, packet, &mut eval)?,
+        real::Disposition::AwaitingAaaa
+    );
+    let cancel = core.take_effect()?.ok_or(Error::NotReady)?;
+    assert_eq!(core.effect(cancel)?, Effect::CancelNativeDns(first));
+    core.release_effect(cancel)?;
+
+    let ticket = core
+        .take_effect_with_output(ready)?
+        .ok_or(Error::NotReady)?;
+    let Effect::StartQuery(query) = core.effect(ticket)? else {
+        return Err(Error::Conflict);
+    };
+    assert_eq!(query.kind, 28);
+    assert_eq!(&query.bytes[..2], &id);
+    let second = core.query_admitted_native(&mut scratch, ticket)?;
+    assert_ne!(first, second);
+    core.release_effect(ticket)?;
+    assert_eq!(
+        core.native_dns_result(&mut scratch, first, packet, &mut eval),
+        Err(Error::StaleGeneration)
+    );
+    let ipv6 = [Record {
+        kind: Type(28),
+        data: RData::Raw(&[6; 16]),
+        ..record(&[], 1_000)?
+    }];
+    assert_eq!(
+        core.native_dns_result(
+            &mut scratch,
+            second,
+            Packet::new(id, 0, &[], &ipv6, &[], &[]),
+            &mut eval
+        )?,
+        real::Disposition::Completed
+    );
+    let cancel = core.take_effect()?.ok_or(Error::NotReady)?;
+    assert_eq!(core.effect(cancel)?, Effect::CancelNativeDns(second));
+    core.release_effect(cancel)?;
+
+    let mut widths = [false; 2];
+    for _ in 0..2 {
+        let ticket = core
+            .take_effect_with_output(ready)?
+            .ok_or(Error::NotReady)?;
+        let Effect::Output(output) = core.effect(ticket)? else {
+            return Err(Error::Conflict);
+        };
+        assert_eq!(output.wire_id, wire_id);
+        match output.payload {
+            Payload::Raw(bytes) if bytes == [127, 0, 0, 1] => widths[0] = true,
+            Payload::Raw(bytes) if bytes == [6; 16] => widths[1] = true,
+            _ => return Err(Error::Malformed),
+        }
+        core.release_effect(ticket)?;
+    }
+    assert_eq!(widths, [true; 2]);
+    let ticket = core
+        .take_effect_with_output(ready)?
+        .ok_or(Error::NotReady)?;
+    assert!(
+        matches!(core.effect(ticket)?, Effect::Output(output) if output.wire_id == wire_id && output.payload == Payload::End)
+    );
+    core.release_effect(ticket)?;
+    assert!(core.take_effect_with_output(ready)?.is_none());
+    for payload in [Payload::Raw(&[192, 0, 2, 8]), Payload::End] {
+        let ticket = core.take_effect()?.ok_or(Error::NotReady)?;
+        assert!(matches!(
+            core.effect(ticket)?,
+            Effect::Output(output)
+                if output.client == blocked && output.wire_id == other_wire && output.payload == payload
+        ));
+        core.release_effect(ticket)?;
+    }
+    assert!(core.take_effect()?.is_none());
+    Ok(())
+}
 #[test]
 fn queued_output_survives_cache_expiry_and_old_tickets_cannot_release_replacement_payload()
 -> Result<(), Error> {

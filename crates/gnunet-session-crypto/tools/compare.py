@@ -6,8 +6,10 @@ sys.dont_write_bytecode=True
 from corpus import generate,openings,summary
 from udp_source import generate as generate_udp_source
 PIN='346358e26d4dcc2dc4f51bef5d52dca29c7d8165'
-TOOLCHAIN='1.99.1'
 PACKAGE=Path(__file__).resolve().parents[1]
+TOOLS=PACKAGE.parents[1]/"tools"
+sys.path.insert(0,str(TOOLS))
+from rust_toolchain import rust_channel
 
 def sha(p):return hashlib.sha256(p.read_bytes()).hexdigest()
 def dump(p,obj):p.write_text(json.dumps(obj,indent=2,sort_keys=True)+'\n')
@@ -44,6 +46,7 @@ def registry(lock):
 def main():
  ap=argparse.ArgumentParser(description=__doc__)
  for name in ['repository','source','reference','deps-prefix','output']:ap.add_argument('--'+name,type=Path,required=True)
+ ap.add_argument('--toolchain')
  a=ap.parse_args();repo=a.repository.resolve();source=a.source.resolve();ref=a.reference.resolve();deps=a.deps_prefix.resolve();out=a.output.resolve()
  receipt=json.loads(ref.read_text());build=Path(receipt['build']).resolve();prefix=Path(receipt['prefix']).resolve()
  contained(out,[repo,source,PACKAGE,build,prefix,deps,ref.parent]);out.mkdir(parents=True,exist_ok=False)
@@ -81,7 +84,7 @@ def main():
   command(['git','ls-files'],source,env,out/'git-files')
   def discover_paths():
    cpaths=[source/line for line in subprocess.check_output(['git','ls-files'],cwd=source,text=True).splitlines() if (source/line).is_file()]
-   paths=files(PACKAGE)+cpaths+list(linked)+[helper,ref,build/'gnunet_private_config.h',build/'src/include/gnunet_config.h',build/'compile_commands.json',repo/'Cargo.toml',repo/'Cargo.lock',repo/'rust-toolchain.toml',repo/'spec/gnunet/api/declarations.json']
+   paths=files(PACKAGE)+cpaths+list(linked)+[TOOLS/'rust_toolchain.py',repo/'rust-toolchain.toml',helper,ref,build/'gnunet_private_config.h',build/'src/include/gnunet_config.h',build/'compile_commands.json',repo/'Cargo.toml',repo/'Cargo.lock',repo/'spec/gnunet/api/declarations.json']
    paths += [Path(item['path']) for item in receipt['libraries']]
    for name in ['gnunet-types','gnunet-wire','gnunet-crypto','gnunet-gnscrypto','gnunet-hello']:paths+=files(repo/'crates'/name)
    return paths
@@ -92,7 +95,8 @@ def main():
   for name in ['src','examples','tests']:shutil.copytree(PACKAGE/name,rust/name)
   (rust/'Cargo.toml').write_text((PACKAGE/'Cargo.toml.in').read_text().replace('@REPOSITORY@',str(repo)))
   shutil.copy2(repo/'Cargo.lock',rust/'Cargo.lock')
-  cargo=['cargo','+'+TOOLCHAIN]
+  toolchain=rust_channel(repo,a.toolchain)
+  cargo=['cargo','+'+toolchain]
   metadata=json.loads(command(cargo+['metadata','--manifest-path',rust/'Cargo.toml','--offline','--format-version','1'],repo,env,out/'metadata'))
   actual_meta=json.loads(command(cargo+['metadata','--manifest-path',PACKAGE/'Cargo.toml','--offline','--locked','--format-version','1','--no-deps'],repo,env,out/'production-metadata'))
   actual_package=next(p for p in actual_meta['packages'] if Path(p['manifest_path']).resolve()==(PACKAGE/'Cargo.toml').resolve())
@@ -130,7 +134,7 @@ def main():
   assert 'test result: ok. 7 passed; 0 failed; 0 ignored;' in tests and all('test '+name+' ... ok' in tests for name in public_names),'independent public API witnesses missing'
   command(cargo+['clippy','--manifest-path',rust/'Cargo.toml','--all-targets','--offline','--locked'],repo,env,out/'clippy')
   command(cargo+['doc','--manifest-path',rust/'Cargo.toml','--no-deps','--offline','--locked'],repo,env,out/'doc')
-  command([sys.executable,'-B',PACKAGE/'tools/ownership.py','--manifest',rust/'Cargo.toml','--target-dir',out/'target','--output',out/'ownership','--toolchain',TOOLCHAIN],repo,env,out/'ownership-run')
+  command([sys.executable,'-B',PACKAGE/'tools/ownership.py','--manifest',rust/'Cargo.toml','--target-dir',out/'target','--output',out/'ownership','--toolchain',toolchain],repo,env,out/'ownership-run')
   ownership=json.loads((out/'ownership/result.json').read_text());assert ownership['status']=='passed' and ownership['negative_case_count']==14 and ownership['positive_control']['passed'] and ownership['inputs_unchanged']
   points=command(cargo+['run','--manifest-path',rust/'Cargo.toml','--example','public_points','--offline','--locked'],repo,env,out/'points').splitlines();assert len(points)==256
   base=generate(points)
@@ -184,7 +188,7 @@ def main():
   for item in receipt['libraries']:assert sha(Path(item['path']))==item['sha256'],'normal library changed'
   generated_after=snapshot(files(rust));dump(out/'generated-after.json',generated_after);assert generated_before==generated_after
   assert {str(p) for p in files(PACKAGE)}=={str(p) for p in paths if p.is_relative_to(PACKAGE)}
-  result={'status':'passed','scope':'normal unchanged utility-library primitives and exact public KDF compositions; no C CORE/TRANSPORT daemon or complete handshake execution','revision':head,'toolchain':TOOLCHAIN,'inputs_unchanged':True,'generated_rust_inputs_unchanged':True,'profiles':profile_results,'new_registry_packages':new,'normal_util':{'path':str(util),'sha256':sha(util)},'normal_sodium':{'path':str(sodium),'sha256':sha(sodium)},'normal_linked_libraries':{str(p):sha(p) for p in sorted(linked)},'negative_controls':controls,'ownership':{'negative_cases':14,'positive_controls':1,'receipt':'ownership/result.json','sha256':sha(out/'ownership/result.json')},'normal_dependency_graph_has_no_std_or_alloc_features':True,'production_template_dependencies_and_features_match':True,'udp_source_component':udp_component,'rust_tests':{'unit':24,'independent_public_api':7,'compile_fail_doc':2,'external_oracle_per_helper_profile':1},'embedded':['thumbv6m-none-eabi','thumbv7em-none-eabi'],'inventory_only':True,'remaining':['Elligator0x0022','remaining Elligator HPKE and key-family APIs','full UDP identity/replay/rekey owner','CORE state machine and framing','TCP packet/frame auth binding','remaining public function gaps and partial foundations recorded in inventory']}
+  result={'status':'passed','scope':'normal unchanged utility-library primitives and exact public KDF compositions; no C CORE/TRANSPORT daemon or complete handshake execution','revision':head,'toolchain':toolchain,'inputs_unchanged':True,'generated_rust_inputs_unchanged':True,'profiles':profile_results,'new_registry_packages':new,'normal_util':{'path':str(util),'sha256':sha(util)},'normal_sodium':{'path':str(sodium),'sha256':sha(sodium)},'normal_linked_libraries':{str(p):sha(p) for p in sorted(linked)},'negative_controls':controls,'ownership':{'negative_cases':14,'positive_controls':1,'receipt':'ownership/result.json','sha256':sha(out/'ownership/result.json')},'normal_dependency_graph_has_no_std_or_alloc_features':True,'production_template_dependencies_and_features_match':True,'udp_source_component':udp_component,'rust_tests':{'unit':24,'independent_public_api':7,'compile_fail_doc':2,'external_oracle_per_helper_profile':1},'embedded':['thumbv6m-none-eabi','thumbv7em-none-eabi'],'inventory_only':True,'remaining':['Elligator0x0022','remaining Elligator HPKE and key-family APIs','full UDP identity/replay/rekey owner','CORE state machine and framing','TCP packet/frame auth binding','remaining public function gaps and partial foundations recorded in inventory']}
   dump(out/'result.json',result);print(json.dumps({'status':'passed','profiles':profile_results,'result':str(out/'result.json')}))
  except Exception as exc:
   dump(out/'failure.json',{'status':'failed','error':repr(exc)});raise

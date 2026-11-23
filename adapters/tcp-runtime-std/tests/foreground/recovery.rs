@@ -90,6 +90,9 @@ async fn source_replacement(changed_master: bool) -> Result<(), Failure> {
             local_key: LocalKeyCapability {
                 ikm_file: seed.clone(),
             },
+            network_changes: Default::default(),
+            peer_mode: startup::PeerMode::Listening,
+            socket_policy: Default::default(),
             limits: Limits {
                 sessions: 1,
                 ..Default::default()

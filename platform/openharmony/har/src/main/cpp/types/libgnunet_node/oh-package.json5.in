@@ -1,0 +1,5 @@
+{
+  "name": "libgnunet_node.so",
+  "types": "./index.d.ts",
+  "version": "@GNUNET_SDK_VERSION@"
+}

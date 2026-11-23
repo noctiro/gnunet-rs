@@ -7,7 +7,7 @@ use gnunet_program_host::{
     service::{self, Preparation},
     shared_clock::SharedClock,
 };
-use gnunet_service_runtime::{Activation, BoundListeners};
+use gnunet_service_runtime::{Activation, BoundListeners, LocalListenerAccess};
 use gnunet_service_startup::{ParentRole, ReadyStatus};
 use std::process::ExitCode;
 use std::{fmt, io, time::Duration};
@@ -108,14 +108,15 @@ pub(super) fn run() -> Result<ExitCode, Failure> {
         settings.statistics.validate()?;
         gnunet_service_startup::verify_configured_identity(&config, b"dns")?;
         let bound = if activation.is_empty() {
-            runtime.block_on(BoundListeners::bind_configured(
-                &config,
-                b"dns",
-                settings.unix.into(),
-            ))?
+            let access = if !settings.unix.match_uid && settings.unix.match_gid {
+                LocalListenerAccess::Group
+            } else {
+                LocalListenerAccess::Owner
+            };
+            runtime.block_on(BoundListeners::bind_configured(&config, b"dns", access))?
         } else {
             let _entered = runtime.enter();
-            BoundListeners::from_activation(activation)?
+            BoundListeners::from_activation_with_access(activation, settings.unix)?
         };
         for error in bound.failures() {
             reports.warning(
@@ -128,10 +129,10 @@ pub(super) fn run() -> Result<ExitCode, Failure> {
                 config,
                 settings,
                 bound,
-                parent,
                 clock: clock.clone(),
                 reports: reports.clone(),
             },
+            parent,
             async {
                 tokio::time::timeout(Duration::from_secs(5), async {
                     if let Some(writer) = &mut ready {

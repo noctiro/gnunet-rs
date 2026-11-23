@@ -112,7 +112,7 @@ pub(crate) enum Tag {
     Insert(u64),
     Conclude,
 }
-/// Retained original unfinished request, exposed only after physical close.
+/// Retained original request without a timely write receipt, exposed after close.
 pub struct Pending {
     /// Original request kind/token.
     pub kind: Kind,
@@ -129,7 +129,7 @@ pub struct Pending {
     pub(crate) bound: Option<Alarm>,
     pub(crate) capacity: usize,
 }
-/// Whole local write of an original request, never a processing/peer ACK.
+/// Original whole local write observed within its deadline.
 #[derive(Clone)]
 pub struct Receipt {
     /// Actual original physical source.
@@ -169,7 +169,7 @@ impl std::error::Error for Cause {
         }
     }
 }
-/// Physically retired original source and unfinished independent request facts.
+/// Physically retired original source and independent request facts.
 pub struct Loss {
     /// Actual original epoch, absent before connection attachment.
     pub epoch: Option<Epoch>,
@@ -179,13 +179,13 @@ pub struct Loss {
     pub joined: bool,
     /// Whole CONCLUDE was actually written, without a response claim.
     pub concluded: bool,
-    /// Actual already whole-written insertions; not durable or peer accepted.
+    /// Actual whole-written insertions, including a late completion in `pending`.
     pub inserts_written: u64,
     /// Actual selected remote elements exposed before loss.
     pub elements: u64,
     /// Current unfinished input prefix.
     pub partial_input: usize,
-    /// Actual unfinished writes, moved without an allocation at failure.
+    /// Writes without a timely receipt, moved without allocating at failure.
     pub pending: VecDeque<Pending>,
 }
 impl Loss {

@@ -1,7 +1,9 @@
 //! Bounded immutable authority inventory and original provider transactions.
 use crate::{
-    Filter, MAX_LABEL_BYTES, MAX_RECORDS, RecordData, RecordFlags, RecordType, SecretKey,
-    SecretKeyView, ZoneKey, append_nickname, normalize_label, normalize_records, prepare_store,
+    Code, Filter, MAX_LABEL_BYTES, MAX_RECORDS, RecordData, RecordFlags, RecordType, SecretKey,
+    SecretKeyView, ZoneKey, append_nickname, normalize_label, normalize_records,
+    policy::{RecordView, normalize_records_for_view},
+    prepare_store,
 };
 #[cfg(target_has_atomic = "ptr")]
 use alloc::sync::Arc;
@@ -10,41 +12,6 @@ use core::{alloc::Layout, cell::Cell, fmt, mem};
 use gnunet_types::Error;
 use gnunet_wire::official::namestore::{RecordSets, Records};
 use zeroize::Zeroizing;
-/// Actual service code, retaining extension numeric codes without success guesses.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct Code(u32);
-impl Code {
-    /// The requested pure no-op or original provider commit completed.
-    pub const NONE: Self = Self(0);
-    /// Actual backend failure without a more specific cause.
-    pub const UNKNOWN: Self = Self(5000);
-    /// No matching delegation was found.
-    pub const ZONE_NOT_FOUND: Self = Self(5002);
-    /// Empty deletion found no actual records (a tombstone is not an ordinary record).
-    pub const RECORD_NOT_FOUND: Self = Self(5003);
-    /// Inconsistent/malformed authoritative data.
-    pub const RECORD_DATA_INVALID: Self = Self(5008);
-    /// Advisory begin found no existing label.
-    pub const NO_RESULTS: Self = Self(5010);
-    /// A complete actual response cannot fit declared limits.
-    pub const RECORD_TOO_BIG: Self = Self(5012);
-    /// Actual backend refused an operation.
-    pub const BACKEND_FAILED: Self = Self(5013);
-    /// Actual authoritative store failed.
-    pub const STORE_FAILED: Self = Self(5014);
-    /// Invalid NFC label.
-    pub const LABEL_INVALID: Self = Self(5015);
-    /// Preserve an actual extension code.
-    #[must_use]
-    pub const fn new(n: u32) -> Self {
-        Self(n)
-    }
-    /// Original numeric code.
-    #[must_use]
-    pub const fn value(self) -> u32 {
-        self.0
-    }
-}
 /// Explicit allocated-core resources. Historical snapshots and owned query
 /// payloads share retained_bytes; no key hash or ambient cache is introduced.
 #[derive(Clone, Copy, Debug)]
@@ -87,7 +54,8 @@ impl Default for Limits {
     }
 }
 impl Limits {
-    fn validate(self) -> Result<(), Error> {
+    /// Validate the inventory's resource bounds before opening a store.
+    pub fn validate(self) -> Result<(), Error> {
         if self.rows == 0
             || self.zones == 0
             || self.zones > self.rows
@@ -695,9 +663,16 @@ struct Staged {
     queued: bool,
 }
 pub(crate) struct ReadPolicy {
-    pub filter: Filter,
     pub now: u64,
-    pub nickname: bool,
+    pub view: ReadView,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum ReadView {
+    Lookup(Filter),
+    Stream(Filter),
+    Edit,
+    PreviousPublic,
 }
 /// Original provider plan. The caller must actually admit the after-image,
 /// then call queued, and supply its real commit/known-abort/unknown outcome.
@@ -946,7 +921,8 @@ impl Core {
         }
     }
     /// Normalize/read one actual label with the explicit source time/filter.
-    /// A found row may legitimately return zero visible payloads.
+    /// Maintenance lookup retains apex nicknames for read-modify-write. A found
+    /// row may legitimately return zero visible payloads.
     pub fn lookup(
         &self,
         key: SecretKeyView<'_>,
@@ -968,9 +944,8 @@ impl Core {
             &name,
             row,
             ReadPolicy {
-                filter,
                 now,
-                nickname: true,
+                view: ReadView::Lookup(filter),
             },
         )
     }
@@ -1030,27 +1005,29 @@ impl Core {
         row: Option<&Row>,
         policy: ReadPolicy,
     ) -> Result<Query, Error> {
-        let ReadPolicy {
-            filter,
-            now,
-            nickname,
-        } = policy;
+        let ReadPolicy { now, view } = policy;
         self.source(snapshot)?;
         let (found, records, hint, expires) = if let Some(row) = row {
             let rd = record_table(&row.records, self.limits.records_per_set)?;
             let mut normalized = scratch(rd.len(), blank())?;
             let mut indices = scratch(rd.len(), 0usize)?;
-            let selected = normalize_records(
+            let record_view = match view {
+                ReadView::Lookup(filter) => RecordView::Lookup(filter),
+                ReadView::Stream(filter) => RecordView::Standard(filter),
+                ReadView::Edit => RecordView::Edit,
+                ReadView::PreviousPublic => RecordView::Standard(Filter::OMIT_PRIVATE),
+            };
+            let selected = normalize_records_for_view(
                 name,
                 &rd,
                 now,
-                filter,
+                record_view,
                 &mut normalized,
                 &mut indices,
                 self.critical,
             )?;
             let expires = selected.expires();
-            let nick = if nickname && name != crate::APEX {
+            let nick = if !matches!(view, ReadView::PreviousPublic) && name != crate::APEX {
                 snapshot
                     .rows()
                     .iter()
@@ -1069,9 +1046,14 @@ impl Core {
             } else {
                 None
             };
-            let mut merged = scratch(selected.records().len() + 1, blank())?;
-            let selected = append_nickname(name, selected.records(), nick, now, &mut merged)?;
-            let serialized = OwnedRecords::serialize(selected, self.limits.record_bytes)?;
+            let serialized = if let Some(nick) = nick {
+                let mut merged = scratch(selected.records().len() + 1, blank())?;
+                let records =
+                    append_nickname(name, selected.records(), Some(nick), now, &mut merged)?;
+                OwnedRecords::serialize(records, self.limits.record_bytes)?
+            } else {
+                OwnedRecords::serialize(selected.records(), self.limits.record_bytes)?
+            };
             (true, serialized, row.hint.clone(), expires)
         } else {
             (
@@ -1152,9 +1134,8 @@ impl Core {
                     &name,
                     Some(&rows[i]),
                     ReadPolicy {
-                        filter: Filter::OMIT_PRIVATE,
                         now,
-                        nickname: false,
+                        view: ReadView::PreviousPublic,
                     },
                 )?
                 .expires()
@@ -1265,8 +1246,9 @@ impl Core {
         )
     }
     /// Prepare actual advisory begin on an existing label. Missing rows return
-    /// NO_RESULTS without fabricating a stored lock. Prior record data is frozen
-    /// before replacement and becomes available only after actual commit.
+    /// NO_RESULTS without fabricating a stored lock. The edit response retains
+    /// the original apex nickname. Prior record data is frozen before any
+    /// replacement of the hint and, for a change, returned after actual commit.
     pub fn edit_begin(
         &mut self,
         key: SecretKeyView<'_>,
@@ -1289,9 +1271,8 @@ impl Core {
             &name,
             index.map(|i| &self.current.rows()[i]),
             ReadPolicy {
-                filter: Filter::NONE,
                 now,
-                nickname: true,
+                view: ReadView::Edit,
             },
         )?;
         let Some(i) = index else {

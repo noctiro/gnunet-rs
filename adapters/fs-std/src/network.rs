@@ -4,6 +4,8 @@
 //! whole-file or selected-range authentication, or actual local store acknowledgements; it does
 //! not establish remote replication or indefinite network availability.
 mod directory;
+pub(crate) mod retained;
+mod window;
 pub(crate) type TimeLimit = crate::time_limit::TimeLimit<Error>;
 pub mod probe;
 #[cfg(feature = "network")]
@@ -25,9 +27,7 @@ use gnunet_fs::{
     Content, Location,
     content::{BlockKey, FileReader, NodeRef, TAG_BYTES, VerifiedChunk},
 };
-use gnunet_service_runtime::framing::{
-    Accounting, Budget, Class, Limits as FrameLimits, OwnedFrame, ReadStep,
-};
+use gnunet_service_runtime::framing::{Accounting, Budget, Class, Limits as FrameLimits, ReadStep};
 use gnunet_types::{AbsoluteTime, Error as ProtocolError};
 use gnunet_wire::official::fs::{
     BlockType, CLIENT_PUT_PREFIX, Request, Response, SEARCH_LOOPBACK_ONLY, SEARCH_PREFIX, Search,
@@ -41,6 +41,7 @@ use std::{
     fmt,
     future::{Future, poll_fn},
     io,
+    num::NonZeroU32,
     task::{Context, Poll},
 };
 use tokio::io::{AsyncWrite, AsyncWriteExt};
@@ -149,6 +150,9 @@ pub struct DownloadOptions {
     /// rotation also clears pending/late input. There is no per-search cancel
     /// frame. Must be nonzero.
     pub queries_per_connection: u32,
+    /// Maximum outstanding request count within one authenticated sibling group.
+    /// The native MQ query budget and bounded reorder storage also apply.
+    pub request_parallelism: NonZeroU32,
     /// Maximum physical bytes offered in one read/write step, nonzero.
     pub io_slice_bytes: usize,
 }
@@ -164,6 +168,7 @@ impl DownloadOptions {
             target: [0; 32],
             local_only: false,
             queries_per_connection: 32,
+            request_parallelism: NonZeroU32::MIN.saturating_add(15),
             io_slice_bytes: 65535,
         }
     }
@@ -192,9 +197,6 @@ struct Lookup {
 }
 impl Lookup {
     fn new(source: EndpointSource, options: DownloadOptions) -> Result<Self, Error> {
-        if options.queries_per_connection == 0 || options.io_slice_bytes == 0 {
-            return Err(ProtocolError::InvalidInput.into());
-        }
         let time = TimeLimit::new(source.clock(), options.deadline, options.native_deadline)?;
         Self::with_time(source, options, time)
     }
@@ -203,9 +205,6 @@ impl Lookup {
         options: DownloadOptions,
         hard: tokio::time::Instant,
     ) -> Result<Self, Error> {
-        if options.queries_per_connection == 0 || options.io_slice_bytes == 0 {
-            return Err(ProtocolError::InvalidInput.into());
-        }
         let time = TimeLimit::new(
             source.clock(),
             options.deadline,
@@ -222,6 +221,9 @@ impl Lookup {
         options: DownloadOptions,
         time: TimeLimit,
     ) -> Result<Self, Error> {
+        if options.queries_per_connection == 0 || options.io_slice_bytes == 0 {
+            return Err(ProtocolError::InvalidInput.into());
+        }
         let channel = Channel::new(
             source,
             FrameLimits {
@@ -285,6 +287,49 @@ impl Lookup {
         })
         .await
     }
+    fn attach(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Error>> {
+        if self.connected {
+            return Poll::Ready(Ok(()));
+        }
+        match self.channel.poll_connect(cx) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(Err(error)) | Poll::Ready(Ok(ConnectionStep::Unavailable(error))) => {
+                Poll::Ready(Err(error.into()))
+            }
+            Poll::Ready(Ok(ConnectionStep::Attached)) => {
+                self.connected = true;
+                self.queries = 0;
+                Poll::Ready(Ok(()))
+            }
+            Poll::Ready(Ok(ConnectionStep::Retry { error, .. })) => {
+                if self.first_io.is_none() {
+                    self.first_io = Some(error);
+                }
+                cx.waker().wake_by_ref();
+                Poll::Pending
+            }
+        }
+    }
+    fn queue(&mut self, origin: u64, kind: BlockType, query: [u8; 64]) -> Result<(), Error> {
+        let framed = self.channel.framing_mut().ok_or(ProtocolError::NotReady)?;
+        let mut bytes = [0; SEARCH_PREFIX];
+        Request::Search(Search {
+            options: if self.options.local_only {
+                SEARCH_LOOPBACK_ONLY
+            } else {
+                0
+            },
+            block_type: kind,
+            anonymity: self.options.anonymity,
+            target: self.options.target,
+            query,
+            seen: &[],
+        })
+        .encode(&mut bytes)?;
+        framed.enqueue_copy(&bytes, origin, Class::Ordinary)?;
+        self.queries += 1;
+        Ok(())
+    }
     async fn fetch(&mut self, request: NodeRef) -> Result<(), Error> {
         if self.queries >= self.options.queries_per_connection {
             self.channel.detach();
@@ -303,52 +348,13 @@ impl Lookup {
                 Poll::Pending => return Poll::Pending,
                 Poll::Ready(result) => result?,
             }
-            if !self.connected {
-                match self.channel.poll_connect(cx) {
-                    Poll::Pending => return Poll::Pending,
-                    Poll::Ready(Err(error)) => return Poll::Ready(Err(error.into())),
-                    Poll::Ready(Ok(ConnectionStep::Attached)) => {
-                        self.connected = true;
-                        self.queries = 0;
-                    }
-                    Poll::Ready(Ok(ConnectionStep::Unavailable(error))) => {
-                        return Poll::Ready(Err(error.into()));
-                    }
-                    Poll::Ready(Ok(ConnectionStep::Retry { error, .. })) => {
-                        if self.first_io.is_none() {
-                            self.first_io = Some(error);
-                        }
-                        cx.waker().wake_by_ref();
-                        return Poll::Pending;
-                    }
-                }
+            match self.attach(cx) {
+                Poll::Pending => return Poll::Pending,
+                Poll::Ready(result) => result?,
             }
             if !queued {
-                let framed = self.channel.framing_mut().ok_or(ProtocolError::NotReady)?;
-                framed.reserve(SEARCH_PREFIX, Class::Ordinary)?;
-                let mut bytes = Vec::new();
-                bytes
-                    .try_reserve_exact(SEARCH_PREFIX)
-                    .map_err(|_| ProtocolError::Capacity)?;
-                bytes.resize(SEARCH_PREFIX, 0);
-                Request::Search(Search {
-                    options: if self.options.local_only {
-                        SEARCH_LOOPBACK_ONLY
-                    } else {
-                        0
-                    },
-                    block_type: kind,
-                    anonymity: self.options.anonymity,
-                    target: self.options.target,
-                    query,
-                    seen: &[],
-                })
-                .encode(&mut bytes)?;
                 self.serial = self.serial.checked_add(1).ok_or(ProtocolError::Overflow)?;
-                framed
-                    .enqueue_owned(OwnedFrame::new(bytes), self.serial, Class::Ordinary)
-                    .map_err(|rejected| rejected.reason)?;
-                self.queries += 1;
+                self.queue(self.serial, kind, query)?;
                 queued = true;
             }
             let framed = self.channel.framing_mut().ok_or(ProtocolError::NotReady)?;
@@ -483,11 +489,30 @@ struct Download<'buffers, 'cache> {
     plain: &'buffers mut [u8],
     encoded: &'buffers mut [u8],
     lookup: Lookup,
+    window: window::Window,
     cache: Option<&'cache mut Repository>,
     progress: Progress,
 }
+struct LocalNode {
+    length: usize,
+    already_written: bool,
+}
 trait DownloadSink {
-    async fn chunk(&mut self, chunk: VerifiedChunk<'_>) -> Result<(), Error>;
+    fn retains_nodes(&self) -> bool {
+        false
+    }
+    async fn local_node(
+        &mut self,
+        _node: NodeRef,
+        _plaintext: &mut [u8],
+        _encoded: &mut [u8],
+    ) -> Result<Option<LocalNode>, Error> {
+        Ok(None)
+    }
+    async fn index(&mut self, _node: NodeRef, _plaintext: &[u8]) -> Result<(), Error> {
+        Ok(())
+    }
+    async fn chunk(&mut self, chunk: VerifiedChunk<'_>, reused: bool) -> Result<(), Error>;
     async fn finish(&mut self) -> Result<(), Error>;
 }
 impl<'buffers, 'cache> Download<'buffers, 'cache> {
@@ -500,8 +525,27 @@ impl<'buffers, 'cache> Download<'buffers, 'cache> {
         plain: &'buffers mut [u8],
         encoded: &'buffers mut [u8],
     ) -> Result<Self, Error> {
+        Self::with_lookup(
+            Lookup::new(source, options)?,
+            content,
+            cache,
+            keys,
+            plain,
+            encoded,
+        )
+    }
+
+    fn with_lookup(
+        lookup: Lookup,
+        content: Content,
+        cache: Option<&'cache mut Repository>,
+        keys: &'buffers mut [BlockKey],
+        plain: &'buffers mut [u8],
+        encoded: &'buffers mut [u8],
+    ) -> Result<Self, Error> {
         Ok(Self {
-            lookup: Lookup::new(source, options)?,
+            lookup,
+            window: window::Window::default(),
             reader: FileReader::new(content, keys)?,
             plain,
             encoded,
@@ -519,7 +563,21 @@ impl<'buffers, 'cache> Download<'buffers, 'cache> {
             if control(self.progress) == Control::Cancel {
                 return Err(Error::Cancelled(self.progress));
             }
-            let cached = if let Some(store) = self.cache.as_deref_mut() {
+            let local = if sink.retains_nodes() && !self.window.has_pending() {
+                controlled(
+                    self.lookup
+                        .during(sink.local_node(request, self.plain, self.encoded)),
+                    self.progress,
+                    &mut control,
+                )
+                .await??
+            } else {
+                None
+            };
+            let reused = local.as_ref().is_some_and(|node| node.already_written);
+            let cached = if let Some(local) = local {
+                Some(local.length)
+            } else if let Some(store) = self.cache.as_deref_mut() {
                 match store.read_block(request, self.encoded) {
                     Ok(length) => Some(length),
                     Err(crate::Error::Io(error)) if error.kind() == io::ErrorKind::NotFound => None,
@@ -532,19 +590,40 @@ impl<'buffers, 'cache> Download<'buffers, 'cache> {
                 let bytes = self.encoded.get(..length).ok_or(ProtocolError::Malformed)?;
                 (length, self.reader.open_next(bytes, self.plain)?)
             } else {
-                self.lookup
-                    .fetch_controlled(request, self.progress, &mut control)
+                let buffered = self.cache.is_none()
+                    && self
+                        .window
+                        .select(&mut self.lookup, request, self.reader.ready_leaves())?;
+                if buffered {
+                    controlled(
+                        self.window.fetch(&mut self.lookup),
+                        self.progress,
+                        &mut control,
+                    )
                     .await?;
+                } else {
+                    self.lookup
+                        .fetch_controlled(request, self.progress, &mut control)
+                        .await?;
+                }
                 if control(self.progress) == Control::Cancel {
                     return Err(Error::Cancelled(self.progress));
                 }
-                let bytes = self.lookup.block()?;
+                let bytes = if buffered {
+                    self.window.block()?
+                } else {
+                    self.lookup.block()?
+                };
                 let chunk = self.reader.open_next(bytes, self.plain)?;
                 if let Some(store) = self.cache.as_deref_mut() {
                     store.cache(request.key().query, bytes)?;
                 }
                 let length = bytes.len();
-                self.lookup.release();
+                if buffered {
+                    self.window.release();
+                } else {
+                    self.lookup.release();
+                }
                 (length, chunk)
             };
             if let Some(chunk) = chunk {
@@ -553,12 +632,23 @@ impl<'buffers, 'cache> Download<'buffers, 'cache> {
                 }
                 let length = chunk.bytes().len();
                 controlled(
-                    self.lookup.during(sink.chunk(chunk)),
+                    self.lookup.during(sink.chunk(chunk, reused)),
                     self.progress,
                     &mut control,
                 )
                 .await??;
                 self.progress.plaintext_bytes += length as u64;
+            } else if !reused && sink.retains_nodes() {
+                let plaintext = self
+                    .plain
+                    .get(..request.node().plaintext_bytes())
+                    .ok_or(ProtocolError::Malformed)?;
+                controlled(
+                    self.lookup.during(sink.index(request, plaintext)),
+                    self.progress,
+                    &mut control,
+                )
+                .await??;
             }
             self.progress.blocks += 1;
             self.progress.encoded_bytes += length as u128;
@@ -583,7 +673,7 @@ struct Writer<'output, W> {
     output: &'output mut W,
 }
 impl<W: AsyncWrite + Unpin> DownloadSink for Writer<'_, W> {
-    async fn chunk(&mut self, chunk: VerifiedChunk<'_>) -> Result<(), Error> {
+    async fn chunk(&mut self, chunk: VerifiedChunk<'_>, _reused: bool) -> Result<(), Error> {
         self.output.write_all(chunk.bytes()).await?;
         Ok(())
     }

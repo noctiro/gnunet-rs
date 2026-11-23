@@ -95,7 +95,7 @@ pub struct Limits {
     pub branches: usize,
     /// Maximum retained actual accepting results, including queued/exposed debt.
     pub outputs: usize,
-    /// Maximum retained exact DHT-result fingerprints across live original queries.
+    /// Maximum number of recent DHT-result fingerprints across live original queries.
     pub seen_results: usize,
     /// Maximum combined GET/PUT predecessor identities per result.
     pub output_paths: usize,
@@ -134,7 +134,7 @@ pub enum Work<'a> {
     Put {
         /// Opaque original work id; a clone remains the same original id.
         job: JobId,
-        /// The actual accepted original IPC allocation.
+        /// The original local publisher or accepted IPC allocation.
         client: ClientId,
         /// The original state proof key.
         key: Hash,
@@ -170,7 +170,7 @@ pub enum Work<'a> {
     Sign {
         /// Opaque original work id; a clone remains the same original id.
         job: JobId,
-        /// The actual accepted original IPC allocation.
+        /// The original local publisher or accepted IPC allocation.
         client: ClientId,
         /// Actual original PILS peer public identity, not a secret.
         peer: [u8; 32],
@@ -181,7 +181,7 @@ pub enum Work<'a> {
     Retire {
         /// Opaque original work id; a clone remains the same original id.
         job: JobId,
-        /// The actual accepted original IPC allocation.
+        /// The original local publisher or accepted IPC allocation.
         client: ClientId,
         /// The SAME original operation; admission/cancel-queued is not quiescence.
         target: JobId,

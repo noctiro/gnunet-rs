@@ -2,9 +2,18 @@ use gnunet_config::Configuration;
 use gnunet_tcp_communicator_core::session::Policy;
 use std::{
     error::Error,
-    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
+    net::{IpAddr, SocketAddr},
     num::NonZeroUsize,
 };
+/// Native TCP peer ingress policy; the public TCP protocol is unchanged.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum PeerMode {
+    /// Bind/adopt configured peer listeners and publish their actual addresses.
+    #[default]
+    Listening,
+    /// Initiate ordinary peer connections only; no listener or local address ADD.
+    OutboundOnly,
+}
 /// A configured BINDTO hostname, not a public TRANSPORT address or DNS result.
 #[derive(Debug)]
 pub struct Hostname {
@@ -23,30 +32,25 @@ impl Hostname {
         self.port
     }
 }
+#[derive(Debug)]
+pub(crate) enum Binding {
+    Wildcard(u16),
+    Numeric(SocketAddr),
+    Hostname(Hostname),
+}
+
 /// Parsed official TCP communicator options, independent of wire extensions.
 pub struct Settings {
-    /// Numeric bindings. Empty only when `hostname` requires actual resolution.
-    pub bindings: Vec<SocketAddr>,
-    /// Original hostname binding, resolved and prebound before USERNAME.
-    pub hostname: Option<Hostname>,
+    binding: Option<Binding>,
     /// Original reference policy with official overrides.
     pub policy: Policy,
-    /// Explicit IPv6 admission policy.
-    pub disable_v6: bool,
+    disable_v6: bool,
     /// Selected PILS identity/HELLO profile, independent of the TCP handshake.
     pub identity_profile: gnunet_pils::Profile,
 }
-fn bindto(
-    bind: &str,
-    disable_v6: bool,
-) -> Result<(Vec<SocketAddr>, Option<Hostname>), Box<dyn Error>> {
+fn bindto(bind: &str, disable_v6: bool) -> Result<Binding, Box<dyn Error>> {
     if !bind.is_empty() && bind.bytes().all(|byte| byte.is_ascii_digit()) {
-        let port = bind.parse::<u16>()?;
-        let mut addresses = vec![SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), port)];
-        if !disable_v6 {
-            addresses.push(SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), port));
-        }
-        return Ok((addresses, None));
+        return Ok(Binding::Wildcard(bind.parse()?));
     }
     let numeric = bind.parse::<SocketAddr>().ok().or_else(|| {
         let ip = bind
@@ -59,7 +63,7 @@ fn bindto(
         if disable_v6 && address.is_ipv6() {
             return Err("IPv6 BINDTO disabled".into());
         }
-        return Ok((vec![address], None));
+        return Ok(Binding::Numeric(address));
     }
     let (name, port) = match bind.rsplit_once(':') {
         Some((name, port)) => (name, port.parse::<u16>()?),
@@ -76,40 +80,74 @@ fn bindto(
     let mut bytes = Vec::new();
     bytes.try_reserve_exact(name.len())?;
     bytes.extend_from_slice(name.as_bytes());
-    Ok((Vec::new(), Some(Hostname { name: bytes, port })))
+    Ok(Binding::Hostname(Hostname { name: bytes, port }))
 }
 impl Settings {
+    /// The configured IPv6 admission policy used for all native endpoints.
+    #[must_use]
+    pub const fn disable_v6(&self) -> bool {
+        self.disable_v6
+    }
+
+    /// Only listening settings carry a binding that can create or adopt ingress.
+    pub(crate) fn binding(&self) -> Option<&Binding> {
+        self.binding.as_ref()
+    }
+
+    /// Original hostname awaiting resolution, if BINDTO selected a name.
+    #[must_use]
+    pub fn hostname(&self) -> Option<&Hostname> {
+        match self.binding()? {
+            Binding::Hostname(name) => Some(name),
+            _ => None,
+        }
+    }
+
     /// Parse official BINDTO bare port, numeric address (including port0), or
     /// hostname with optional port. Hostnames remain unresolved until the
     /// original shared Resolver and prebinding owner actually run.
     pub fn parse(config: &Configuration) -> Result<Self, Box<dyn Error>> {
+        Self::parse_for(config, PeerMode::Listening)
+    }
+    /// Select native ingress independently from the official session policy.
+    /// Outbound-only mode neither reads BINDTO nor requests bind-name resolution.
+    pub fn parse_for(config: &Configuration, mode: PeerMode) -> Result<Self, Box<dyn Error>> {
         let section = b"communicator-tcp";
         let identity_profile = gnunet_pils::Profile::configured(
             config.get(b"PILS", b"PROFILE"),
             config.get(b"communicator-tcp-rust", b"PILS_PROFILE"),
         )?;
-        let bind = std::str::from_utf8(
-            config
-                .get(section, b"BINDTO")
-                .ok_or("missing communicator-tcp BINDTO")?,
-        )?;
-        let disable_v6 = config.get_yesno(section, b"DISABLE_V6").unwrap_or(false);
-        let (bindings, hostname) = bindto(bind, disable_v6)?;
+        let disable_v6 = config
+            .get(section, b"DISABLE_V6")
+            .map(|_| config.get_yesno(section, b"DISABLE_V6"))
+            .transpose()?
+            .unwrap_or(false);
+        let binding = match mode {
+            PeerMode::Listening => {
+                let bind = std::str::from_utf8(
+                    config
+                        .get(section, b"BINDTO")
+                        .ok_or("missing communicator-tcp BINDTO")?,
+                )?;
+                Some(bindto(bind, disable_v6)?)
+            }
+            PeerMode::OutboundOnly => None,
+        };
         let mut policy = Policy::reference(NonZeroUsize::new(1024).ok_or("entropy policy")?);
-        policy.max_backpressure =
-            usize::try_from(config.get_number(section, b"MAX_QUEUE_LENGTH").unwrap_or(8))?;
+        if let Ok(max) = config.get_number(section, b"MAX_QUEUE_LENGTH") {
+            policy.max_backpressure = usize::try_from(max)?;
+        }
         policy.rekey_interval_us = config
             .get_time(section, b"REKEY_INTERVAL")
-            .unwrap_or(86_400_000_000);
+            .unwrap_or(policy.rekey_interval_us);
         policy.rekey_max_bytes = config
             .get_number(section, b"REKEY_MAX_BYTES")
-            .unwrap_or(400 * 1024 * 1024);
+            .unwrap_or(policy.rekey_max_bytes);
         if policy.rekey_max_bytes == 0 {
             return Err("REKEY_MAX_BYTES must be positive".into());
         }
         Ok(Self {
-            bindings,
-            hostname,
+            binding,
             policy,
             disable_v6,
             identity_profile,
@@ -120,6 +158,38 @@ impl Settings {
 #[cfg(test)]
 mod profile_tests {
     use super::*;
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "Outbound mode must preserve actual official session policy while omitting all bind selection"
+    )]
+    fn outbound_profile_needs_no_bindto_and_preserves_peer_protocol_policy()
+    -> Result<(), Box<dyn Error>> {
+        let mut config = Configuration::default();
+        config.set_number(b"communicator-tcp", b"REKEY_MAX_BYTES", 777)?;
+        let outbound = Settings::parse_for(&config, PeerMode::OutboundOnly)?;
+        assert!(outbound.binding().is_none());
+        assert!(outbound.hostname().is_none());
+        assert_eq!(outbound.policy.rekey_max_bytes, 777);
+        let refusal = crate::listeners::Listeners::prepare(&outbound, Default::default())
+            .err()
+            .ok_or("outbound settings admitted listener preparation")?;
+        assert_eq!(refusal.kind(), std::io::ErrorKind::InvalidInput);
+        config.set_value(
+            b"communicator-tcp",
+            b"BINDTO",
+            Some(b"invalid bind selection:letters"),
+        )?;
+        let selected = Settings::parse_for(&config, PeerMode::OutboundOnly)?;
+        assert!(selected.binding().is_none());
+        assert!(selected.hostname().is_none());
+        assert_eq!(
+            selected.policy.rekey_max_bytes,
+            outbound.policy.rekey_max_bytes
+        );
+        assert!(Settings::parse(&config).is_err());
+        Ok(())
+    }
     #[test]
     #[expect(
         clippy::panic_in_result_fn,
@@ -141,7 +211,9 @@ mod profile_tests {
             gnunet_pils::Profile::ReferenceDeterministic
         );
         assert_eq!(selected.policy.rekey_max_bytes, 777);
-        assert_eq!(selected.bindings, ["127.0.0.1:0".parse::<SocketAddr>()?]);
+        assert!(
+            matches!(selected.binding(), Some(Binding::Numeric(address)) if *address == SocketAddr::from(([127, 0, 0, 1], 0)))
+        );
         config.set_value(
             b"communicator-tcp-rust",
             b"PILS_PROFILE",

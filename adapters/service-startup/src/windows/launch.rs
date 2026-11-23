@@ -2,11 +2,12 @@
 use super::{
     ParentRole,
     capture::{ACTIVATION, DETACH},
+    grant::Signer,
     parent::{ParentBootstrap, ParentFailure, ReadyReceipt},
 };
 use gnunet_native::{
-    process::{Console, ExportedHandle, LaunchLimits, Spawn, Stdio},
-    socket_activation::{ExportSection, PublishFailure},
+    process::{AccountProfile, Console, LaunchLimits, Spawn, Stdio},
+    socket_activation::{AccountExportSection, ExportSection, Publication, PublishFailure, Source},
 };
 use gnunet_service_runtime::{
     pipe::PipeListener,
@@ -16,7 +17,6 @@ use std::{
     error::Error,
     ffi::{OsStr, OsString},
     fmt, io,
-    os::windows::io::{AsHandle, BorrowedSocket},
     path::Path,
     task::{Context, Poll},
 };
@@ -46,7 +46,22 @@ pub struct Command<'a> {
     /// registration changes during publication. Keep these sources alive until
     /// actual qualified readiness, or explicitly retire the child on failure or
     /// abandonment. Publication does not transfer pathname cleanup ownership.
-    pub listeners: &'a [BorrowedSocket<'a>],
+    pub listeners: &'a [Source<'a>],
+}
+
+/// Cross-account supervisor inputs with closed standard streams and its account environment.
+pub struct AccountCommand<'a> {
+    /// Absolute native executable path.
+    pub executable: &'a Path,
+    /// Literal argv0, independent of the executable path.
+    pub argv0: &'a OsStr,
+    /// Literal arguments after argv0.
+    pub arguments: &'a [OsString],
+    /// Original loaded profile and verified primary token for this child.
+    pub profile: AccountProfile,
+    /// Quiescent IPv4/IPv6 TCP listeners in import order, retained until actual readiness
+    /// or explicit failed-child retirement. An empty slice selects self-binding startup.
+    pub listeners: &'a [Source<'a>],
 }
 /// Native launch failure, retaining original diagnostics and provider reservations.
 #[derive(Debug)]
@@ -87,6 +102,7 @@ pub struct LaunchFailure {
     pub child: Option<OriginalChild>,
     /// Independent failure to revoke start permission after setup failed.
     pub revocation: Option<RegistryError>,
+    _publication: Option<Publication>,
 }
 impl fmt::Display for LaunchFailure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -106,6 +122,7 @@ impl Error for LaunchFailure {
 /// Drop closes local channel/wait owners only; the registry retains the process.
 pub struct Parent {
     bootstrap: ParentBootstrap,
+    publication: Option<Publication>,
 }
 impl Parent {
     /// Exact registry-branded child created by this launch.
@@ -126,7 +143,13 @@ impl Parent {
         match self.poll_connect(cx) {
             Poll::Pending => Poll::Pending,
             Poll::Ready(Err(error)) => Poll::Ready(Err(error)),
-            Poll::Ready(Ok(())) => self.bootstrap.poll_status(cx),
+            Poll::Ready(Ok(())) => {
+                let status = self.bootstrap.poll_status(cx);
+                if matches!(&status, Poll::Ready(Ok(_))) {
+                    self.publication = None;
+                }
+                status
+            }
         }
     }
     /// Await actual qualified readiness, preserving all progress on cancellation.
@@ -138,8 +161,12 @@ impl Parent {
         self.bootstrap.take_control()
     }
 }
-struct PreparedExport {
-    section: ExportSection,
+enum Activation<'a> {
+    Inherited(ExportSection<'a>),
+    Dedicated(AccountExportSection<'a>),
+}
+struct PreparedExport<'a> {
+    section: Activation<'a>,
     // Reserve error-owner backing before admitting a suspended child. Filling
     // the cold error variant after native publication needs no extra allocation.
     failure: Box<std::mem::MaybeUninit<PublishFailure>>,
@@ -150,22 +177,82 @@ struct PreparedExport {
 /// retains the original child for explicit cleanup, never a no-child refusal.
 pub fn launch(
     registry: &mut ChildRegistry,
-    mut command: Command<'_>,
+    command: Command<'_>,
     limits: LaunchLimits,
 ) -> Result<Parent, LaunchFailure> {
-    let prepare = |error| LaunchFailure {
+    launch_owned(registry, command, limits, None)
+}
+
+/// Start under the selected Windows account. Managed activation uses an original
+/// suspended child and publishes its native section before resume.
+pub fn launch_as(
+    registry: &mut ChildRegistry,
+    command: AccountCommand<'_>,
+    limits: LaunchLimits,
+) -> Result<Parent, LaunchFailure> {
+    let directory = command
+        .executable
+        .parent()
+        .ok_or_else(|| prepare(io::ErrorKind::InvalidInput.into()))?;
+    let environment = command.profile.environment(limits).map_err(prepare)?;
+    launch_owned(
+        registry,
+        Command {
+            executable: command.executable,
+            argv0: command.argv0,
+            arguments: command.arguments,
+            environment,
+            directory,
+            stdio: [Stdio::Closed; 3],
+            console: Console::Detached,
+            role: ParentRole::Supervisor,
+            listeners: command.listeners,
+        },
+        limits,
+        Some(command.profile),
+    )
+}
+
+fn prepare(error: io::Error) -> LaunchFailure {
+    LaunchFailure {
         cause: LaunchCause::Prepare(error),
         child: None,
         revocation: None,
-    };
+        _publication: None,
+    }
+}
+
+fn launch_owned(
+    registry: &mut ChildRegistry,
+    mut command: Command<'_>,
+    limits: LaunchLimits,
+    profile: Option<AccountProfile>,
+) -> Result<Parent, LaunchFailure> {
     let sockets = command.listeners;
-    let section = if sockets.is_empty() {
+    let mut section = if sockets.is_empty() {
         None
     } else {
+        let section = if let Some(profile) = &profile {
+            Activation::Dedicated(
+                AccountExportSection::for_account(sockets, profile).map_err(prepare)?,
+            )
+        } else {
+            Activation::Inherited(ExportSection::for_listeners(sockets).map_err(prepare)?)
+        };
         Some(PreparedExport {
-            section: ExportSection::new(sockets.len()).map_err(prepare)?,
+            section,
             failure: Box::new_uninit(),
         })
+    };
+    let signer = match section.as_mut().map(|prepared| &mut prepared.section) {
+        Some(Activation::Dedicated(section)) if section.requires_bootstrap() => {
+            let signer = Signer::generate().map_err(prepare)?;
+            section
+                .set_bootstrap_verifying_key(signer.verifying_key())
+                .map_err(prepare)?;
+            Some((signer, Box::new_uninit()))
+        }
+        _ => None,
     };
     // Five explicit private hints plus one generated section-handle hint when
     // active. Native environment encoding makes generated exports win by name.
@@ -185,7 +272,11 @@ pub fn launch(
         .environment
         .try_reserve_exact(5)
         .map_err(|_| prepare(io::ErrorKind::OutOfMemory.into()))?;
-    let listener = PipeListener::bind().map_err(prepare)?;
+    let listener = match &profile {
+        Some(profile) => PipeListener::bind_for_user(profile.user().map_err(prepare)?),
+        None => PipeListener::bind(),
+    }
+    .map_err(prepare)?;
     let endpoint = listener.endpoint().as_os_str();
     command
         .environment
@@ -204,10 +295,6 @@ pub fn launch(
     command
         .environment
         .push((ACTIVATION.into(), OsString::new()));
-    let export = section.as_ref().map(|section| ExportedHandle {
-        handle: section.section.as_handle(),
-        environment_key: OsStr::new(ACTIVATION),
-    });
     let spawn = Spawn {
         executable: command.executable,
         argv0: command.argv0,
@@ -215,21 +302,29 @@ pub fn launch(
         environment: &command.environment,
         directory: command.directory,
         stdio: command.stdio,
-        exported_handles: export.as_slice(),
+        exported_handles: &[],
         console: command.console,
     };
     let suspended = section.is_some();
-    let child = if suspended {
-        registry.spawn_suspended(spawn, limits)
-    } else {
-        registry.spawn(spawn, limits)
+    let activation = section.as_mut().map(|export| &mut export.section);
+    let child = match (profile, activation) {
+        (Some(profile), Some(Activation::Dedicated(section))) => {
+            registry.spawn_suspended_as(spawn, profile, section, OsStr::new(ACTIVATION), limits)
+        }
+        (Some(profile), None) => registry.spawn_as(spawn, profile, limits),
+        (None, Some(Activation::Inherited(section))) => {
+            registry.spawn_for_activation(spawn, section, OsStr::new(ACTIVATION), limits)
+        }
+        (None, None) => registry.spawn(spawn, limits),
+        _ => return Err(prepare(io::ErrorKind::InvalidData.into())),
     }
     .map_err(|error| LaunchFailure {
         cause: LaunchCause::Registry(error),
         child: None,
         revocation: None,
+        _publication: None,
     })?;
-    let bootstrap = ParentBootstrap::new(listener, registry, &child).map_err(|error| {
+    let mut bootstrap = ParentBootstrap::new(listener, registry, &child).map_err(|error| {
         if suspended {
             failed_preparation(registry, &child, LaunchCause::Registry(error))
         } else {
@@ -237,24 +332,60 @@ pub fn launch(
                 cause: LaunchCause::Registry(error),
                 child: Some(child.clone()),
                 revocation: None,
+                _publication: None,
             }
         }
     })?;
-    if let Some(PreparedExport { section, failure }) = section {
-        let publication = match registry.original(&child) {
-            Ok(original) => section
-                .publish(original, sockets)
-                .map_err(|error| LaunchCause::Activation(Box::write(failure, error))),
+    let publication = if let Some(PreparedExport { section, failure }) = section {
+        let publication = match registry.activation_target(&child) {
+            Ok(original) => match section {
+                Activation::Inherited(section) => section
+                    .publish(original)
+                    .map(|publication| (publication, None)),
+                Activation::Dedicated(section) => section.publish(original),
+            }
+            .map_err(|error| LaunchCause::Activation(Box::write(failure, error))),
             Err(error) => Err(LaunchCause::Registry(error)),
         };
-        publication.map_err(|cause| failed_preparation(registry, &child, cause))?;
-        registry.resume(&child).map_err(|error| LaunchFailure {
-            cause: LaunchCause::Registry(error),
-            child: Some(child.clone()),
-            revocation: None,
-        })?;
-    }
-    Ok(Parent { bootstrap })
+        let (publication, grant) =
+            publication.map_err(|cause| failed_preparation(registry, &child, cause))?;
+        let signed = match (signer, grant) {
+            (Some((signer, storage)), Some(grant)) => signer
+                .seal(grant)
+                .map(|frame| Some(Box::write(storage, frame))),
+            (None, None) => Ok(None),
+            _ => Err(io::Error::other(
+                "activation grant does not match the original launch route",
+            )),
+        };
+        match signed {
+            Ok(Some(grant)) => bootstrap.set_activation_grant(grant),
+            Ok(None) => {}
+            Err(error) => {
+                return Err(LaunchFailure {
+                    cause: LaunchCause::Prepare(error),
+                    revocation: registry.cancel_preparation(&child).err(),
+                    child: Some(child),
+                    _publication: Some(publication),
+                });
+            }
+        }
+        if let Err(error) = registry.resume(&child) {
+            return Err(LaunchFailure {
+                cause: LaunchCause::Registry(error),
+                child: Some(child),
+                revocation: None,
+                _publication: Some(publication),
+            });
+        }
+        Some(publication)
+    } else {
+        None
+    };
+    Ok(Parent {
+        bootstrap,
+        publication,
+    })
 }
 fn failed_preparation(
     registry: &mut ChildRegistry,
@@ -265,5 +396,6 @@ fn failed_preparation(
         cause,
         child: Some(child.clone()),
         revocation: registry.cancel_preparation(child).err(),
+        _publication: None,
     }
 }

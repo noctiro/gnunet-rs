@@ -18,7 +18,11 @@ use gnunet_nat::{
     address::{SocketAddress, parse_ipv4},
     state::{self, Advertised, Core, Provider, ProviderKind, Source},
 };
-use gnunet_service_runtime::clock::{ClockSubscription, RuntimeClock};
+use gnunet_service_runtime::{
+    clock::{ClockSubscription, RuntimeClock},
+    network::SocketPolicy,
+    network_change::NetworkChanges,
+};
 use gnunet_types::Error as Fault;
 use gnunet_wire::official::nat::{self, AddressClass};
 use std::{
@@ -33,7 +37,6 @@ use std::{
 };
 use tokio::{
     io::AsyncWriteExt,
-    net::{TcpSocket, UdpSocket},
     time::{Instant, Sleep},
 };
 /// Actual original cause, retaining concrete clock/DNS/IGD/helper failures.
@@ -303,7 +306,7 @@ pub struct Manager {
     unresolved: usize,
     retire_sources: Vec<Source>,
     stun: Vec<(SocketAddress, Provider)>,
-    helpers: Supervisor,
+    helpers: Option<Supervisor>,
     next: u64,
     next_scan: Due,
     next_external: Due,
@@ -313,6 +316,9 @@ pub struct Manager {
     cursor: usize,
     stopping: bool,
     helper_first: bool,
+    network_changes: NetworkChanges,
+    socket_policy: SocketPolicy,
+    scan_first: bool,
 }
 impl Manager {
     /// Use the exact process-shared Resolver/clock Arc and immutable config snapshot.
@@ -322,14 +328,43 @@ impl Manager {
         limits: state::Limits,
         resolver: SharedResolution,
         clock: Arc<dyn RuntimeClock>,
+        network_changes: NetworkChanges,
+    ) -> Result<Self, Failure> {
+        Self::new_with_socket_policy(
+            config,
+            settings,
+            limits,
+            resolver,
+            clock,
+            network_changes,
+            SocketPolicy::default(),
+        )
+    }
+
+    /// Use the original application's egress policy for all native NAT jobs.
+    pub fn new_with_socket_policy(
+        config: Configuration,
+        settings: Settings,
+        limits: state::Limits,
+        resolver: SharedResolution,
+        clock: Arc<dyn RuntimeClock>,
+        network_changes: NetworkChanges,
+        socket_policy: SocketPolicy,
     ) -> Result<Self, Failure> {
         if !Arc::ptr_eq(&resolver.clock(), &clock) {
             return Err(Fault::InvalidInput.into());
         }
+        if settings.helpers.is_some() && socket_policy.is_protected() {
+            return Err(Fault::Unsupported.into());
+        }
         let mut core = Core::new(limits)?;
         let interface_provider = core.provider_started(ProviderKind::Interface)?;
         let external_provider = core.provider_started(ProviderKind::ExternalIp)?;
-        let helpers = Supervisor::new(settings.helper_paths.clone(), settings.helper_limits)?;
+        let helpers = settings
+            .helpers
+            .as_ref()
+            .map(|helpers| Supervisor::new(helpers.paths.clone(), helpers.limits))
+            .transpose()?;
         let now = clock.sample()?.now.as_micros();
         let native = Instant::now();
         let subscription = clock.subscribe()?;
@@ -377,7 +412,14 @@ impl Manager {
             cursor: 0,
             stopping: false,
             helper_first: false,
+            network_changes,
+            socket_policy,
+            scan_first: true,
         })
+    }
+
+    fn gate(&self, bounds: Bounds) -> Result<Gate, Error> {
+        Gate::new_with_socket_policy(self.clock.clone(), bounds, self.socket_policy.clone())
     }
     /// Actual core view, never an independent shadow inventory.
     pub fn core(&self) -> &Core {
@@ -393,7 +435,10 @@ impl Manager {
     }
     /// Current cleanup/child debt; shutdown is complete only when this iszero.
     pub fn pending(&self) -> usize {
-        self.jobs.len() + self.helpers.pending() + self.leases.len() + self.cleanup_queue.len()
+        self.jobs.len()
+            + self.helpers.as_ref().map_or(0, Supervisor::pending)
+            + self.leases.len()
+            + self.cleanup_queue.len()
     }
     /// Mapping removal or helper retirement which could not be established.
     pub const fn unresolved(&self) -> usize {
@@ -599,13 +644,14 @@ impl Manager {
                 )?;
             }
             nat::Request::Reverse { local, remote } => {
+                let helpers = self.helpers.as_mut().ok_or(Fault::Unsupported)?;
                 let reversal = self.core.request_reversal(
                     source,
                     SocketAddress::from_wire(local.address())?,
                     SocketAddress::from_wire(remote.address())?,
                 )?;
                 let bounds = Bounds::after(&*self.clock, self.settings.job_timeout)?;
-                self.helpers.start_client(reversal, bounds, &*self.clock)?;
+                helpers.start_client(reversal, bounds, &*self.clock)?;
             }
         }
         Ok(())
@@ -672,7 +718,7 @@ impl Manager {
         }
         let observations = upnp::ReadObservations::new(upnp::Limits::default())?;
         let bounds = Bounds::after(&*self.clock, self.settings.job_timeout)?;
-        let mut gate = Gate::new(self.clock.clone(), bounds)?;
+        let mut gate = self.gate(bounds)?;
         let provider = self.core.provider_started(ProviderKind::Mapping {
             source,
             protocol: protocol.number(),
@@ -709,7 +755,7 @@ impl Manager {
         }
     }
     fn add(&mut self, intent: Intent, bounds: Bounds) -> Result<(), Failure> {
-        let mut gate = Gate::new(self.clock.clone(), bounds)?;
+        let mut gate = self.gate(bounds)?;
         let resolver = self.resolver.clone();
         let i = intent.clone();
         let attempt = upnp::AddAttempt::new()?;
@@ -774,7 +820,7 @@ impl Manager {
         origin: CleanupOrigin,
         bounds: Bounds,
     ) -> Result<(), Failure> {
-        let mut gate = Gate::new(self.clock.clone(), bounds)?;
+        let mut gate = self.gate(bounds)?;
         let resolver = self.resolver.clone();
         let i = intent.clone();
         let attempt = upnp::DeleteAttempt::default();
@@ -817,7 +863,7 @@ impl Manager {
         };
         let mapping = lease.mapping.clone();
         let bounds = Bounds::after(&*self.clock, self.settings.job_timeout)?;
-        let mut gate = Gate::new(self.clock.clone(), bounds)?;
+        let mut gate = self.gate(bounds)?;
         let resolver = self.resolver.clone();
         let future = Box::pin(async move {
             let present =
@@ -851,7 +897,7 @@ impl Manager {
         let port = *port;
         let host = host.clone();
         let bounds = Bounds::after(&*self.clock, self.settings.job_timeout)?;
-        let mut gate = Gate::new(self.clock.clone(), bounds)?;
+        let mut gate = self.gate(bounds)?;
         let mut lookup = Lookup::start(&self.resolver, &gate, &host, 128)?;
         let disable_v6 = self.settings.disable_v6;
         let future = Box::pin(async move {
@@ -887,25 +933,22 @@ impl Manager {
         self.admit(Kind::Dns { source, provider }, bounds, future)?;
         Ok(())
     }
-    fn external(&mut self) -> Result<(), Failure> {
-        if !self.settings.use_stun || self.settings.stun_servers.is_empty() {
-            return Ok(());
-        }
+    fn external(&mut self, settings: crate::settings::ActiveStun) -> Result<(), Failure> {
         let bounds = Bounds::after(&*self.clock, self.settings.job_timeout)?;
-        let servers = self.settings.stun_servers.clone();
-        let max_datagrams = self.settings.stun_datagrams;
         let resolver = self.resolver.clone();
         let clock = self.clock.clone();
+        let socket_policy = self.socket_policy.clone();
         let future = Box::pin(async move {
             let mut last = None;
-            for (host, port) in servers {
-                match crate::probe::external_ipv4(
+            for (host, port) in settings.servers.iter() {
+                match crate::probe::external_ipv4_with_socket_policy(
                     resolver.clone(),
                     clock.clone(),
                     host,
                     port,
                     bounds,
-                    max_datagrams,
+                    settings.datagrams,
+                    socket_policy.clone(),
                 )
                 .await
                 {
@@ -930,7 +973,8 @@ impl Manager {
             if port == 0 {
                 return Err(Fault::InvalidInput.into());
             }
-            self.helpers.start_test(
+            let helpers = self.helpers.as_mut().ok_or(Fault::Unsupported)?;
+            helpers.start_test(
                 state::Reversal {
                     source,
                     local: [0; 4],
@@ -943,16 +987,15 @@ impl Manager {
             return Ok(());
         }
         let target = SocketAddr::from((request.destination, request.port));
-        let mut gate = Gate::new(self.clock.clone(), bounds)?;
+        let mut gate = self.gate(bounds)?;
         let future = Box::pin(async move {
             if request.is_tcp == 1 {
-                let socket = TcpSocket::new_v4()?;
+                gate.check()?;
+                let socket = gate.socket_policy().tcp_socket(target)?;
                 let mut stream = gate.run(socket.connect(target)).await?;
                 gate.run(stream.write_all(&request.data)).await?;
             } else {
-                let socket = gate
-                    .run(UdpSocket::bind(SocketAddr::from(([0, 0, 0, 0], 0))))
-                    .await?;
+                let socket = gate.bind_udp(SocketAddr::from(([0, 0, 0, 0], 0))).await?;
                 let n = gate.run(socket.send_to(&request.data, target)).await?;
                 if n != 2 {
                     return Err(io::Error::new(
@@ -974,7 +1017,9 @@ impl Manager {
         source: Source,
         observe: &mut impl FnMut(Event),
     ) -> Result<(), Failure> {
-        self.helpers.source_stopped(source);
+        if let Some(helpers) = &mut self.helpers {
+            helpers.source_stopped(source);
+        }
         if let Some(provider) = self
             .clients
             .iter()
@@ -1038,7 +1083,7 @@ impl Manager {
     }
     fn scan(&mut self, observe: &mut impl FnMut(Event)) -> Result<(), Failure> {
         let bounds = Bounds::after(&*self.clock, self.settings.job_timeout)?;
-        let gate = Gate::new(self.clock.clone(), bounds)?;
+        let gate = self.gate(bounds)?;
         let addresses = interfaces::scan(
             &mut self.core,
             self.interface_provider,
@@ -1086,8 +1131,8 @@ impl Manager {
         for i in (0..self.interfaces.len()).rev() {
             if !locals.contains(&self.interfaces[i].local) {
                 let old = self.interfaces.swap_remove(i);
-                if let Some(helper) = old.helper {
-                    self.helpers.stop(helper)?;
+                if let (Some(helpers), Some(helper)) = (&mut self.helpers, old.helper) {
+                    helpers.stop(helper)?;
                 }
             }
         }
@@ -1099,7 +1144,7 @@ impl Manager {
                 self.interfaces.push(Interface {
                     local,
                     helper: None,
-                    retry: Some(Instant::now()),
+                    retry: self.helpers.as_ref().map(|_| Instant::now()),
                     backoff: Duration::from_millis(100),
                 });
             }
@@ -1451,7 +1496,11 @@ impl Manager {
         cx: &mut Context<'_>,
         observe: &mut impl FnMut(Event),
     ) -> Result<(), Failure> {
-        if let Some(e) = self.helpers.poll_native(cx) {
+        if let Some(e) = self
+            .helpers
+            .as_mut()
+            .and_then(|helpers| helpers.poll_native(cx))
+        {
             self.helper_event(e, observe)?;
         }
         let now = Instant::now();
@@ -1509,7 +1558,7 @@ impl Manager {
             if self.settings.enable_ipscan {
                 include(self.next_scan.native);
             }
-            if self.settings.use_stun && !self.settings.stun_servers.is_empty() {
+            if self.settings.active_stun.is_some() {
                 include(self.next_external.native);
             }
             for i in &self.interfaces {
@@ -1599,7 +1648,8 @@ impl Manager {
         };
         self.maintain(now)?;
         if !self.helper_first
-            && let Poll::Ready(event) = self.helpers.poll(cx, Some(now))
+            && let Some(helpers) = &mut self.helpers
+            && let Poll::Ready(event) = helpers.poll(cx, Some(now))
         {
             self.helper_first = true;
             self.helper_event(event, observe)?;
@@ -1667,7 +1717,16 @@ impl Manager {
         if self.stopping {
             return Poll::Pending;
         }
-        if self.settings.enable_ipscan && self.next_scan.reached(now) {
+        if self.settings.enable_ipscan && self.network_changes.poll_changed(cx).is_ready() {
+            self.next_scan = Due {
+                absolute: now,
+                native: Instant::now(),
+            };
+        }
+        let scan_due = self.settings.enable_ipscan && self.next_scan.reached(now);
+        let scan_first = std::mem::replace(&mut self.scan_first, true);
+        if scan_due && scan_first {
+            self.scan_first = false;
             self.next_scan = Due::after(&*self.clock, self.settings.interface_interval)?;
             if let Err(error) = self.scan(observe) {
                 observe(Event::Failed {
@@ -1678,14 +1737,20 @@ impl Manager {
             }
             return Poll::Ready(Ok(()));
         }
+        // Continuous host hints cannot hide provider refresh or helper work.
+        // Keep the due scan owned while those classes get their next turn.
+        if scan_due {
+            cx.waker().wake_by_ref();
+        }
         for i in 0..self.interfaces.len() {
-            if self.interfaces[i].helper.is_none()
+            if let Some(helpers) = &mut self.helpers
+                && self.interfaces[i].helper.is_none()
                 && self.interfaces[i]
                     .retry
                     .is_some_and(|t| Instant::now() >= t)
             {
                 let local = self.interfaces[i].local;
-                match self.helpers.start_server(local) {
+                match helpers.start_server(local) {
                     Ok(h) => {
                         self.interfaces[i].helper = Some(h);
                         self.interfaces[i].retry = None;
@@ -1787,13 +1852,12 @@ impl Manager {
                 return Poll::Ready(Ok(()));
             }
         }
-        if self.settings.use_stun
-            && !self.settings.stun_servers.is_empty()
+        if let Some(settings) = &self.settings.active_stun
             && self.next_external.reached(now)
             && !self.jobs.iter().any(|j| matches!(j.kind, Kind::External))
         {
-            self.next_external = Due::after(&*self.clock, self.settings.stun_interval)?;
-            if let Err(error) = self.external() {
+            self.next_external = Due::after(&*self.clock, settings.interval)?;
+            if let Err(error) = self.external(settings.clone()) {
                 observe(Event::Failed {
                     job: 0,
                     source: None,
@@ -1802,7 +1866,9 @@ impl Manager {
             }
             return Poll::Ready(Ok(()));
         }
-        if let Poll::Ready(event) = self.helpers.poll(cx, Some(now)) {
+        if let Some(helpers) = &mut self.helpers
+            && let Poll::Ready(event) = helpers.poll(cx, Some(now))
+        {
             self.helper_event(event, observe)?;
             self.helper_first = true;
             return Poll::Ready(Ok(()));
@@ -1814,10 +1880,13 @@ impl Manager {
     /// wait is fabricated; caller keeps polling until pending iszero or hard cap.
     pub fn shutdown(&mut self, observe: &mut impl FnMut(Event)) -> Result<(), Failure> {
         self.stopping = true;
+        self.network_changes = NetworkChanges::default();
         while let Some(source) = self.clients.last().map(|c| c.source) {
             self.source_stopped(source, observe)?;
         }
-        self.helpers.stop_all();
+        if let Some(helpers) = &mut self.helpers {
+            helpers.stop_all();
+        }
         let mut i = 0;
         while i < self.jobs.len() {
             if matches!(self.jobs[i].kind, Kind::Delete { .. }) {
@@ -1833,7 +1902,10 @@ impl Manager {
     /// network cleanup when the clock cannot authorize an original operation.
     pub fn abort(&mut self, observe: &mut impl FnMut(Event)) {
         self.stopping = true;
-        self.helpers.stop_all();
+        self.network_changes = NetworkChanges::default();
+        if let Some(helpers) = &mut self.helpers {
+            helpers.stop_all();
+        }
         for cleanup in self.cleanup_queue.drain(..) {
             self.unresolved = self.unresolved.saturating_add(1);
             observe(Event::MappingUnknown {

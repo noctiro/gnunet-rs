@@ -40,6 +40,13 @@ separate: an exposed write, source loss and cleanup failure can coexist.
 Private instance and generation tokens bind callbacks to their original owner;
 a copied peer ID, request number or pathname cannot recreate that authority.
 
+Validate required context where an operation or resource is created. Group
+the validated fields into one value and keep construction private to that
+boundary. States that can submit a native operation carry its original owner
+and deadline. A state that observes an interface or socket identifier only
+can report it or reject a mismatch. Atomic delivery requires a native
+capability that selects and validates the original object.
+
 A healthy identity update differs from physical observer replacement. Check the
 observer identity, revision and freshness before admitting new work. An admitted
 handshake, signature, ciphertext or call retains its original identity. Resolve
@@ -64,6 +71,16 @@ Domain input outcomes distinguish consumed work, local admission refusal and
 physical-source failure. Capacity refusal for one peer cannot implicitly retire
 unrelated sessions. Shared framing owns byte cursors and control capacity;
 the consuming domain decides when that physical source must retire.
+Validate input against the protocol's limits before admitting its contents
+against local budgets. A valid peer reply can be consumed even when some of its
+candidates do not fit the local table.
+
+Once a bounded owner has accepted a complete input, release the shared receive
+cursor while semantic work waits for capacity, flow control or dependencies.
+Keep the physical input only while ownership has not transferred. Protocol
+reads and synchronization retain capacity independent of ordinary work, so
+backpressure cannot block the messages needed to resolve it. Native cursor
+metadata remains separate from authenticated graph and key authority.
 
 Canceling a wait retains its original operation and byte cursors. Explicit
 cancellation settles children or transfers their outstanding effects before
@@ -96,19 +113,153 @@ failure have different scope and must be reported accordingly.
   commits remain unknown. Replay history needs a safe retention or refusal
   policy; cache eviction cannot erase security history.
 
-File publication separates content synchronization, name installation, writer
-close and directory synchronization. Preserve uncertainty and failed cleanup
-owners. A read-only observation can verify a tuple or absence; it cannot grant
-mutation or cleanup ownership. Persisted metadata cannot recreate native device,
-route, process or code-execution authority.
+The [native publication layer](adapters/native-std/src/filesystem/publication.rs)
+synchronizes staged content and closes its writer before it installs the name.
+It retains the original file through a separate read-only handle. The caller
+owns recovery after an uncertain replacement. A directory barrier and cleanup
+each have their own result. Read-only observations can verify identity or
+absence. Persisted metadata cannot recreate native device, route, process or
+code-execution authority.
 
 ## Native platform boundaries
 
-Linux, macOS, Windows and FreeBSD are full native implementation targets. Shared
-protocol and service behavior sits above platform socket, process, filesystem,
-credential and device mechanisms. Share Unix implementations where contracts
-match; isolate differing syscalls, ABI layouts and lifecycle rules in native
-modules. Missing capabilities and provider failures remain explicit errors.
+Shared protocol and service behavior sits above platform socket, process,
+filesystem, credential and device mechanisms. Share Unix implementations
+where contracts match. Isolate differing syscalls, ABI layouts and lifecycle
+rules in native modules. Missing capabilities and provider failures remain
+explicit errors.
+Automatic platform selection may omit an unavailable optional capability.
+An explicit deployment selection must either satisfy its constraints or fail.
+A configured trusted provider path must be absolute after variable expansion,
+without resolving relative paths against the process directory.
+
+The [embedded peer](adapters/node-std/README.md) composes the original native
+services on the caller's runtime. It owns a bounded readiness and stop graph.
+CORE, NSE, DHT and CADET start along their dependency chain and retire in
+reverse. CORE and the communicators retire before TRANSPORT drains on the
+original PILS connection.
+TRANSPORT owns the aggregate sent to PILS. Communicators supply address changes
+on their original IPC streams. The embedded readiness barrier holds publication
+while local services establish their initial identity and listener ownership.
+Optional communicators share the standalone runtime and configuration parser.
+Raw QUIC and HTTP/3 own their UDP sockets and bounded frame pools. The UNIX
+testing communicator binds a separate datagram socket inside the private IPC
+namespace. Each enabled communicator joins the readiness barrier.
+On the same physical PILS connection, a peer change fences local signing while
+TRANSPORT withdraws the old managed records. Communicator streams and address
+leases retain their owners. CORE reattaches under the replacement identity.
+The operating system and ABI determine which native interfaces can be built.
+Device capabilities and permissions determine which providers can run. The
+deployment supplies lifecycle ownership. Apps and extensions use SDK callbacks
+and their platform package format. Each application SDK build owns the source
+layout and native binaries for its deliverable. Build automation consumes the
+published path to check or distribute that same package.
+The [direct embedded peer](crates/gnunet-direct-peer/README.md) binds one TCP
+queue to its TRANSPORT validation and one CORE session. The firmware supplies
+its socket, elapsed and absolute clocks, entropy and durable reservation ports.
+Validation expiry retires CORE keys and retained input. CORE expiry runs
+independently of output credit. Fragmentation retains exact CORE bytes until
+the last BOX enters the original TCP queue. Socket readiness observes that
+same owner without granting another close.
+
+The [foreground node](apps/gnunet-node/README.md)
+uses the same readiness and stop graph. The process supervisor supplies its
+service identity, directories and stop signal. The
+[image staging command](tools/xtask/node/README.md#stage-a-system-image-input)
+combines the original Cargo executable with the Android or OpenHarmony
+supervisor recipe. The Linux small-system image requires the original state
+and IPC directories to belong to the selected mount before the node starts.
+[Desktop prefix staging](tools/xtask/node/README.md#deploy-as-an-operating-system-service)
+selects a systemd, launchd, FreeBSD rc.d or Windows SCM service recipe.
+The process publishes systemd readiness and SCM running state from the
+same node readiness callback. Unix signals and SCM stop requests enter
+the same bounded retirement path. Process state under launchd and rc.d
+does not imply node readiness.
+
+The [node SDK](platform/sdk/README.md) gives native callers one handle
+to a dedicated Rust worker, which is joined on destruction. Desktop route
+sockets and Windows notification registrations deliver coalesced rescan hints.
+The process owns the original subscription through retirement and cancels
+native callbacks before returning its clean stop result.
+An embedded Resolver selects one DNS authority at construction. A UDP network
+snapshot replaces upstreams, retires their sockets and clears dynamic cache
+entries. System policy delegates address and reverse lookups to the operating
+system. Both backends use the same RESOLVER IPC and original deadlines. Each
+native request holds its capacity until its cancellation or callback retires
+the original resources. Linux and FreeBSD isolate blocking name-service calls
+in a child using private RESOLVER pipes. A process supervisor owns its wait
+through cancellation and node-runtime retirement.
+Each scan reconciles only the addresses of its original interfaces. Native
+adapters retain the original descriptors or SDK handles through cancellation
+and completion.
+For NAT reversal, a deployment can supply an installed observer and sender
+pair to the node. The NAT service owns both through its existing interface
+leases and child supervisor. Helper execution uses the deployment's native
+authority and requires an unprotected socket policy.
+[NAT reversal configuration](apps/gnunet-node/README.md#nat-reversal)
+
+The VPN coordinator accepts application-owned raw IP sources and asynchronous
+system settings. An application backend reports the original install, removal
+and packet write results against the coordinator's source and request IDs.
+The embedded node starts VPN after CADET and, for automatic exit discovery,
+after REGEX connects to the original DHT and PILS services. VPN retires its
+on-demand REGEX searches before releasing either dependency. The standalone
+VPN uses the same discovery provider. REGEX results select a CADET peer for
+the originating Internet flow.
+The deployment supplies one socket policy at node construction. The runtime's
+socket factory applies it before releasing each new Internet socket to its
+native owner. Peer communicators, Resolver, NAT and direct-IP DHTU use the same
+policy for their initial sockets and replacements. Unix protection retains its
+provider context until the last policy owner is released.
+The SDK uses the same control endpoint for application packets and native
+raw-IP descriptors. A Unix descriptor is duplicated for the Rust worker and
+retired before its original interface can be removed.
+The application can fence packet traffic synchronously while the coordinator
+keeps the original route and write receipts live for retirement. Pending work
+retains its deadline, and uncertain writes keep their exposure state through
+retirement. Desktop descriptors still carry their original interface and route
+evidence. [Application providers](adapters/vpn-std/COORDINATOR.md#application-providers)
+
+DNS interception processes typed DNS payloads in its pure engine. The host owns
+real packet framing and request/source-bound reply permits. The Apple UDP flow
+adapter retains original SDK flow and endpoint owners and gives each flow its
+own bounded output and callback retirement debt. The same gateway and official
+IPC process both packet and application-flow sources. The macOS system extension
+and the iOS app extension each host that service on one worker. Both forward
+TCP through bounded bidirectional relays and use Network.framework for upstream
+traffic. Startup and stop stay bound to the original provider session and its
+callback resource loans. The iOS provider waits for the native retirement
+receipt and worker join before completing the OS stop callback.
+Active DNS caches and retired callback owners have separate bounded storage, so
+a canceled connection need not block the next generation. Native readiness and
+send deadlines run independently of canonical time; expiry retains unresolved
+SDK ownership until its actual callbacks retire.
+The macOS containing application uses the AppKit main loop and serialized native
+preference operations. Approval, reboot deferral, saved enablement and provider
+readiness are distinct states; an expired wait cannot cancel an unknown native
+effect. Signing, native activation and receiving-path
+qualification follow the [backend contract](adapters/dns-service-std/NATIVE_BACKENDS.md).
+
+Kernel interception must separate service capture admission from native receive
+enforcement. Service disconnect revokes requests while the native owner keeps
+its receive guard and original flow generations alive through outstanding
+injections. Native completion cannot recreate reply authority or establish
+application delivery. Driver unload has a separate rundown boundary; a filter
+query cannot pin that owner.
+
+On Windows, an independent kernel file pins the driver while WFP owns packet
+callbacks. A separate maintenance file drives retirement and holds a WDM
+request through release of the kernel file. The I/O manager owns final unload
+after file and request rundown. The BFE subscription belongs to the stable
+driver. Each packet generation owns distinct filters, callback registrations,
+injection handles and a service file. Recovery revokes the old file, joins its
+original packet and native ownership, then admits a fresh generation. The DNS
+gateway cancels work from the lost packet source before attaching the replacement.
+
+Linux transparent ingress uses native UDP metadata in place of a reconstructed
+IP packet. Each request retains its original peer, local endpoint and ingress
+for reply. Socket and mark ownership stays in the Linux adapter. The DNS
+engine receives the same payload and reply-permit contract as other sources.
 
 Keep local filename and command encodings native until their protocol boundary.
 Configuration expansion does not mutate the process environment or working

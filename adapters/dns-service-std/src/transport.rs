@@ -210,6 +210,9 @@ impl<'id> Helper<'id> {
     pub(crate) fn take_startup_error(&mut self) -> Option<io::Error> {
         self.startup_error.take()
     }
+    pub(crate) const fn frame_capacity(&self) -> usize {
+        self.limit
+    }
     /// Actual original PID metadata for incomplete cleanup diagnostics.
     pub fn pid(&self) -> Option<u32> {
         self.child.as_ref().and_then(Child::id)

@@ -70,26 +70,27 @@ impl<I: gnunet_dns::Idna> Context<'_, I> {
         if request.endpoint == IdentitySign {
             let user = request
                 .query(b"user", self.limits.bytes)?
-                .ok_or(Fault::InvalidInput)?;
+                .ok_or_else(|| service(1))?;
             let data = request
                 .query_bytes(b"data", self.limits.bytes)?
-                .ok_or(Fault::InvalidInput)?;
+                .ok_or_else(|| service(1))?;
             let ego = directory
                 .egos()
-                .find(|e| e.name() == user.as_slice())
+                .find(|e| e.name().eq_ignore_ascii_case(user.as_slice()))
                 .ok_or_else(|| service(200))?;
             if ego.secret().view()?.key_type() != KeyType::Eddsa {
-                return Err(Fault::Unsupported.into());
+                return Err(service(200));
             }
             let mut seed = Zeroizing::new([0u8; 32]);
             seed.copy_from_slice(&ego.secret().expose_serialized()[4..]);
             let key = gnunet_crypto::EddsaPrivateKey::from_seed(*seed);
             let signature = key.sign_raw(&data);
             let mut encoded = [0u8; 86];
-            base64url(signature.as_bytes(), &mut encoded)?;
+            let length =
+                gnunet_rest::base64::encode(signature.as_bytes(), &mut encoded, true, false)?;
             let mut json = Json::new(self.limits.output_bytes)?;
             json.raw(b"{\"signature\":")?;
-            json.string(&encoded)?;
+            json.string(&encoded[..length])?;
             json.raw(b"}")?;
             return Ok(Response::json(json.bytes));
         }
@@ -200,27 +201,4 @@ async fn id_result<'id>(
             _ => {}
         }
     }
-}
-fn base64url(input: &[u8; 64], out: &mut [u8; 86]) -> Result<(), Error> {
-    const A: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-    let mut bits = 0u32;
-    let mut count = 0;
-    let mut at = 0;
-    for b in input {
-        bits = (bits << 8) | u32::from(*b);
-        count += 8;
-        while count >= 6 {
-            count -= 6;
-            out[at] = A[((bits >> count) & 63) as usize];
-            at += 1;
-        }
-    }
-    if count != 0 {
-        out[at] = A[((bits << (6 - count)) & 63) as usize];
-        at += 1;
-    }
-    if at != out.len() {
-        return Err(Fault::Malformed.into());
-    }
-    Ok(())
 }

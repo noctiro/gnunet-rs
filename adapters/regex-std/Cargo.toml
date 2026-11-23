@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+gnunet-config.workspace = true
 gnunet-dht-client-host.workspace = true
 gnunet-regex-service = { workspace = true, features = ["alloc"] }
 gnunet-service-runtime.workspace = true

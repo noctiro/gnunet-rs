@@ -10,6 +10,33 @@ use gnunet_wire::official::{AbsoluteTime, pils::Request};
 use std::{future::poll_fn, time::Duration};
 use tokio::{io::AsyncWriteExt, time::timeout};
 
+#[test]
+fn configured_foreground_polls_stop_before_startup() -> Result<(), Box<dyn StdError>> {
+    let mut config = Configuration::default();
+    config.set_value(b"core", b"CLASS", Some(b"invalid-stop-fixture-class"))?;
+    let ready_called = std::cell::Cell::new(false);
+    let mut foreground = std::pin::pin!(foreground_with_clock(
+        &config,
+        Activation::default(),
+        Limits::default(),
+        |_, _| {
+            ready_called.set(true);
+            Ok(())
+        },
+        std::future::ready(Ok(())),
+        |_| {},
+        Arc::new(SystemClock),
+    ));
+    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+    let outcome = foreground.as_mut().poll(&mut cx);
+    if ready_called.get()
+        || !matches!(outcome, Poll::Ready(Ok(report)) if report.accepted == 0 && report.requests == 0)
+    {
+        return Err(format!("CORE stop did not preempt startup: {outcome:?}").into());
+    }
+    Ok(())
+}
+
 #[tokio::test(flavor = "current_thread")]
 #[expect(
     clippy::panic_in_result_fn,

@@ -2,7 +2,13 @@
 //! the official listener; this foreground does not start a private aggregate
 //! node, an embedded PEERSTORE, hidden Resolver, key loader or network transport.
 pub use crate::reporting::{Notice, Reports};
-use crate::{Failure, Failures, generation::Reservations, owner, settings::Settings, time::Clock};
+use crate::{
+    Failure, Failures,
+    generation::{Reservations, retirement},
+    owner,
+    settings::Settings,
+    time::Clock,
+};
 use gnunet_program_host::{program::Prepared, shared_clock::SharedClock};
 use gnunet_service_runtime::{BoundListeners, clock::RuntimeClock};
 use std::{
@@ -447,25 +453,25 @@ impl Reports {
                     crate::pils::Reason::Refused(_) => "refused",
                 }
             )),
-            owner::Event::EpochRetiring { previous, observed } => self.diagnostic(format_args!(
-                "TRANSPORT old Engine physically retired for real PID change {:?} -> {:?}",
+            owner::Event::IdentityRetiring { previous, observed } => self.diagnostic(format_args!(
+                "TRANSPORT retiring local identity {:?} before selecting {:?}",
                 previous.peer(),
                 observed.peer()
             )),
-            owner::Event::EpochStarted {
+            owner::Event::IdentityActivated {
                 identity,
                 generation,
             } => self.diagnostic(format_args!(
-                "TRANSPORT new Engine brand generation={generation} actual PID={:?}",
+                "TRANSPORT activated local identity {:?} in generation {generation}",
                 identity.peer()
             )),
-            owner::Event::ReservationRetired(crate::epoch::ReservationOutcome::Failed {
+            owner::Event::ReservationRetired(retirement::ReservationOutcome::Failed {
                 error,
                 ..
             }) => self.diagnostic(format_args!(
                 "TRANSPORT original retired stamp failed: {error}"
             )),
-            owner::Event::ReservationRetired(crate::epoch::ReservationOutcome::Mismatched {
+            owner::Event::ReservationRetired(retirement::ReservationOutcome::Mismatched {
                 ..
             }) => self.diagnostic(format_args!(
                 "TRANSPORT actual retired stamp receipt did not match its original job"

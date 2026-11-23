@@ -63,7 +63,7 @@ pub fn run(input: Startup<'_, '_>) -> Result<(), Failure> {
             ))?
         } else {
             let _entered = runtime.enter();
-            BoundListeners::from_activation(activation)?
+            BoundListeners::from_activation_with_access(activation, settings.access)?
         };
         for error in bound.failures() {
             reports.warning(

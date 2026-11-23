@@ -15,6 +15,7 @@ gnunet-types.workspace = true
 gnunet-wire.workspace = true
 gnunet-crypto.workspace = true
 gnunet-session-crypto.workspace = true
+libm.workspace = true
 subtle.workspace = true
 zeroize.workspace = true
 

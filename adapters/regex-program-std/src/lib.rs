@@ -9,6 +9,8 @@ mod factory;
 mod lifecycle;
 mod native;
 pub use native::NativeFactory;
+mod profiler;
+pub use profiler::run_profiler;
 mod reporting;
 mod settings;
 /// Bounded original STATISTICS owner, implemented independently from business IPC.
@@ -45,10 +47,12 @@ impl<F: Factory> process::Application for Application<F> {
         let report = lifecycle::run::<F>(lifecycle::Inputs {
             config: context.config.duplicate()?,
             settings: context.settings,
-            bound: context.listeners,
             clock: Arc::new(context.clock),
             control: context.signals,
-            notification: context.readiness,
+            frontend: lifecycle::Frontend::Service {
+                bound: context.listeners,
+                notification: context.readiness,
+            },
             diagnostics: &diagnostics,
         })
         .await;

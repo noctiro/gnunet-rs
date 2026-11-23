@@ -78,21 +78,31 @@ impl Connection {
             Stream::Tcp(_) => Ok(None),
         }
     }
+    #[cfg(windows)]
+    pub(crate) const fn windows_listener_access(
+        &self,
+    ) -> Option<gnunet_native::local_path::EndpointAccess> {
+        match &self.stream {
+            Stream::Unix(stream) => stream.listener_access(),
+            Stream::Tcp(_) => None,
+        }
+    }
     /// Kernel-reported Unix peer UID/GID, or None for TCP. This only observes
     /// the original owned socket; it performs no account lookup or admission.
     #[cfg(unix)]
     pub fn unix_peer_credentials(&self) -> io::Result<Option<(u32, u32)>> {
         match &self.stream {
             Stream::Unix(stream) => {
-                #[cfg(target_os = "macos")]
+                #[cfg(target_vendor = "apple")]
                 {
+                    use std::os::fd::AsFd;
+
                     // Admission uses only kernel UID/GID. Darwin's independent
                     // peer PID query can fail after disconnect even though the
                     // connect-time credentials remain available on this socket.
-                    let (uid, gid) = nix::unistd::getpeereid(stream).map_err(io::Error::from)?;
-                    Ok(Some((uid.as_raw(), gid.as_raw())))
+                    gnunet_native::network::unix_peer_ids(stream.as_fd()).map(Some)
                 }
-                #[cfg(not(target_os = "macos"))]
+                #[cfg(not(target_vendor = "apple"))]
                 {
                     let peer = stream.peer_cred()?;
                     Ok(Some((peer.uid(), peer.gid())))

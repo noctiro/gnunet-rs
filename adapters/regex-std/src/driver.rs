@@ -286,6 +286,15 @@ impl<'a, D: Provider> Driver<'a, D> {
     pub fn server(&self) -> &Server {
         &self.server
     }
+    /// Schedule one round for this coordinator's original local publisher.
+    pub fn announce_local(&mut self) -> Result<(), Failure> {
+        if self.failed || self.closing {
+            return Err(Fault::Closed.into());
+        }
+        self.server
+            .announce_local()
+            .map_err(|e| Box::new(e) as Failure)
+    }
     /// Take an actual transport observation retained independently if a later
     /// clock/core error prevented delivering it in the same poll.
     pub fn take_observation(&mut self) -> Option<Progress<'a>> {

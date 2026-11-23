@@ -76,12 +76,13 @@ qualification.
 
 On macOS fresh mode retains the direct native utun path and requires the selected
 identity to have the necessary privileges. It does not pretend the Linux helper
-exists on Darwin. `IFNAME` must be an utunN. There is no native/privileged
-fallback after a helper failure.
+exists on Darwin. Omit `[vpn] IFNAME` to let the kernel select the utun
+interface, or set it to an available `utunN` to require that exact name.
 
 On FreeBSD fresh mode records a private recovery checkpoint before creating a
 TUN and renaming it to `[vpn] IFNAME`. `[vpn-rust] TUN_RECOVERY_FILE` defaults to
-`$GNUNET_DATA_HOME/vpn/tun-recovery`. The original checkpoint lock is held through
+`$GNUNET_DATA_HOME/vpn/tun-recovery`. The checkpoint path must be absolute after
+variable expansion. The original checkpoint lock is held through
 native device lifetime and cleanup. Startup retires the exact previously saved
 owner before another allocation; unresolved allocation intents block recreation.
 An occupied name is refused. Checkpoint selection is rejected in preopened mode
@@ -158,10 +159,12 @@ explicit route debt.
 Windows verifies configured USERNAME against the current native identity;
 it does not perform a Unix account transition. Normal detached re-exec, managed
 console detachment, original activation and parent readiness use the shared
-Windows startup layer. New local endpoints use `LOCAL_ACCESS=owner` by default;
-`group` and `everyone` are explicit alternatives. This selects a native endpoint
-ACL, not a Unix peer-credential result. `UNIX_MATCH_UID/GID=YES` is rejected on
-Windows. Inherited listeners retain the creator's security responsibility.
+Windows startup layer. `[vpn] UNIX_MATCH_UID` requires owner access and takes
+precedence over `UNIX_MATCH_GID`, which accepts owner or primary-group access.
+New local endpoints default to owner unless group matching alone is requested.
+`[vpn-rust] LOCAL_ACCESS` accepts `owner`, `group` or `everyone` when it
+satisfies the configured restriction. Inherited listeners retain their
+original pre-listen protection. TCP uses the configured IP ACL.
 
 Only enabled IP families have native MTU actions and snapshot queries. The
 other family remains untouched; every MTU action has a separate original receipt.
@@ -174,7 +177,8 @@ classification. They are not interrupted or replayed by a timer.
 
 `TUN_MODE=preopened` still requires `GNUNET_VPN_TUN_FD` to designate a uniquely
 transferred kernel TUN/utun descriptor. It is verified after USERNAME and
-must already match the native plan. Arbitrary files, sockets and helper pipes do
+must already match the native plan and any explicitly configured `[vpn] IFNAME`.
+Arbitrary files, sockets and helper pipes do
 not qualify as this descriptor. The service does not rewrite an externally
 provided device. Its framing mode comes from the kernel descriptor;
 the official helper transport always uses its mandatory Linux PI prefix.
@@ -205,12 +209,23 @@ with no new hidden worker, DHT implementation or private search protocol.
 
 Each bounded search retains the original VPN discovery/flow generation. Actual
 REGEX request enqueue precedes pure admission; a whole local write is separate
-from an RESULT. Only an original result with matching job, MQ epoch
-and ordinal supplies a peer. The search then closes its original MQ before the
-pure discovery retires. A result discovers a peer; CADET endpoint/credit/KX
-checks still apply. The peer AF assignment comes from the explicit
-`PEER_AF_PROFILE` configuration, never from inferred byte lengths or a supposed
-authentication property of REGEX. The official search has no transport selector.
+from a RESULT. The result carries the peer identity and DHT paths. The VPN
+matches the job, MQ epoch and ordinal, then selects the transmit profile for
+that identity. The search closes before CADET binds the selected peer and
+writes any buffered payload. CADET owns peer authentication.
+
+`[vpn-rust] PEER_AF_PROFILES` assigns distinct AF profiles to named service
+peers and REGEX-discovered exits. Use up to 64 semicolon-separated
+`PEER PROFILE` entries, with a 52-character GNUnet identity or 64 hex digits
+and a `native`, `linux`, `darwin`, `freebsd` or `windows` profile.
+Duplicate decoded identities are rejected. `PEER_AF_PROFILE` supplies an
+explicit fallback for otherwise unassigned peers. With neither setting for a
+discovered Internet gateway, the VPN sends the Linux AF profile. The official
+C Internet gateway requires its Linux-only installed helper, and Rust gateways
+accept the supported AF values on every host. REGEX and CADET gateway ports
+identify the gateway without exposing its platform ABI. The selected profile
+applies to outgoing frames with an AF field. Incoming ICMP replies carry their
+own AF, including for named TCP/UDP services. [Official EXIT build](https://git.gnunet.org/gnunet/gnunet/file/src/service/exit/meson.build.html#l10) · [Helper requirement](https://git.gnunet.org/gnunet/gnunet/file/src/service/exit/gnunet-daemon-exit.c.html#l4004)
 
 Defaults are16 simultaneous search MQs,10 seconds to send,30 seconds to receive a
 first result and60 seconds per original job. Configure `REGEX_SEARCHES`,
@@ -223,7 +238,8 @@ there is no invented wire DONE, no proof that no matching exit exists, and no
 attached search replay. A closing or stale flow cancels the exact old search. Table capacity produces an explicit original refusal without blocking other
 searches, application MQs or the shared Resolver.
 
-`EXIT_DISCOVERY=configured` instead selects explicit fixed policies. `CONFIGURED_EXITS` is a semicolon-separated list of entries:
+`EXIT_DISCOVERY=configured` selects fixed gateways. A nonempty
+`CONFIGURED_EXITS` list requires this mode. Separate entries with semicolons.
 
 ```
 PEER  prefix|any  tcp|udp|icmp|icmp6|any  first-last  native|linux|darwin|freebsd|windows
@@ -231,16 +247,17 @@ PEER  prefix|any  tcp|udp|icmp|icmp6|any  first-last  native|linux|darwin|freebs
 
 `PEER` accepts the official52-character GNUnet identity or64 hex digits. Up to64
 ordered entries select the first matching destination network, transport and
-port. The AF profile describes the peer endpoint's platform wire AF
-assignment. An empty list is valid for named SERVICE redirects; Internet flows
+port. ICMP rules match the Internet destination family's protocol and port zero,
+including when the local lease uses the other IP family. The AF profile
+describes the peer endpoint's platform wire AF assignment. An empty list is
+valid for named SERVICE redirects; Internet flows
 then fail with a configured provider miss. Configured selection is not
 reported as an automatic REGEX result. Named peer SERVICE requests do not need
-Internet exit discovery in either mode. `PEER_AF_PROFILE` supplies their default
-profile and REGEX-discovered peers' explicitly selected profile;
-`IPC_AF_PROFILE` supplies the local VPN IPC source profile (both default native).
-Native profiles select the actual Linux, macOS, FreeBSD or Windows address-family
-values. The peer profile describes its C endpoint independently of the local
-platform.
+Internet exit discovery in either mode. Each `CONFIGURED_EXITS` entry supplies
+its own AF profile. The default codec for unassigned named services is `native`
+unless `PEER_AF_PROFILE` is set. `IPC_AF_PROFILE` overrides the `native` local IPC
+profile. The peer profile
+describes the remote endpoint's Linux, macOS, FreeBSD or Windows AF values.
 
 ## Resource bounds and scheduling
 

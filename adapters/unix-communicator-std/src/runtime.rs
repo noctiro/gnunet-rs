@@ -5,7 +5,7 @@ use gnunet_service_runtime::{
     framing::{Accounting, Budget, Class, Limits as FrameLimits, OwnedFrame},
 };
 use gnunet_types::Error as Protocol;
-use gnunet_wire::official::communicator::{Queue as WireQueue, Request};
+use gnunet_wire::official::communicator::{DEFAULT_PEER_IDLE_TIMEOUT, Queue as WireQueue, Request};
 use std::{
     cell::Cell,
     collections::VecDeque,
@@ -99,7 +99,7 @@ pub struct Limits {
     pub lifetime: Duration,
     /// Original initial PILS/TRANSPORT readiness bound.
     pub startup: Duration,
-    /// Native bounded retry after actual ENOBUFS; EAGAIN uses reactor readiness.
+    /// Initial delay for transient native send errors on each destination.
     pub enobufs_retry: Duration,
     /// Explicit PILS signature profile, default official metadata-only.
     pub profile: gnunet_pils::Profile,
@@ -112,14 +112,10 @@ impl Default for Limits {
             output_frames: 8,
             output_bytes: 524280,
             io_slice: 65535,
-            datagram_bytes: if cfg!(target_os = "macos") {
-                2048
-            } else {
-                65535
-            },
+            datagram_bytes: native::DATAGRAM_LIMIT,
             socket_buffer: 1024 * 1024,
             operation: Duration::from_secs(30),
-            idle: Duration::from_secs(300),
+            idle: DEFAULT_PEER_IDLE_TIMEOUT,
             lifetime: Duration::from_secs(86400),
             startup: Duration::from_secs(30),
             enobufs_retry: Duration::from_millis(1),
@@ -128,7 +124,7 @@ impl Default for Limits {
     }
 }
 impl Limits {
-    fn validate(self) -> Result<(), Fault> {
+    pub(crate) fn validate(self) -> Result<(), Fault> {
         if self.queues == 0
             || self.queues > 65535
             || self.incoming == 0
@@ -574,6 +570,36 @@ struct Output<'id> {
     role: Role,
     bound: Bound,
 }
+#[derive(Clone, Copy)]
+struct SendRetry {
+    at: Instant,
+    delay: Duration,
+}
+impl SendRetry {
+    fn after(
+        error: &io::Error,
+        previous: Option<Self>,
+        now: Instant,
+        initial: Duration,
+        deadline: Instant,
+    ) -> Option<Self> {
+        if !matches!(
+            error.kind(),
+            io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+        ) && error.raw_os_error() != Some(libc::ENOBUFS)
+        {
+            return None;
+        }
+        let max_delay = initial.max(Duration::from_millis(64));
+        let delay = previous.map_or(initial, |retry| {
+            retry.delay.saturating_mul(2).min(max_delay)
+        });
+        let at = now
+            .checked_add(delay)
+            .map_or(deadline, |at| at.min(deadline));
+        Some(Self { at, delay })
+    }
+}
 struct Send {
     outcome: SendOutcome,
     ack_bytes: usize,
@@ -581,7 +607,7 @@ struct Send {
     message: [u8; 8],
     packet: Zeroizing<Vec<u8>>,
     bound: Bound,
-    retry: Option<Instant>,
+    retry: Option<SendRetry>,
     status: Option<i32>,
 }
 struct Queue {
@@ -757,11 +783,7 @@ impl<'id> Runtime<'id> {
                 .ok_or(Protocol::Overflow)?
                 .min(hard),
         };
-        let cap = limits.datagram_bytes.min(if cfg!(target_os = "macos") {
-            2048
-        } else {
-            65535
-        });
+        let cap = limits.datagram_bytes.min(native::DATAGRAM_LIMIT);
         let mtu = gnunet_unix_communicator::payload_mtu(cap)?;
         let address = Address::new(path)?;
         let view = gnunet_unix_communicator::Address::from_path(path)?;
@@ -1083,6 +1105,8 @@ impl<'id> Runtime<'id> {
         }
     }
     fn earliest(&self) -> Instant {
+        let now = Instant::now();
+        let can_send = !self.identity.paused();
         let mut target = self.parent.hard;
         if !self.ever_ready {
             target = target.min(self.startup.hard)
@@ -1091,13 +1115,16 @@ impl<'id> Runtime<'id> {
             target = target.min(out.bound.hard)
         }
         for q in self.queues.iter().flatten() {
-            if q.send.is_none() && q.idle.hard > Instant::now() {
+            if q.send.is_none() && q.idle.hard > now {
                 target = target.min(q.idle.hard);
             }
             if let Some(s) = &q.send {
                 target = target.min(s.bound.hard);
-                if let Some(retry) = s.retry {
-                    target = target.min(retry)
+                if can_send
+                    && let Some(retry) = s.retry
+                    && retry.at > now
+                {
+                    target = target.min(retry.at)
                 }
             }
         }
@@ -1315,15 +1342,15 @@ impl<'id> Runtime<'id> {
             Poll::Ready(Ok(_)) => Poll::Ready(Ok(())),
         }
     }
-    fn poll_send(
+    fn attempt_send(
         &mut self,
-        cx: &mut Context<'_>,
         now: u64,
         observe: &mut impl FnMut(Event<'id>),
-    ) -> Poll<Result<(), Fault>> {
+    ) -> Result<bool, Fault> {
         let epoch = self.epoch.map(|epoch| epoch.serial);
-        for step in 0..self.queues.len() {
-            let index = (self.send_cursor + step) % self.queues.len();
+        let queue_count = self.queues.len();
+        for step in 0..queue_count {
+            let index = (self.send_cursor + step) % queue_count;
             let Some(q) = &mut self.queues[index] else {
                 continue;
             };
@@ -1331,30 +1358,35 @@ impl<'id> Runtime<'id> {
                 continue;
             }
             let Some(send) = &mut q.send else { continue };
-            if send.status.is_some() {
+            if send.outcome != SendOutcome::Unsent {
                 continue;
             }
-            if send.retry.is_some_and(|t| Instant::now() < t) {
+            if send.retry.is_some_and(|retry| Instant::now() < retry.at) {
                 continue;
             }
-            send.retry = None;
-            let result = self.socket.as_mut().ok_or(Protocol::Closed)?.poll_send(
-                cx,
-                &q.address,
-                &send.packet,
-            );
+            if send.bound.expired(Some(now)) {
+                return Err(Fault::Deadline);
+            }
+            // A full destination need not change this unconnected socket's
+            // writable readiness. The original send owns its next attempt.
+            let result = self
+                .socket
+                .as_ref()
+                .ok_or(Protocol::Closed)?
+                .try_send(&q.address, &send.packet);
+            self.send_cursor = (index + 1) % queue_count;
             match result {
-                Poll::Pending => {}
-                Poll::Ready(Ok(n)) => {
+                Ok(n) => {
+                    send.retry = None;
                     if n != send.packet.len() {
                         send.outcome = SendOutcome::Unknown {
                             expected: send.packet.len(),
                             actual: n,
                         };
-                        return Poll::Ready(Err(Fault::ShortDatagram {
+                        return Err(Fault::ShortDatagram {
                             expected: send.packet.len(),
                             actual: n,
-                        }));
+                        });
                     }
                     send.status = Some(1);
                     send.outcome = SendOutcome::Whole { bytes: n };
@@ -1367,22 +1399,19 @@ impl<'id> Runtime<'id> {
                         message_id: send.message,
                         bytes: n,
                     });
-                    self.send_cursor = (index + 1) % self.queues.len();
-                    return Poll::Ready(Ok(()));
                 }
-                Poll::Ready(Err(error)) => {
+                Err(error) => {
                     self.statistics.network_failures =
                         self.statistics.network_failures.saturating_add(1);
-                    let retrying = error.raw_os_error() == Some(libc::ENOBUFS)
-                        || error.kind() == io::ErrorKind::Interrupted;
-                    if retrying {
-                        send.retry = Some(
-                            Instant::now()
-                                .checked_add(self.limits.enobufs_retry)
-                                .ok_or(Protocol::Overflow)?
-                                .min(send.bound.hard),
-                        )
-                    } else {
+                    send.retry = SendRetry::after(
+                        &error,
+                        send.retry,
+                        Instant::now(),
+                        self.limits.enobufs_retry,
+                        send.bound.hard,
+                    );
+                    let retrying = send.retry.is_some();
+                    if !retrying {
                         send.status = Some(-1);
                         send.outcome = SendOutcome::Failed {
                             errno: error.raw_os_error(),
@@ -1395,12 +1424,11 @@ impl<'id> Runtime<'id> {
                         error,
                         retrying,
                     });
-                    self.send_cursor = (index + 1) % self.queues.len();
-                    return Poll::Ready(Ok(()));
                 }
             }
+            return Ok(true);
         }
-        Poll::Pending
+        Ok(false)
     }
     fn send_results(
         &mut self,
@@ -1448,7 +1476,6 @@ impl<'id> Runtime<'id> {
         // Mark as pending immutable result, avoiding duplicate ACK enqueue.
         let q = self.queues[index].as_mut().ok_or(Protocol::Stale)?;
         q.send.as_mut().ok_or(Protocol::Stale)?.status = None;
-        q.send.as_mut().ok_or(Protocol::Stale)?.retry = Some(self.parent.hard);
         let _original_now = now;
         Ok(true)
     }
@@ -1649,7 +1676,10 @@ impl<'id> Runtime<'id> {
                 1 => self.poll_connect(cx, observe),
                 2 => self.poll_write(cx, observe),
                 3 => self.poll_read(cx, now, observe),
-                4 => self.poll_send(cx, now, observe),
+                4 => match self.attempt_send(now, observe)? {
+                    true => Poll::Ready(Ok(())),
+                    false => Poll::Pending,
+                },
                 5 => self.poll_network(cx, now, observe),
                 _ => match self.reannounce(now, observe) {
                     Ok(true) => Poll::Ready(Ok(())),

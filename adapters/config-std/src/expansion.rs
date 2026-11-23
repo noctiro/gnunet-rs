@@ -104,9 +104,23 @@ struct Expansion<'a, 'observer, E> {
     observer: Option<crate::diagnostic::BorrowedObserver<'observer>>,
     cfg: &'a Configuration,
     environment: &'a E,
-    active: Vec<(Vec<u8>, bool)>,
+    active: Vec<Vec<u8>>,
     operations: usize,
     depth: usize,
+}
+/// A finalized replacement and the input term it consumes. Its bytes must not
+/// be scanned again by the caller; recursive values are expanded before return.
+struct Term {
+    value: Vec<u8>,
+    consumed: usize,
+}
+impl Term {
+    fn unchanged(input: &[u8]) -> Self {
+        Self {
+            value: input[..1].to_vec(),
+            consumed: 1,
+        }
+    }
 }
 impl<E: Environment> Expansion<'_, '_, E> {
     fn all(&mut self, input: &[u8]) -> Result<Vec<u8>, Error> {
@@ -116,29 +130,43 @@ impl<E: Environment> Expansion<'_, '_, E> {
         if input.len() > self.cfg.limits.max_expanded_bytes {
             return Err(Error::Capacity);
         }
-        let mut output = input.to_vec();
+        let mut output = Vec::with_capacity(input.len());
         let mut cursor = 0;
-        while cursor < output.len() {
-            if output[cursor] == b'$' {
-                self.operations = self.operations.checked_add(1).ok_or(Error::Capacity)?;
-                if self.operations > self.cfg.limits.max_expansions {
-                    return Err(Error::Capacity);
-                }
-                let replacement = self.leading(&output[cursor..])?;
-                let size = cursor
-                    .checked_add(replacement.len())
-                    .ok_or(Error::Capacity)?;
-                if size > self.cfg.limits.max_expanded_bytes {
-                    return Err(Error::Capacity);
-                }
-                output.truncate(cursor);
-                output.extend_from_slice(&replacement);
+        while cursor < input.len() {
+            let remaining = &input[cursor..];
+            let literal = remaining
+                .iter()
+                .position(|byte| *byte == b'$')
+                .unwrap_or(remaining.len());
+            self.append(&mut output, &remaining[..literal])?;
+            cursor += literal;
+            if cursor == input.len() {
+                break;
             }
-            cursor += 1;
+            let term = self.leading(&input[cursor..])?;
+            self.append(&mut output, &term.value)?;
+            cursor += term.consumed;
         }
         Ok(output)
     }
-    fn leading(&mut self, input: &[u8]) -> Result<Vec<u8>, Error> {
+    fn append(&self, output: &mut Vec<u8>, input: &[u8]) -> Result<(), Error> {
+        let size = output
+            .len()
+            .checked_add(input.len())
+            .ok_or(Error::Capacity)?;
+        if size > self.cfg.limits.max_expanded_bytes {
+            return Err(Error::Capacity);
+        }
+        output.extend_from_slice(input);
+        Ok(())
+    }
+    fn leading(&mut self, input: &[u8]) -> Result<Term, Error> {
+        if input.starts_with(b"$") {
+            self.operations = self.operations.checked_add(1).ok_or(Error::Capacity)?;
+            if self.operations > self.cfg.limits.max_expansions {
+                return Err(Error::Capacity);
+            }
+        }
         self.depth += 1;
         if self.depth > self.cfg.limits.max_expansion_depth {
             self.cfg.note_to(
@@ -157,7 +185,7 @@ impl<E: Environment> Expansion<'_, '_, E> {
         self.depth -= 1;
         result
     }
-    fn leading_inner(&mut self, input: &[u8]) -> Result<Vec<u8>, Error> {
+    fn leading_inner(&mut self, input: &[u8]) -> Result<Term, Error> {
         self.cfg.note_to(
             self.observer,
             "config.dollar.asked",
@@ -177,7 +205,10 @@ impl<E: Environment> Expansion<'_, '_, E> {
                 b"Doesn't start with $ - not expanding\n",
                 &[],
             );
-            return Ok(input.to_vec());
+            return Ok(Term {
+                value: input.to_vec(),
+                consumed: input.len(),
+            });
         }
         if self.active.len() >= self.cfg.limits.max_expansion_depth {
             return Err(Error::Cycle);
@@ -208,7 +239,7 @@ impl<E: Environment> Expansion<'_, '_, E> {
                     b"Missing closing `}' in option `%s'\n",
                     &[A::Bytes(input)],
                 );
-                return Ok(input.to_vec());
+                return Ok(Term::unchanged(input));
             }
             let expression = &input[2..end];
             let (name, default) = if let Some(colon) = expression.iter().position(|b| *b == b':') {
@@ -246,48 +277,53 @@ impl<E: Environment> Expansion<'_, '_, E> {
                 default.map_or(A::NullString, A::Bytes),
             ],
         );
-        let paths = self.cfg.get_observed(b"PATHS", name, self.observer);
-        let from_paths = paths.is_some();
-        let prefix = paths
-            .map(<[u8]>::to_vec)
-            .or_else(|| self.environment.variable(name));
+        // Upstream compares the original variable names exactly, even though
+        // the PATHS lookup itself is case insensitive. An active name behaves
+        // like an undefined variable, so a recursive default can terminate it.
+        let recursive = self.active.iter().any(|active| active == name);
+        let prefix = if recursive {
+            self.cfg.note_to(
+                self.observer,
+                "config.dollar.self-reference",
+                Level::WARNING,
+                b"expand_dollar",
+                2871,
+                b"The definition of `%s' refers to itself, not expanding it\n",
+                &[A::Bytes(name)],
+            );
+            None
+        } else {
+            self.cfg
+                .get_observed(b"PATHS", name, self.observer)
+                .map(<[u8]>::to_vec)
+                .or_else(|| self.environment.variable(name))
+        };
         let prefix = match prefix {
             Some(prefix) => prefix,
             None => match default {
-                Some(default) => self.leading(default)?,
+                Some(default) => {
+                    let term = self.leading(default)?;
+                    let mut prefix = term.value;
+                    self.append(&mut prefix, &default[term.consumed..])?;
+                    prefix
+                }
                 None => {
                     self.cfg.note_to(self.observer,"config.dollar.missing",Level::WARNING,b"expand_dollar",2828,b"Failed to expand `%s' in `%s' as it is neither found in [PATHS] nor defined as an environmental variable\n",&[A::Bytes(name),A::Bytes(input)]);
-                    return Ok(input.to_vec());
+                    return Ok(Term::unchanged(input));
                 }
             },
         };
-        if self.active.iter().any(|(active, was_paths)| {
-            *was_paths == from_paths
-                && if from_paths {
-                    self.cfg.case_equals(active, name)
-                } else {
-                    active == name
-                }
-        }) {
-            return Err(Error::Cycle);
-        }
-        self.active.push((name.to_vec(), from_paths));
+        self.active.push(name.to_vec());
         let expanded = self.all(&prefix);
         self.active.pop();
         let mut expanded = expanded?;
-        let size = expanded
-            .len()
-            .checked_add(usize::from(separator.is_some()))
-            .and_then(|n| n.checked_add(suffix.len()))
-            .ok_or(Error::Capacity)?;
-        if size > self.cfg.limits.max_expanded_bytes {
-            return Err(Error::Capacity);
-        }
         if let Some(separator) = separator {
-            expanded.push(separator);
+            self.append(&mut expanded, &[separator])?;
         }
-        expanded.extend_from_slice(suffix);
-        Ok(expanded)
+        Ok(Term {
+            value: expanded,
+            consumed: input.len() - suffix.len(),
+        })
     }
 }
 
@@ -295,8 +331,9 @@ impl Configuration {
     /// Expand every dollar expression using `[PATHS]` before the environment.
     /// Missing variables and unmatched braces stay literal, as in the C helper.
     /// Defaults use `${NAME:-value}` (also `${NAME:=value}` or `${NAME:value}`).
-    /// Recursive references/resource exhaustion return an explicit error rather
-    /// than repeating the C helper's unbounded recursion.
+    /// A variable already being expanded is undefined for that nested reference:
+    /// its default is used, or the reference remains literal. Resource limits
+    /// still return an explicit error.
     pub fn expand_dollar(
         &self,
         input: &[u8],
@@ -437,6 +474,30 @@ impl Configuration {
         environment: &impl Environment,
     ) -> Result<PathBuf, Error> {
         self.get_filename_observed(section, key, environment, None)
+    }
+    /// Read an explicitly absolute filename after dollar expansion. A relative
+    /// path is rejected instead of resolving against the process directory.
+    pub fn get_absolute_filename(
+        &self,
+        section: &[u8],
+        key: &[u8],
+        environment: &impl Environment,
+    ) -> Result<PathBuf, Error> {
+        let value = self.get(section, key).ok_or(Error::Missing)?;
+        self.expand_absolute_filename(value, environment)
+    }
+    /// Expand a path expression without consulting the current directory or
+    /// making a relative result absolute.
+    pub fn expand_absolute_filename(
+        &self,
+        value: &[u8],
+        environment: &impl Environment,
+    ) -> Result<PathBuf, Error> {
+        let path = bytes_path(&self.expand_dollar(value, environment)?)?;
+        if !path.is_absolute() {
+            return Err(Error::InvalidInput);
+        }
+        Ok(path)
     }
     /// Filename lookup, recursive dollar and host expansion through one local
     /// observer; no callback is retained in the returned owned path.

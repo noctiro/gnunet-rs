@@ -70,14 +70,21 @@ impl DeviceHandle {
     pub(crate) fn fd(&self) -> io::Result<&OwnedFd> {
         self.fd.as_ref().ok_or(io::ErrorKind::NotConnected.into())
     }
+    #[cfg(target_os = "freebsd")]
+    pub(crate) fn close_packet_fd(&mut self) -> io::Result<()> {
+        self.fd
+            .take()
+            .map_or(Ok(()), |fd| nix::unistd::close(fd).map_err(Into::into))
+    }
     pub(crate) fn defer_interface_cleanup(&mut self) {
         #[cfg(target_os = "freebsd")]
         {
             self.interface_close = InterfaceClose::Defer;
         }
     }
-    /// Whether this owner must explicitly destroy a persistent interface after
-    /// closing the descriptor. Driver-managed interfaces follow the last FD.
+    /// Whether this owner retains interface cleanup after closing the descriptor.
+    /// A tracked FreeBSD transient interface observes the driver's final-close
+    /// removal. A manual interface requires explicit destruction.
     #[must_use]
     pub const fn requires_interface_cleanup(&self) -> bool {
         #[cfg(target_os = "freebsd")]
@@ -132,10 +139,7 @@ impl DeviceHandle {
     }
     #[cfg(target_os = "freebsd")]
     fn retire_inner(&mut self) -> io::Result<Option<crate::recovery::Journal>> {
-        let fd_error = self
-            .fd
-            .take()
-            .and_then(|fd| nix::unistd::close(fd).err().map(io::Error::from));
+        let fd_error = self.close_packet_fd().err();
         let interface = match self.interface.take() {
             Some(owner) => match self.interface_close {
                 InterfaceClose::Destroy => owner.retire(),

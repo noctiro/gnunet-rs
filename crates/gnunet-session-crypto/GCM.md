@@ -29,7 +29,7 @@ Normal native layout observed: InitialKX48, UDPConfirmation104 (time offset96), 
 Run from the repository using an installed toolchain and existing normal reference:
 
 ```sh
-python3 tools/gcm_verify.py --repository /path/to/gnunet-rs --source /path/to/pinned/gnunet --reference /path/to/normal/build-result.json --deps-prefix /path/to/normal/deps --output /fresh/separate/output --toolchain 1.99.1
+python3 tools/gcm_verify.py --repository /path/to/gnunet-rs --source /path/to/pinned/gnunet --reference /path/to/normal/build-result.json --deps-prefix /path/to/normal/deps --output /fresh/separate/output --toolchain 1.100.0
 ```
 
 The verifier binds source/library/tool/manifests before and after, rediscovering file sets; checks full tracked C source against the normal receipt and private-config hash; checks normal library receipt hashes and recursive runtime dependency closure; validates exact approved cached crate archives and every expanded archive file before/after; records toolchain, Cargo graph, no-alloc features, generated inputs, selected rlib and artifact hashes. integration still owns Cargo lock/policy/RustSec review.

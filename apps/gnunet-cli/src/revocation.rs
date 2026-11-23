@@ -1,5 +1,7 @@
 //! Public REVOCATION certificate work and original-MQ operations. Public work
 //! files contain exactly372 bytes; no private key file is opened or imported.
+#[cfg(any(unix, windows))]
+mod standalone;
 use gnunet::{
     clients::{identity, revocation as native},
     crypto::{EddsaPrivateKey, gns::PkeySecret},
@@ -9,6 +11,8 @@ use gnunet::{
     },
 };
 use native::clock::{RuntimeClock, SystemClock};
+#[cfg(any(unix, windows))]
+pub(super) use standalone::run as run_standalone;
 use std::{
     error::Error,
     ffi::OsString,
@@ -541,6 +545,26 @@ async fn compute(
     }
     failures.finish()
 }
+fn sign_template(
+    ego: &identity::Identity,
+    public: ZoneKey,
+    timestamp: u64,
+    ttl: u64,
+) -> Result<Certificate> {
+    let template = Certificate::from_parts(public, timestamp, ttl, &[0; 32], &[0; 64]);
+    let region = template.proof()?.signing_message();
+    let mut raw = Zeroizing::new([0; 32]);
+    raw.copy_from_slice(&ego.secret().expose_serialized()[4..]);
+    let signature = match ego.secret().key_type() {
+        identity::KeyType::Ecdsa => PkeySecret::from_bytes(*raw)?.sign(3, &[&region])?,
+        identity::KeyType::Eddsa => *EddsaPrivateKey::from_seed(*raw)
+            .sign(3, &region)?
+            .as_bytes(),
+    };
+    Ok(Certificate::from_parts(
+        public, timestamp, ttl, &[0; 32], &signature,
+    ))
+}
 async fn prepare(
     socket: PathBuf,
     name: &[u8],
@@ -573,10 +597,8 @@ async fn prepare(
         identity::LookupProgress::Finished{outcome:identity::LookupOutcome::Found(ego),..}=>{
             let public=ZoneKey::from_wire(&ego.public_key()?)?;let now=clock.sample()?.now.as_micros();
             if now>=deadline||Instant::now()>=hard{return Err("original signing deadline".into())}
-            let timestamp=now.saturating_sub(pure::PREDATE_MICROS);let template=Certificate::from_parts(public,timestamp,o.policy.epoch_duration.saturating_mul(u64::from(o.epochs)),&[0;32],&[0;64]);
-            let region=template.proof()?.signing_message();let mut raw=Zeroizing::new([0;32]);raw.copy_from_slice(&ego.secret().expose_serialized()[4..]);
-            let signature=match ego.secret().key_type(){identity::KeyType::Ecdsa=>PkeySecret::from_bytes(*raw)?.sign(3,&[&region])?,identity::KeyType::Eddsa=>*EddsaPrivateKey::from_seed(*raw).sign(3,&region)?.as_bytes()};
-            let prepared=Certificate::from_parts(public,timestamp,template.proof()?.ttl(),&[0;32],&signature);
+            let timestamp=now.saturating_sub(pure::PREDATE_MICROS);
+            let prepared=sign_template(&ego,public,timestamp,o.policy.epoch_duration.saturating_mul(u64::from(o.epochs)))?;
             if clock.sample()?.now.as_micros()>=deadline||Instant::now()>=hard{return Err("original signing deadline elapsed before public output".into())}
             save_public(output,&prepared)?;return row(out,serde_json::json!({"event":"revocation_prepared","public_certificate_bytes":372,"timestamp_us":timestamp,"purpose":3,"pow_complete":false,"service_accepted":false}))
         },identity::LookupProgress::Finished{outcome,..}=>return Err(format!("original IDENTITY lookup failed: {outcome:?}").into()),identity::LookupProgress::Closed=>return Err("lookup closed".into()),identity::LookupProgress::Source(identity::Progress::WaitDeadline)=>return Err("original lookup deadline".into()),identity::LookupProgress::Source(_)=>{}

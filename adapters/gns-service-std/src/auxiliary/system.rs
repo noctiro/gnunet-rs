@@ -11,6 +11,7 @@ use std::{
     cell::Cell,
     future::Future,
     marker::PhantomData,
+    net::IpAddr,
     pin::{Pin, pin},
     rc::Rc,
     sync::Arc,
@@ -99,6 +100,51 @@ impl<const R: usize, const N: usize> Factory<R, N> {
         steps: u32,
         bounds: Bounds,
     ) -> Result<Query<'id, R, N>, Error<'id>> {
+        let family = match kind {
+            RecordType::A => Family::V4,
+            RecordType::AAAA => Family::V6,
+            kind if kind.value() == 0 => Family::Any,
+            _ => return Err(Fault::Unsupported.into()),
+        };
+        self.subscribe(
+            name,
+            steps,
+            bounds,
+            family,
+            Answers::Records {
+                records: Vec::new(),
+                bytes: 0,
+            },
+        )
+    }
+
+    pub(super) fn start_nameserver<'id>(
+        &self,
+        name: &str,
+        steps: u32,
+        bounds: Bounds,
+        limit: usize,
+    ) -> Result<Query<'id, R, N>, Error<'id>> {
+        self.subscribe(
+            name,
+            steps,
+            bounds,
+            Family::Any,
+            Answers::Nameserver {
+                addresses: Vec::new(),
+                limit,
+            },
+        )
+    }
+
+    fn subscribe<'id>(
+        &self,
+        name: &str,
+        steps: u32,
+        bounds: Bounds,
+        family: Family,
+        answers: Answers,
+    ) -> Result<Query<'id, R, N>, Error<'id>> {
         super::guard(bounds)?;
         if self.closing.get() {
             return Err(Fault::Closed.into());
@@ -106,12 +152,6 @@ impl<const R: usize, const N: usize> Factory<R, N> {
         if steps == 0 {
             return Err(Fault::Capacity.into());
         }
-        let family = match kind {
-            RecordType::A => Family::V4,
-            RecordType::AAAA => Family::V6,
-            kind if kind.value() == 0 => Family::Any,
-            _ => return Err(Fault::Unsupported.into()),
-        };
         let active = self.active.get();
         if active == self.limits.operations {
             return Err(Fault::WouldBlock.into());
@@ -140,8 +180,7 @@ impl<const R: usize, const N: usize> Factory<R, N> {
             alarm: None,
             limits: self.limits,
             family,
-            records: Vec::new(),
-            bytes: 0,
+            answers,
             report: Some(SystemReport {
                 token,
                 addresses: 0,
@@ -171,8 +210,7 @@ pub struct Query<'id, const R: usize, const N: usize> {
     alarm: Option<Pin<Box<Sleep>>>,
     limits: Limits,
     family: Family,
-    records: Vec<Record>,
-    bytes: usize,
+    answers: Answers,
     report: Option<SystemReport>,
     permit: Option<Permit>,
     closing: bool,
@@ -181,8 +219,66 @@ pub struct Query<'id, const R: usize, const N: usize> {
     // grants no query identity. The real broker Token above supplies identity.
     lifetime: PhantomData<&'id ()>,
 }
+enum Answers {
+    Records {
+        records: Vec<Record>,
+        bytes: usize,
+    },
+    Nameserver {
+        addresses: Vec<IpAddr>,
+        limit: usize,
+    },
+}
+impl Answers {
+    fn push(&mut self, address: IpAddr, limits: Limits, now: AbsoluteTime) -> Result<(), Fault> {
+        match self {
+            Self::Records { records, bytes } => {
+                let (record_type, data) = match address {
+                    IpAddr::V4(ip) => (RecordType::A, copy(&ip.octets())?),
+                    IpAddr::V6(ip) => (RecordType::AAAA, copy(&ip.octets())?),
+                };
+                let total = bytes.checked_add(data.len()).ok_or(Fault::Overflow)?;
+                if records.len() == limits.records || total > limits.bytes {
+                    return Err(Fault::Capacity);
+                }
+                records.try_reserve(1).map_err(|_| Fault::Capacity)?;
+                records.push(Record {
+                    origin: Origin::System,
+                    expiration_time: now.as_micros().saturating_add(limits.lifetime.0),
+                    record_type,
+                    flags: RecordFlags::NONE,
+                    data,
+                });
+                *bytes = total;
+            }
+            Self::Nameserver { addresses, limit } => {
+                if !addresses.contains(&address) {
+                    if addresses.len() == *limit {
+                        return Err(Fault::Capacity);
+                    }
+                    addresses.try_reserve(1).map_err(|_| Fault::Capacity)?;
+                    addresses.push(address);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn take(&mut self) -> Value {
+        match self {
+            Self::Records { records, .. } => Value::Records {
+                records: std::mem::take(records),
+                spent: 1,
+            },
+            Self::Nameserver { addresses, .. } => Value::Addresses {
+                addresses: std::mem::take(addresses),
+                spent: 1,
+            },
+        }
+    }
+}
 enum Observation {
-    Address(std::net::IpAddr),
+    Address(IpAddr),
     Terminal(Completion),
 }
 impl<'id, const R: usize, const N: usize> Query<'id, R, N> {
@@ -259,23 +355,7 @@ impl<'id, const R: usize, const N: usize> Operation for Query<'id, R, N> {
                 if !self.family.accepts(address) {
                     return Poll::Ready(Err(Fault::Malformed.into()));
                 }
-                let (kind, slice): (RecordType, Vec<u8>) = match address {
-                    std::net::IpAddr::V4(ip) => (RecordType::A, copy(&ip.octets())?),
-                    std::net::IpAddr::V6(ip) => (RecordType::AAAA, copy(&ip.octets())?),
-                };
-                let total = self.bytes.checked_add(slice.len()).ok_or(Fault::Overflow)?;
-                if self.records.len() == self.limits.records || total > self.limits.bytes {
-                    return Poll::Ready(Err(Fault::Capacity.into()));
-                }
-                self.records.try_reserve(1).map_err(|_| Fault::Capacity)?;
-                self.records.push(Record {
-                    origin: Origin::System,
-                    expiration_time: now.as_micros().saturating_add(self.limits.lifetime.0),
-                    record_type: kind,
-                    flags: RecordFlags::NONE,
-                    data: slice,
-                });
-                self.bytes = total;
+                self.answers.push(address, self.limits, now)?;
                 cx.waker().wake_by_ref();
                 Poll::Pending
             }
@@ -284,10 +364,7 @@ impl<'id, const R: usize, const N: usize> Operation for Query<'id, R, N> {
                 self.delivered = true;
                 self.alarm = None;
                 match terminal {
-                    Completion::End => Poll::Ready(Ok(Value::Records {
-                        records: std::mem::take(&mut self.records),
-                        spent: 1,
-                    })),
+                    Completion::End => Poll::Ready(Ok(self.answers.take())),
                     Completion::Timeout => Poll::Ready(Err(Fault::Timeout.into())),
                     _ => Poll::Ready(Err(Fault::Malformed.into())),
                 }

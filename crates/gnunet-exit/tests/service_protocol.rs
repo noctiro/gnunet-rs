@@ -6,7 +6,7 @@
     reason = "One focused pure model checks same-hash TCP/UDP target selection, ambiguous duplicates and immutable original tuples"
 )]
 use gnunet_exit::{
-    Address, AfProfile,
+    Address, AfProfile, PeerProfiles,
     engine::{Config, Effect, Engine, Limits, Service, Target},
     nat::{Entropy, Pool},
     policy::{Endpoint, Policy, Prefix, Protocol},
@@ -43,7 +43,7 @@ fn config(services: &[Service]) -> Config<'_> {
         ipv6: None,
         services,
         dns: false,
-        af: AfProfile::LINUX,
+        peer_profiles: &PeerProfiles::LINUX,
     }
 }
 fn message(value: PeerMessage<'_>) -> Result<Vec<u8>, Error> {

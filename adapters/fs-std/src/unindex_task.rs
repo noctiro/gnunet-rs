@@ -638,7 +638,7 @@ impl Task {
             return Err(Fault::InvalidInput.into());
         }
         let words = encode_keywords(extra_keywords)?;
-        let metadata_snapshot = metadata.snapshot()?;
+        let metadata_snapshot = metadata.snapshot_for_document(&file)?;
         let metadata_length =
             u32::try_from(metadata_snapshot.len()).map_err(|_| Fault::Capacity)?;
         let body_bytes = 52usize
@@ -919,6 +919,14 @@ impl Task {
                 return Err(failure);
             }
         };
+        if self.state.keywords.is_none()
+            && let Err(error) = self.manifest.metadata.check_bound_document(&input)
+        {
+            let result = self.append(END, &[3]);
+            let mut failure = self.failure(error.into());
+            failure.secondary = result.err();
+            return Err(failure);
+        }
         let extras = match copy_keywords(&self.manifest.extra_keywords) {
             Ok(v) => v,
             Err(e) => return Err(self.failure(e)),
@@ -1014,6 +1022,14 @@ impl Journal<'_> {
 }
 impl Recorder for Journal<'_> {
     fn source(&mut self, file_id: [u8; 64], bytes: u64) -> Result<(), Fault> {
+        if !self
+            .task
+            .manifest
+            .metadata
+            .agrees_with_bound_digest(file_id)
+        {
+            return self.retain(Err(Cause::SourceChanged));
+        }
         let result = match self.task.state.source {
             Some(original) if original != (file_id, bytes) => Err(Cause::SourceChanged),
             Some(_) => Ok(()),

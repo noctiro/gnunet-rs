@@ -7,10 +7,13 @@ extern crate alloc;
 #[cfg(feature = "alloc")]
 mod service;
 #[cfg(feature = "alloc")]
-pub use service::*;
-#[cfg(feature = "alloc")]
+pub use service::{Change, Core, Decision, Ego, Limits, Snapshot, StageView, Transaction};
+/// Bounded, allocation-free ego inventory and synchronous mutation owner.
+#[cfg(feature = "fixed")]
+pub mod fixed;
+#[cfg(any(feature = "alloc", feature = "fixed"))]
 mod names;
-#[cfg(feature = "alloc")]
+#[cfg(any(feature = "alloc", feature = "fixed"))]
 #[rustfmt::skip]
 mod tables;
 
@@ -20,6 +23,45 @@ use gnunet_types::Error;
 pub use gnunet_wire::official::identity::{KEY_LEN, KeyType, SecretKeyView};
 use subtle::ConstantTimeEq;
 use zeroize::{Zeroize, Zeroizing};
+
+/// Largest name fitting an official UPDATE with a serialized private key.
+pub const MAX_NAME_BYTES: usize = 65535 - 12 - 36 - 1;
+
+/// Requested mutation. Preparation alone has no committed effect.
+#[derive(Clone, Copy, Debug)]
+pub enum Mutation<'a> {
+    /// Create or import one key and normalize its supplied name.
+    Create {
+        /// Requested name before normalization.
+        name: &'a [u8],
+        /// Structurally validated supplied private key.
+        key: SecretKeyView<'a>,
+    },
+    /// Normalize both names, then rename the old ego.
+    Rename {
+        /// Existing name before normalization.
+        old: &'a [u8],
+        /// New name before normalization.
+        new: &'a [u8],
+    },
+    /// Normalize the name, then remove the ego.
+    Delete {
+        /// Existing name before normalization.
+        name: &'a [u8],
+    },
+}
+
+/// Inventory change kind. CREATE replies before UPDATE. RENAME and DELETE
+/// update before their success reply.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ChangeKind {
+    /// New ego at index zero of the after snapshot.
+    Create,
+    /// Existing ego renamed in place.
+    Rename,
+    /// Ego removed from the after snapshot.
+    Delete,
+}
 
 /// Official result code, preserving unknown future service codes.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -151,15 +193,14 @@ impl SecretKey {
 }
 
 /// Locale-neutral Unicode18 lowercase followed by canonical NFD, using the same
-/// fixed profile/tables as ego names. This pure capability is available under
-/// the existing alloc feature boundary, but the function itself allocates
-/// nothing and invokes no service, key, crypto, clock or I/O operation.
+/// fixed profile and tables as ego names. The function uses the caller's
+/// buffers for all normalization work.
 ///
 /// Caller scalar buffers are scratch and may change on error; output is written
 /// only after complete validation/capacity preflight. Its owner must erase any
 /// sensitive output/scratch. Input is canonical UTF-8 without NUL, at most65530
 /// bytes; no ego-name byte limit, IDNA mapping or ASCII approximation is imposed.
-#[cfg(feature = "alloc")]
+#[cfg(any(feature = "alloc", feature = "fixed"))]
 pub fn normalize_name_into(
     input: &[u8],
     output: &mut [u8],

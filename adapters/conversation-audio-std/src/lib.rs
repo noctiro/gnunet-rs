@@ -6,7 +6,7 @@ pub mod framing;
 #[cfg(any(unix, windows))]
 #[expect(
     unsafe_code,
-    reason = "Confined standard libopus and POSIX/PulseAudio or Windows/WASAPI ABI providers; no GNUnet FFI or opaque protocol implementation"
+    reason = "Confined standard libopus and platform PCM ABIs, with the GNUnet protocol implemented in Rust"
 )]
 mod native;
 pub mod ogg;

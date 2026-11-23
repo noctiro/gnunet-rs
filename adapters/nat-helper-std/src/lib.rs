@@ -65,21 +65,28 @@ fn failure(code: u8, cause: Cause) -> Failure {
 }
 #[cfg(any(
     target_os = "linux",
+    target_os = "android",
     target_os = "macos",
     target_os = "freebsd",
     windows
 ))]
 mod arguments;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "android"))]
 #[path = "linux.rs"]
 mod platform;
 #[cfg(any(target_os = "macos", target_os = "freebsd"))]
 #[path = "bsd.rs"]
 mod platform;
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
+#[cfg(any(
+    target_os = "linux",
+    target_os = "android",
+    target_os = "macos",
+    target_os = "freebsd"
+))]
 mod runner;
 #[cfg(any(
     target_os = "linux",
+    target_os = "android",
     target_os = "macos",
     target_os = "freebsd",
     windows
@@ -89,12 +96,22 @@ mod text;
 mod windows;
 /// Run the native reversal sender. Unix captures raw sockets before dropping
 /// saved credentials; Windows uses the invoking token without elevation.
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
+#[cfg(any(
+    target_os = "linux",
+    target_os = "android",
+    target_os = "macos",
+    target_os = "freebsd"
+))]
 pub fn client() -> Result<(), Failure> {
     runner::client()
 }
 /// Run the native reversal observer with original output and stop ownership.
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
+#[cfg(any(
+    target_os = "linux",
+    target_os = "android",
+    target_os = "macos",
+    target_os = "freebsd"
+))]
 pub fn server() -> Result<(), Failure> {
     runner::server()
 }
@@ -111,6 +128,7 @@ pub fn server() -> Result<(), Failure> {
 /// Refuse targets without a qualified raw-kernel backend.
 #[cfg(not(any(
     target_os = "linux",
+    target_os = "android",
     target_os = "macos",
     target_os = "freebsd",
     windows
@@ -121,6 +139,7 @@ pub fn client() -> Result<(), Failure> {
 /// Refuse targets without a qualified raw-kernel backend.
 #[cfg(not(any(
     target_os = "linux",
+    target_os = "android",
     target_os = "macos",
     target_os = "freebsd",
     windows
@@ -129,7 +148,12 @@ pub fn server() -> Result<(), Failure> {
     Err(failure(1, Cause::Unsupported))
 }
 /// One bounded best-effort stderr diagnostic. It never writes a protocol line.
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
+#[cfg(any(
+    target_os = "linux",
+    target_os = "android",
+    target_os = "macos",
+    target_os = "freebsd"
+))]
 pub fn diagnostic(error: &Failure) {
     use std::fmt::Write;
     let mut line = text::Text::<512>::new();
@@ -142,6 +166,7 @@ pub fn diagnostic(error: &Failure) {
 /// Unsupported-target diagnostic has no native boundary or privileged execution.
 #[cfg(not(any(
     target_os = "linux",
+    target_os = "android",
     target_os = "macos",
     target_os = "freebsd",
     windows

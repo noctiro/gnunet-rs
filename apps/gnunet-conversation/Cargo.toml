@@ -4,8 +4,10 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+default-run = "gnunet-conversation"
 
 [target.'cfg(any(unix, windows))'.dependencies]
+gnunet-conversation-audio-host.workspace = true
 gnunet-conversation-client-host.workspace = true
 gnunet-identity-client-host.workspace = true
 gnunet-identity.workspace = true
@@ -24,16 +26,22 @@ gnunet-program-host = { workspace = true, features = ["runtime", "resolver-broke
 gnunet-client-host.workspace = true
 gnunet-resolver-broker.workspace = true
 gnunet-service-runtime.workspace = true
-tokio = { workspace = true, features = ["rt", "time", "net", "signal"] }
+gnunet-service-startup.workspace = true
+tokio = { workspace = true, features = ["rt", "time", "net", "signal", "io-util", "macros"] }
 gnunet-native.workspace = true
 zeroize = { workspace = true, features = ["alloc"] }
 
 [target.'cfg(unix)'.dependencies]
 nix.workspace = true
+tokio = { workspace = true, features = ["process"] }
 
 [[bin]]
 name = "gnunet-conversation"
 path = "src/main.rs"
+
+[[bin]]
+name = "gnunet-conversation-test"
+path = "src/test_command.rs"
 
 [lints]
 workspace = true

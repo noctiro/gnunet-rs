@@ -1,8 +1,34 @@
 # Official SETU union core
 
 Pure SETU algorithms, active IPC/P2P codecs, bounded sets and operation/service
-coordination. Native sockets and CADET ownership belong to the
-[host adapter](../../adapters/setu-std/README.md).
+coordination. The [host adapter](../../adapters/setu-std/README.md)
+owns native sockets and CADET channels.
+
+## Fixed peer operations
+
+`fixed::Session` drives one original ordered CADET channel using caller arenas.
+Full exchanges send the original full or missing-only element sequence and
+complete after the native channel retires. The source may render one element
+from append-only storage. A refused constructor returns
+the original arenas. Peer outputs retain their original receipt until admitted
+or retired. New peer elements pass through the application's admission port.
+
+The fixed responder sends one official compressed estimator. The initiator
+accepts compressed prefixes with 1, 2, 4 or 8 estimators and the single-estimator
+raw form that fits the peer frame. It reuses one local estimator and one peel
+row. The compressed reader retains a standard DEFLATE history window and
+checks member length and checksum before choosing the exchange mode.
+The optional `fixed-zlib` feature supplies a caller-owned codec. The supplied
+frame buffer bounds the actual SEC and element wire sizes.
+
+An optional `fixed::Differential` workspace enables differential negotiation
+with explicit bucket and round limits. It reuses the estimator cells after
+negotiation, receives contiguous IBF slices, and binds offers, demands and
+elements to the exact channel and admitted output. A stalled filter retries
+with a larger bounded IBF. With symmetric reporting enabled, an outbound
+lease identifies the original element for ADD_REMOTE when the peer demanded
+it or the full return leg proved it missing. Publish the result after
+admitting the matching transmission.
 
 The protocol reference is official v0.29.1, commit
 `346358e26d4dcc2dc4f51bef5d52dca29c7d8165`. Active sources are

@@ -135,12 +135,23 @@ impl<'a> Client<'a> {
             Poll::Ready(Ok(ReadStep::Eof)) => Poll::Ready(self.retire(LossCause::Eof, true)),
             Poll::Ready(Ok(ReadStep::Progress { bytes, complete })) => {
                 self.read_first = false;
+                if self
+                    .input_hard
+                    .is_some_and(|target| Instant::now() >= target)
+                {
+                    return Poll::Ready(self.retire(LossCause::Deadline, true));
+                }
                 if complete {
-                    if let Some(progress) = self.poll_native_guard(cx) {
-                        return Poll::Ready(progress);
-                    }
+                    self.input_hard = None;
                     Poll::Ready(self.dispatch(cx, epoch))
                 } else {
+                    if self.input_hard.is_none() {
+                        self.input_hard = Some(
+                            Instant::now()
+                                .checked_add(self.limits.input_timeout)
+                                .ok_or(ProtocolError::Overflow)?,
+                        );
+                    }
                     Poll::Ready(Ok(Progress::Activity {
                         epoch,
                         read_bytes: bytes,
@@ -174,6 +185,9 @@ impl<'a> Client<'a> {
         Ok(None)
     }
     fn expire_native(&mut self, now: Instant) -> Result<Option<Progress<'a>>, Error> {
+        if self.input_hard.is_some_and(|target| now >= target) {
+            return self.retire(LossCause::Deadline, true).map(Some);
+        }
         for index in 0..self.slots.len() {
             let Some(state) = &self.slots[index] else {
                 continue;
@@ -196,7 +210,7 @@ impl<'a> Client<'a> {
         self.retire_idle_connect();
         Ok(None)
     }
-    /// Check and arm original native response/retirement targets before a
+    /// Check and arm native response, input and retirement targets before a
     /// containing owner's clock wait. Cancellation and this guard sample no
     /// canonical clock or advance socket cursors. Returned losses have already
     /// detached the original MQ; local completions confer no remote receipt.

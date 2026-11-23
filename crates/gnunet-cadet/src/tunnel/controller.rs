@@ -568,6 +568,7 @@ impl<'id, 'slots, 'route> Controller<'id, 'slots, 'route> {
             limits,
         })
     }
+
     /// Original end-to-end tunnel identity; connection authority remains separate.
     #[must_use]
     pub const fn scope(&self) -> Scope<'id> {
@@ -1451,6 +1452,8 @@ impl<'id, 'slots, 'route> Controller<'id, 'slots, 'route> {
     /// original peer's purpose38 signature and strict origin monotime ledger.
     /// Keep confirmed receive keys; pause only new application seals. Entropy/
     /// fresh KX follows through request(), never by resetting old counters.
+    /// An initial live Alice transcript retains its original candidate, DH job
+    /// and deadline: the peer's signed request may cross its first KX/AUTH.
     pub fn peer_reset(
         &mut self,
         scope: Scope<'id>,
@@ -1469,8 +1472,16 @@ impl<'id, 'slots, 'route> Controller<'id, 'slots, 'route> {
             return Err(Error::Replay);
         }
         self.reset_high_water = proof.monotime();
-        self.discard_candidate();
-        self.intent = None;
+        let initial_alice = self.active.is_none()
+            && self.context.binding.role == Role::Alice
+            && self
+                .candidate
+                .as_ref()
+                .is_some_and(|candidate| now < candidate.retry().expires);
+        if !initial_alice {
+            self.discard_candidate();
+            self.intent = None;
+        }
         self.traffic_paused = true;
         Ok(Event::ResetArmed)
     }
@@ -1633,6 +1644,7 @@ impl<'id, 'slots, 'route> Controller<'id, 'slots, 'route> {
     }
     /// Schedule a real due per-connection encrypted KEEPALIVE. This is a bounded
     /// lower-priority control intent, never a plaintext wire heartbeat or ACK.
+    /// An already pending control or unavailable original route returns NotReady.
     pub fn keepalive<const P: usize>(
         &mut self,
         scope: Scope<'id>,
@@ -1643,9 +1655,11 @@ impl<'id, 'slots, 'route> Controller<'id, 'slots, 'route> {
         self.authorize(scope)?;
         self.time(now)?;
         self.book(book)?;
-        let info = book.route_info(route)?;
-        if info.expected_peer != Some(self.context.binding.peer)
-            || book.keepalive_due(now) != Some(route)
+        if self.traffic_paused
+            || self.pending.is_some()
+            || self.intent.is_some()
+            || book.route_info(route)?.expected_peer != Some(self.context.binding.peer)
+            || !book.keepalive_ready(route, now)
         {
             return Err(Error::NotReady);
         }
@@ -1689,8 +1703,13 @@ impl<'id, 'slots, 'route> Controller<'id, 'slots, 'route> {
             if !matches!(pending.state, PendingState::Retained) {
                 return Ok(None);
             }
+            let route = pending.attempt.route;
             let eligible = self.live_generation(pending.attempt.generation.serial)
-                && book.select(self.context.binding.peer) == Some(pending.attempt.route);
+                && if pending.plan == Plan::KeepAlive {
+                    book.keepalive_ready(route, now)
+                } else {
+                    book.select(self.context.binding.peer) == Some(route)
+                };
             if eligible {
                 let pending = self.pending.as_mut().ok_or(Error::StaleGeneration)?;
                 let bytes = output.get_mut(..pending.length).ok_or(Error::Capacity)?;
@@ -1721,7 +1740,8 @@ impl<'id, 'slots, 'route> Controller<'id, 'slots, 'route> {
             return Ok(None);
         }
         let route = if let Some(preferred) = intent.preferred {
-            if book.keepalive_due(now) != Some(preferred) {
+            if !book.keepalive_ready(preferred, now) {
+                self.intent = None;
                 return Ok(None);
             }
             preferred

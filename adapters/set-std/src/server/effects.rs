@@ -212,7 +212,11 @@ impl<'id, 'slots> Server<'id, 'slots> {
                 if self.cadet.pending_transmit().is_some() || self.cadet.epoch().is_none() {
                     return Ok(false);
                 }
-                let hard = self.hard()?;
+                let Some(operation_hard) = self.operation_hard(*operation)? else {
+                    self.reject(id, Fault::Deadline, observe)?;
+                    return Ok(true);
+                };
+                let hard = self.hard()?.min(operation_hard);
                 match self.cadet.open(peer, app_id) {
                     Ok(channel) => {
                         self.channels[index] = Some(Channel {
@@ -228,6 +232,7 @@ impl<'id, 'slots> Server<'id, 'slots> {
                             retire_reason: Fault::Closed,
                             first: None,
                             input: None,
+                            operation_hard: Some(operation_hard),
                             hard: None,
                         });
                         let transmit = self.cadet.pending_transmit().ok_or(Fault::Conflict)?;
@@ -264,7 +269,11 @@ impl<'id, 'slots> Server<'id, 'slots> {
                     return Ok(false);
                 }
                 let actual = channel.channel;
-                let ack_hard = self.hard()?;
+                let Some(operation_hard) = self.operation_hard(operation)? else {
+                    self.reject(id, Fault::Deadline, observe)?;
+                    return Ok(true);
+                };
+                let ack_hard = self.hard()?.min(operation_hard);
                 self.core.admit_effect(id)?;
                 self.adopted = Some(Adopt {
                     id,
@@ -272,6 +281,7 @@ impl<'id, 'slots> Server<'id, 'slots> {
                 });
                 let channel = self.channels[index].as_mut().ok_or(Fault::Stale)?;
                 channel.owner = Some(PeerOwner::Operation(operation));
+                channel.operation_hard = Some(operation_hard);
                 channel.listener = None;
                 if let Some(input) = &mut channel.input {
                     // Start the actual receive-credit release phase after local
@@ -284,6 +294,9 @@ impl<'id, 'slots> Server<'id, 'slots> {
             }
             Action::PeerSend { owner, bytes } => {
                 let owner = *owner;
+                let PeerOwner::Operation(operation) = owner else {
+                    return Err(Fault::Conflict.into());
+                };
                 let Some(index) = self.owner_channel(owner) else {
                     self.reject(id, Fault::Closed, observe)?;
                     return Ok(true);
@@ -291,6 +304,13 @@ impl<'id, 'slots> Server<'id, 'slots> {
                 let source = self.channels[index].as_ref().ok_or(Fault::Stale)?;
                 if source.closing {
                     self.reject(id, Fault::Closed, observe)?;
+                    return Ok(true);
+                }
+                let operation_hard = source.operation_hard.ok_or(Fault::Stale)?;
+                if self.core.operation_remaining(operation, self.now()?)? == 0
+                    || Instant::now() >= operation_hard
+                {
+                    self.reject(id, Fault::Deadline, observe)?;
                     return Ok(true);
                 }
                 let channel = source.channel;
@@ -320,14 +340,12 @@ impl<'id, 'slots> Server<'id, 'slots> {
                     self.reject(id, Fault::Capacity, observe)?;
                     return Ok(true);
                 }
-                let hard = self.hard()?;
                 self.core.admit_effect(id)?;
                 self.sends.push_back(Send {
                     id,
                     channel,
                     frame: OwnedFrame::new(copy),
                     charge,
-                    hard,
                 });
                 Ok(true)
             }

@@ -44,8 +44,8 @@ policy and a synchronous startup callback. `serve_statistics_controlled_with_asy
 awaits an asynchronous startup effect after real listener polling. Failure or
 cancellation releases accepted streams and core generations and restores the
 original retained-byte accounting. Borrowed listeners remain caller-owned.
-Windows uses native endpoint ACLs; requesting Unix UID/GID authentication remains
-an explicit unsupported error rather than a substitute credential proof.
+Windows applies local restrictions through the
+[original configured listener's DACL](../service-runtime/README.md#configured-local-listeners).
 
 The adapter runs one task, with a bounded connection table, input and output
 buffers. It creates no detached connection task or unbounded channel. It polls

@@ -1,0 +1,26 @@
+import("//build/ohos.gni")
+
+group("gnunet_node_image") {
+  deps = [
+    ":gnunet-node",
+    ":gnunet_node_init",
+@NAT_HELPER_DEPS@  ]
+}
+
+ohos_prebuilt_executable("gnunet-node") {
+  source = "gnunet-node"
+  output = "gnunet-node"
+  install_enable = true
+  module_install_dir = "bin"
+  install_images = [ "system" ]
+  part_name = "@PART@"
+  subsystem_name = "@SUBSYSTEM@"
+}
+
+ohos_prebuilt_etc("gnunet_node_init") {
+  source = "gnunet-node.cfg"
+  relative_install_dir = "init"
+  install_images = [ "system" ]
+  part_name = "@PART@"
+  subsystem_name = "@SUBSYSTEM@"
+}@NAT_HELPER_TARGETS@

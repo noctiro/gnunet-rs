@@ -22,9 +22,7 @@ pub use unix::bind_private_with_permissions;
 #[cfg(unix)]
 pub use unix::capture;
 #[cfg(windows)]
-pub use windows::ActivatedSocket;
-#[cfg(windows)]
-pub use windows::Activation;
+pub use windows::{ActivatedLocalSocket, ActivatedSocket, Activation};
 
 #[cfg(unix)]
 impl Activation {

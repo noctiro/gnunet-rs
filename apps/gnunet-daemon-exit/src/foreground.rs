@@ -246,7 +246,7 @@ struct Owners<'cfg, 'id, 'slots> {
     dns_advertisement: Option<dns_advertisement::Owner<'cfg>>,
     binding_count: usize,
     requires_tun: bool,
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "freebsd"))]
     recovery: network::recovery::Controller,
     resolver: Resolver,
     watch: Option<Ipv6Watch>,
@@ -285,7 +285,7 @@ impl Owners<'_, '_, '_> {
         }
     }
     fn shutdown(&mut self) {
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "freebsd"))]
         self.recovery.close();
         if self.done {
             return;
@@ -319,7 +319,7 @@ impl Owners<'_, '_, '_> {
             quiescent: closed.quiescent,
             regex,
             unremoved_routes: std::mem::take(&mut self.routes),
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "freebsd"))]
             recovery: self.recovery.take_report(),
         });
         self.done = true;
@@ -552,13 +552,18 @@ enum Turn {
     Step(Progress),
     RenewWatch,
 }
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "freebsd"))]
 fn retire_missing(
     exit: &mut Exit<'_, '_, '_>,
     recovery: &mut network::recovery::Controller,
     reports: &Reporter,
 ) -> Result<bool, Failure> {
-    Ok(exit.retire_missing_wintun(&mut |event| recovery.observe(event, reports))?)
+    let mut observe = |event| recovery.observe(event, reports);
+    #[cfg(windows)]
+    let retired = exit.retire_missing_wintun(&mut observe)?;
+    #[cfg(target_os = "freebsd")]
+    let retired = exit.retire_missing_freebsd(&mut observe)?;
+    Ok(retired)
 }
 async fn turn(
     owners: &mut Owners<'_, '_, '_>,
@@ -568,9 +573,9 @@ async fn turn(
 ) -> Result<Turn, Failure> {
     let reports = owners.reports.clone();
     let cleanup = owners.cleanup.clone();
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "freebsd"))]
     let recovery = &mut owners.recovery;
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "freebsd"))]
     let routes = &mut owners.routes;
     let exit = &mut owners.exit;
 
@@ -588,7 +593,7 @@ async fn turn(
     poll_fn(|cx| {
         reports.register(cx);
         let guarded = exit.poll_native_guard(cx, &mut |event| {
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "freebsd"))]
             if interruptible {
                 recovery.observe(event, &reports);
                 return;
@@ -600,7 +605,7 @@ async fn turn(
         {
             return Poll::Ready(Ok(Turn::Step(Progress::WaitDeadline)));
         }
-        #[cfg(not(windows))]
+        #[cfg(not(any(windows, target_os = "freebsd")))]
         if interruptible && requires_tun && !exit.tun_source_current() {
             return Poll::Ready(Err("original EXIT packet source retired".into()));
         }
@@ -611,7 +616,7 @@ async fn turn(
                 Poll::Pending => {}
             }
         }
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "freebsd"))]
         if interruptible {
             recovery.retire_watch(watch, &reports)?;
         }
@@ -620,9 +625,9 @@ async fn turn(
             match watch.poll(cx) {
                 Poll::Ready(Ipv6Progress::Observed(sample)) => {
                     if sample.state != Ipv6State::Ready {
-                        #[cfg(windows)]
+                        #[cfg(any(windows, target_os = "freebsd"))]
                         let retired = interruptible && retire_missing(exit, recovery, &reports)?;
-                        #[cfg(unix)]
+                        #[cfg(all(unix, not(target_os = "freebsd")))]
                         let retired = false;
                         if !retired {
                             return Poll::Ready(Err(format!(
@@ -644,18 +649,18 @@ async fn turn(
                         return Poll::Ready(Err(e.into()));
                     }
                     if matches!(done.reason, Ipv6End::Deadline) {
-                        #[cfg(windows)]
+                        #[cfg(any(windows, target_os = "freebsd"))]
                         if interruptible && retire_missing(exit, recovery, &reports)? {
                             progressed = true;
                         } else {
                             return Poll::Ready(Ok(Turn::RenewWatch));
                         }
-                        #[cfg(unix)]
+                        #[cfg(all(unix, not(target_os = "freebsd")))]
                         return Poll::Ready(Ok(Turn::RenewWatch));
                     } else {
-                        #[cfg(windows)]
+                        #[cfg(any(windows, target_os = "freebsd"))]
                         let retired = interruptible && retire_missing(exit, recovery, &reports)?;
-                        #[cfg(unix)]
+                        #[cfg(all(unix, not(target_os = "freebsd")))]
                         let retired = false;
                         if !retired {
                             return Poll::Ready(Err(format!(
@@ -700,7 +705,7 @@ async fn turn(
         // this bounded polling future before checking the resulting source state.
         let exit_step = {
             let mut observe_event = |event| {
-                #[cfg(windows)]
+                #[cfg(any(windows, target_os = "freebsd"))]
                 if interruptible {
                     recovery.observe(event, &reports);
                     return;
@@ -721,9 +726,16 @@ async fn turn(
         if interruptible && reports.failed() {
             return Poll::Ready(Ok(Turn::Stop));
         }
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "freebsd"))]
         if interruptible {
-            match recovery.poll_restore(cx, stop, exit, watch, routes) {
+            match recovery.poll_restore(
+                cx,
+                stop,
+                exit,
+                watch,
+                #[cfg(any(windows, target_os = "freebsd"))]
+                routes,
+            ) {
                 Poll::Ready(Err(error)) => return Poll::Ready(Err(error)),
                 Poll::Ready(Ok(network::recovery::Admission::Stopped)) => {
                     return Poll::Ready(Ok(Turn::Stop));
@@ -925,7 +937,7 @@ async fn run(
             return Err(Box::new(rejected.error));
         }
     };
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "freebsd"))]
     let recovery = network::recovery::Controller::new(&settings, cleanup.clone())?;
     let mut owners = Owners {
         exit,
@@ -933,7 +945,7 @@ async fn run(
         dns_advertisement,
         binding_count: bindings.len(),
         requires_tun: settings.ipv4.is_some() || settings.ipv6.is_some(),
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "freebsd"))]
         recovery,
         resolver,
         watch: None,

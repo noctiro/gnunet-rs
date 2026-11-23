@@ -7,8 +7,7 @@ libgnunet FFI, hidden Resolver, detached Tokio task, or peer-authentication clai
 
 `Runtime::new` requires a current Tokio runtime, explicit fixed TLS material,
 selectors sharing one RuntimeClock, finite Limits, and a matching Buffers pool. It snapshots all live selectors together before admission. Remote queue addresses
-are the admitted numeric `quic-`/`http3-` address codec. Local configuration is
-handled by the separate PROGRAM module. A `None` NAT source explicitly selects
+are the admitted numeric `quic-`/`http3-` address codec. A `None` NAT source explicitly selects
 local-only operation, advertising only a concrete bound numeric address;
 a wildcard is never presented as a learned public address.
 
@@ -19,6 +18,25 @@ HTTP3 link and pure slot loans, preserving the official application framing.
 The shared [compatibility contract](../../spec/gnunet/compatibility.md) defines
 peer interoperability qualification.
 
+## Embedded foreground
+
+`embedded::serve` owns the receive pool and runs the communicator on the
+caller's Tokio reactor. With `embedded-config`, `Configured::read` and
+`serve_configured` use the standard bind, TLS files and resource settings.
+Use `read_with_environment` to provide an explicit filename context.
+Both entry points take the original TRANSPORT, PILS and optional NAT selectors.
+The caller supplies one shared clock through these selectors.
+`Settings.socket_policy`, or the explicit policy argument after `network_changes`
+in `serve_configured`, prepares the original UDP endpoint before bind. Both raw
+QUIC and HTTP/3 use that same endpoint through identity replacement. Standalone
+and low-level `Runtime::new` startup use the ordinary process policy.
+
+Readiness gives the verified local peer and numeric bound UDP endpoint after
+the original TRANSPORT registration is written. The `NetworkChanges` receiver
+advances the original interface scanner. NAT retains address publication.
+Complete the stop future and await retirement of the same runtime. The
+`h3-profile` feature enables HTTP/3.
+
 ## Ownership and local facts
 
 A queue id is checked, never reused within this allocation, and belongs only to
@@ -28,18 +46,23 @@ original flow id. A matching Received callback is accepted only after the actual
 Incoming frame completed its local MQ write. Closing the MQ classifies remaining
 callback debts as lost; it cannot generate processing or FC acknowledgments.
 
-A SEND is admitted to one concrete original Link before the held RX is released. It retains one immutable copy, original message id, original queue, hard bound,
-known provider prefix and any unknown-exposure report. The local Sent
-result and additional queue credit use the same physical FIFO. Sent whole-write
-is separate from provider plaintext acceptance; neither proves UDP transmission
-or remote HTTP/peer processing. Credit is restored only after the original Sent
-result and credit frame really completed local writing, and the link has a free
-bounded send reservation. An H3 POST can still own its native/profile row after
-its DATA was accepted and its local Sent result was written; that row is reused
-only after its original response, body retirement and output completion. Initial
-and recovered queues advertise zero credit while that reservation is unavailable. A command already held by the MQ keeps its original deadline until capacity
-returns. Whole provider acceptance is never automatically replayed as a new POST
-or stream message.
+A queue admits one SEND into its exclusive bounded state before releasing the
+physical MQ frame. It retains one immutable allocation, original message id,
+queue and hard bound. Native stream pressure leaves that SEND queued while
+later MQ commands, including flow-control acknowledgments, can progress. When
+native capacity becomes available, the allocation moves once into the original
+Link without renewing its deadline. Queued bytes have no native acceptance;
+submitted bytes retain their known provider prefix and unknown-exposure facts.
+
+The local Sent result and additional queue credit use the same physical FIFO.
+Credit is restored only after both frames complete local writing and the
+exclusive SEND state is released. Credit describes this admission state, not
+temporary HTTP stream availability. An H3 POST can still own its native/profile
+row after its DATA was accepted and its local Sent result was written; that row
+is reused only after its original response, body retirement and output
+completion. Sent whole-write and provider plaintext acceptance do not prove UDP
+transmission or remote HTTP/peer processing. Whole provider acceptance is never
+automatically replayed as a new POST or stream message.
 
 Every original native hard alarm is registered before clock or provider polling. Source lifetime, partial input, callback and send bounds remain finite. Logical
 clock rollback never extends the native bound. The first close fixes its grace;
@@ -67,23 +90,39 @@ Caller pools cap retained connections and bodies. Raw default receive slabs are
 1232 bytes while the advertised outbound queue MTU remains1000. H3 default body
 slabs are1452 bytes, outbound MTU1080, and each connection requires at least
 polls+2 slots. Backend QUIC windows, pending initial bytes, stream credit, output
-frames/bytes, receive slices and total source lifetime are separately bounded. The socket wrapper limits each receive batch to8. The raw incremental
-read scratch is1024 bytes per retained connection. A full FIFO/held callback does
-not renew a deadline, create another operation, or count as IO progress.
+frames/bytes, receive slices and total source lifetime are separately bounded.
+The UDP socket uses Quinn's ancillary-data backend through bounded Tokio
+readiness. Each receive poll attempts one batch of up to eight buffers.
+An isolated error, including Windows ICMP TTL expiry, schedules another
+poll through the original endpoint owner. Other receive failures retain their
+native cause. Recoverable send failures count as datagram loss and only bytes
+accepted by the UDP socket contribute to the send total.
+Raw incremental reads use 1024 bytes of scratch space per retained connection.
+A full FIFO or held callback does not renew a deadline, create another
+operation, or count as IO progress.
 
-TLS uses explicit caller-provided Rustls/AWS-LC configurations and Quinn
-rustls adapters. TLS1.3 only, exact ALPN, no early data/resumption/tickets, and no
-global default provider. GNUnet transport certificates follow the explicitly
-untrusted C policy, while TLS CertificateVerify signatures are checked by
-the provider; a certificate or raw PID proposal never authenticates a GNUnet
-peer. HOSTLIST PKI policy is unchanged. This is not a pure-Rust cryptographic primitive/FIPS claim.
+Quinn runs TLS 1.3 through explicit Rustls configurations, with profile-specific
+ALPN and early data, resumption and tickets disabled. The
+[shared Rust provider](../tls-crypto-std/README.md) handles handshake and packet
+protection and checks CertificateVerify signatures. The adapter supplies Rust
+Retry integrity, stateless reset and address-validation token keys. Configured
+credentials use the shared provider's private-key validation and signing.
+GNUnet peer authentication remains the responsibility of the transport protocol.
 
 ## Native NAT
 
-The bound UDP port is registered with the explicit native sockaddr ABI. Actual add/remove address callbacks retain their original NAT AddressId and map
-to distinct standard TRANSPORT address ids. No REGISTER ACK or NAT reachability
-success is invented. A NAT end retires this source; no old registration or
-one-shot mutation is replayed into another epoch. The pinned raw C communicator
+The single bound UDP address and actual port are registered with NAT through
+its native sockaddr ABI. IPv6 listeners use `IPV6_V6ONLY` on all hosts.
+A numeric `BINDTO` port selects a wildcard, with `DISABLE_V6` selecting
+the IPv4 wildcard. A literal address selects its own family.
+Peer dials and advertisements use the bound address family and a concrete
+unicast address with a nonzero port. IPv4-mapped IPv6 addresses and IPv6
+link-local routes or addresses with zone or flow metadata are refused. A bad
+peer address refuses the original queue request and preserves the endpoint.
+NAT add/remove callbacks retain their original AddressId. Publishable addresses
+receive a standard TRANSPORT address id. Other callbacks retire through NAT
+without blocking valid announcements. A NAT end retires this source. The pinned
+raw C communicator
 has no reversal implementation and no STUN handler; reversal notifications are
 explicit diagnostics rather than fake completed operations. Actual bounded interface snapshots implement the public nt.c loopback/local
 prefix/WAN categories. A120-second default refresh is caller-configurable. Refresh failure preserves its error and classifies new observations as
@@ -99,31 +138,31 @@ that entry point. Configured TLS pairs are loaded with finite byte/chain limits;
 new pairs use exclusive creation and native private file permissions. Original
 parent-directory and file handles authorize cleanup; a replaced credential link
 is refused. Partial pairs remain an explicit error. File flushes and directory
-barrier observations stay separate; Windows reports its unavailable directory
-barrier rather than synthesizing synchronization.
+barrier observations stay separate.
+[Native directory barrier](../native-std/API.md#anchored-filesystem-operations)
 
 Linux, macOS, FreeBSD and Windows share the same runtime. Native client startup
 captures original inheritance once and refuses service listeners. Unix applies
 configured process privileges; Windows verifies the configured primary-token
 SID. Shared native stop subscriptions retain the original parent control.
 Identity selection and the first stop check precede TLS credential and UDP
-endpoint creation.
+endpoint creation. On Windows, the endpoint sets `SO_EXCLUSIVEADDRUSE` before
+binding and gives the same socket to Quinn.
 Standard-stream and credential-file calls retain native OS blocking semantics.
 
 `program.rs` selects PROGRAM options and identity. `program/scheduling.rs`
 composes the shared foreground scheduler, Resolver and stop latch;
 `program/drive.rs` owns runtime progress and retirement. Credential namespace
 ownership and independent terminal errors live in their respective modules.
+Within the runtime, `send.rs` owns SEND admission, `recovery.rs` handles physical
+TRANSPORT replacement, and `retirement.rs` settles original connection debts and
+driver ownership. Raw and HTTP/3 links own their respective native framing.
 
 ## Building
 
 ```sh
 cargo build --release -p gnunet-communicator-quic -p gnunet-communicator-http3
 ```
-
-The pinned Quinn/Rustls/AWS-LC dependencies require a native C toolchain and
-target SDK headers, including the Windows SDK for MSVC and FreeBSD base headers
-when cross-compiling. Both executable profiles use the same native entry.
 
 ## TRANSPORT source recovery
 
@@ -143,12 +182,14 @@ does not require a globally empty FIFO. Initial startup expiry applies only unti
 the first Ready, while every original operation and overall lifetime keeps
 its original target.
 
-An accepted reliable stream send keeps its exact native SendId and original
-deadline while draining. Its replacement queue has no credit until that native
-send really settles. Only then can a new capacity update be sent, without an old
-SENT result. Failed old receive callbacks release their original application
-frame as local retirement, not successful delivery. Native source loss and
-explicit shutdown still close their original endpoint and drivers.
+Never-submitted queued bytes are erased when their physical MQ fails. A native
+reliable stream send keeps its exact SendId, original deadline and exposure facts
+while draining, including when no accepted prefix has yet been observed. Its
+replacement queue can be announced with zero credit while that original SEND
+occupies the admission state. Only after it settles can a capacity update be
+sent, without an old SENT result. Failed old receive callbacks release their
+original application frame as local retirement, not successful delivery. Native
+source loss and explicit shutdown still close their original endpoint and drivers.
 
 Local IPC cases cover partial-prefix EOF/reconnection without FIFO replay,
 malformed framing remaining fatal, source identity pauses and announcement

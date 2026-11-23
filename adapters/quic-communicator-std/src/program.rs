@@ -1,17 +1,15 @@
 //! Actual standard PROGRAM foreground for raw QUIC and HTTP3 communicators.
 //! Runtime, Resolver, external frame loans and original shutdown remain in this
 //! one scoped task. There is no detached actor, fallback DNS or C transport FFI.
-mod credentials;
 mod observation;
 mod reporting;
 use crate::statistics::{NoStatistics, StatisticsFactory};
-mod resources;
 mod settings;
 use crate::tls::Profile;
 use gnunet_program_host::{
     logging::Logger,
     policy::Level,
-    program::{self, Defaults, Invocation, NlsDisabled, Preparation},
+    program::{self, Defaults, Invocation, Preparation},
     shared_clock::SharedClock,
 };
 use gnunet_service_startup::ClientStartup;
@@ -61,7 +59,7 @@ pub fn run_with_statistics<F: StatisticsFactory + 'static>(
         Default::default(),
     )?;
     let mut logger = Logger::new(settings::binary(profile), std::process::id(), false)?;
-    let preparation = program::prepare(
+    let preparation = program::prepare_installed(
         config,
         Invocation {
             binary_name: settings::binary(profile),
@@ -72,7 +70,6 @@ pub fn run_with_statistics<F: StatisticsFactory + 'static>(
         Default::default(),
         std::env::args_os(),
         &program::Environment::capture(),
-        &mut NlsDisabled,
         &mut logger,
         &clock,
         &mut io::stdout().lock(),
@@ -108,12 +105,10 @@ pub fn run_with_statistics<F: StatisticsFactory + 'static>(
         let settings = Settings::read(prepared.main().config, profile)?;
         #[cfg(unix)]
         {
-            let user = gnunet_service_startup::configured_user(
-                prepared.main().config,
-                settings::section(profile),
-            )?
-            .map(|n| gnunet_service_startup::resolve_user(&n))
-            .transpose()?;
+            let user =
+                gnunet_service_startup::configured_user(prepared.main().config, profile.section())?
+                    .map(|n| gnunet_service_startup::resolve_user(&n))
+                    .transpose()?;
             let privilege = gnunet_service_startup::apply_privileges(
                 user.as_ref(),
                 gnunet_service_startup::GroupsProfile::WithInitgroups,
@@ -129,7 +124,7 @@ pub fn run_with_statistics<F: StatisticsFactory + 'static>(
         #[cfg(windows)]
         gnunet_service_startup::verify_configured_identity(
             prepared.main().config,
-            settings::section(profile),
+            profile.section(),
         )?;
         if reports.borrow().failed() {
             return Ok(());

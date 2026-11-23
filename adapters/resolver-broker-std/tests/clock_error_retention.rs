@@ -1,6 +1,8 @@
 //! Independent real public owner error-retention regression; no native connect.
 #[path = "../../ipc-unix/tests/support/clock_source.rs"]
 pub mod clock_source;
+#[path = "support/directory.rs"]
+mod directory;
 use gnunet_service_runtime::clock::{ClockSample, ClockSubscription, RuntimeClock};
 use gnunet_types::Error;
 use std::sync::{
@@ -32,8 +34,15 @@ fn check_retention(second_refusal: bool) -> Result<(), Box<dyn std::error::Error
         type Stats<'owner> =gnunet_ipc_unix::handle::StatisticsHandle<'owner, 8,64,4,64,16>;
         let source=Arc::new(Source{clock:clock_source::Adjustable::frozen(1_000_000,8)?,fail:AtomicU8::new(0)});
         let mut cfg=gnunet_config::Configuration::default();
-        cfg.set_value(b"resolver",b"UNIXPATH",Some(b"/private/tmp/gnunet-clock-review-not-connected-resolver"))?;
-        cfg.set_value(b"statistics",b"UNIXPATH",Some(b"/private/tmp/gnunet-clock-review-not-connected-statistics"))?;
+        let dir = directory::Directory::new()?;
+        for (section, name) in [
+            (b"resolver".as_slice(), "resolver"),
+            (b"statistics".as_slice(), "statistics"),
+        ] {
+            let endpoint = dir.0.join(name);
+            let encoded = gnunet_native::os_bytes::encode(endpoint.as_os_str());
+            cfg.set_value(section, b"UNIXPATH", Some(&encoded))?;
+        }
         let profile=gnunet_resolver_broker::native_profile()?;
         let families=gnunet_resolver_broker::FamilyProfile::new(profile.encode(gnunet_resolver_broker::Family::V4),profile.encode(gnunet_resolver_broker::Family::V6))?;
         let(context,_driver)=gnunet_resolver_broker::broker::<4,64>(gnunet_resolver_broker::LiveConfiguration::new(cfg.duplicate()?),Default::default(),families,source.clone())?;

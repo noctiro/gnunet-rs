@@ -2,6 +2,7 @@
 use super::{
     identity, ioctl,
     lifetime::{InterfaceLease, Lifetime},
+    listed_device_identity,
 };
 use crate::{
     DeviceHandle,
@@ -13,10 +14,8 @@ use std::{
     error::Error,
     fmt, io,
     mem::size_of,
-    os::{
-        fd::OwnedFd,
-        unix::fs::{FileTypeExt, OpenOptionsExt},
-    },
+    os::{fd::OwnedFd, unix::fs::OpenOptionsExt},
+    path::Path,
 };
 const SET_DESCRIPTION: libc::c_ulong = nix::request_code_write!(b'i', 41, size_of::<libc::ifreq>());
 const GET_DESCRIPTION: libc::c_ulong =
@@ -82,10 +81,8 @@ pub(super) fn install_created(
     if !crate::recovery::canonical_unit(device) || device.len() >= 16 || birth == [0; 32] {
         return Err(mismatch());
     }
-    let metadata = std::fs::symlink_metadata(format!("/dev/{device}"))?;
-    if !metadata.file_type().is_char_device() {
-        return Err(mismatch());
-    }
+    let path = format!("/dev/{device}");
+    let file = listed_device_identity(Path::new(&path))?;
     let mut device_name = [0; 16];
     device_name[..device.len()].copy_from_slice(device.as_bytes());
     let record = Record {
@@ -93,7 +90,7 @@ pub(super) fn install_created(
         device: device_name,
         index: lease.index.ok_or_else(mismatch)?,
         birth,
-        file: FileIdentity::from_metadata(&metadata),
+        file,
     };
     publish(lease, record)
 }
@@ -129,8 +126,14 @@ pub(super) fn check_marker_at(socket: &OwnedFd, name: &str, record: &Record) -> 
         _ => Err(mismatch()),
     }
 }
+pub(super) fn name_at_index(index: u32) -> io::Result<Option<[u8; 16]>> {
+    names::locate(index)
+}
+pub(crate) fn index_unoccupied(index: u32) -> io::Result<bool> {
+    Ok(name_at_index(index)?.is_none())
+}
 pub(super) fn locate(socket: &OwnedFd, record: &Record) -> io::Result<Option<[u8; 16]>> {
-    let Some(name) = names::locate(record.index)? else {
+    let Some(name) = name_at_index(record.index)? else {
         return Ok(None);
     };
     check_marker_at(socket, crate::recovery::read_name(&name)?, record)?;
@@ -142,12 +145,161 @@ pub(super) fn check_created(fd: &OwnedFd, lease: &InterfaceLease) -> io::Result<
         return Err(mismatch());
     }
     if let Some(record) = &lease.recovery {
-        let stat = nix::sys::stat::fstat(fd)?;
-        if FileIdentity::unix(stat.st_dev, stat.st_ino) != record.file {
+        if actual.file != record.file {
             return Err(mismatch());
         }
         check_marker_at(&lease.socket, &actual.name, record)?;
     }
+    Ok(())
+}
+fn fence_retained(
+    lease: &mut InterfaceLease,
+    expected: &crate::Info,
+    fib: Option<u32>,
+) -> io::Result<()> {
+    let record = lease.recovery.as_deref().ok_or_else(mismatch)?;
+    let checkpoint = lease.checkpoint.as_mut().ok_or_else(mismatch)?;
+    checkpoint.fence_active(record)?;
+    let name = locate(&lease.socket, record)?.ok_or(io::ErrorKind::NotFound)?;
+    if crate::recovery::read_name(&name)? != expected.name
+        || record.index != expected.index
+        || lease.name()? != expected.name
+        || Some(super::get_fib(&lease.socket, &expected.name)?) != fib
+    {
+        return Err(mismatch());
+    }
+    Ok(())
+}
+
+/// Prove the original marked lease is still journaled and its index is vacant.
+pub(crate) fn fence_missing(handle: &mut DeviceHandle, expected: &crate::Info) -> io::Result<()> {
+    let record = fenced_record(handle, expected)?;
+    if !index_unoccupied(record.index)? {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "original FreeBSD TUN index is occupied",
+        ));
+    }
+    let path = format!("/dev/{}", record.device_name()?);
+    if let Some(identity) = super::observe_listed_device(Path::new(&path))? {
+        return Err(if identity == record.file {
+            io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "original FreeBSD TUN node remains present",
+            )
+        } else {
+            mismatch()
+        });
+    }
+    Ok(())
+}
+
+pub(crate) fn missing_index(handle: &mut DeviceHandle, expected: &crate::Info) -> io::Result<bool> {
+    if !index_unoccupied(expected.index)? {
+        return Ok(false);
+    }
+    let record = fenced_record(handle, expected)?;
+    index_unoccupied(record.index)
+}
+
+fn fenced_record<'a>(
+    handle: &'a mut DeviceHandle,
+    expected: &crate::Info,
+) -> io::Result<&'a Record> {
+    let lease = handle.interface.as_mut().ok_or_else(mismatch)?;
+    let record = lease.recovery.as_deref().ok_or_else(mismatch)?;
+    if record.index != expected.index || lease.name()? != expected.name {
+        return Err(mismatch());
+    }
+    lease
+        .checkpoint
+        .as_mut()
+        .ok_or_else(mismatch)?
+        .fence_active(record)?;
+    Ok(record)
+}
+
+/// Clear the old checkpoint only after independent route settlement.
+pub(crate) fn retire_missing(
+    handle: &mut DeviceHandle,
+    expected: &crate::Info,
+) -> io::Result<crate::recovery::Journal> {
+    fence_missing(handle, expected)?;
+    if handle.fd().is_ok() {
+        return Err(io::Error::other(
+            "old FreeBSD packet descriptor remains open",
+        ));
+    }
+    let lease = handle.interface.as_mut().ok_or_else(mismatch)?;
+    let record = lease.recovery.as_deref().ok_or_else(mismatch)?;
+    let checkpoint = lease.checkpoint.as_mut().ok_or_else(mismatch)?;
+    checkpoint.finish_active(record)?;
+    lease
+        .checkpoint
+        .take()
+        .map(|owner| *owner)
+        .ok_or_else(mismatch)
+}
+
+/// Requalify the original packet FD and active checkpoint before registration.
+pub(crate) fn verify_retained_packet(
+    handle: &mut DeviceHandle,
+    expected: &crate::Info,
+    fib: Option<u32>,
+) -> io::Result<()> {
+    let (fd, lease) = handle.recovery_parts()?;
+    fence_retained(lease, expected, fib)?;
+    let actual = identity(fd)?;
+    let record = lease.recovery.as_deref().ok_or_else(mismatch)?;
+    if !actual.header
+        || actual.name != expected.name
+        || actual.index != expected.index
+        || actual.file != record.file
+        || observed_lifetime(fd)? != lease.lifetime
+    {
+        return Err(mismatch());
+    }
+    check_marker_at(&lease.socket, &actual.name, record)?;
+    crate::platform::nonblocking(fd)
+}
+
+/// Native lifetime of the qualified original packet descriptor and interface.
+pub(crate) enum ReopenScope {
+    Manual,
+    Transient,
+}
+
+/// Qualify the original device and distinguish its actual native lifetime.
+pub(crate) fn prepare_reopen_packet(
+    handle: &mut DeviceHandle,
+    expected: &crate::Info,
+    fib: Option<u32>,
+) -> io::Result<ReopenScope> {
+    verify_retained_packet(handle, expected, fib)?;
+    let lease = handle.interface.as_ref().ok_or_else(mismatch)?;
+    if lease.lifetime == Lifetime::Transient {
+        return Ok(ReopenScope::Transient);
+    }
+    check_selected(lease.recovery.as_deref().ok_or_else(mismatch)?)?;
+    Ok(ReopenScope::Manual)
+}
+
+/// Open only the original manual unit under its still-active checkpoint.
+pub(crate) fn open_retained_packet(
+    handle: &mut DeviceHandle,
+    expected: &crate::Info,
+    fib: Option<u32>,
+) -> io::Result<()> {
+    if handle.fd().is_ok() {
+        return Err(io::ErrorKind::AlreadyExists.into());
+    }
+    let lease = handle.interface.as_mut().ok_or_else(mismatch)?;
+    fence_retained(lease, expected, fib)?;
+    if lease.lifetime != Lifetime::Manual {
+        return Err(mismatch());
+    }
+    let fd = open_selected(lease.recovery.as_deref().ok_or_else(mismatch)?)?;
+    handle.install_fd(fd);
     Ok(())
 }
 /// An absent-name observation or a newly reacquired, qualified exclusive device.
@@ -240,45 +392,49 @@ impl From<io::Error> for QualificationFailure {
         }
     }
 }
+fn check_selected(record: &Record) -> io::Result<String> {
+    // Inventory the device directory before lookup or open of a named unit.
+    let path = format!("/dev/{}", record.device_name()?);
+    if listed_device_identity(Path::new(&path))? != record.file {
+        return Err(mismatch());
+    }
+    Ok(path)
+}
+fn open_selected(record: &Record) -> io::Result<OwnedFd> {
+    let path = check_selected(record)?;
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .custom_flags(libc::O_CLOEXEC | libc::O_NONBLOCK | libc::O_NOFOLLOW)
+        .open(path)?;
+    Ok(file.into())
+}
+pub(super) fn observed_lifetime(fd: &OwnedFd) -> io::Result<Lifetime> {
+    match super::read_int(fd, super::lifetime::GET_TRANSIENT) {
+        Ok(0) => Ok(Lifetime::Manual),
+        Ok(1) => Ok(Lifetime::Transient),
+        Ok(_) => Err(mismatch()),
+        Err(error) if error.raw_os_error() == Some(libc::ENOTTY) => Ok(Lifetime::Manual),
+        Err(error) => Err(error),
+    }
+}
 fn qualify(record: &Record) -> Result<Option<Qualified>, QualificationFailure> {
     let socket: OwnedFd = control_socket()?.into();
     let Some(actual_name) = locate(&socket, record)? else {
         return Ok(None);
     };
     let name = crate::recovery::read_name(&actual_name)?;
-    // Devfs open can clone an absent tunN. Inspect the existing character node
-    // first, under the caller's serialized administration/device-access scope.
-    let path = format!("/dev/{}", record.device_name()?);
-    let before = std::fs::symlink_metadata(&path)?;
-    if !before.file_type().is_char_device() || FileIdentity::from_metadata(&before) != record.file {
-        return Err(mismatch().into());
-    }
-    let file = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .custom_flags(libc::O_CLOEXEC | libc::O_NONBLOCK | libc::O_NOFOLLOW)
-        .open(path)?;
-    let handle = DeviceHandle::from_fd(file.into());
+    let handle = DeviceHandle::from_fd(open_selected(record)?);
     let checked = (|| -> io::Result<Lifetime> {
-        let stat = nix::sys::stat::fstat(handle.fd()?)?;
-        if FileIdentity::unix(stat.st_dev, stat.st_ino) != record.file {
-            return Err(mismatch());
-        }
         let info = identity(handle.fd()?)?;
-        if info.name != name || info.index != record.index {
+        if info.file != record.file || info.name != name || info.index != record.index {
             return Err(mismatch());
         }
         check_marker_at(&socket, name, record)?;
         if index(name)? != record.index {
             return Err(mismatch());
         }
-        match super::read_int(handle.fd()?, super::lifetime::GET_TRANSIENT) {
-            Ok(0) => Ok(Lifetime::Manual),
-            Ok(1) => Ok(Lifetime::Transient),
-            Ok(_) => Err(mismatch()),
-            Err(error) if error.raw_os_error() == Some(libc::ENOTTY) => Ok(Lifetime::Manual),
-            Err(error) => Err(error),
-        }
+        observed_lifetime(handle.fd()?)
     })();
     match checked {
         Ok(lifetime) => Ok(Some(Qualified {

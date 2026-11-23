@@ -1,8 +1,9 @@
 //! One owned native UDP socket with retained atomic TX and explicit RX consumption.
 //! Waiting futures borrow this owner; cancellation cannot recreate or drop its packet.
+use gnunet_service_runtime::network::{SocketOpenError, SocketPolicy};
 use gnunet_types::{Error, Rejected};
 use gnunet_udp_communicator_core::send::{Datagram, Policy};
-use socket2::{Domain, Protocol, SockRef, Socket, Type};
+use socket2::SockRef;
 use std::{
     io,
     net::SocketAddr,
@@ -14,6 +15,7 @@ use std::{
 };
 use tokio::{io::ReadBuf, net::UdpSocket};
 use zeroize::{Zeroize, Zeroizing};
+#[cfg(feature = "transport")]
 mod discovery;
 const RECEIVE_BYTES: usize = 65536;
 // A receipt outlives a mutable borrow and can survive an owner's Drop. A checked,
@@ -84,12 +86,15 @@ pub enum SocketError {
     Core(Error),
     /// Original native socket failure.
     Io(io::Error),
+    /// Application refused preparation before the descriptor was bound.
+    Protection(io::Error),
 }
 impl std::fmt::Display for SocketError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Core(e) => write!(f, "UDP socket: {e}"),
             Self::Io(e) => write!(f, "UDP socket: {e}"),
+            Self::Protection(e) => write!(f, "UDP socket protection: {e}"),
         }
     }
 }
@@ -97,7 +102,7 @@ impl std::error::Error for SocketError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Core(_) => None,
-            Self::Io(e) => Some(e),
+            Self::Io(e) | Self::Protection(e) => Some(e),
         }
     }
 }
@@ -157,11 +162,13 @@ impl Receipt {
 /// RX buffer requests cover a maximum datagram and kernel accounting. All IPv6
 /// owners reject mapped-v4 destinations. Addresses do not assert peer identity.
 pub struct DatagramSocket {
+    socket_policy: SocketPolicy,
     owner: SocketId,
     socket: Option<Arc<UdpSocket>>,
     local: SocketAddr,
     profile: Profile,
     pending: Option<Pending>,
+    #[cfg(feature = "transport")]
     discovery: Option<discovery::Pending>,
     receive: Zeroizing<Vec<u8>>,
     receipt: Option<Receipt>,
@@ -170,7 +177,10 @@ pub struct DatagramSocket {
 impl DatagramSocket {
     /// Bind a real nonblocking native socket inside an active Tokio IO runtime.
     /// Construction reserves one full65536-byte RX buffer before publication.
-    pub fn bind(address: SocketAddr) -> Result<Self, SocketError> {
+    /// Windows reserves this default socket's address exclusively before bind;
+    /// adopting an already-bound scan socket does not change its bind policy.
+    /// The original socket policy also governs later native burst sockets.
+    pub fn bind(address: SocketAddr, socket_policy: SocketPolicy) -> Result<Self, SocketError> {
         let profile = if address.is_ipv4() {
             Profile::Ipv4
         } else {
@@ -179,23 +189,31 @@ impl DatagramSocket {
         if !profile.accepts(address) {
             return Err(Error::InvalidInput.into());
         }
-        let domain = if address.is_ipv4() {
-            Domain::IPV4
-        } else {
-            Domain::IPV6
-        };
-        let socket = Socket::new(domain, Type::DGRAM, Some(Protocol::UDP))?;
+        let socket = socket_policy
+            .open_udp(address)
+            .map_err(|error| match error {
+                SocketOpenError::Create(error) => SocketError::Io(error),
+                SocketOpenError::Protection(error) => SocketError::Protection(error),
+            })?;
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsSocket;
+            gnunet_native::network::set_exclusive_address_use(socket.as_socket())?;
+        }
         if profile == Profile::Ipv6 {
             socket.set_only_v6(true)?;
         }
         socket.set_nonblocking(true)?;
         socket.bind(&address.into())?;
         let standard: std::net::UdpSocket = socket.into();
-        Self::adopt(UdpSocket::from_std(standard)?)
+        Self::adopt(UdpSocket::from_std(standard)?, socket_policy)
     }
     /// Adopt the exact actual scan descriptor; it is never rebound or cloned as
     /// another receive owner. Allocation precedes any publication of this owner.
-    pub(crate) fn adopt(socket: UdpSocket) -> Result<Self, SocketError> {
+    pub(crate) fn adopt(
+        socket: UdpSocket,
+        socket_policy: SocketPolicy,
+    ) -> Result<Self, SocketError> {
         #[cfg(windows)]
         {
             use std::os::windows::io::AsSocket;
@@ -224,11 +242,13 @@ impl DatagramSocket {
             .map_err(|_| Error::Capacity)?;
         receive.resize(RECEIVE_BYTES, 0);
         Ok(Self {
+            socket_policy,
             owner: SocketId::next()?,
             socket: Some(Arc::new(socket)),
             local,
             profile,
             pending: None,
+            #[cfg(feature = "transport")]
             discovery: None,
             receive: Zeroizing::new(receive),
             receipt: None,
@@ -241,6 +261,11 @@ impl DatagramSocket {
     pub(crate) fn shared(&self) -> Result<Arc<UdpSocket>, Error> {
         self.socket.as_ref().cloned().ok_or(Error::Closed)
     }
+    /// Original policy for sockets derived from this owner.
+    #[must_use]
+    pub const fn socket_policy(&self) -> &SocketPolicy {
+        &self.socket_policy
+    }
     /// Original actual local endpoint, retained for teardown diagnostics.
     #[must_use]
     pub const fn local_address(&self) -> SocketAddr {
@@ -250,6 +275,21 @@ impl DatagramSocket {
     #[must_use]
     pub const fn profile(&self) -> Profile {
         self.profile
+    }
+    /// Whether an encrypted or discovery datagram owns the native send slot.
+    #[must_use]
+    pub const fn has_pending_send(&self) -> bool {
+        if self.pending.is_some() {
+            return true;
+        }
+        #[cfg(feature = "transport")]
+        {
+            self.discovery.is_some()
+        }
+        #[cfg(not(feature = "transport"))]
+        {
+            false
+        }
     }
     /// Admit exactly one original immutable prepared packet. Refusal returns that
     /// same owner. There is no implicit send, payload copy or nonce regeneration.
@@ -384,7 +424,7 @@ impl DatagramSocket {
     /// itself is not a callback, delivery receipt or hidden background operation.
     #[must_use]
     pub const fn is_quiescent(&self) -> bool {
-        self.pending.is_none() && self.discovery.is_none() && self.receipt.is_none()
+        !self.has_pending_send() && self.receipt.is_none()
     }
     /// Retire the real socket and erase buffered original data. Prepared unsent
     /// packet owners drop here; their cryptographic sequences remain burned.
@@ -395,7 +435,10 @@ impl DatagramSocket {
     /// Retire original packet slots while the process keeps its sole socket
     /// reader. Old receipts cannot regain access after a generation cut.
     pub(crate) fn retire_packets(&mut self) {
-        self.discovery = None;
+        #[cfg(feature = "transport")]
+        {
+            self.discovery = None;
+        }
         drop(self.pending.take());
         self.receive.as_mut_slice().zeroize();
         self.receipt = None;

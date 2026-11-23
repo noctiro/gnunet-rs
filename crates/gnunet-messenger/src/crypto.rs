@@ -14,14 +14,14 @@ pub mod message;
 pub mod records;
 /// Actual member/peer signature and short-message hash paths.
 pub mod signature;
-/// Protocol/crypto failure. No missing official authorization MAC is invented.
+/// Protocol or cryptographic failure with explicit required key inputs.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Error {
     /// Actual bounded codec, entropy or cryptographic failure.
     Protocol(Fault),
-    /// The active192-byte AUTHORIZATION transmission omits the separate MAC16
-    /// required by its HMAC/decryptor. Official received bytes cannot supply it.
-    AuthorizationMacOmitted,
+    /// AUTHORIZATION needs the original group key in addition to the shared key.
+    /// Use the dedicated two-key verification or recovery operation.
+    GroupKeyRequired,
 }
 impl From<Fault> for Error {
     fn from(error: Fault) -> Self {
@@ -32,8 +32,8 @@ impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Protocol(error) => write!(f, "Messenger crypto: {error:?}"),
-            Self::AuthorizationMacOmitted => {
-                f.write_str("official AUTHORIZATION omits its required MAC")
+            Self::GroupKeyRequired => {
+                f.write_str("AUTHORIZATION verification requires its original group key")
             }
         }
     }

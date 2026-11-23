@@ -144,7 +144,7 @@ impl<'c, 'slots, 'p, E: Entropy, const O: usize> Server<'c, 'slots, 'p, E, O> {
             if !info {
                 for app in self.apps.iter().flatten() {
                     for l in &app.rooms {
-                        if l.room != room || l.phase != LeasePhase::Active {
+                        if l.room != room || !l.phase.is_active() {
                             continue;
                         }
                         if let Body::Talk { discourse, .. } = body {
@@ -199,7 +199,7 @@ impl<'c, 'slots, 'p, E: Entropy, const O: usize> Server<'c, 'slots, 'p, E, O> {
                         && !t.closing
                         && !t.remote_closed
                         && Some(t.channel) != exclude
-                        && (info || t.compatible)
+                        && (info || t.handshake.is_ready())
                     {
                         destinations.push(Destination::Peer(t.channel));
                     }
@@ -258,7 +258,7 @@ impl<'c, 'slots, 'p, E: Entropy, const O: usize> Server<'c, 'slots, 'p, E, O> {
                 .ok_or(Fault::Stale)?
                 .rooms
                 .iter()
-                .any(|l| l.source == source && l.phase != LeasePhase::Closing)
+                .any(|l| l.source == source && !l.phase.is_closing())
             {
                 self.tasks[i] = None;
                 return Ok(true);
@@ -379,7 +379,7 @@ impl<'c, 'slots, 'p, E: Entropy, const O: usize> Server<'c, 'slots, 'p, E, O> {
                 return Ok(true);
             };
             let kind = msg.body()?.kind();
-            if !tunnel.compatible && kind != Kind::INFO {
+            if !tunnel.handshake.is_ready() && kind != Kind::INFO {
                 continue;
             }
             let bytes = carrier::encode(
@@ -412,7 +412,11 @@ impl<'c, 'slots, 'p, E: Entropy, const O: usize> Server<'c, 'slots, 'p, E, O> {
             let Some(t) = self.tunnels[i].as_ref() else {
                 continue;
             };
-            if t.closing || t.remote_closed || !t.compatible || t.bootstrap >= self.messages.len() {
+            if t.closing
+                || t.remote_closed
+                || !t.handshake.is_ready()
+                || t.bootstrap >= self.messages.len()
+            {
                 continue;
             }
             let (room, channel, mut cursor) = (t.room, t.channel, t.bootstrap);
@@ -521,7 +525,7 @@ impl<'c, 'slots, 'p, E: Entropy, const O: usize> Server<'c, 'slots, 'p, E, O> {
         let bytes = &received.input.messages()[offset..];
         let (frame, _) = gnunet_wire::official::Frame::decode_prefix(bytes)?;
         let count = frame.encoded_len();
-        let raw = carrier::decode(&bytes[..count])?;
+        let raw = carrier::decode(frame)?.expose();
         let (room, source, peer) = {
             let t = self.tunnels[index].as_ref().ok_or(Fault::Stale)?;
             (t.room, t.source, t.peer)
@@ -538,6 +542,11 @@ impl<'c, 'slots, 'p, E: Entropy, const O: usize> Server<'c, 'slots, 'p, E, O> {
         )?;
         let hash = core::crypto::signature::message_hash(parsed);
         if !kind.is_known() {
+            return Err(Fault::Unsupported.into());
+        }
+        if let Body::Info { version } = parsed.body()
+            && version != carrier::VERSION
+        {
             return Err(Fault::Unsupported.into());
         }
         let known = self.core.service_attribution(room, &hash).is_ok();
@@ -570,13 +579,11 @@ impl<'c, 'slots, 'p, E: Entropy, const O: usize> Server<'c, 'slots, 'p, E, O> {
             if authenticated.sender != gnunet_crypto::hash512(&peer) {
                 return Err(Fault::Authentication.into());
             }
-            let Body::Info { version } = parsed.body() else {
-                return Err(Fault::Malformed.into());
-            };
-            if version != carrier::VERSION {
-                return Err(Fault::Unsupported.into());
-            }
-            self.tunnels[index].as_mut().ok_or(Fault::Stale)?.compatible = true;
+            self.tunnels[index]
+                .as_mut()
+                .ok_or(Fault::Stale)?
+                .handshake
+                .observe_info();
             // INFO is connection-local; no app notification or rebroadcast.
             self.track(room, hash, Some(channel), false)?;
             let m = self
@@ -735,7 +742,7 @@ impl<'c, 'slots, 'p, E: Entropy, const O: usize> Server<'c, 'slots, 'p, E, O> {
                     source,
                     channel,
                     peer: info.peer,
-                    compatible: false,
+                    handshake: PeerHandshake::default(),
                     info_queued: false,
                     closing: false,
                     remote_closed: false,
@@ -788,6 +795,16 @@ impl<'c, 'slots, 'p, E: Entropy, const O: usize> Server<'c, 'slots, 'p, E, O> {
                     until: self.until()?,
                 });
             }
+            cadet::Step::Credit { channel, .. } => {
+                if let Some(tunnel) = self
+                    .tunnels
+                    .iter_mut()
+                    .flatten()
+                    .find(|t| t.channel == channel)
+                {
+                    tunnel.handshake.observe_credit();
+                }
+            }
             cadet::Step::Destroyed(channel) => {
                 if let Some(tunnel) = self
                     .tunnels
@@ -814,7 +831,7 @@ impl<'c, 'slots, 'p, E: Entropy, const O: usize> Server<'c, 'slots, 'p, E, O> {
         if self.history_frozen() {
             return Ok(false);
         }
-        if self.entry_steps(observe)? || self.leases()? {
+        if self.entry_steps(observe)? || self.leases(observe)? {
             return Ok(true);
         }
         if self.room_step()? {

@@ -1,5 +1,10 @@
+extern crate std;
+
 use super::*;
+use crate::replay::durable::{self, CommitFailure, Destination, Refusal};
 use crate::replay::{Limits, NonceSlot, PeerSlot, Reason, Replay};
+use gnunet_wire::official::{MessageHeader, message_type};
+use std::vec;
 
 const LEASE: u64 = 10;
 const STAMP: u64 = 20;
@@ -70,6 +75,135 @@ fn wire_pair(
     )?;
     check(material.until() == LEASE)?;
     Ok((first, second))
+}
+
+#[test]
+fn in_place_seal_matches_the_canonical_box_bytes() -> Result<(), Error> {
+    // The entire official FS UBLOCK application and recorded DHT path fit
+    // through a full virtual CORE record and the longest official BOX route.
+    const CORE_BYTES: usize = 62_576;
+    const PLAIN_BYTES: usize = dv::PAYLOAD_PREFIX + CORE_BYTES;
+    const BOX_BYTES: usize = dv::BOX_PREFIX + dv::MAX_HOPS * 32 + PLAIN_BYTES;
+    let instance = Instance::new();
+    let key = EddsaPrivateKey::from_seed([61; 32]);
+    let sender = PeerId(*key.public_key().as_bytes());
+    let source = instance.source(sender, 0, 100)?;
+    let (target, _) = recipient([62; 32])?;
+    let mut path: [PeerId; dv::MAX_HOPS] = core::array::from_fn(|i| PeerId([i as u8 + 2; 32]));
+    path[dv::MAX_HOPS - 1] = target;
+    let mut core = vec![0; CORE_BYTES];
+    MessageHeader::from_total_size(message_type::CORE_ENCRYPTED_MESSAGE_CAKE, CORE_BYTES)?
+        .encode(&mut core)?;
+    let packet = || Packet {
+        route: &path,
+        without_fc: false,
+        message: &core,
+    };
+    let prepare = || {
+        source
+            .task(STAMP, 1, LEASE)?
+            .prepare_seal(target, 1, &mut FixtureEntropy(80))
+    };
+    let mut copied = vec![0; BOX_BYTES];
+    let mut in_place = vec![77; BOX_BYTES + 1];
+    let mut scratch = vec![0; PLAIN_BYTES];
+    let expected = prepare()?.seal_local(&key, 2, packet(), &mut scratch, &mut copied)?;
+    let actual = prepare()?.seal_local_in_place(&key, 2, packet(), &mut in_place)?;
+    check(actual.bytes() == BOX_BYTES && expected.bytes() == BOX_BYTES)?;
+    check(in_place[..actual.bytes()] == copied[..])?;
+    check(in_place[actual.bytes()] == 77)?;
+    check(matches!(
+        prepare()?.seal_local_in_place(&key, 2, packet(), &mut in_place[..BOX_BYTES - 1]),
+        Err(Error::Capacity)
+    ))?;
+    check(in_place[..actual.bytes()] == copied[..])
+}
+
+struct DurableFixture {
+    target: PeerId,
+    sender: PeerId,
+    calls: usize,
+}
+
+impl durable::Store for DurableFixture {
+    type Error = Error;
+
+    fn commit(&mut self, packet: durable::Packet<'_>) -> Result<(), CommitFailure<Error>> {
+        if packet.target() != self.target
+            || packet.sender() != self.sender
+            || packet.stamp() != STAMP
+        {
+            return Err(CommitFailure::Rejected(Error::Conflict));
+        }
+        self.calls += 1;
+        match self.calls {
+            1 => Err(CommitFailure::Rejected(Error::WouldBlock)),
+            2 => Ok(()),
+            _ => Err(CommitFailure::OutcomeUnknown(Error::Storage)),
+        }
+    }
+}
+
+#[test]
+fn durable_grant_requires_the_original_commit_and_fences_unknown_outcome() -> Result<(), Error> {
+    let instance = Instance::new();
+    let key = EddsaPrivateKey::from_seed([111; 32]);
+    let sender = PeerId(*key.public_key().as_bytes());
+    let sending = instance.source(sender, 0, 100)?;
+    let (target, keypair) = recipient([112; 32])?;
+    let original = instance.source(target, 0, 100)?;
+    let other = instance.source(target, 0, 100)?;
+    let mut store = Destination::new(
+        &original,
+        DurableFixture {
+            target,
+            sender,
+            calls: 0,
+        },
+    )
+    .map_err(|failure| failure.reason)?;
+    let (first, second) = wire_pair(&sending, &key, target)?;
+    let encapsulation = BoxPacket::decode(&first)?.encapsulation()?;
+    let mut materials = [ReceiveSlot::new()];
+    let mut cache = ReceiveCache::new(&mut materials)?;
+    let material = ReceiveMaterial::local(original.task(0, 6, LEASE)?, encapsulation, &keypair, 6)?;
+    let key_id = cache.insert(0, material, 6)?;
+    let mut scratch = [0; PLAIN];
+    let mut buffer = [0; MESSAGE.len()];
+    let request = original
+        .task(0, 6, 80)?
+        .prepare_open(BoxPacket::decode(&first)?, 6)?;
+    let opened = cache.open(key_id, request, 6, &mut scratch, &mut buffer)?;
+    let denied = match store.admit(opened, 6) {
+        Err(denied)
+            if denied.reason == Refusal::Store(CommitFailure::Rejected(Error::WouldBlock)) =>
+        {
+            denied
+        }
+        _ => return Err(Error::Conflict),
+    };
+    let first = store.admit(denied.value, 7).map_err(|_| Error::Conflict)?;
+    check(first.message(7)? == MESSAGE)?;
+    let mut another = [0; MESSAGE.len()];
+    let request = other
+        .task(0, 7, 80)?
+        .prepare_open(BoxPacket::decode(&second)?, 7)?;
+    let material = ReceiveMaterial::local(other.task(0, 7, LEASE)?, encapsulation, &keypair, 7)?;
+    let mut another_materials = [ReceiveSlot::new()];
+    let mut another_cache = ReceiveCache::new(&mut another_materials)?;
+    let another_id = another_cache.insert(0, material, 7)?;
+    let foreign = another_cache.open(another_id, request, 7, &mut scratch, &mut another)?;
+    check(
+        matches!(store.admit(foreign, 7), Err(denied) if denied.reason == Refusal::Source(Error::Stale)),
+    )?;
+
+    let request = original
+        .task(0, 8, 80)?
+        .prepare_open(BoxPacket::decode(&second)?, 8)?;
+    let opened = cache.open(key_id, request, 8, &mut scratch, &mut another)?;
+    check(matches!(store.admit(opened, 8), Err(denied)
+        if denied.reason == Refusal::Store(CommitFailure::OutcomeUnknown(Error::Storage))))?;
+    check(first.message(8) == Err(Error::Closed))
 }
 
 #[test]

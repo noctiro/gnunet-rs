@@ -266,9 +266,17 @@ impl<'s, 'p, 'c, 'slots> State<'s, 'p, 'c, 'slots> {
         let core = self.session.core();
         let calls = &self.calls;
         let origin = self.origin;
+        let receive_deadline = self.cadet_receive_deadline();
+        let mut input_expired = false;
         let mut guard = || -> Result<(), cadet::Error> {
             control.check(clock.as_ref(), true)?;
             super::identity::current(pils, expected)?;
+            if let Some((_, bound)) = receive_deadline
+                && let Err(reason) = bound.check(clock.as_ref())
+            {
+                input_expired = reason == Fault::Deadline;
+                return Err(reason.into());
+            }
             if let Some(pending) = pending
                 && !pending.io_allowed(core.ok_or(Fault::NotReady)?, calls, origin.now()?)?
             {
@@ -276,7 +284,12 @@ impl<'s, 'p, 'c, 'slots> State<'s, 'p, 'c, 'slots> {
             }
             Ok(())
         };
-        let wait = self.earliest()?.map(|b| b.hard.into());
+        let wait = self
+            .earliest()?
+            .into_iter()
+            .chain(receive_deadline.map(|(_, bound)| bound))
+            .map(|bound| bound.hard.into())
+            .min();
         // The current Packet owns the original DATA and its input credit.
         // Drain only existing output until its final real ACK is Written;
         // dispatching a later Destroyed must not erase these received bytes.
@@ -286,6 +299,9 @@ impl<'s, 'p, 'c, 'slots> State<'s, 'p, 'c, 'slots> {
             self.cadet.poll_guarded(cx, wait, &mut guard)
         };
         self.track_port_restore();
+        if input_expired && let Some((owner, _)) = receive_deadline {
+            return self.expire_cadet_receive_owner(owner);
+        }
         let event = match result {
             Poll::Pending => return Ok(false),
             Poll::Ready(event) => event?,
@@ -298,9 +314,9 @@ impl<'s, 'p, 'c, 'slots> State<'s, 'p, 'c, 'slots> {
                 | cadet::Step::Data(_)
                 | cadet::Step::RejectedIncoming { .. }
                 | cadet::Step::Ignored { .. }
-        ) && let Some(original) = self.cadet_input
+        ) && self.expire_cadet_input()?
         {
-            original.check(self.sources.clock.as_ref())?;
+            return Ok(true);
         }
         match event {
             cadet::Step::Connected(epoch) => {
@@ -357,8 +373,8 @@ impl<'s, 'p, 'c, 'slots> State<'s, 'p, 'c, 'slots> {
                 Ok(true)
             }
             cadet::Step::Data(received) => {
-                self.cadet_input = None;
-                self.data(received, input_bound)
+                let bound = self.cadet_input.take().unwrap_or(input_bound);
+                self.data(received, bound)
             }
             cadet::Step::RejectedIncoming { transmit, .. } => {
                 self.cadet_input = None;
@@ -423,6 +439,9 @@ impl<'s, 'p, 'c, 'slots> State<'s, 'p, 'c, 'slots> {
                 Ok(read_bytes > 0 || written_bytes > 0)
             }
             cadet::Step::WaitDeadline => {
+                if self.expire_cadet_input()? {
+                    return Ok(true);
+                }
                 self.refresh()?;
                 self.control.check(self.sources.clock.as_ref(), true)?;
                 Ok(false)

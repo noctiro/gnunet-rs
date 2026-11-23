@@ -83,7 +83,7 @@ fn execute(mode: Mode) -> Result<u8, Cause> {
     use gnunet_program_host::{
         foreground,
         logging::Logger,
-        program::{self, Defaults, Invocation, NlsDisabled, Preparation},
+        program::{self, Defaults, Invocation, Preparation},
         reporting::Reporter,
         shared_clock::SharedClock,
     };
@@ -98,11 +98,11 @@ fn execute(mode: Mode) -> Result<u8, Cause> {
     )?;
     let mut logger = Logger::new(mode.name(), std::process::id(), false)?;
     let selection = options::Selection::new(mode);
-    let preparation = program::prepare(config, Invocation {
+    let preparation = program::prepare_installed(config, Invocation {
         binary_name: mode.name(),
         help: Some(b"Official DHT GET/PUT/MONITOR/HELLO through the configured DHT CLIENT endpoint. MONITOR observes all three message classes, with optional -k key/type filters. HELLO with no argument obtains a public URL; one positional URL offers it for bootstrapping. HELLO waits forever by default; an optional -T bounds it. -k KEY hashes the exact string with GNUnet SHA-512; -K accepts its printed Base32 key. -r replication defaults to 5; -t type defaults to TEST (8), -R records the route and -x demultiplexes everywhere. GET -T timeout defaults to 60 s and prints each actual result. PUT -d DATA requires nonempty bytes, -e expiration defaults to 1 h; PUT -T is an additional total wait budget, default 60 s. -V prints original write/retry/route diagnostics. A completed PUT is only a local IPC write, with no service, replication or durability acknowledgement. Standard -c/-L/-l/-h/-v apply."),
         select_default_filename: true, defaults: Defaults::Native,
-    }, selection.options(), std::env::args_os(), &program::Environment::capture(), &mut NlsDisabled, &mut logger, &clock, &mut io::stdout().lock(), &mut io::stderr().lock());
+    }, selection.options(), std::env::args_os(), &program::Environment::capture(), &mut logger, &clock, &mut io::stdout().lock(), &mut io::stderr().lock());
     let reporter = Reporter::new(logger, clock.clone());
     let result = (|| -> Result<u8, Cause> {
         #[cfg(unix)]

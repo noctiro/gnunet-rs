@@ -1,10 +1,7 @@
 //! Explicit Rust-owned committed history store and one bounded storage worker.
 //! Startup recovery alone owns Loaded; arbitrary network bytes have no constructor
 //! for this production CommittedArchive provider. No fsync runs in socket polling.
-use crate::core::{
-    self,
-    archive::{CommittedArchive, Recovered},
-};
+use crate::core::{self, CommittedArchive, archive::Recovered};
 use gnunet_snapshot_host::{
     Namespace,
     backend::{self, Loaded, Store},

@@ -1,4 +1,8 @@
 //! Publication-specific task/KSK preparation over the shared extraction core.
+mod simulation;
+pub use simulation::simulate;
+
+use super::plan::tree::{Event, Observer, emit, root_file_progress};
 use super::{Limits, Task, plan};
 use crate::{
     Buffers, Control, Progress,
@@ -9,11 +13,11 @@ use crate::{
     input_tree::InputDir,
     network::BlockOptions,
 };
-use gnunet_fs::{Content, Keyword, Keywords, metadata as md};
+use gnunet_fs::{Content, Keyword, Keywords, Location, Uri, metadata as md};
 use gnunet_native::filesystem::Directory;
 use std::{
     cell::{Cell, RefCell},
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fmt,
     fs::{self, File},
     io::Write,
@@ -194,7 +198,7 @@ pub struct KeywordTask {
     pub name: PathBuf,
     /// Complete canonical KSK URI, for diagnostics/restoration.
     pub uri: Vec<u8>,
-    /// Exact corresponding object's canonical CHK URI.
+    /// Exact corresponding object's canonical CHK or signed LOC URI.
     pub target: Vec<u8>,
 }
 /// Standard metadata artifact actually written and synced inside the owned group.
@@ -204,7 +208,7 @@ pub struct MetadataArtifact {
     pub name: PathBuf,
     /// Original tree-relative object (empty for the selected input itself).
     pub relative: PathBuf,
-    /// Exact object CHK to which this metadata and its KSK belong.
+    /// Exact object CHK or signed LOC to which this metadata and KSK belong.
     pub target: Vec<u8>,
     /// Complete official uncompressed v2 metadata bytes.
     pub wire: Vec<u8>,
@@ -218,7 +222,7 @@ pub struct Prepared {
     pub content: Task,
     /// Genuine per-object KSK tasks; empty when extraction was disabled.
     pub keywords: Vec<KeywordTask>,
-    /// Canonical selected content root CHK URI.
+    /// Canonical selected content root CHK or signed LOC URI.
     pub content_uri: Vec<u8>,
     /// Standard serialized metadata for every prepared object.
     pub metadata: Vec<MetadataArtifact>,
@@ -233,8 +237,7 @@ impl Prepared {
     }
 }
 
-fn uri(content: Content, limits: Limits) -> Result<Vec<u8>, Failure> {
-    let value = content.uri();
+fn canonical_uri(value: Uri<'_>, limits: Limits) -> Result<Vec<u8>, Failure> {
     let n = value.encoded_len()?;
     if n > limits.plan.ublock.uri.max_input_bytes {
         return Err(Failure::Policy);
@@ -262,7 +265,7 @@ impl<'a, C: FnMut(Progress) -> Control> Extractor<'a, C> {
         policy: Policy,
         limits: Limits,
         context: &'a Context<C>,
-        formats_enabled: bool,
+        metadata: &'a MetadataSettings,
     ) -> Result<Self, plan::Error> {
         Ok(Self {
             core: extraction::Extractor::new(
@@ -270,7 +273,7 @@ impl<'a, C: FnMut(Progress) -> Control> Extractor<'a, C> {
                 policy.metadata,
                 extraction_limits(limits),
                 context,
-                formats_enabled,
+                metadata,
             )?,
             objects: HashMap::new(),
             retained: 0,
@@ -393,9 +396,9 @@ impl<C: FnMut(Progress) -> Control> plan::tree::MetadataProvider for Extractor<'
 
 struct KeywordInput<'a> {
     path: &'a Path,
-    target: Content,
+    target: Uri<'a>,
     wire: &'a [u8],
-    terms: &'a [Vec<u8>],
+    terms: &'a [Keyword<'a>],
     blocks: BlockOptions,
     limits: Limits,
     policy: Policy,
@@ -430,13 +433,6 @@ fn keyword_task<C: FnMut(Progress) -> Control>(
         return Err(Failure::Policy);
     }
     context.check()?;
-    let mut keyword = Vec::new();
-    keyword
-        .try_reserve_exact(terms.len())
-        .map_err(|_| Failure::Policy)?;
-    for term in terms {
-        keyword.push(Keyword::new(term, false)?);
-    }
     let mut items = Vec::new();
     items
         .try_reserve_exact(policy.metadata.max_metadata_items)
@@ -474,8 +470,8 @@ fn keyword_task<C: FnMut(Progress) -> Control>(
         |repo| {
             plan::prepare_keywords(
                 repo,
-                Keywords::new(&keyword)?,
-                target.uri(),
+                Keywords::new(terms)?,
+                target,
                 Some(&metadata),
                 limits.plan,
             )
@@ -559,10 +555,208 @@ pub fn prepare_with_metadata(
     metadata: MetadataSettings,
     control: impl FnMut(Progress) -> Control,
 ) -> Result<Prepared, Failure> {
+    prepare_with_annotations(
+        group_root,
+        input,
+        buffers,
+        blocks,
+        limits,
+        policy,
+        Annotations {
+            metadata,
+            root_keywords: &RootKeywords::default(),
+            observer: None,
+        },
+        control,
+    )
+}
+
+/// An ordered list of explicit publication labels. Each occurrence retains its
+/// mandatory-search marker and receives one DATASTORE PUT.
+#[derive(Default)]
+pub struct RootKeywords(Vec<(Vec<u8>, bool)>);
+
+impl RootKeywords {
+    /// Append one literal label admitted by the default publication bounds.
+    pub fn push(&mut self, label: &[u8], mandatory: bool) -> Result<(), gnunet_types::Error> {
+        use gnunet_types::Error;
+        let limits = Limits::default().plan;
+        if self.0.len() >= limits.ublock.uri.max_keywords
+            || self.0.len() >= limits.max_puts
+            || label.len()
+                > limits
+                    .ublock
+                    .max_label_bytes
+                    .min(limits.ublock.uri.max_keyword_bytes)
+        {
+            return Err(Error::Capacity);
+        }
+        if label.is_empty() {
+            return Err(Error::InvalidInput);
+        }
+        Keyword::new(label, mandatory)?;
+        self.0.try_reserve(1).map_err(|_| Error::Capacity)?;
+        let mut term = Vec::new();
+        term.try_reserve_exact(label.len())
+            .map_err(|_| Error::Capacity)?;
+        term.extend_from_slice(label);
+        self.0.push((term, mandatory));
+        Ok(())
+    }
+
+    /// Whether the caller supplied no explicit labels.
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Borrow ordered explicit terms, also used by standalone URI publication.
+    pub fn terms(&self) -> Result<Vec<Keyword<'_>>, gnunet_types::Error> {
+        let mut terms = Vec::new();
+        terms
+            .try_reserve_exact(self.0.len())
+            .map_err(|_| gnunet_types::Error::Capacity)?;
+        for (label, mandatory) in &self.0 {
+            terms.push(Keyword::new(label, *mandatory)?);
+        }
+        Ok(terms)
+    }
+
+    /// Merge optional automatic terms by decoded label. Preserve the order and
+    /// mandatory marker of every explicit term and append unmatched automatic ones.
+    pub fn with_automatic<'a>(
+        &'a self,
+        automatic: &'a [Vec<u8>],
+    ) -> Result<Vec<Keyword<'a>>, gnunet_types::Error> {
+        use gnunet_types::Error;
+        let mut terms = self.terms()?;
+        terms
+            .try_reserve_exact(automatic.len())
+            .map_err(|_| Error::Capacity)?;
+        let mut explicit_labels = HashSet::new();
+        if !automatic.is_empty() {
+            explicit_labels
+                .try_reserve(self.0.len())
+                .map_err(|_| Error::Capacity)?;
+            explicit_labels.extend(self.0.iter().map(|(label, _)| label.as_slice()));
+        }
+        for term in automatic {
+            if !explicit_labels.contains(term.as_slice()) {
+                terms.push(Keyword::new(term, false)?);
+            }
+        }
+        Ok(terms)
+    }
+
+    fn retained_bytes(&self) -> Option<usize> {
+        let descriptors = self
+            .0
+            .capacity()
+            .checked_mul(std::mem::size_of::<(Vec<u8>, bool)>())?;
+        self.0.iter().try_fold(descriptors, |total, (label, _)| {
+            total.checked_add(label.capacity())
+        })
+    }
+}
+
+/// Owned metadata selection and explicit labels for the published root only.
+pub struct Annotations<'a> {
+    /// Metadata extraction policy and manual annotations.
+    pub metadata: MetadataSettings,
+    /// Explicit root labels, independent of automatic extraction.
+    pub root_keywords: &'a RootKeywords,
+    /// Optional actual scan, extraction and plaintext encoding information.
+    pub observer: Observer<'a>,
+}
+
+/// Prepare an ordinary file or tree with explicitly selected root annotations.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Content, task bounds and annotations are one admitted worker request"
+)]
+pub fn prepare_with_annotations(
+    group_root: &Path,
+    input: &Path,
+    buffers: &mut Buffers,
+    blocks: BlockOptions,
+    limits: Limits,
+    policy: Policy,
+    annotations: Annotations<'_>,
+    control: impl FnMut(Progress) -> Control,
+) -> Result<Prepared, Failure> {
+    prepare_annotations(
+        group_root,
+        input,
+        buffers,
+        blocks,
+        limits,
+        policy,
+        annotations,
+        None,
+        control,
+    )
+}
+
+/// Resolve an optional signed placement once for each exact zero-anonymity
+/// object. The original CHK is used if the signer delivers no placement.
+/// Member LOCs are embedded before encoding the enclosing directory.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Content, task bounds and annotations are one admitted worker request"
+)]
+pub fn prepare_with_locations(
+    group_root: &Path,
+    input: &Path,
+    buffers: &mut Buffers,
+    blocks: BlockOptions,
+    limits: Limits,
+    policy: Policy,
+    annotations: Annotations<'_>,
+    sign_location: &mut dyn FnMut(Content) -> Result<Option<Location>, plan::Error>,
+    control: impl FnMut(Progress) -> Control,
+) -> Result<Prepared, Failure> {
+    if blocks.anonymity != 0 {
+        return Err(Failure::Policy);
+    }
+    prepare_annotations(
+        group_root,
+        input,
+        buffers,
+        blocks,
+        limits,
+        policy,
+        annotations,
+        Some(sign_location),
+        control,
+    )
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Content, task bounds and annotations are one admitted worker request"
+)]
+fn prepare_annotations(
+    group_root: &Path,
+    input: &Path,
+    buffers: &mut Buffers,
+    blocks: BlockOptions,
+    limits: Limits,
+    policy: Policy,
+    annotations: Annotations<'_>,
+    mut sign_location: Option<&mut dyn FnMut(Content) -> Result<Option<Location>, plan::Error>>,
+    control: impl FnMut(Progress) -> Control,
+) -> Result<Prepared, Failure> {
+    let Annotations {
+        metadata,
+        root_keywords,
+        mut observer,
+    } = annotations;
     let mut policy = policy;
     policy.metadata.extract &= metadata.automatic_keywords_enabled();
     policy.validate(limits)?;
-    let settings_bytes = metadata.retained_bytes()?;
+    let settings_bytes = metadata
+        .retained_bytes()?
+        .checked_add(root_keywords.retained_bytes().ok_or(Failure::Policy)?)
+        .ok_or(Failure::Policy)?;
     if settings_bytes > policy.max_group_plan_bytes {
         return Err(Failure::Policy);
     }
@@ -574,6 +768,20 @@ pub fn prepare_with_metadata(
             limit: policy.max_group_plan_bytes,
         }),
     };
+    let signing = sign_location.is_some();
+    let mut sign = |content| -> Result<Option<Location>, plan::Error> {
+        context.check()?;
+        let location = sign_location.as_mut().ok_or(plan::Error::Binding)?(content)?;
+        context.check()?;
+        if location.is_some() {
+            context
+                .budget
+                .borrow_mut()
+                .add(2 * std::mem::size_of::<(usize, Location)>())?;
+        }
+        Ok(location)
+    };
+    let mut locations = signing.then(|| plan::tree::Locations::new(&mut sign));
     context.check()?;
     let group = Directory::open(group_root)?;
     let group_id = crate::FileIdentity::of(group.as_file())?;
@@ -584,13 +792,7 @@ pub fn prepare_with_metadata(
     if observed.is_dir() && fs::canonicalize(group_root)?.starts_with(fs::canonicalize(input)?) {
         return Err(Failure::Policy);
     }
-    let mut extractor = Extractor::new(
-        input,
-        policy,
-        limits,
-        &context,
-        metadata.format_extraction_enabled(),
-    )?;
+    let mut extractor = Extractor::new(input, policy, limits, &context, &metadata)?;
     extractor.core.content_file_bytes = if observed.is_dir() {
         limits.plan.tree.max_file_bytes
     } else {
@@ -612,13 +814,15 @@ pub fn prepare_with_metadata(
                 blocks,
                 limits,
                 |repo| {
-                    let (tree, puts) = plan::tree::prepare_tree_with_metadata(
+                    let (tree, puts) = plan::tree::prepare_tree_observed(
                         repo,
                         &directory,
                         policy.indexed.then_some(input),
                         buffers,
                         limits.plan,
                         &mut extractor,
+                        observer.take(),
+                        locations.as_mut(),
                         |p| context.report(p),
                     )?;
                     Ok(plan::Plan {
@@ -635,6 +839,14 @@ pub fn prepare_with_metadata(
                 return Err(Failure::Policy);
             }
             let stamp = descriptor_info(&file)?;
+            emit(
+                &mut observer,
+                Event::Scanning {
+                    relative: Path::new(""),
+                    directory: false,
+                },
+            )?;
+            emit(&mut observer, Event::ScanComplete)?;
             extractor.extract(
                 &file,
                 Path::new(""),
@@ -642,6 +854,9 @@ pub fn prepare_with_metadata(
                 &[],
                 policy.metadata.max_metadata_bytes,
             )?;
+            emit(&mut observer, Event::Extracted(Path::new("")))?;
+            emit(&mut observer, Event::MetadataComplete)?;
+            let report = root_file_progress(&mut observer, stamp.bytes, |p| context.report(p));
             let task = Task::prepare_admitted(
                 group_root.join("content"),
                 blocks,
@@ -654,7 +869,7 @@ pub fn prepare_with_metadata(
                             input,
                             buffers,
                             limits.plan,
-                            |p| context.report(p),
+                            report,
                         )?;
                         Ok(plan::Plan {
                             artifact: plan::Artifact::IndexedFile {
@@ -664,9 +879,7 @@ pub fn prepare_with_metadata(
                             puts: prepared.puts,
                         })
                     } else {
-                        plan::prepare_file(repo, &mut file, buffers, limits.plan, |p| {
-                            context.report(p)
-                        })
+                        plan::prepare_file(repo, &mut file, buffers, limits.plan, report)
                     }
                 },
                 |manifest, bytes| context.admit_task(manifest, bytes),
@@ -675,25 +888,36 @@ pub fn prepare_with_metadata(
             if descriptor_info(&file)? != stamp {
                 return Err(Failure::Plan(crate::Error::SourceChanged.into()));
             }
+            if let Some(locations) = &mut locations {
+                let _root = locations.sign(0, artifact_content(&task)?)?;
+            }
             task
         };
         context.check()?;
         let root = artifact_content(&content)?;
-        let content_uri = uri(root, limits)?;
         let count = match &content.manifest().plan.artifact {
             plan::Artifact::Tree(t) => t.objects.len(),
             _ => 1,
         };
+        let root_uri = locations
+            .as_ref()
+            .and_then(|owner| owner.values.last())
+            .filter(|(index, _)| *index + 1 == count)
+            .map_or(root.uri(), |(_, location)| Uri::Location(*location));
+        let content_uri = canonical_uri(root_uri, limits)?;
+        let mut locations = locations
+            .into_iter()
+            .flat_map(|owner| owner.values)
+            .peekable();
+        let keyword_capacity = if policy.metadata.extract {
+            count.min(policy.max_keyword_tasks)
+        } else {
+            usize::from(!root_keywords.is_empty())
+        };
         let collection = count
             .checked_mul(std::mem::size_of::<MetadataArtifact>())
             .and_then(|n| {
-                n.checked_add(if policy.metadata.extract {
-                    count
-                        .min(policy.max_keyword_tasks)
-                        .checked_mul(std::mem::size_of::<KeywordTask>())?
-                } else {
-                    0
-                })
+                n.checked_add(keyword_capacity.checked_mul(std::mem::size_of::<KeywordTask>())?)
             })
             .ok_or(Failure::Policy)?;
         context.budget.borrow_mut().add(
@@ -706,11 +930,10 @@ pub fn prepare_with_metadata(
             .try_reserve_exact(count)
             .map_err(|_| Failure::Policy)?;
         let mut keywords = Vec::new();
-        if policy.metadata.extract {
-            keywords
-                .try_reserve_exact(count.min(policy.max_keyword_tasks))
-                .map_err(|_| Failure::Policy)?;
-        }
+        keywords
+            .try_reserve_exact(keyword_capacity)
+            .map_err(|_| Failure::Policy)?;
+        let no_explicit = RootKeywords::default();
         for i in 0..count {
             context.check()?;
             let (relative, target) = match &content.manifest().plan.artifact {
@@ -740,7 +963,12 @@ pub fn prepare_with_metadata(
             } else {
                 Vec::new()
             };
-            let target_uri = uri(target, limits)?;
+            let target = if locations.peek().is_some_and(|(index, _)| *index == i) {
+                Uri::Location(locations.next().ok_or(Failure::Policy)?.1)
+            } else {
+                target.uri()
+            };
+            let target_uri = canonical_uri(target, limits)?;
             let name = PathBuf::from(format!("metadata-{i}"));
             // Original metadata body is already charged once in Extractor. Reserve
             // the final collection's extra names/target before any persistent write.
@@ -755,14 +983,20 @@ pub fn prepare_with_metadata(
             context.check()?;
             persist_metadata(&group, &name, &object.wire)?;
             context.check()?;
-            if policy.metadata.extract {
+            let explicit = if relative.as_os_str().is_empty() {
+                root_keywords
+            } else {
+                &no_explicit
+            };
+            let terms = explicit.with_automatic(&selected_terms)?;
+            if !terms.is_empty() {
                 let keyword_name = PathBuf::from(format!("keyword-{}", keywords.len()));
                 let keyword_path = group_root.join(&keyword_name);
                 let input = KeywordInput {
                     path: &keyword_path,
                     target,
                     wire: &object.wire,
-                    terms: &selected_terms,
+                    terms: &terms,
                     blocks,
                     limits,
                     policy,
@@ -785,6 +1019,7 @@ pub fn prepare_with_metadata(
             }
             // The root's query snapshot has fulfilled its actual Task inputs.
             // Keep the final metadata wire charged, release only those terms.
+            drop(terms);
             drop(selected_terms);
             context.budget.borrow_mut().replace(query_charge, 0)?;
             metadata.push(MetadataArtifact {

@@ -14,7 +14,7 @@ use gnunet_fs_host::server::{
         Availability, Block, BlockSource, Failure as SourceFailure, Progress as SourceProgress,
         Retired, Retirement, Selection,
     },
-    gap::{Limits, Router},
+    gap::{Accounting, Limits, Router},
     peers::Pair,
 };
 use gnunet_service_runtime::{clock::RuntimeClock, framing::OwnedFrame};
@@ -331,7 +331,7 @@ fn composed_local_query(
                     priority,
                     ..
                 } if peer == PEER => {
-                    assert_eq!(priority, 32);
+                    assert_eq!(priority, 0);
                     assert_eq!(usize::from(size), GET_PREFIX);
                     (request_id, size)
                 }
@@ -361,7 +361,8 @@ fn composed_local_query(
                     let get = Get::decode(messages)?;
                     assert_eq!(get.block_type, BlockType::DBLOCK);
                     assert_eq!(*get.query, local_key);
-                    assert_eq!(get.priority, priority);
+                    assert_eq!(priority, 0);
+                    assert_eq!(get.priority, 32);
                     assert_eq!(get.bitmap, 0);
                     assert!(get.identities.is_empty() && get.bloom.is_empty());
                 }
@@ -477,6 +478,7 @@ fn composed_local_query(
             },
             pure_gap,
             privacy,
+            Accounting::Unmetered,
             {
                 let facts = facts.clone();
                 let source_clock = source_clock.clone();
@@ -936,6 +938,42 @@ fn idle_dht_chain_falls_back_with_original_ublock_seen_and_one_consumer() -> Res
     }
     Ok(())
 }
+#[test]
+fn level_zero_any_starts_only_the_original_gap_owner() -> Result<(), Failure> {
+    let direct = Rc::new(RefCell::new(OfferedFacts::default()));
+    let gap = Rc::new(RefCell::new(OfferedFacts::default()));
+    let mut router = Pair::discovery(
+        Some(OfferedPeer {
+            offer: Offered::Error,
+            facts: Rc::clone(&direct),
+        }),
+        Some(OfferedPeer {
+            offer: Offered::Queued,
+            facts: Rc::clone(&gap),
+        }),
+        1,
+    )?;
+    let seen = [[7; 64]];
+    let search = Search {
+        options: 0,
+        block_type: BlockType::ANY,
+        anonymity: 0,
+        target: [0; 32],
+        query: [8; 64],
+        seen: &seen[0],
+    };
+    assert_eq!(router.start(1, search, &seen)?, RouteAdmission::Queued);
+    assert_eq!(direct.borrow().starts, 0);
+    assert_eq!(gap.borrow().starts, 1);
+    assert_eq!(gap.borrow().level, Some(0));
+    assert_eq!(gap.borrow().seen, seen);
+    router.cancel(1)?;
+    assert_eq!(direct.borrow().cancels, 0);
+    assert_eq!(gap.borrow().cancels, 1);
+    router.close()?;
+    Ok(())
+}
+
 #[test]
 fn queued_or_failed_direct_route_never_silently_replays_to_gap() -> Result<(), Failure> {
     for offer in [Offered::Queued, Offered::Error] {
@@ -1472,6 +1510,7 @@ fn source_scope_profile(
             },
             protocol,
             privacy,
+            Accounting::Unmetered,
             |_| Ok(source),
             Entropy,
             Limits {

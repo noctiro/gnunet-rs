@@ -18,6 +18,13 @@ pub(crate) struct Bounds {
     pub canonical: u64,
 }
 impl Bounds {
+    pub fn earlier(self, other: Self) -> Self {
+        Self {
+            hard: self.hard.min(other.hard),
+            canonical: self.canonical.min(other.canonical),
+        }
+    }
+
     pub fn native(self) -> Result<(), Fault> {
         if Instant::now() >= self.hard {
             Err(Fault::Deadline)

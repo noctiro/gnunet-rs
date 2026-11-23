@@ -12,9 +12,9 @@ cargo build --release -p gnunet-rest-server
 ./target/release/gnunet-rest-server -c rest.conf
 ```
 
-Enable build feature `oidc` to include OpenID Connect. Its AWS-LC backend requires
-a native C toolchain and target SDK headers. The active official REST daemon uses
-plain HTTP; TLS termination is outside this process.
+Enable the `oidc` build feature to include OpenID Connect. The REST server uses
+plain HTTP, matching the official REST daemon. TLS termination runs outside this
+process.
 
 ```ini
 [rest]
@@ -58,8 +58,8 @@ private bytes in that directory, synchronizes and closes the original writer,
 rechecks the original target and request bounds, then replaces the name atomically.
 Cleanup operates on the original staged file. Replaced namespace/file selections
 are refused. Stage, publication uncertainty, writer-close and cleanup errors stay
-independent. Windows reports directory synchronization as `Unavailable`; file
-publication does not manufacture a directory-durability receipt.
+independent. The worker reports the [native directory barrier](../../adapters/native-std/API.md#anchored-filesystem-operations)
+separately from file publication.
 
 `LiveConfiguration` and the HTTP result change only after the matched worker
 receipt. Dropping an HTTP wait does not abandon or replay an admitted write.

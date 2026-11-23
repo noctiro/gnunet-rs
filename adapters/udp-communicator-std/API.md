@@ -18,17 +18,30 @@ equality is a replay. The bounded, checksummed snapshot is an internal disk form
 not a GNUnet network message. Peer capacity is explicit and bounded to 4096. Local outgoing monotime intervals are reserved under the same writer fence. Unused issued timestamps remain skipped after restart.
 
 A successful commit requires the complete temporary write, file synchronization,
-original-file publication, the native directory barrier and exact original-file
-snapshot/hash readback. `Journal::directory_sync()` reports that barrier's actual
-capability; Windows reports `DirectorySync::Unavailable`, which is not a crash
-persistence guarantee. Recovery retains the original opened replacement and
+actual writer close, original-file publication, the native directory barrier and
+exact original-file snapshot/hash readback. Pending and newly committed snapshots
+retain the same original through a separate read-only lease. A failed replacement
+attempt retains that lease for recovery and never triggers temporary-name cleanup.
+Reopening canonical state also synchronizes its held original before selecting
+and checking a read-only lease, closing the synchronization handle and repeating
+the exact snapshot/hash readback. This path never removes canonical state.
+The journal retains the readback's native identity, length, modification time
+and change time with that lease. Readiness and replacement recheck the complete
+fence through the original directory. When the same committed original returns
+with changed metadata, explicit recovery verifies its committed bytes before
+and after synchronization and refreshes its metadata fence.
+`Journal::directory_sync()` reports the
+[native directory barrier](../native-std/API.md#anchored-filesystem-operations).
+Recovery retains the original opened replacement and
 refuses another file even when its bytes are equal. Uncertainty blocks further
 commits and ready history reads. A pre-existing fence with no canonical state
 is refused rather than resetting replay history.
 
 The pure-core trait preserves Storage/OutcomeUnknown/Replay. `take_failure`
 returns the original stage, outcome, native cause and independent cleanup error;
-it never resolves a transaction. No detached writer outlives the owner.
+it never resolves a transaction. A sealing failure retains its complete native
+`publication::Failure` in the cause, including independent writer-close and
+original-stage cleanup observations. No detached writer outlives the owner.
 
 `replay::Namespace` holds one process writer fence above full-local-identity
 child Journals. A live child retains that root fence even if the Namespace
@@ -70,6 +83,8 @@ must be consumed before the next receive. Sends use one whole datagram
 syscall; errors retain the same packet and original OS cause. There is no suffix
 send, nonce regeneration, implicit remote receipt or cryptographic credit refund. IPv6 sets IPV6_V6ONLY. The source profiles are IPv4 base1452/KX1300/BOX1404
 and IPv6 base1232/KX1080/BOX1184; source-compatible rekey adds36 to the BOX extent.
+On Windows, a newly created default socket sets `SO_EXCLUSIVEADDRUSE` before
+binding. Adopted sockets retain their original bind configuration.
 
 Before publishing a bound or adopted socket, the adapter requests a 128 KiB
 kernel receive buffer if the reported budget is smaller, allowing a maximum
@@ -171,16 +186,14 @@ waits retain the shutdown phase; native failures preserve their cause. Abrupt
 
 ## Native platforms
 
-The same socket, replay, driver and communicator owners are available on Linux,
-macOS, FreeBSD and Windows. Unix discovery sends use `sendmsg`; Windows uses
-provider-qualified `WSASendMsg` with `IP_PKTINFO` or `IPV6_PKTINFO` on the original
-socket. Windows interface facts include actual native access type and address
-DAD state. Discovery snapshots remain bounded; an invalid snapshot never implies
-that existing interface claims should be removed. LAN observations pass through
-APPLICATION validation and do not grant authenticated queues or remote credit.
-The discovery owner uses the platform's explicit sockaddr profile for signing;
-verification includes all four producer profiles while preserving the observed
-IP, flow and scope. Unsupported platforms refuse discovery during construction.
+Unix discovery uses `sendmsg` on Linux, Android, macOS, iOS, FreeBSD and the
+OpenHarmony standard system. Windows uses provider-qualified `WSASendMsg` on the
+original socket. The native adapter prepares source metadata once per pending
+send. The discovery owner signs with the SDK's socket ABI, shared with NAT IPC.
+Verification checks the four supported producer layouts with the observed IP,
+flow and scope. Unknown layouts fail discovery setup. Windows interface facts
+include native access type and address DAD state. Snapshot errors preserve
+existing interface claims. LAN observations enter APPLICATION validation.
 
 ## Discovery retirement
 

@@ -15,6 +15,20 @@ pub use unix::resolve;
 #[cfg(windows)]
 pub use windows::resolve;
 
+/// The target SDK's native `AF_INET` and `AF_INET6`, in that order.
+#[must_use]
+pub const fn internet_address_families() -> (i32, i32) {
+    #[cfg(unix)]
+    {
+        (libc::AF_INET, libc::AF_INET6)
+    }
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Networking::WinSock::{AF_INET, AF_INET6};
+        (AF_INET as i32, AF_INET6 as i32)
+    }
+}
+
 /// Native address-family policy for the ARM endpoint profile.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Families {

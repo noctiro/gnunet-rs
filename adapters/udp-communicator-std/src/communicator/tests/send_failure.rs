@@ -17,7 +17,7 @@ async fn native_failure() -> Test {
         // A buffer below one atomic datagram yields a native refusal.
         // This reference only observes/restores options on the original
         // socket; it performs no send or receive and is dropped before stop.
-        let socket = DatagramSocket::bind("127.0.0.1:0".parse()?)?;
+        let socket = DatagramSocket::bind("127.0.0.1:0".parse()?, Default::default())?;
         let options = socket.shared()?;
         let native = socket2::SockRef::from(options.as_ref());
         let bytes = native.send_buffer_size()?;
@@ -25,7 +25,7 @@ async fn native_failure() -> Test {
         (socket, options, bytes)
     };
     #[cfg(not(any(target_os = "macos", target_os = "freebsd")))]
-    let socket = DatagramSocket::bind("127.0.0.1:0".parse()?)?;
+    let socket = DatagramSocket::bind("127.0.0.1:0".parse()?, Default::default())?;
     #[cfg(any(target_os = "macos", target_os = "freebsd"))]
     let refused = target;
     #[cfg(not(any(target_os = "macos", target_os = "freebsd")))]

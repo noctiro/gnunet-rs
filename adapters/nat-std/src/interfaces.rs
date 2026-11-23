@@ -2,8 +2,8 @@
 //! become a successful empty snapshot or synthesize mass address removals.
 use crate::{Error, deadline::Gate};
 use gnunet_nat::{
-    address::SocketAddress,
-    state::{Advertised, Core, Provider},
+    address::{AddressPolicy, Advertised, SocketAddress},
+    state::{Core, Provider},
 };
 use gnunet_wire::official::nat::AddressClass;
 use std::net::SocketAddr;
@@ -44,17 +44,20 @@ pub fn snapshot(
     addresses
         .try_reserve_exact(rows.len())
         .map_err(|_| gnunet_types::Error::Capacity)?;
+    let policy = AddressPolicy {
+        disable_v6,
+        ..AddressPolicy::default()
+    };
     for row in rows {
         if !row.is_up() {
             continue;
         }
-        let address = portable(row.address).with_port(0);
-        if address.is_unspecified() || disable_v6 && matches!(address, SocketAddress::V6 { .. }) {
+        let address = portable(row.address);
+        if !policy.allows(address) {
             continue;
         }
-        let value = Advertised {
-            address,
-            class: address.classify(AddressClass::LAN),
+        let Some(value) = Advertised::interface(address, AddressClass::LAN) else {
+            continue;
         };
         if !addresses.contains(&value) {
             addresses.push(value);

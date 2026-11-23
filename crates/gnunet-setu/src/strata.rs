@@ -16,6 +16,7 @@ pub const CELLS_PER_ESTIMATOR: usize = STRATA * BUCKETS;
 pub const ALL_CELLS: usize = ESTIMATORS * CELLS_PER_ESTIMATOR;
 /// Actual uncompressed bytes per estimator, including source20-byte bucket stride.
 pub const WIRE_BYTES_PER_ESTIMATOR: usize = CELLS_PER_ESTIMATOR * BUCKET_WIRE_BYTES;
+pub(crate) const WIRE_BYTES_PER_STRATUM: usize = BUCKETS * BUCKET_WIRE_BYTES;
 /// One heuristic directional difference, not a verified result/element count.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct Estimate {
@@ -28,6 +29,50 @@ pub struct Estimate {
     pub estimators: u8,
     /// At least one failed/budget-limited stratum required power-of-two extrapolation.
     pub extrapolated: bool,
+}
+
+#[derive(Clone, Copy, Default)]
+pub(crate) struct Directional {
+    pub(crate) positive: u64,
+    pub(crate) negative: u64,
+}
+
+impl Directional {
+    pub(crate) fn add(self, other: Self) -> Result<Self, Error> {
+        Ok(Self {
+            positive: self
+                .positive
+                .checked_add(other.positive)
+                .ok_or(Error::Overflow)?,
+            negative: self
+                .negative
+                .checked_add(other.negative)
+                .ok_or(Error::Overflow)?,
+        })
+    }
+
+    pub(crate) fn multiply(self, factor: u64) -> Result<Self, Error> {
+        Ok(Self {
+            positive: self.positive.checked_mul(factor).ok_or(Error::Overflow)?,
+            negative: self.negative.checked_mul(factor).ok_or(Error::Overflow)?,
+        })
+    }
+}
+
+fn peel_row(mut diff: Ibf<'_>) -> Result<Option<Directional>, Error> {
+    let mut recovered = Directional::default();
+    // Source allows at most 80 successful items for a 79-cell stratum before
+    // refusing a continuing/cyclic decoder. A stalled row contributes nothing.
+    for _ in 0..=BUCKETS + 1 {
+        match diff.peel()? {
+            Decode::Empty => return Ok(Some(recovered)),
+            Decode::Stalled => break,
+            Decode::Item { side: 1, .. } => recovered.positive += 1,
+            Decode::Item { side: -1, .. } => recovered.negative += 1,
+            Decode::Item { .. } => return Err(Error::Malformed),
+        }
+    }
+    Ok(None)
 }
 /// Number of estimators selected by the active total-byte threshold policy.
 /// Multiplication overflow is explicit instead of choosing a wrapped small profile.
@@ -58,11 +103,22 @@ impl<'a> Strata<'a> {
     /// Initialize all eight local estimators in caller storage. Shape refusal
     /// preserves the storage; no large arrays are placed on the stack.
     pub fn clear(cells: &'a mut [Cell], order: Order) -> Result<Self, Error> {
-        let cells = cells.get_mut(..ALL_CELLS).ok_or(Error::Capacity)?;
+        Self::clear_prefix(cells, ESTIMATORS as u8, order)
+    }
+
+    /// Initialize an exact transmitted estimator prefix in caller storage.
+    pub fn clear_prefix(
+        cells: &'a mut [Cell],
+        estimators: u8,
+        order: Order,
+    ) -> Result<Self, Error> {
+        let cells = cells
+            .get_mut(..Self::cell_count(estimators)?)
+            .ok_or(Error::Capacity)?;
         cells.fill(Cell::default());
         Ok(Self {
             cells,
-            estimators: ESTIMATORS as u8,
+            estimators,
             order,
         })
     }
@@ -114,10 +170,7 @@ impl<'a> Strata<'a> {
         Ok(())
     }
     fn modify(&mut self, key: Key, side: i8, apply: bool) -> Result<(), Error> {
-        if usize::from(self.estimators) != ESTIMATORS {
-            return Err(Error::Capacity);
-        }
-        for estimator in 0..ESTIMATORS {
+        for estimator in 0..usize::from(self.estimators) {
             let salted = key.salted((estimator as u32) * 8);
             // The active C inserts inside the trailing-one loop: every one of
             // these nested low strata gets the key, not just one selected layer.
@@ -140,7 +193,7 @@ impl<'a> Strata<'a> {
         }
         Ok(())
     }
-    /// Insert a real reconciliation key into all eight source rotations.
+    /// Insert a real reconciliation key into each active source rotation.
     /// Deterministic indices and every overflow/work bound preflight before mutation.
     pub fn insert(&mut self, key: Key) -> Result<(), Error> {
         self.modify(key, 1, false)?;
@@ -167,7 +220,7 @@ impl<'a> Strata<'a> {
         if self.cells[..cells].iter().any(|cell| cell.count < 0) {
             return Err(Error::InvalidInput);
         }
-        let stride = BUCKETS * BUCKET_WIRE_BYTES;
+        let stride = WIRE_BYTES_PER_STRATUM;
         for row in 0..usize::from(estimators) * STRATA {
             let at = row * BUCKETS;
             let ibf = Ibf::view(&mut self.cells[at..at + BUCKETS], HASHES, self.order)?;
@@ -184,7 +237,7 @@ impl<'a> Strata<'a> {
         if input.len() != Self::wire_len(estimators)? {
             return Err(Error::Malformed);
         }
-        let stride = BUCKETS * BUCKET_WIRE_BYTES;
+        let stride = WIRE_BYTES_PER_STRATUM;
         for row in 0..usize::from(estimators) * STRATA {
             let at = row * BUCKETS;
             let mut ibf = Ibf::view(&mut self.cells[at..at + BUCKETS], HASHES, self.order)?;
@@ -209,67 +262,83 @@ impl<'a> Strata<'a> {
         if self.order != other.order {
             return Err(Error::InvalidInput);
         }
+        self.estimate_using(estimators, scratch, |at, scratch| {
+            scratch.copy_from_slice(&self.cells[at..at + BUCKETS]);
+            Ibf::view(scratch, HASHES, self.order)?.subtract_cells(&other.cells[at..at + BUCKETS])
+        })
+    }
+
+    /// Estimate remote-minus-local directly from the exact uncompressed wire
+    /// prefix, using one stratum of work rather than a second decoded prefix.
+    pub fn estimate_remote_raw(
+        &self,
+        estimators: u8,
+        input: &[u8],
+        scratch: &mut [Cell],
+    ) -> Result<Estimate, Error> {
+        self.check_prefix(estimators)?;
+        if input.len() != Self::wire_len(estimators)? {
+            return Err(Error::Malformed);
+        }
+        self.estimate_using(estimators, scratch, |at, scratch| {
+            let start = at * BUCKET_WIRE_BYTES;
+            let end = start + WIRE_BYTES_PER_STRATUM;
+            self.subtract_remote_row(at, &input[start..end], scratch)
+        })
+    }
+
+    pub(crate) fn peel_remote_row(
+        &self,
+        layer: usize,
+        input: &[u8],
+        scratch: &mut [Cell],
+    ) -> Result<Option<Directional>, Error> {
         let scratch = scratch.get_mut(..BUCKETS).ok_or(Error::Capacity)?;
-        let mut total_positive = 0u64;
-        let mut total_negative = 0u64;
+        if layer >= STRATA || input.len() != WIRE_BYTES_PER_STRATUM {
+            return Err(Error::Malformed);
+        }
+        self.subtract_remote_row(layer * BUCKETS, input, scratch)?;
+        peel_row(Ibf::view(scratch, HASHES, self.order)?)
+    }
+
+    fn subtract_remote_row(
+        &self,
+        at: usize,
+        input: &[u8],
+        scratch: &mut [Cell],
+    ) -> Result<(), Error> {
+        let mut diff = Ibf::view(scratch, HASHES, self.order)?;
+        diff.read_slice(0, BUCKETS, 8, input)?;
+        diff.subtract_cells(&self.cells[at..at + BUCKETS])
+    }
+
+    fn estimate_using(
+        &self,
+        estimators: u8,
+        scratch: &mut [Cell],
+        mut subtract: impl FnMut(usize, &mut [Cell]) -> Result<(), Error>,
+    ) -> Result<Estimate, Error> {
+        let scratch = scratch.get_mut(..BUCKETS).ok_or(Error::Capacity)?;
+        let mut total = Directional::default();
         let mut extrapolated = false;
         for estimator in 0..usize::from(estimators) {
-            let mut positive = 0u64;
-            let mut negative = 0u64;
+            let mut recovered = Directional::default();
             for layer in (0..STRATA).rev() {
                 let at = (estimator * STRATA + layer) * BUCKETS;
-                scratch.copy_from_slice(&self.cells[at..at + BUCKETS]);
-                let mut diff = Ibf::view(&mut *scratch, HASHES, self.order)?;
-                diff.subtract_cells(&other.cells[at..at + BUCKETS])?;
-                let mut layer_positive = 0u64;
-                let mut layer_negative = 0u64;
-                let mut complete = false;
-                // Source allows at most80 successful items for a79-cell
-                // stratum before refusing a continuing/cyclic decoder.
-                for attempt in 0..=BUCKETS + 1 {
-                    match diff.peel()? {
-                        Decode::Empty => {
-                            complete = true;
-                            break;
-                        }
-                        Decode::Stalled => break,
-                        Decode::Item { side: 1, .. } => {
-                            layer_positive += 1;
-                        }
-                        Decode::Item { side: -1, .. } => {
-                            layer_negative += 1;
-                        }
-                        Decode::Item { .. } => return Err(Error::Malformed),
-                    }
-                    if attempt > BUCKETS {
-                        break;
-                    }
-                }
-                if complete {
-                    positive = positive
-                        .checked_add(layer_positive)
-                        .ok_or(Error::Overflow)?;
-                    negative = negative
-                        .checked_add(layer_negative)
-                        .ok_or(Error::Overflow)?;
+                subtract(at, scratch)?;
+                if let Some(row) = peel_row(Ibf::view(scratch, HASHES, self.order)?)? {
+                    recovered = recovered.add(row)?;
                 } else {
-                    let factor = 1u64 << (layer + 1);
-                    positive = positive.checked_mul(factor).ok_or(Error::Overflow)?;
-                    negative = negative.checked_mul(factor).ok_or(Error::Overflow)?;
+                    recovered = recovered.multiply(1u64 << (layer + 1))?;
                     extrapolated = true;
                     break;
                 }
             }
-            total_positive = total_positive
-                .checked_add(positive)
-                .ok_or(Error::Overflow)?;
-            total_negative = total_negative
-                .checked_add(negative)
-                .ok_or(Error::Overflow)?;
+            total = total.add(recovered)?;
         }
         Ok(Estimate {
-            positive: total_positive / u64::from(estimators),
-            negative: total_negative / u64::from(estimators),
+            positive: total.positive / u64::from(estimators),
+            negative: total.negative / u64::from(estimators),
             estimators,
             extrapolated,
         })

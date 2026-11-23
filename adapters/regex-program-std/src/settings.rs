@@ -1,7 +1,8 @@
 //! Official REGEX section plus explicitly bounded Rust implementation policies.
 use crate::{Failure, statistics};
 use gnunet_config::Configuration;
-use gnunet_service_runtime::{credentials::UnixAccess, service::ShutdownMode};
+use gnunet_regex_server_host::startup;
+use gnunet_service_runtime::credentials::UnixAccess;
 use std::time::Duration;
 /// Explicit finite capacities. These are local policies, never added wire fields.
 #[derive(Clone, Debug)]
@@ -33,62 +34,21 @@ impl Settings {
     /// Parse the real selected section. Absent UID/GID flags are false, matching
     /// generic SERVICE option semantics. No synthetic USERNAME fallback exists.
     pub fn read(config: &Configuration) -> Result<Self, Failure> {
-        let pils_profile = gnunet_pils::Profile::configured(config.get(b"PILS", b"PROFILE"), None)?;
-        let mut core = gnunet_regex_service::Limits::default();
-        let mut host = gnunet_regex_server_host::Limits::default();
-        core.clients = size(config, b"MAX_CLIENTS", core.clients, 1, 1024)?;
-        host.clients = core.clients;
-        core.jobs = size(config, b"MAX_JOBS", core.jobs, 1, 65536)?;
-        core.branches = size(config, b"MAX_BRANCHES", core.branches, 1, 16384)?;
-        core.outputs = size(config, b"MAX_RESULTS", core.outputs, 1, 65536)?;
-        core.seen_results = size(config, b"MAX_SEEN_RESULTS", core.seen_results, 1, 262144)?;
-        core.input_bytes = size(config, b"MAX_INPUT_BYTES", core.input_bytes, 1, 65535)?;
-        core.retained_bytes = size(
-            config,
-            b"RETAINED_BYTES",
-            core.retained_bytes,
-            1024,
-            256 * 1024 * 1024,
-        )?;
-        core.announcement_bytes = size(
-            config,
-            b"ANNOUNCEMENT_BYTES",
-            core.announcement_bytes,
-            1024,
-            core.retained_bytes,
-        )?;
-        host.io_slice_bytes = size(config, b"IO_SLICE_BYTES", host.io_slice_bytes, 1, 65535)?;
-        host.first_input = duration(config, b"FIRST_INPUT_TIMEOUT", host.first_input)?;
-        host.partial_input = duration(config, b"PARTIAL_INPUT_TIMEOUT", host.partial_input)?;
-        host.output_lifetime = duration(config, b"OUTPUT_TIMEOUT", host.output_lifetime)?;
-        let driver = gnunet_regex_server_host::driver::Limits {
-            operations: core.jobs,
-            signature_lifetime: duration(config, b"SIGNATURE_TIMEOUT", Duration::from_secs(300))?,
-        };
+        let shared = startup::Settings::read(config)?;
         let statistics = statistics::Limits {
             operation: duration(config, b"STATISTICS_TIMEOUT", Duration::from_secs(5))?,
             ..Default::default()
         };
         statistics.validate()?;
-        let flags = |key: &[u8]| {
-            config
-                .get(b"regex", key)
-                .map(|_| config.get_yesno(b"regex", key))
-                .transpose()
-                .map(|v| v.unwrap_or(false))
-        };
         let value = Self {
-            pils_profile,
-            core,
-            host,
-            driver,
+            pils_profile: shared.pils_profile,
+            core: shared.core,
+            host: shared.host,
+            driver: shared.driver,
             resolver: gnunet_resolver_broker::Limits::default(),
             statistics,
-            unix: UnixAccess {
-                match_uid: flags(b"UNIX_MATCH_UID")?,
-                match_gid: flags(b"UNIX_MATCH_GID")?,
-            },
-            startup: duration(config, b"STARTUP_TIMEOUT", Duration::from_secs(300))?,
+            unix: shared.unix,
+            startup: shared.startup,
             shutdown_grace: duration(config, b"RETIREMENT_NOTICE_DELAY", Duration::from_secs(5))?,
             statistics_grace: duration(
                 config,
@@ -107,30 +67,8 @@ impl Settings {
         &self,
         config: &Configuration,
     ) -> Result<gnunet_service_runtime::service::ServiceOptions, Failure> {
-        // Official regex uses GNUNET_SERVICE_OPTION_NONE: immediate shutdown.
-        gnunet_service_runtime::service_options(config, b"regex", ShutdownMode::Immediate)
+        startup::service_options(config)
     }
-}
-fn size(
-    config: &Configuration,
-    key: &[u8],
-    default: usize,
-    min: usize,
-    max: usize,
-) -> Result<usize, Failure> {
-    let value = if config.get(b"regex", key).is_some() {
-        usize::try_from(config.get_size(b"regex", key)?)?
-    } else {
-        default
-    };
-    if !(min..=max).contains(&value) {
-        return Err(format!(
-            "REGEX resource {} outside {min}..={max}",
-            String::from_utf8_lossy(key)
-        )
-        .into());
-    }
-    Ok(value)
 }
 fn duration(config: &Configuration, key: &[u8], default: Duration) -> Result<Duration, Failure> {
     let value = if config.get(b"regex", key).is_some() {

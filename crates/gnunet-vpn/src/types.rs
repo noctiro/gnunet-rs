@@ -45,6 +45,10 @@ token!(
     "Original redirection/callback ownership; cancel has no wire command."
 );
 token!(Lease, "Original bounded logical address lease allocation.");
+token!(
+    Reservation,
+    "An in-process group of address reservations awaiting original reply settlement."
+);
 token!(Flow, "Original kernel transport tuple/channel allocation.");
 token!(Buffer, "Original immutable buffered packet allocation.");
 /// Original physically attached TUN device; configuration alone cannot mint it.
@@ -301,8 +305,6 @@ pub struct Limits {
     pub ipv6: Option<Prefix>,
     /// Actual remote/local AF assignment profile.
     pub ipc_af: AfProfile,
-    /// Explicit initial peer endpoint AF profile, overridable only at actual bind.
-    pub peer_af: AfProfile,
     /// Maximum raw complete TUN packet retained.
     pub packet_bytes: usize,
     /// Genuine inactive-flow lifetime; source close remains explicit.
@@ -314,7 +316,6 @@ impl Default for Limits {
             ipv4: None,
             ipv6: None,
             ipc_af: AfProfile::native(),
-            peer_af: AfProfile::native(),
             packet_bytes: 65535,
             idle_micros: 300_000_000,
         }
@@ -382,7 +383,7 @@ pub struct DiscoveryRequest<'id> {
     pub discovery: Discovery<'id>,
     /// Actual Internet address.
     pub destination: Address,
-    /// Actual transport protocol.
+    /// Actual Internet-side transport protocol, after any ICMP family translation.
     pub protocol: u8,
     /// Actual desired destination port.
     pub port: u16,
@@ -488,6 +489,46 @@ pub(crate) struct LeaseState {
     pub target: Target,
     pub expires: AbsoluteTime,
     pub used: AbsoluteTime,
+    pub publication: LeasePublication,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LeasePublication {
+    Reserved,
+    Armed,
+    Published,
+    LocalPublished,
+    Uncertain(MonoInstant),
+}
+
+impl LeaseState {
+    pub(crate) fn owns_address(self, now: AbsoluteTime, activity: Option<MonoInstant>) -> bool {
+        self.expires > now
+            || match self.publication {
+                LeasePublication::Reserved | LeasePublication::Armed => true,
+                LeasePublication::Published | LeasePublication::LocalPublished => false,
+                LeasePublication::Uncertain(until) => activity.is_none_or(|now| now < until),
+            }
+    }
+
+    pub(crate) fn routable(self, now: AbsoluteTime) -> bool {
+        self.expires > now && !matches!(self.publication, LeasePublication::Reserved)
+    }
+}
+
+/// Observation of the native reply that contains the reserved address.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReservationOutcome {
+    /// No native operation can still publish this address.
+    Unsent,
+    /// Local submission was observed; the normal lease stays allocated.
+    Submitted,
+    /// Submission could have occurred. Keep the address reserved through its
+    /// lease and at least until the original native submission deadline.
+    Uncertain {
+        /// Original native elapsed-time limit after which submission is forbidden.
+        deadline: MonoInstant,
+    },
 }
 /// Caller-owned address lease metadata.
 #[derive(Clone, Copy)]
@@ -507,14 +548,64 @@ impl Default for LeaseSlot {
     }
 }
 #[derive(Clone, Copy)]
+pub(crate) struct PeerSource {
+    pub identity: [u8; 32],
+    pub serial: u64,
+    pub transmit_af: AfProfile,
+}
+#[derive(Clone, Copy)]
+pub(crate) enum FlowPeer {
+    Unselected,
+    Selected([u8; 32]),
+    Bound(PeerSource),
+}
+impl FlowPeer {
+    pub(crate) const fn bound(&self) -> Option<&PeerSource> {
+        match self {
+            Self::Bound(source) => Some(source),
+            Self::Unselected | Self::Selected(_) => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum InternetTransport {
+    Tcp(u16),
+    Udp(u16),
+    Icmp,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct InternetRoute {
+    pub(crate) destination: Address,
+    pub(crate) transport: InternetTransport,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum FlowRoute {
+    Service {
+        peer: [u8; 32],
+        descriptor: [u8; 64],
+    },
+    Internet(InternetRoute),
+}
+
+impl FlowRoute {
+    pub(crate) const fn target(self) -> Target {
+        match self {
+            Self::Service { peer, descriptor } => Target::Service { peer, descriptor },
+            Self::Internet(route) => Target::Internet(route.destination),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
 pub(crate) struct FlowState {
-    pub af: AfProfile,
     pub serial: u64,
     pub tuple: Tuple,
-    pub target: Target,
+    pub route: FlowRoute,
     pub phase: Phase,
-    pub peer: Option<[u8; 32]>,
-    pub source: Option<u64>,
+    pub peer: FlowPeer,
     pub peer_ended: bool,
     pub discovery: Option<Work>,
     pub open: Option<Work>,
@@ -543,7 +634,9 @@ impl Default for FlowSlot {
 }
 #[derive(Clone, Copy)]
 pub(crate) enum PacketKind {
-    Peer,
+    Peer {
+        wire_family: Option<Family>,
+    },
     Tun {
         tun: u64,
         delivery: u64,
@@ -665,6 +758,9 @@ pub enum RouteAction {
     /// Read the retained original owned interface/route scope after a packet
     /// session replacement. This neither replays mutation nor borrows away debt.
     Verify,
+    /// Restore missing configuration on a proved original owned interface.
+    /// Admission retains the old route debt until the restored plan is verified.
+    Restore,
     /// Remove/relinquish only that original scope's owned OS-route effects.
     Remove,
 }

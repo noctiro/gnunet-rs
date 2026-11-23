@@ -1,4 +1,18 @@
 use super::*;
+
+/// Native operation that retained the original TUN after a retryable refusal.
+#[cfg(target_os = "freebsd")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FreeBsdRecoveryStage {
+    /// Absence and close preflight before checking the retired route scope.
+    RecreatePreflight,
+    /// Qualification before the one-shot close of the original descriptor.
+    BeforeClose,
+    /// Restart with the original transient descriptor still open.
+    Restart(tun::FreeBsdRestartStage),
+    /// Reacquire the original manual interface after a confirmed close.
+    Reopen(tun::FreeBsdReopenStage),
+}
 /// Explicit source/configuration or original native failure.
 #[derive(Debug)]
 pub enum Error {
@@ -60,6 +74,7 @@ impl From<server::Error> for Error {
         Self::Ipc(e)
     }
 }
+
 /// Caller-provided actual physical owners. Their pools have independent lifetimes.
 pub struct Parts<'id, 'store, 'bytes, 'cadet, 'cstore> {
     /// Original real local SERVICE owner and its borrowed pure engine.
@@ -138,6 +153,7 @@ pub struct ConfiguredExit {
     /// Explicit actual peer endpoint AF profile, not detected from length.
     pub af: core::AfProfile,
 }
+
 /// Original discovery port mode. No variant silently starts a Resolver/REGEX job.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DiscoveryMode {
@@ -168,8 +184,6 @@ pub struct Limits {
     /// Completed ready-state monitoring query lifetime; each finished sample may
     /// start a distinct query, while unfinished initial DAD never renews its budget.
     pub monitor_timeout: Duration,
-    /// Explicit default actual endpoint profile for named services.
-    pub service_af: core::AfProfile,
     /// Actual Internet-exit discovery policy mode.
     pub discovery: DiscoveryMode,
 }
@@ -185,7 +199,6 @@ impl Default for Limits {
             shutdown_grace: Duration::from_secs(10),
             ipv6_watch: tun::Ipv6WatchOptions::default(),
             monitor_timeout: Duration::from_secs(3),
-            service_af: core::AfProfile::native(),
             discovery: DiscoveryMode::Configured,
         }
     }
@@ -269,14 +282,31 @@ pub enum Event<'id, 'cadet> {
     },
     /// Actual original TUN physically stopped; route cleanup is independent.
     TunLost(tun::Loss),
+    /// FreeBSD packet I/O retired; the managed interface remains owned.
+    #[cfg(target_os = "freebsd")]
+    TunRecovering(tun::Loss),
+    /// A retryable native refusal retains the original managed interface.
+    #[cfg(target_os = "freebsd")]
+    FreeBsdRecoveryRetry {
+        /// The native recovery operation that failed.
+        stage: FreeBsdRecoveryStage,
+        /// Original native cause.
+        error: io::Error,
+    },
+    /// The original managed FreeBSD outage budget elapsed before readiness.
+    #[cfg(target_os = "freebsd")]
+    FreeBsdRecoveryExpired {
+        /// Original absolute outage deadline, including all repair steps.
+        deadline: Instant,
+    },
     /// Windows: sealed historical absence of this retired source's native scope.
     #[cfg(windows)]
     InterfaceRetired(tun::WintunScopeRetirement),
-    /// Windows: original typed control error before physical recovery was selected.
-    #[cfg(windows)]
+    /// Original typed control error before physical recovery was selected.
+    #[cfg(any(windows, target_os = "freebsd"))]
     RecoveryError(Error),
-    /// Windows: original native action failed while physical recovery took over.
-    #[cfg(windows)]
+    /// Original native action failed while physical recovery took over.
+    #[cfg(any(windows, target_os = "freebsd"))]
     RecoveryControlFailed(tun::ApplyFailure),
     /// Original exact core peer retired.
     PeerLost(core::PeerLoss<'id>),
@@ -299,6 +329,15 @@ pub enum Event<'id, 'cadet> {
         /// Exact pure output.
         effect: core::Effect<'id>,
         /// Actual raw packet bytes.
+        bytes: usize,
+    },
+    /// The application VPN provider accepted one whole original packet.
+    ProviderWritten {
+        /// Original platform packet request.
+        write: provider::RequestId,
+        /// Exact pure output.
+        effect: core::Effect<'id>,
+        /// Complete raw IP packet size.
         bytes: usize,
     },
     /// Exact original CADET application frame fully wrote on its MQ.
@@ -341,6 +380,8 @@ pub struct CleanupErrors {
     pub control: Option<io::Error>,
     /// Actual close errno from the final retained original TUN.
     pub tun: Option<io::Error>,
+    /// Actual close error from the final application VPN provider.
+    pub provider: Option<io::Error>,
 }
 impl CleanupErrors {
     /// All original error objects have been transferred or were absent.
@@ -351,14 +392,15 @@ impl CleanupErrors {
             && self.prior_tun.is_none()
             && self.control.is_none()
             && self.tun.is_none()
+            && self.provider.is_none()
     }
 }
 impl fmt::Display for CleanupErrors {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "VPN cleanup coordinator={:?}; IPC={:?}; prior TUN close={:?}; control close={:?}; final TUN close={:?}",
-            self.failure, self.ipc, self.prior_tun, self.control, self.tun
+            "VPN cleanup coordinator={:?}; IPC={:?}; prior TUN close={:?}; control close={:?}; final TUN close={:?}. Application provider close={:?}",
+            self.failure, self.ipc, self.prior_tun, self.control, self.tun, self.provider
         )
     }
 }
@@ -371,6 +413,7 @@ impl std::error::Error for CleanupErrors {
             .or_else(|| self.prior_tun.as_ref().map(|e| e as &dyn std::error::Error))
             .or_else(|| self.control.as_ref().map(|e| e as &dyn std::error::Error))
             .or_else(|| self.tun.as_ref().map(|e| e as &dyn std::error::Error))
+            .or_else(|| self.provider.as_ref().map(|e| e as &dyn std::error::Error))
     }
 }
 /// Actual independent forced-close report, without remote-processing claims.
@@ -381,6 +424,8 @@ pub struct Close<'cadet> {
     pub cadet: Option<cadet::Loss<'cadet>>,
     /// Actual original device stop report, if still retained.
     pub tun: Option<tun::Loss>,
+    /// Original application provider close outcome, without descriptor metadata.
+    pub provider: Option<provider::CloseOutcome>,
     /// Independent close errno from an earlier observed TUN loss. The original
     /// loss was delivered through Event; it never proves kernel route removal.
     pub prior_tun_close_error: Option<io::Error>,

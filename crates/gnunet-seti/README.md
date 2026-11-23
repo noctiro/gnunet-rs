@@ -1,9 +1,9 @@
 # Official SETI intersection core
 
 This crate implements the active GNUnet v0.29.1 SETI collection and operation
-owner, including alternating Bloom reconciliation. It is `no_std`, has no
-allocator or unsafe code, and creates no network, resolver, task or thread. A native SETI **service** listener/CADET adapter remains a separate integration;
-this core does not claim that an IPC client alone supplies that service.
+owner, including alternating Bloom reconciliation. It is `no_std` and uses
+caller-provided storage. The [host adapter](../../adapters/seti-std/README.md)
+connects this owner to native IPC and authenticated CADET channels.
 
 The pinned source is commit `346358e26d4dcc2dc4f51bef5d52dca29c7d8165`, specifically
 `src/service/seti/{seti.h,gnunet-service-seti_protocol.h,gnunet-service-seti.c,seti_api.c}`,
@@ -47,9 +47,9 @@ unknown ACCEPT produces the FAILURE result on its original set MQ.
    output buffer before accepting one original immutable effect. Retain those
    exact bytes through native completion/stop. `can_queue()` precedes actual
    native admission; `queued()` records admission, `exposed()` only an actual
-   positive write, and `written()` only complete original writing. Protocol and
-   result cursors advance on `written()`. Never substitute queue success or a
-   canceled wait future for these physical facts.
+   positive write, and `written()` only complete original writing. A native
+   in-process CADET writer can settle all three when it takes the complete frame
+   into its own storage. Protocol and result cursors advance on `written()`.
 4. An original never-admitted output can use `reject_prepared()`. A port
    completion proving zero exposure can use `unsent()` even after queue
    admission. It advances no protocol/result cursor. Exposed outputs cannot use

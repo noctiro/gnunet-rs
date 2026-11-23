@@ -51,6 +51,8 @@ pub use files::{Buffers, Control, Limits, Progress, Published, ReadFile, open_in
 use gnunet_fs::content::{EncodedNode, NodeRef};
 pub use gnunet_native::DirectorySync;
 pub use gnunet_native::filesystem::{FileIdentity, FileIdentityParts};
+#[cfg(feature = "service")]
+pub use output::IncompleteOutput;
 pub use output::{
     ArtifactFailure, ArtifactReport, CommitStage, DirectoryStage, OWNER_MARKER_NAME,
     ObservedFailure, OutputDir, OwnedDirectoryFailure, RevalidateFailure, RevalidateStage,

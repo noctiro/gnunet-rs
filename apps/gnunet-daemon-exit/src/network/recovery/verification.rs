@@ -5,7 +5,8 @@ use crate::{
 };
 use gnunet_program_host::reporting::Reporter;
 use gnunet_tun_host::{
-    AsyncTun, Ipv6Progress, Ipv6State, Ipv6Watch, Ipv6WatchOptions, RouteQuery, RouteQueryProgress,
+    AsyncTun, Epoch, Ipv6Progress, Ipv6State, Ipv6Watch, Ipv6WatchOptions, RouteQuery,
+    RouteQueryProgress,
 };
 use std::{
     task::{Context, Poll},
@@ -22,14 +23,29 @@ enum Phase {
 }
 pub(super) struct Verification {
     phase: Phase,
+    epoch: Option<Epoch>,
     route: usize,
     query: Option<RouteQuery>,
     watch: Option<Ipv6Watch>,
+}
+pub(super) struct Verified {
+    epoch: Epoch,
+    watch: Option<Ipv6Watch>,
+}
+impl Verified {
+    pub(super) fn matches(&self, source: &AsyncTun) -> bool {
+        self.epoch.current() && self.epoch == source.epoch()
+    }
+
+    pub(super) fn take_watch(&mut self) -> Option<Ipv6Watch> {
+        self.watch.take()
+    }
 }
 impl Verification {
     pub fn new() -> Self {
         Self {
             phase: Phase::Snapshot,
+            epoch: None,
             route: 0,
             query: None,
             watch: None,
@@ -42,15 +58,24 @@ impl Verification {
         plan: &super::super::verification::Plan,
         hard: Instant,
         dad: Duration,
-    ) -> Poll<Result<Option<Ipv6Watch>, Failure>> {
-        if Instant::now() >= hard || !source.epoch().current() {
+    ) -> Poll<Result<Verified, Failure>> {
+        let epoch = source.epoch();
+        if Instant::now() >= hard || !epoch.current() {
             return Poll::Ready(Err(
                 "EXIT recovery verification target/source retired".into()
             ));
         }
+        let original = self.epoch.get_or_insert_with(|| epoch.clone());
+        if *original != epoch {
+            return Poll::Ready(Err(gnunet_types::Error::StaleGeneration.into()));
+        }
         match self.phase {
             Phase::Snapshot | Phase::FinalSnapshot => {
-                plan.snapshot(source.snapshot(hard, plan.options())?, false)?;
+                let snapshot = source.snapshot(hard, plan.options())?;
+                if snapshot.epoch() != &epoch {
+                    return Poll::Ready(Err(gnunet_types::Error::StaleGeneration.into()));
+                }
+                plan.snapshot(snapshot, false)?;
                 if Instant::now() >= hard {
                     return Poll::Ready(Err(
                         "EXIT recovery snapshot returned after its target".into()
@@ -58,7 +83,10 @@ impl Verification {
                 }
                 if matches!(self.phase, Phase::FinalSnapshot) {
                     self.phase = Phase::Done;
-                    return Poll::Ready(Ok(self.watch.take()));
+                    return Poll::Ready(Ok(Verified {
+                        epoch,
+                        watch: self.watch.take(),
+                    }));
                 }
                 self.phase = Phase::Routes;
             }
@@ -80,6 +108,11 @@ impl Verification {
                         Poll::Pending => return Poll::Pending,
                         Poll::Ready(RouteQueryProgress::Complete(done)) => {
                             self.query = None;
+                            if done.target().epoch() != &epoch {
+                                return Poll::Ready(Err(
+                                    gnunet_types::Error::StaleGeneration.into()
+                                ));
+                            }
                             super::super::verification::route(done, hard)?;
                             self.route += 1;
                         }
@@ -113,17 +146,22 @@ impl Verification {
                 };
                 match watch.poll(cx) {
                     Poll::Pending => return Poll::Pending,
-                    Poll::Ready(Ipv6Progress::Observed(sample)) => match sample.state {
-                        Ipv6State::Ready => self.phase = Phase::FinalSnapshot,
-                        Ipv6State::Tentative => {}
-                        _ => {
-                            return Poll::Ready(Err(format!(
-                                "EXIT recovery IPv6 is not ready: {:?}",
-                                sample.state
-                            )
-                            .into()));
+                    Poll::Ready(Ipv6Progress::Observed(sample)) => {
+                        if sample.target.epoch() != &epoch {
+                            return Poll::Ready(Err(gnunet_types::Error::StaleGeneration.into()));
                         }
-                    },
+                        match sample.state {
+                            Ipv6State::Ready => self.phase = Phase::FinalSnapshot,
+                            Ipv6State::Tentative => {}
+                            _ => {
+                                return Poll::Ready(Err(format!(
+                                    "EXIT recovery IPv6 is not ready: {:?}",
+                                    sample.state
+                                )
+                                .into()));
+                            }
+                        }
+                    }
                     Poll::Ready(Ipv6Progress::Complete(done)) => {
                         self.watch = None;
                         return Poll::Ready(Err(Box::new(crate::lifecycle::CancelledWatch(

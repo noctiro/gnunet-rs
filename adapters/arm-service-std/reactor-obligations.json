@@ -2233,10 +2233,6 @@
     "CLI": 17,
     "TESTING": 7
   },
-  "process_handoff": {
-    "path": "/private/tmp/gnunet-arm-process-handoff-20261027/manifest.json",
-    "sha256": "a7442b7a333a7fb927a095c242cecf350ab09f6c7265495f60c0a6e070d88fcd"
-  },
   "component_scope": {
     "actual_layers": [
       "official source registry and address/readiness owner",

@@ -1,4 +1,4 @@
-//! Actual ordinary DNS, shared system Resolver and prepared registry effects.
+//! Actual ordinary DNS, shared system Resolver and registry effects.
 use crate::{
     Bounds, Close, Operation, Provider, Shared, Value,
     native::{Error, Report},
@@ -27,11 +27,21 @@ pub(super) fn guard(bounds: Bounds) -> Result<(), Fault> {
 pub struct Auxiliary<'id, const R: usize, const N: usize> {
     system: system::Factory<R, N>,
     dns: dns::RecursiveDns,
-    registry: Result<registry::Files, Arc<registry::Error>>,
+    nameservers: NameserverLookup,
+    registry: registry::Source,
     closing: bool,
     // Error/report composition only; real query identity is the broker Token.
     lifetime: PhantomData<&'id ()>,
 }
+/// Select how to resolve hostnames in GNS2DNS records.
+#[derive(Clone, Copy, Debug)]
+pub enum NameserverLookup {
+    /// Resolve through the shared GNUnet Resolver, using its configured policy.
+    Resolver,
+    /// Resolve through the numeric bootstrap settings of the wire DNS owner.
+    WireDns,
+}
+
 impl<'id, const R: usize, const N: usize> Auxiliary<'id, R, N> {
     /// Compose prepared genuine capabilities, never a second broker or fake
     /// successful dependency. Both actual factories must share one clock Arc.
@@ -51,29 +61,51 @@ impl<'id, const R: usize, const N: usize> Auxiliary<'id, R, N> {
         dns: dns::RecursiveDns,
         registry: Result<registry::Files, Arc<registry::Error>>,
     ) -> Result<Self, Fault> {
+        Self::compose(system, dns, || registry::Source::Prepared(registry))
+    }
+
+    /// Compose the ordinary platform protocol/service database as a bounded
+    /// native worker. Startup failure remains a per-registry observation.
+    pub fn with_system_registry(
+        system: system::Factory<R, N>,
+        dns: dns::RecursiveDns,
+    ) -> Result<Self, Fault> {
+        Self::compose(system, dns, registry::Source::native)
+    }
+
+    /// Optional registry preparation failure known before lookup admission.
+    pub fn registry_preparation_error(&self) -> Option<&Arc<registry::Error>> {
+        self.registry.preparation_error()
+    }
+
+    fn compose(
+        system: system::Factory<R, N>,
+        dns: dns::RecursiveDns,
+        registry: impl FnOnce() -> registry::Source,
+    ) -> Result<Self, Fault> {
         if !Arc::ptr_eq(&system.clock(), &dns.clock()) {
             return Err(Fault::InvalidInput);
         }
         Ok(Self {
             system,
             dns,
-            registry,
+            nameservers: NameserverLookup::Resolver,
+            registry: registry(),
             closing: false,
             lifetime: PhantomData,
         })
     }
-}
-struct Registry {
-    value: Option<Value>,
-    mapping: Option<(u16, u16)>,
-    bounds: Bounds,
-    closing: bool,
-    closed: bool,
+
+    /// Select the address lookup route without changing delegated DNS traffic.
+    pub fn with_nameserver_lookup(mut self, lookup: NameserverLookup) -> Self {
+        self.nameservers = lookup;
+        self
+    }
 }
 enum Inner<'id, const R: usize, const N: usize> {
     System(system::Query<'id, R, N>),
     Dns(dns::Query<'id>),
-    Registry(Registry),
+    Registry(registry::Lookup),
 }
 /// Original concrete auxiliary operation. No queue/native completion can be
 /// reconstructed from caller scalars; each inner operation keeps its own owner.
@@ -108,7 +140,17 @@ impl<'id, const R: usize, const N: usize> Provider for Auxiliary<'id, R, N> {
                 remaining_steps,
             } => {
                 guard(bounds)?;
-                Inner::Dns(self.dns.addresses(name, *remaining_steps, bounds)?)
+                match self.nameservers {
+                    NameserverLookup::Resolver => Inner::System(self.system.start_nameserver(
+                        name,
+                        *remaining_steps,
+                        bounds,
+                        self.dns.server_limit(),
+                    )?),
+                    NameserverLookup::WireDns => {
+                        Inner::Dns(self.dns.addresses(name, *remaining_steps, bounds)?)
+                    }
+                }
             }
             EffectKind::Dns {
                 name,
@@ -131,23 +173,11 @@ impl<'id, const R: usize, const N: usize> Provider for Auxiliary<'id, R, N> {
                     bounds,
                 )?)
             }
-            EffectKind::Service { service, protocol } => {
-                guard(bounds)?;
-                let mapping = match &self.registry {
-                    Ok(files) => files.lookup(service, protocol),
-                    Err(error) => Some(
-                        registry::assigned(service, protocol)
-                            .ok_or_else(|| Error::Registry(error.clone()))?,
-                    ),
-                };
-                Inner::Registry(Registry {
-                    value: Some(Value::Service(mapping)),
-                    mapping,
-                    bounds,
-                    closing: false,
-                    closed: false,
-                })
-            }
+            EffectKind::Service { service, protocol } => Inner::Registry(
+                self.registry
+                    .start(service, protocol, bounds)
+                    .map_err(Error::Registry)?,
+            ),
             // NAMECACHE/REVOCATION/DHT are handled by the enclosing concrete
             // native provider. This is not an unspecified fallback backend.
             _ => return Err(Fault::Unsupported.into()),
@@ -159,23 +189,28 @@ impl<'id, const R: usize, const N: usize> Provider for Auxiliary<'id, R, N> {
     fn poll_native_guard(&mut self, _cx: &mut Context<'_>) -> Option<Error<'id>> {
         None
     }
-    fn poll_shared(&mut self, _cx: &mut Context<'_>) -> Poll<Shared<Error<'id>>> {
-        // The single foreground Driver drives shared Resolver wire debt. DNS
-        // futures own their sockets and are polled through original operations.
-        Poll::Pending
+    fn poll_shared(&mut self, cx: &mut Context<'_>) -> Poll<Shared<Error<'id>>> {
+        self.registry.poll_stopped(cx).map(|result| match result {
+            Ok(()) => Shared::Activity,
+            Err(error) => Shared::Failed(Error::Registry(Arc::new(error.into()))),
+        })
     }
     fn begin_close(&mut self) -> Option<Error<'id>> {
         if !self.closing {
             self.closing = true;
             self.system.begin_close();
             self.dns.begin_close();
+            self.registry.begin_close();
         }
         None
     }
     fn is_closed(&self) -> bool {
         // This is the local subscription/socket scope only. Final SERVICE close
         // must additionally disconnect/retire its actual original broker Driver.
-        self.closing && self.system.is_closed() && self.dns.is_closed()
+        self.closing
+            && self.system.is_closed()
+            && self.dns.is_closed()
+            && self.registry.is_stopped()
     }
 }
 impl<'id, const R: usize, const N: usize> Operation for Native<'id, R, N> {
@@ -185,15 +220,7 @@ impl<'id, const R: usize, const N: usize> Operation for Native<'id, R, N> {
         match &mut self.inner {
             Inner::System(query) => query.poll_native_guard(cx),
             Inner::Dns(query) => query.poll_native_guard(cx),
-            Inner::Registry(query)
-                if !query.closing
-                    && query.value.is_some()
-                    && Instant::now() >= query.bounds.hard() =>
-            {
-                query.closing = true;
-                Some(Fault::Timeout.into())
-            }
-            Inner::Registry(_) => None,
+            Inner::Registry(query) => query.check_deadline().map(Error::from),
         }
     }
     fn poll(
@@ -207,11 +234,7 @@ impl<'id, const R: usize, const N: usize> Operation for Native<'id, R, N> {
         match &mut self.inner {
             Inner::System(query) => query.poll(cx, now),
             Inner::Dns(query) => query.poll(cx, now),
-            Inner::Registry(query) if !query.closing => match query.value.take() {
-                Some(value) => Poll::Ready(Ok(value)),
-                None => Poll::Pending,
-            },
-            Inner::Registry(_) => Poll::Pending,
+            Inner::Registry(query) => query.poll(cx),
         }
     }
     fn begin_close(&mut self) -> Option<Self::Error> {
@@ -219,8 +242,7 @@ impl<'id, const R: usize, const N: usize> Operation for Native<'id, R, N> {
             Inner::System(query) => query.begin_close(),
             Inner::Dns(query) => query.begin_close(),
             Inner::Registry(query) => {
-                query.closing = true;
-                query.value = None;
+                query.begin_close();
                 None
             }
         }
@@ -229,13 +251,7 @@ impl<'id, const R: usize, const N: usize> Operation for Native<'id, R, N> {
         match &mut self.inner {
             Inner::System(query) => query.poll_close(cx),
             Inner::Dns(query) => query.poll_close(cx),
-            Inner::Registry(query) if query.closing && !query.closed => {
-                query.closed = true;
-                Poll::Ready(Close::Closed(Report::Registry {
-                    mapping: query.mapping,
-                }))
-            }
-            Inner::Registry(_) => Poll::Pending,
+            Inner::Registry(query) => query.poll_close(cx),
         }
     }
 }

@@ -1,32 +1,95 @@
-//! Kernel Unix peer credentials and explicit service admission policy.
-use crate::connection::Connection;
+//! Local service admission from Unix peer credentials or Windows listener ACLs.
+use crate::{
+    accepted::{AcceptError, SocketEvent},
+    connection::Connection,
+};
+#[cfg(windows)]
+use gnunet_native::local_path::EndpointAccess;
 use std::io;
-/// Explicit Unix peer admission. UID matching takes precedence over GID matching.
+/// Local admission configured by `UNIX_MATCH_UID` and `UNIX_MATCH_GID`.
+/// UID matching takes precedence over GID matching.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct UnixAccess {
-    /// Require the kernel-reported effective peer UID to match this service.
+    /// Require service-owner access.
     pub match_uid: bool,
-    /// Otherwise require matching effective GID or membership in its group.
+    /// Otherwise require service-group access.
     pub match_gid: bool,
 }
 impl UnixAccess {
-    /// Check this original connection against the current effective service identity.
-    /// Non-Unix hosts refuse a requested UID/GID check; process-token SIDs do
-    /// not authenticate a TCP peer and are never substituted here.
+    /// Read an explicitly configured local policy. An absent pair leaves the
+    /// caller's default policy in effect. Malformed options are rejected.
+    pub fn from_config(
+        config: &gnunet_config::Configuration,
+        section: &[u8],
+    ) -> Result<Option<Self>, gnunet_config::Error> {
+        let read = |key: &[u8]| match config.get_yesno(section, key) {
+            Ok(value) => Ok(Some(value)),
+            Err(gnunet_config::Error::Missing) => Ok(None),
+            Err(error) => Err(error),
+        };
+        let match_uid = read(b"UNIX_MATCH_UID")?;
+        let match_gid = read(b"UNIX_MATCH_GID")?;
+        Ok(
+            (match_uid.is_some() || match_gid.is_some()).then_some(Self {
+                match_uid: match_uid.unwrap_or(false),
+                match_gid: match_gid.unwrap_or(false),
+            }),
+        )
+    }
+
+    /// Decide admission for this original local connection. A failed native
+    /// check is reported and refuses this stream without suspending acceptance
+    /// or stopping the service. The caller closes a refused stream.
+    pub fn admits(self, connection: &Connection, report: impl FnOnce(SocketEvent)) -> bool {
+        match self.allows(connection) {
+            Ok(allowed) => allowed,
+            Err(error) => {
+                report(SocketEvent::Failed(AcceptError::Credentials(error)));
+                false
+            }
+        }
+    }
+
+    /// On Unix, check this connection against the current effective service
+    /// identity. On Windows, use a DACL installed before the original AF_UNIX
+    /// listener started accepting. An unidentified Windows listener or a TCP
+    /// stream cannot satisfy a configured local restriction.
     pub fn allows(self, connection: &Connection) -> io::Result<bool> {
+        #[cfg(windows)]
+        {
+            self.allows_windows_listener(connection.windows_listener_access())
+        }
+        #[cfg(unix)]
+        {
+            if !self.match_uid && !self.match_gid {
+                return Ok(true);
+            }
+            self.allows_unix(connection)
+        }
+    }
+    #[cfg(windows)]
+    pub(crate) fn allows_windows_listener(
+        self,
+        access: Option<EndpointAccess>,
+    ) -> io::Result<bool> {
         if !self.match_uid && !self.match_gid {
             return Ok(true);
         }
-        #[cfg(not(unix))]
-        {
-            let _original = connection;
-            Err(io::Error::new(
+        let access = access.ok_or_else(|| {
+            io::Error::new(
                 io::ErrorKind::Unsupported,
-                "Unix peer UID/GID credentials are unavailable on this platform",
-            ))
+                "original Windows AF_UNIX listener ACL is unverified",
+            )
+        })?;
+        Ok(self.permits_windows_access(access))
+    }
+    #[cfg(windows)]
+    pub(crate) fn permits_windows_access(self, access: EndpointAccess) -> bool {
+        match access {
+            EndpointAccess::Owner => true,
+            EndpointAccess::PrimaryGroup => !self.match_uid,
+            EndpointAccess::Everyone => !self.match_uid && !self.match_gid,
         }
-        #[cfg(unix)]
-        self.allows_unix(connection)
     }
     #[cfg(unix)]
     fn allows_unix(self, connection: &Connection) -> io::Result<bool> {
@@ -44,12 +107,9 @@ impl UnixAccess {
         if gid == our_gid {
             return Ok(true);
         }
-        let Some(user) = uzers::get_user_by_uid(uid) else {
+        let Some(user) = gnunet_native::accounts::user_by_uid(uid)? else {
             return Ok(false);
         };
-        let groups = user
-            .groups()
-            .ok_or_else(|| io::Error::other("native group membership lookup unavailable"))?;
-        Ok(groups.iter().any(|group| group.gid() == our_gid))
+        user.belongs_to_group(our_gid)
     }
 }

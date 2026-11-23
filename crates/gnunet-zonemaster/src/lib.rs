@@ -2,6 +2,9 @@
 //! bounded publication scheduling. No listener, DHT client, storage or key file.
 #![no_std]
 #![forbid(unsafe_code)]
+/// Fixed-capacity preparation and sealing with caller-owned storage.
+pub mod fixed;
+mod projection;
 #[cfg(feature = "alloc")]
 extern crate alloc;
 #[cfg(feature = "alloc")]

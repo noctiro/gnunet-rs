@@ -128,6 +128,41 @@ mod tests {
             })
         ));
     }
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "Check a real queued byte before the reactor driver has run"
+    )]
+    fn guard_read_checks_the_original_descriptor_before_a_reactor_hint() -> io::Result<()> {
+        use std::{io::Write, os::unix::net::UnixStream, task::Waker};
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .build()?;
+        let _runtime = runtime.enter();
+        let (reader, mut writer) = UnixStream::pair()?;
+        reader.set_nonblocking(true)?;
+        let io = RegisteredIo::new(reader.into()).map_err(|failure| failure.error)?;
+        let mut cx = Context::from_waker(Waker::noop());
+        let mut byte = [0];
+        writer.write_all(b"x")?;
+        assert!(io.poll_read(&mut cx, &mut byte).is_pending());
+        let read = |owner: &OwnedFd| nix::unistd::read(owner, &mut byte).map_err(io::Error::from);
+        assert!(matches!(
+            io.poll_guard_read_on(&mut cx, read),
+            Poll::Ready(Ok(1))
+        ));
+        assert_eq!(byte, [b'x']);
+        assert!(
+            io.poll_guard_read_on(&mut cx, |owner| {
+                nix::unistd::read(owner, &mut byte).map_err(io::Error::from)
+            })
+            .is_pending()
+        );
+        Ok(())
+    }
+
     /// Compile-only here: a real nonblocking pair supplies the cached Ready and
     /// actual EAGAIN, rather than injecting either result into the wrapper.
     #[test]
@@ -175,9 +210,10 @@ mod tests {
                     let mut cx = Context::from_waker(&waker);
                     let mut calls = 0;
                     let pending = if callback {
-                        io.poll_read_with(&mut cx, |fd| {
+                        io.poll_read_on(&mut cx, |owner| {
+                            assert!(std::ptr::eq(owner, io.descriptor()));
                             calls += 1;
-                            nix::unistd::read(fd, &mut byte).map_err(io::Error::from)
+                            nix::unistd::read(owner, &mut byte).map_err(io::Error::from)
                         })
                     } else {
                         io.poll_read(&mut cx, &mut byte)

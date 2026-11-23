@@ -692,10 +692,9 @@ impl<'id, 'slots, 'bytes> Service<'id, 'slots, 'bytes> {
         }
         Ok(())
     }
-    /// Actual committed STORE completed after its original MQ was retired. This
-    /// trusted storage port notification cannot revive that source or emit its
-    /// result; it only observes the committed record for other live monitors.
-    pub fn committed_after_loss(&mut self, record: Record<'_>) -> Result<(), Error> {
+    /// Notify live monitors about a storage commit without a live original IPC
+    /// STORE. This emits no STORE result or request receipt.
+    pub fn externally_committed(&mut self, record: Record<'_>) -> Result<(), Error> {
         self.notify(record)
     }
     /// Produce at most one local monitor SYNC whose no-iteration start was

@@ -1,9 +1,10 @@
 //! Exclusive staging and original-object cleanup; no replacement retries.
 use super::{BYTES, Directory, Error, File, Files, Outcome, Stage, fail};
-use gnunet_native::filesystem::{FileIdentity, private_single_file_identity};
+use gnunet_native::filesystem::{FileIdentity, private_single_file_identity, publication};
 use std::{
     ffi::OsString,
     io::{self, Write},
+    mem::DropGuard,
 };
 pub(in super::super) struct Temporary {
     directory: Directory,
@@ -17,9 +18,17 @@ impl Temporary {
         self.file
             .write_all(bytes)
             .map_err(|e| fail(Stage::Write, Outcome::NotCommitted, e))?;
-        self.file
-            .sync_all()
-            .map_err(|e| fail(Stage::Write, Outcome::NotCommitted, e))
+        // Finish the only writer before prepare can clone a retained image or
+        // positional reader. Failure leaves this original for identity-bound Drop.
+        publication::seal_retained(&self.directory, &self.name, &mut self.file, BYTES as u64)
+            .map(|_| ())
+            .map_err(|failure| {
+                fail(
+                    Stage::Write,
+                    Outcome::NotCommitted,
+                    io::Error::new(failure.cause.kind(), failure),
+                )
+            })
     }
     pub(super) fn verify(&self) -> Result<(), Error> {
         if private_single_file_identity(&self.file)
@@ -65,12 +74,16 @@ impl Files {
             self.names = None;
             match self.directory.create_private_file(&name) {
                 Ok(file) => {
-                    let identity = private_single_file_identity(&file)
+                    let pending = DropGuard::new(file, |file| {
+                        let _cleanup = self.directory.remove_file(&name, &file);
+                    });
+                    let identity = private_single_file_identity(&pending)
                         .map_err(|e| fail(Stage::Write, Outcome::NotCommitted, e))?;
                     let directory = self
                         .directory
                         .duplicate()
                         .map_err(|e| fail(Stage::Write, Outcome::NotCommitted, e))?;
+                    let file = DropGuard::dismiss(pending);
                     return Ok(Temporary {
                         directory,
                         name,

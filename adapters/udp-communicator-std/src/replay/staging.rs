@@ -1,5 +1,6 @@
 //! Original private stage with independent, identity-bound cleanup.
 use super::{Fence, JournalError, Outcome, Stage, TEMP, native};
+use gnunet_native::filesystem::publication;
 use std::{ffi::OsString, fs::File, io, sync::Arc};
 pub(super) struct Staging {
     owner: Arc<Fence>,
@@ -34,18 +35,19 @@ impl Staging {
         }
         Err(gnunet_types::Error::Capacity.into())
     }
-    pub fn publish(&self, target: &std::ffi::OsStr) -> io::Result<()> {
-        let file = self
-            .file
-            .as_ref()
-            .ok_or_else(|| io::Error::other("UDP original stage was consumed"))?;
-        self.owner.parent.replace_file(&self.name, file, target)
-    }
-    pub fn into_file(mut self) -> Result<File, JournalError> {
-        // Publication may have effects even on failure: preserve the original
-        // stage name for explicit recovery, never delete the committed target.
+    pub fn seal(&mut self, expected_bytes: u64) -> Result<publication::Sealed<'_>, JournalError> {
+        let file = self.file.take().ok_or(gnunet_types::Error::Stale)?;
+        // The native sealing owner now retains exact prepublication cleanup;
+        // after replacement is attempted it never removes the original stage.
         self.retired = true;
-        self.file.take().ok_or(gnunet_types::Error::Stale.into())
+        publication::seal(&self.owner.parent, &self.name, file, expected_bytes).map_err(|failure| {
+            let stage = match failure.stage {
+                "file-sync" => Stage::FileSync,
+                "writer-close" => Stage::WriterClose,
+                _ => Stage::Seal,
+            };
+            super::publication_failure(stage, failure)
+        })
     }
     pub fn discard(&mut self) -> io::Result<()> {
         self.retired = true;

@@ -14,6 +14,8 @@ from pathlib import Path
 
 sys.dont_write_bytecode = True
 TOOLS = Path(__file__).resolve().parent
+sys.path.insert(0, str(TOOLS.parents[2] / "tools"))
+from rust_toolchain import rust_channel
 PIN = '346358e26d4dcc2dc4f51bef5d52dca29c7d8165'
 CORE = 'gnunet-tcp-communicator-core'
 HOST = 'gnunet-tcp-communicator-host'
@@ -233,6 +235,7 @@ def historical_builder(repository,kind,expected_sha256):
 class Commands:
     def __init__(self, output, repository, environment=None):
         self.output, self.repository = Path(output), Path(repository)
+        self.cargo = ("cargo", "+" + rust_channel(self.repository))
         self.env = os.environ.copy()
         self.env.update(environment or {})
         self.env.update(PYTHONDONTWRITEBYTECODE='1', CARGO_BUILD_JOBS='1',
@@ -255,7 +258,7 @@ class Commands:
         return result.stdout
 
     def metadata(self, label, profile=()):
-        return json.loads(self.run(label, ['cargo', '+1.99.1', 'metadata', '--manifest-path',
+        return json.loads(self.run(label, [*self.cargo, 'metadata', '--manifest-path',
                                          self.repository / 'Cargo.toml', '--locked', '--offline',
                                          '--format-version=1', *profile]))
 
@@ -297,7 +300,7 @@ class Commands:
             self.headers[path]=digest
 
     def example(self, package, name):
-        output = self.run('build-' + name, ['cargo', '+1.99.1', 'build', '--manifest-path',
+        output = self.run('build-' + name, [*self.cargo, 'build', '--manifest-path',
                           self.repository / 'Cargo.toml', '--locked', '--offline', '-p', package,
                           '--example', name, '--message-format=json', '-j', '1'])
         artifacts = [json.loads(row) for row in output.splitlines() if row.startswith(b'{')]
@@ -313,7 +316,7 @@ class Commands:
 
     def tests(self):
         selected = [piece for name in PACKAGES for piece in ('-p', name)]
-        cargo = ['cargo', '+1.99.1', 'test', '--manifest-path', self.repository / 'Cargo.toml',
+        cargo = [*self.cargo, 'test', '--manifest-path', self.repository / 'Cargo.toml',
                  '--locked', '--offline', *selected, '-j', '1', '--message-format=json']
         built = self.run('test-build', [*cargo, '--no-run'])
         def executables(data):
@@ -332,7 +335,7 @@ class Commands:
         return check_tests(tested.decode())
 
     def xtask(self):
-        output = self.run('build-xtask', ['cargo', '+1.99.1', 'build', '--manifest-path',
+        output = self.run('build-xtask', [*self.cargo, 'build', '--manifest-path',
                           self.repository / 'Cargo.toml', '--locked', '--offline', '-p', 'xtask',
                           '--bin', 'xtask', '--message-format=json', '-j', '1'])
         rows = [json.loads(line) for line in output.splitlines() if line.startswith(b'{')]

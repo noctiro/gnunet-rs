@@ -6,12 +6,13 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
-# Exact new backend approved by Root. Native/asm AWS-LC primitives, no libgnunet FFI.
-aws-lc-rs = { version = "=1.19.0", default-features = false, features = ["alloc", "non-fips", "ring-io"] }
+crypto-bigint.workspace = true
+getrandom = { workspace = true, features = ["sys_rng"] }
 gnunet-types.workspace = true
 gnunet-json.workspace = true
 gnunet-crypto.workspace = true
 gnunet-rest = { workspace = true, features = ["oidc"] }
+rsa.workspace = true
 zeroize.workspace = true
 
 [lints]

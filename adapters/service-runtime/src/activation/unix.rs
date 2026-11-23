@@ -436,18 +436,34 @@ pub(crate) fn bind_private_checked(
     mode: u32,
 ) -> io::Result<PrivateListener> {
     use std::os::unix::fs::PermissionsExt;
-    bind_private_with(path, None, |socket| {
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))?;
-        socket.listen(backlog)
-    })
+    // A bound STREAM socket cannot accept connections before listen. Commit
+    // access before that first listen rather than changing a multithreaded
+    // process's umask. Namespace/ACL mutation remains excluded by the caller.
+    let (pending, warnings) = bind_pending(path)?;
+    std::fs::set_permissions(pending.path.path(), std::fs::Permissions::from_mode(mode))?;
+    pending.socket.listen(backlog)?;
+    Ok(pending.finish(warnings))
 }
 fn bind_private_with(
     path: &Path,
     mode: Option<u32>,
     listen: impl FnOnce(&Socket) -> io::Result<()>,
 ) -> io::Result<PrivateListener> {
-    let address = SockAddr::unix(path)?;
     let _mask = PrivateUmaskGuard::new()?;
+    let (pending, mut warnings) = bind_pending(path)?;
+    if let Some(mode) = mode {
+        use std::os::unix::fs::PermissionsExt;
+        if let Err(error) =
+            std::fs::set_permissions(pending.path.path(), std::fs::Permissions::from_mode(mode))
+        {
+            warnings.push(error);
+        }
+    }
+    listen(&pending.socket)?;
+    Ok(pending.finish(warnings))
+}
+fn bind_pending(path: &Path) -> io::Result<(PendingPrivateListener, Vec<io::Error>)> {
+    let address = SockAddr::unix(path)?;
     let socket = Socket::new(Domain::UNIX, Type::STREAM, None)?;
     let mut warnings = Vec::new();
     if let Err(error) = socket.set_reuse_address(true) {
@@ -459,25 +475,52 @@ fn bind_private_with(
         socket,
         path: crate::CreatedPath::capture(path.to_path_buf())?,
     };
-    if let Some(mode) = mode {
-        use std::os::unix::fs::PermissionsExt;
-        if let Err(error) =
-            std::fs::set_permissions(pending.path.path(), std::fs::Permissions::from_mode(mode))
-        {
-            warnings.push(error);
+    Ok((pending, warnings))
+}
+impl PendingPrivateListener {
+    fn finish(self, warnings: Vec<io::Error>) -> PrivateListener {
+        let Self { socket, path } = self;
+        PrivateListener {
+            listener: socket.into(),
+            path,
+            warnings,
         }
     }
-    listen(&pending.socket)?;
-    let PendingPrivateListener { socket, path } = pending;
-    Ok(PrivateListener {
-        listener: socket.into(),
-        path,
-        warnings,
-    })
 }
 #[cfg(test)]
 mod private_backlog_tests {
     use super::*;
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "Real Unix socket regression checks pre-listen rejection and committed permissions before accepting"
+    )]
+    fn bound_stream_refuses_connections_until_permissions_are_committed() -> io::Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+        let directory =
+            std::env::temp_dir().join(format!("gnunet-prelisten-access-{}", std::process::id()));
+        std::fs::create_dir(&directory)?;
+        let path = directory.join("listener");
+        let (pending, warnings) = bind_pending(&path)?;
+        let before = std::os::unix::net::UnixStream::connect(&path);
+        assert!(
+            matches!(before, Err(ref error) if error.kind() == io::ErrorKind::ConnectionRefused)
+        );
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))?;
+        assert_eq!(
+            std::fs::metadata(&path)?.permissions().mode() & 0o777,
+            0o700
+        );
+        pending.socket.listen(5)?;
+        let prepared = pending.finish(warnings);
+        let client = std::os::unix::net::UnixStream::connect(&path)?;
+        let accepted = prepared.listener.accept()?;
+        drop((client, accepted));
+        drop(prepared);
+        assert!(!path.exists());
+        std::fs::remove_dir(directory)?;
+        Ok(())
+    }
     #[test]
     #[expect(
         clippy::panic_in_result_fn,

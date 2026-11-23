@@ -65,11 +65,8 @@ impl From<gnunet_config::Error> for Error {
 /// Source command forms differ in executable filename versus argv0 semantics.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Recipe {
-    /// Raw official textual command; later native port must use official parser.
-    Gnunet(Vec<u8>),
-    /// Native Windows paths remain literal arguments, separate from GNUnet
-    /// prefix/options fragments. Text is diagnostic/core metadata only.
-    #[cfg(windows)]
+    /// Native paths remain literal arguments. Configured prefix/options use
+    /// the GNUnet command grammar.
     Native {
         /// Bounded original command description; never reparsed for native paths.
         text: Vec<u8>,
@@ -98,8 +95,6 @@ impl Recipe {
     /// persisted, decoded or serialized as protocol text.
     pub fn core_bytes(&self) -> &[u8] {
         match self {
-            Self::Gnunet(command) => command,
-            #[cfg(windows)]
             Self::Native { text, .. } => text,
             Self::Simple { filename, .. } => filename.as_encoded_bytes(),
         }
@@ -122,6 +117,57 @@ pub struct Service {
     pub pipe_control: bool,
     /// Actual source-native command plan, never a claim of execution.
     pub recipe: Recipe,
+    #[cfg(windows)]
+    pub(crate) account: WindowsAccount,
+}
+
+#[cfg(windows)]
+#[derive(Clone, Debug)]
+pub(crate) enum WindowsAccount {
+    Inherited,
+    Dedicated {
+        sid: gnunet_native::identity::Sid,
+        credential: OsString,
+    },
+}
+
+#[cfg(windows)]
+impl WindowsAccount {
+    fn resolve(
+        config: &Configuration,
+        section: &[u8],
+        env: &impl Environment,
+        configuration: Option<&std::path::Path>,
+        recipe: &Recipe,
+    ) -> Result<Self, Error> {
+        let Some(name) = gnunet_service_startup::configured_user_with(config, section, env)? else {
+            return Ok(Self::Inherited);
+        };
+        let sid = gnunet_native::identity::account_sid(&name)?;
+        if sid == gnunet_native::identity::process_user()? {
+            return Ok(Self::Inherited);
+        }
+        if !configuration.is_some_and(std::path::Path::is_absolute)
+            || !matches!(recipe, Recipe::Native { .. })
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "a different Windows service account requires a native GNUnet command and an absolute configuration path",
+            ).into());
+        }
+        let credential = expanded(config, section, b"WINDOWS_LOGON_CREDENTIAL", env)?;
+        if credential.is_empty() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "a different Windows service account requires WINDOWS_LOGON_CREDENTIAL",
+            )
+            .into());
+        }
+        Ok(Self::Dedicated {
+            sid,
+            credential: gnunet_native::os_bytes::decode_owned(credential)?,
+        })
+    }
 }
 /// Nonfatal source diagnostics retained independently from a successful registry.
 #[derive(Clone, Debug)]
@@ -187,8 +233,8 @@ fn replace_name(mut text: Vec<u8>, name: &[u8], limits: Limits) -> Result<Vec<u8
     }
 }
 impl Registry {
-    /// Snapshot exact service selection and source command composition, without I/O
-    /// beyond source stat/project discovery. Caller environment is read-only.
+    /// Snapshot service selection and source command composition. On Windows a
+    /// configured account is resolved before listener preparation.
     pub fn from_config(
         config: &Configuration,
         env: &impl Environment,
@@ -321,27 +367,20 @@ impl Registry {
                     join(&mut command, b" ", limits.command_bytes)?;
                     join(&mut command, &options, limits.command_bytes)?;
                 }
-                #[cfg(unix)]
-                {
-                    Recipe::Gnunet(command)
+                let mut arguments = Vec::new();
+                if debug {
+                    arguments.extend(["-L".into(), "DEBUG".into()]);
                 }
-                #[cfg(windows)]
-                {
-                    let mut arguments = Vec::new();
-                    if debug {
-                        arguments.extend(["-L".into(), "DEBUG".into()]);
-                    }
-                    if let Some(configuration) = &configuration {
-                        arguments.push("-c".into());
-                        arguments.push(configuration.as_os_str().to_owned());
-                    }
-                    Recipe::Native {
-                        text: command,
-                        prefix: local_prefix,
-                        binary: path.into_os_string(),
-                        arguments,
-                        options,
-                    }
+                if let Some(configuration) = &configuration {
+                    arguments.push("-c".into());
+                    arguments.push(configuration.as_os_str().to_owned());
+                }
+                Recipe::Native {
+                    text: command,
+                    prefix: local_prefix,
+                    binary: path.into_os_string(),
+                    arguments,
+                    options,
                 }
             };
             let immediate = yes(config, name, b"IMMEDIATE_START");
@@ -350,6 +389,9 @@ impl Registry {
             } else {
                 yes(config, name, b"START_ON_DEMAND")
             };
+            #[cfg(windows)]
+            let account =
+                WindowsAccount::resolve(config, name, env, configuration.as_deref(), &recipe)?;
             services.try_reserve(1).map_err(|_| Error::Capacity)?;
             services.push(Service {
                 name: name.to_vec(),
@@ -359,6 +401,8 @@ impl Registry {
                 bind,
                 pipe_control: yes(config, name, b"PIPECONTROL"),
                 recipe,
+                #[cfg(windows)]
+                account,
             });
         }
         services.reverse();

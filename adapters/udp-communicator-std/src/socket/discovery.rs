@@ -1,16 +1,13 @@
-//! Safe sendmsg control construction for actual interface/source selection.
-//! No raw FD owner or ancillary pointer is manufactured in this crate.
+//! Bounded discovery sends on the original socket.
 use super::{DatagramSocket, Profile, Sent, SocketError};
+use gnunet_native::network::DatagramSource;
 use gnunet_types::Error;
 use socket2::SockRef;
-#[cfg(unix)]
-use socket2::{MsgHdr, SockAddr};
-#[cfg(unix)]
-use std::io::IoSlice;
 use std::{
     future::Future,
     io,
     net::{Ipv6Addr, SocketAddr},
+    num::NonZeroU32,
     pin::Pin,
     task::{Context, Poll},
     time::Instant,
@@ -21,19 +18,13 @@ use tokio::{
 };
 pub(super) struct Pending {
     pub target: SocketAddr,
-    source: SocketAddr,
-    index: u32,
+    source: DatagramSource,
     operation: u64,
     packet: [u8; 96],
     hard: Instant,
     timer: Pin<Box<Sleep>>,
 }
 impl DatagramSocket {
-    /// Whether either original encrypted or discovery datagram owns TX. This
-    /// must be checked before creating a new encrypted packet/consuming a nonce.
-    pub fn has_pending_send(&self) -> bool {
-        self.pending.is_some() || self.discovery.is_some()
-    }
     pub(crate) fn join_discovery(&self, group: &Ipv6Addr, index: u32) -> Result<(), SocketError> {
         if self.profile != Profile::Ipv6 || index == 0 {
             return Err(Error::InvalidInput.into());
@@ -59,23 +50,20 @@ impl DatagramSocket {
         if self.has_pending_send() {
             return Err(Error::WouldBlock.into());
         }
-        if index == 0 || !self.profile.accepts(source) || !self.profile.accepts(target) {
+        if !self.profile.accepts(source) || !self.profile.accepts(target) {
             return Err(Error::InvalidInput.into());
         }
         if Instant::now() >= hard {
             return Err(Error::Deadline.into());
         }
+        let index = NonZeroU32::new(index).ok_or(Error::InvalidInput)?;
+        let source = DatagramSource::new(source, index)?;
         let socket = self.socket.as_deref().ok_or(Error::Closed)?;
         if self.profile == Profile::Ipv4 {
             SockRef::from(socket).set_broadcast(true)?;
         }
-        // Validate/prepare ancillary metadata before publishing this pending
-        // packet, preserving the existing pending packet on all refusals.
-        #[cfg(unix)]
-        control(source, index)?;
         self.discovery = Some(Pending {
             source,
-            index,
             target,
             operation,
             packet,
@@ -146,153 +134,15 @@ impl DatagramSocket {
         self.discovery = None;
     }
 }
-#[cfg(unix)]
 fn send(socket: &tokio::net::UdpSocket, pending: &Pending) -> io::Result<usize> {
-    let (control, len) = control(pending.source, pending.index)?;
-    let address = SockAddr::from(pending.target);
-    let buffers = [IoSlice::new(&pending.packet)];
-    let message = MsgHdr::new()
-        .with_addr(&address)
-        .with_buffers(&buffers)
-        .with_control(&control[..len]);
-    SockRef::from(socket).sendmsg(&message, 0)
-}
-#[cfg(windows)]
-fn send(socket: &tokio::net::UdpSocket, pending: &Pending) -> io::Result<usize> {
-    use std::os::windows::io::AsSocket;
-    gnunet_native::network::send_datagram_from(
-        socket.as_socket(),
-        pending.source,
-        pending.index,
-        pending.target,
-        &pending.packet,
-    )
-}
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
-fn field(out: &mut [u8], offset: usize, bytes: &[u8]) {
-    out[offset..offset + bytes.len()].copy_from_slice(bytes);
-}
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
-fn control(source: SocketAddr, index: u32) -> io::Result<([u8; 64], usize)> {
-    use std::mem::{align_of, offset_of, size_of};
-    // FreeBSD CMSG_DATA/SPACE use native long alignment, which may exceed
-    // the alignment of its socklen_t-based cmsghdr itself.
-    let alignment = if cfg!(target_os = "freebsd") {
-        size_of::<libc::c_long>()
-    } else {
-        align_of::<libc::cmsghdr>()
-    };
-    let align = |n: usize| (n + alignment - 1) & !(alignment - 1);
-    let data = align(size_of::<libc::cmsghdr>());
-    let (level, kind, payload) = match source {
-        SocketAddr::V4(_) => {
-            #[cfg(target_os = "freebsd")]
-            {
-                (
-                    libc::IPPROTO_IP,
-                    libc::IP_SENDSRCADDR,
-                    size_of::<libc::in_addr>(),
-                )
-            }
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
-            {
-                (
-                    libc::IPPROTO_IP,
-                    libc::IP_PKTINFO,
-                    size_of::<libc::in_pktinfo>(),
-                )
-            }
-        }
-        SocketAddr::V6(_) => (
-            libc::IPPROTO_IPV6,
-            libc::IPV6_PKTINFO,
-            size_of::<libc::in6_pktinfo>(),
-        ),
-    };
-    let length = data + payload;
-    let total = data + align(payload);
-    if total > 64 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "ancillary buffer exceeds bound",
-        ));
-    }
-    #[cfg(target_os = "linux")]
-    let cmsg_len = length;
-    #[cfg(any(target_os = "macos", target_os = "freebsd"))]
-    let cmsg_len = u32::try_from(length)
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "ancillary length"))?;
-    let header = libc::cmsghdr {
-        cmsg_len,
-        cmsg_level: level,
-        cmsg_type: kind,
-    };
-    let mut bytes = [0; 64];
-    field(
-        &mut bytes,
-        offset_of!(libc::cmsghdr, cmsg_len),
-        &header.cmsg_len.to_ne_bytes(),
-    );
-    field(
-        &mut bytes,
-        offset_of!(libc::cmsghdr, cmsg_level),
-        &header.cmsg_level.to_ne_bytes(),
-    );
-    field(
-        &mut bytes,
-        offset_of!(libc::cmsghdr, cmsg_type),
-        &header.cmsg_type.to_ne_bytes(),
-    );
-    match source {
-        SocketAddr::V4(source) => {
-            #[cfg(target_os = "freebsd")]
-            field(&mut bytes, data, &source.ip().octets());
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
-            {
-                #[cfg(target_os = "linux")]
-                let native_index = i32::try_from(index)
-                    .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "interface index"))?;
-                // Darwin's SDK specifies that a nonzero ipi_ifindex takes
-                // precedence over ipi_spec_dst. Keep it zero there so an alias's
-                // exact signed source IP, rather than an interface primary, wins.
-                #[cfg(target_os = "macos")]
-                let native_index = 0i32;
-                field(
-                    &mut bytes,
-                    data + offset_of!(libc::in_pktinfo, ipi_ifindex),
-                    &native_index.to_ne_bytes(),
-                );
-                field(
-                    &mut bytes,
-                    data + offset_of!(libc::in_pktinfo, ipi_spec_dst),
-                    &source.ip().octets(),
-                );
-            }
-        }
-        SocketAddr::V6(source) => {
-            field(
-                &mut bytes,
-                data + offset_of!(libc::in6_pktinfo, ipi6_addr),
-                &source.ip().octets(),
-            );
-            field(
-                &mut bytes,
-                data + offset_of!(libc::in6_pktinfo, ipi6_ifindex),
-                &index.to_ne_bytes(),
-            );
-        }
-    }
-    Ok((bytes, total))
-}
-#[cfg(all(
-    unix,
-    not(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))
-))]
-fn control(_source: SocketAddr, _index: u32) -> io::Result<([u8; 64], usize)> {
-    Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "native discovery source selection is not qualified on this target",
-    ))
+    #[cfg(unix)]
+    let original = std::os::fd::AsFd::as_fd(socket);
+    #[cfg(windows)]
+    let original = std::os::windows::io::AsSocket::as_socket(socket);
+
+    pending
+        .source
+        .send(original, pending.target, &pending.packet)
 }
 
 #[cfg(test)]
@@ -312,9 +162,9 @@ mod tests {
         ] {
             let index = interfaces
                 .iter()
-                .find(|row| row.address.ip() == ip && row.index != 0)
-                .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "loopback interface"))?
-                .index;
+                .filter(|row| row.address.ip() == ip)
+                .find_map(|row| NonZeroU32::new(row.index))
+                .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "loopback interface"))?;
             let receiver = tokio::net::UdpSocket::bind(SocketAddr::new(ip, 0)).await?;
             let unspecified = if ip.is_ipv4() {
                 IpAddr::V4(Ipv4Addr::UNSPECIFIED)
@@ -325,8 +175,7 @@ mod tests {
             let source = SocketAddr::new(ip, sender.local_addr()?.port());
             let until = Instant::now() + std::time::Duration::from_secs(2);
             let pending = Pending {
-                source,
-                index,
+                source: DatagramSource::new(source, index)?,
                 target: receiver.local_addr()?,
                 operation: 1,
                 packet: [0x47; 96],

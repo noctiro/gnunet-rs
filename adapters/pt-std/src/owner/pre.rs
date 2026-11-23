@@ -6,6 +6,29 @@ use tokio::time::Instant;
 mod tests;
 
 impl<'a, 'slots> Owner<'a, 'slots> {
+    pub(super) fn retire_pre_source(&mut self) -> Result<(), Failure> {
+        if let Some(client) = &mut self.cadet {
+            if client.epoch().is_some() {
+                if !matches!(client.reconnect()?, cadet::Step::Lost { .. }) {
+                    return Err(Fault::Conflict.into());
+                }
+            } else {
+                // There is no attached source to retire again. A connector
+                // admitted for the lost PRE source must not finish afterward.
+                client.cancel_connect();
+            }
+        }
+        // This CADET owner serves only PRE. Its original physical retirement
+        // discharges both pending output and held receive credit; no old query
+        // or receive_done may enter the next MQ. Core tunnel cleanup waits for
+        // the next coherent clock turn, before any new provider work.
+        self.transmit = None;
+        self.received = None;
+        self.cadet_input_hard = None;
+        self.cadet_lost = true;
+        Ok(())
+    }
+
     pub(super) fn on_cadet(&mut self, p: cadet::Step<'a>, now: u64) -> Result<Event, Failure> {
         self.blocked &= !8;
         match p {
@@ -22,11 +45,12 @@ impl<'a, 'slots> Owner<'a, 'slots> {
                         Err(e) => return Err(e.into()),
                     },
                     TxKind::Destroy(t) => {
-                        if self.received.as_ref().is_some_and(|r| r.tunnel == t) {
-                            self.received = None;
+                        // The service can report this exact channel gone while
+                        // our already-admitted destroy frame is still writing.
+                        if let Some(i) = self.channels.iter().position(|c| c.tunnel == t) {
+                            self.channels.remove(i);
+                            self.core.tunnel_stopped(t, now)?;
                         }
-                        self.core.tunnel_stopped(t, now)?;
-                        self.channels.retain(|c| c.tunnel != t)
                     }
                     TxKind::Open | TxKind::ReceiveDone => {}
                 }
@@ -49,19 +73,8 @@ impl<'a, 'slots> Owner<'a, 'slots> {
                     .iter()
                     .position(|r| r.channel == Some(channel))
                 {
-                    if let Some(received) = self
-                        .received
-                        .as_mut()
-                        .filter(|r| r.input.channel() == channel)
-                    {
-                        // Classify already-owned replies before resetting this
-                        // tunnel's DNS IDs or reselecting unanswered requests.
-                        received.needs_ack = false;
-                        self.channels[i].remote_closed = true;
-                    } else {
-                        let row = self.channels.remove(i);
-                        self.core.tunnel_stopped(row.tunnel, now)?;
-                    }
+                    let row = self.channels.remove(i);
+                    self.core.tunnel_stopped(row.tunnel, now)?;
                 }
                 Ok(Event::Cadet)
             }
@@ -75,8 +88,7 @@ impl<'a, 'slots> Owner<'a, 'slots> {
                     .iter()
                     .find(|row| row.channel == Some(input.channel()))
                     .ok_or(Fault::Stale)?;
-                if row.destroying || row.remote_closed {
-                    // Known local/remote retirement cannot acquire new input.
+                if row.destroying {
                     return Ok(Event::Cadet);
                 }
                 self.received = Some(Received {
@@ -85,7 +97,6 @@ impl<'a, 'slots> Owner<'a, 'slots> {
                     peer: row.peer,
                     cursor: 0,
                     processed: false,
-                    needs_ack: true,
                     bounds: Bound::after(now, self.limits.control_timeout)?,
                 });
                 Ok(Event::Cadet)
@@ -197,20 +208,6 @@ impl<'a, 'slots> Owner<'a, 'slots> {
                 if !r.processed {
                     return Ok(Some(Event::Activity));
                 }
-            }
-            if !r.needs_ack {
-                let received = self.received.take().ok_or(Fault::Conflict)?;
-                if let Some(index) = self
-                    .channels
-                    .iter()
-                    .position(|row| row.tunnel == received.tunnel)
-                {
-                    let row = self.channels.remove(index);
-                    self.core.tunnel_stopped(row.tunnel, now)?;
-                }
-                // Native channel is gone. Release only the local packet; its
-                // old Delivery cannot authorize receive_done or a new ACK.
-                return Ok(Some(Event::Cadet));
             }
             if self.transmit.is_none() {
                 match self

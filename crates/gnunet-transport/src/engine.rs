@@ -1,6 +1,7 @@
 use crate::{
     PeerId, Times,
     communicator::{self, Queue},
+    flow_timing::{KEEPALIVE_MICROS as FLOW_KEEPALIVE, MIN_MICROS as FLOW_MIN},
     fragment::Assembly,
     outbound::{self, Book, Coverage, FragmentSend, Job, Span},
     p2p::{self, Challenge, Flow, Validation},
@@ -334,8 +335,21 @@ struct Held {
 enum NetworkStep {
     LocalFailure(Error),
     Processed(bool),
-    OwnedMessage(Zeroizing<Vec<u8>>, u64),
+    OwnedMessage(Zeroizing<Vec<u8>>, crate::fragment::Expiry),
     Diverted,
+}
+#[derive(Clone, Copy)]
+struct PacketTiming {
+    validity: u64,
+    native_expiry: Option<crate::fragment::Expiry>,
+}
+impl PacketTiming {
+    const fn unbound(validity: u64) -> Self {
+        Self {
+            validity,
+            native_expiry: None,
+        }
+    }
 }
 enum ReceiveMode<'a> {
     Domain(Option<dv_bridge::NativeInput<'a>>),
@@ -361,8 +375,6 @@ struct Attempt {
     bytes: usize,
 }
 const RETRY: u64 = 1_000_000;
-const FLOW_MIN: u64 = 100_000;
-const FLOW_KEEPALIVE: u64 = 150_000_000;
 const UNCONFIRMED: u64 = 300_000_000;
 const LIVENESS: u64 = 900_000_000;
 /// One process-level protocol engine: shared service owners, independent peers.
@@ -566,6 +578,11 @@ impl Engine {
     pub fn address_snapshot(&self) -> Result<crate::addresses::Publication<'_>, Error> {
         self.local_addresses.snapshot()
     }
+    /// Compare address set revisions on this engine only. Use a publication ID
+    /// for operation ownership and completion.
+    pub const fn address_set_revision(&self) -> u64 {
+        self.local_addresses.revision()
+    }
     /// Compare operational address claims with the current local resource set.
     /// This comparison grants no peer/address authentication or dial authority.
     pub fn addresses_match(&self, hello: gnunet_hello::Hello<'_>) -> bool {
@@ -616,6 +633,39 @@ impl Engine {
             .iter()
             .position(|v| &v.id == id)
             .ok_or(Error::Stale)
+    }
+    /// Whether the original CORE registration is bound to the local peer.
+    pub fn is_core_client(&self, id: &ClientId) -> Result<bool, Error> {
+        Ok(self.clients[self.client(id)?].role == Role::Core)
+    }
+    /// Replace the signer identity after the host retires original CORE
+    /// streams and signing operations. Existing communicator queues and
+    /// their original send/receive correlations retain their ownership.
+    pub fn replace_local_peer(&mut self, peer: PeerId) -> Result<(), Error> {
+        if self.dv_source_active() || self.clients.iter().any(|client| client.role == Role::Core) {
+            return Err(Error::Conflict);
+        }
+        self.signing.retire(|_, _| false, self.last_monotonic);
+        self.sender_ranges.retire_authority();
+        self.jobs.retain(|job| {
+            let old_response = job.control && Validation::decode(&job.message).is_ok();
+            if old_response {
+                self.buffered -= job.charge();
+                self.remote_acks.remove_job(job.id);
+                self.dv_bridge.job_retired(job.id);
+            }
+            !old_response
+        });
+        while let Some(route) = self
+            .routes
+            .iter()
+            .find(|route| route.description.peer == peer)
+        {
+            let owner = route.owner.clone();
+            self.route_down(&owner, peer, route.description.id)?;
+        }
+        self.identity = peer;
+        Ok(())
     }
     /// Preflight an explicitly shared-coordinate embedding profile. This does
     /// not infer an absolute clock from a genuinely independent monotonic one.
@@ -1063,9 +1113,9 @@ impl Engine {
     ) -> Result<ReceiveOutcome, Error> {
         self.receive_inner(id, input, times, signer, entropy, ReceiveMode::Domain(None))
     }
-    /// Process one original raw DV communicator input without keeping the MQ
-    /// head parked while Actor capacity is unavailable. The existing bounded
-    /// inbox/held owners retain its original FC token and first-byte targets.
+    /// Process one original communicator input which can depend on this DV
+    /// source. The same bounded framing, reassembly and inbox retain the
+    /// original flow-control token and first-byte targets.
     pub fn receive_dv_at(
         &mut self,
         input: dv_bridge::NativeInput<'_>,
@@ -1107,10 +1157,7 @@ impl Engine {
         else {
             return Err(Error::Unsupported);
         };
-        if !matches!(
-            Frame::decode(message)?.header().message_type().value(),
-            crate::dv::LEARN_TYPE | crate::dv::BOX_TYPE
-        ) {
+        if p2p::DvFrame::classify(message).is_none() {
             return Err(Error::Unsupported);
         }
         // A duplicate token cannot acquire a second debt or acknowledge away
@@ -1396,23 +1443,30 @@ impl Engine {
                         ..
                     } => {
                         let mut reassembled = None;
-                        let mut until = now
-                            .checked_add(crate::fragment::EXPIRY)
-                            .ok_or(Error::Overflow)?;
-                        if let Some(original) = &native {
-                            until = until.min(original.until.0);
+                        let timing = PacketTiming {
+                            validity,
+                            native_expiry: native.map(|original| crate::fragment::Expiry {
+                                mono: original.until.0,
+                                absolute: Some(original.absolute_until),
+                            }),
+                        };
+                        let mut expiry = crate::fragment::Expiry::monotonic(
+                            now.checked_add(crate::fragment::EXPIRY)
+                                .ok_or(Error::Overflow)?,
+                        );
+                        if let Some(original) = timing.native_expiry {
+                            expiry = expiry.tighten(original);
                         }
                         let mut diverted = false;
-                        let result = match self.network(id, peer, message, validity, times, signer)
-                        {
+                        let result = match self.network(id, peer, message, timing, times, signer) {
                             Ok(NetworkStep::LocalFailure(error)) => return Err(error),
                             Ok(NetworkStep::Processed(hold)) => Ok(hold),
                             Ok(NetworkStep::Diverted) => {
                                 diverted = true;
                                 Ok(false)
                             }
-                            Ok(NetworkStep::OwnedMessage(body, original_until)) => {
-                                until = until.min(original_until);
+                            Ok(NetworkStep::OwnedMessage(body, original_expiry)) => {
+                                expiry = expiry.tighten(original_expiry);
                                 reassembled = Some(body);
                                 // The assembly has left the table before an
                                 // inner handler can change link state. Its
@@ -1421,7 +1475,7 @@ impl Engine {
                                     id,
                                     peer,
                                     reassembled.as_deref().ok_or(Error::Stale)?,
-                                    validity,
+                                    timing,
                                     times,
                                     signer,
                                 ) {
@@ -1453,10 +1507,8 @@ impl Engine {
                                     let held = Held {
                                         dv: Some(dv_bridge::HeldSource {
                                             source,
-                                            until,
-                                            absolute_until: native
-                                                .as_ref()
-                                                .map(|original| original.absolute_until),
+                                            until: expiry.mono,
+                                            absolute_until: expiry.absolute,
                                         }),
                                         owner: id.clone(),
                                         peer,
@@ -1696,7 +1748,7 @@ impl Engine {
         owner: &ClientId,
         peer: PeerId,
         input: &[u8],
-        validity: u64,
+        timing: PacketTiming,
         times: Times,
         signer: &mut impl Signer,
     ) -> Result<NetworkStep, Error> {
@@ -1707,14 +1759,14 @@ impl Engine {
         {
             return Err(Error::Authentication);
         }
-        self.network_peer(Some(owner), peer, input, validity, times, signer)
+        self.network_peer(Some(owner), peer, input, timing, times, signer)
     }
     fn network_peer(
         &mut self,
         owner: Option<&ClientId>,
         peer: PeerId,
         input: &[u8],
-        validity: u64,
+        timing: PacketTiming,
         times: Times,
         signer: &mut impl Signer,
     ) -> Result<NetworkStep, Error> {
@@ -1729,7 +1781,7 @@ impl Engine {
                 if !self.control_route_fits(peer, 120) || !self.control_room(120) {
                     return Ok(NetworkStep::Processed(false));
                 }
-                let lifetime = validity.min(p2p::MAX_VALIDITY);
+                let lifetime = timing.validity.min(p2p::MAX_VALIDITY);
                 if signer.validation_mode() == crate::signing::ValidationMode::Deferred {
                     let route = self
                         .routes
@@ -1887,7 +1939,7 @@ impl Engine {
                     self.backchannel_drop(Error::NotFound);
                 }
             }
-            1214 => return self.fragment(p, peer, input, now),
+            1214 => return self.fragment(p, peer, input, times, timing.native_expiry),
             1216 => {
                 let boxed = p2p::Reliable::decode(input)?;
                 let inner = Frame::decode(boxed.message)?
@@ -1909,8 +1961,10 @@ impl Engine {
                 });
                 return Ok(NetworkStep::OwnedMessage(
                     body,
-                    now.checked_add(crate::fragment::EXPIRY)
-                        .ok_or(Error::Overflow)?,
+                    crate::fragment::Expiry::monotonic(
+                        now.checked_add(crate::fragment::EXPIRY)
+                            .ok_or(Error::Overflow)?,
+                    ),
                 ));
             }
             1217 => {
@@ -2056,8 +2110,10 @@ impl Engine {
         p: usize,
         peer: PeerId,
         input: &[u8],
-        now: u64,
+        times: Times,
+        native_expiry: Option<crate::fragment::Expiry>,
     ) -> Result<NetworkStep, Error> {
+        let now = times.monotonic().0;
         if !self.peers[p].connected {
             return Err(Error::Authentication);
         }
@@ -2093,16 +2149,35 @@ impl Engine {
             self.assemblies.len() - 1
         };
         let complete = self.assemblies[index].insert(fragment)?;
+        if let Some(original) = native_expiry {
+            let assembly = &mut self.assemblies[index];
+            assembly.native_expiry = Some(
+                assembly
+                    .native_expiry
+                    .map_or(original, |old| old.tighten(original)),
+            );
+        }
         let body = if complete {
             let assembly = self.assemblies.remove(index);
-            let until = assembly.expires;
+            let mut expiry = crate::fragment::Expiry::monotonic(assembly.expires);
+            let native_expiry = assembly.native_expiry;
             self.buffered -= assembly.charge();
             let body = assembly.into_body();
             let kind = Frame::decode(&body)?.header().message_type().value();
             if matches!(kind, 1214 | 1216) {
                 return Err(Error::Unsupported);
             }
-            Some((body, until))
+            // Preserve the protocol reassembly TTL for ordinary payloads.
+            // DV admission uses the earliest original native fragment bounds.
+            if matches!(kind, crate::dv::LEARN_TYPE | crate::dv::BOX_TYPE)
+                && let Some(native) = native_expiry
+            {
+                expiry = expiry.tighten(native);
+                if expiry.expired(times) {
+                    return Err(Error::Deadline);
+                }
+            }
+            Some((body, expiry))
         } else {
             None
         };
@@ -2118,7 +2193,7 @@ impl Engine {
             received: now,
         });
         Ok(match body {
-            Some((body, until)) => NetworkStep::OwnedMessage(body, until),
+            Some((body, expiry)) => NetworkStep::OwnedMessage(body, expiry),
             None => NetworkStep::Processed(false),
         })
     }
@@ -3412,6 +3487,49 @@ impl Engine {
             pending_fragment_acks: self.peers.iter().map(|p| p.fragment_acks.len()).sum(),
         }
     }
+}
+
+#[cfg(test)]
+#[test]
+fn replacing_peer_retires_signatures_and_unused_monotime() -> Result<(), Error> {
+    let mut engine = Engine::new(PeerId([1; 32]), Limits::default())?;
+    let remote = PeerId([2; 32]);
+    let challenge = Challenge {
+        nonce: [4; 32],
+        origin: 5,
+    };
+    let validation = Validation {
+        signature: [6; 64],
+        nonce: challenge.nonce,
+        origin: challenge.origin,
+        validity: 100,
+    };
+    engine.enqueue(None, remote, &challenge.encode(), None, true)?;
+    engine.enqueue(None, remote, &validation.encode(), None, true)?;
+    let times = Times::shared_coordinate(1);
+    if engine.stamp(times)?.is_some() {
+        return Err(Error::Conflict);
+    }
+    let demand = engine
+        .monotime_demand()
+        .ok_or(Error::NotReady)?
+        .id()
+        .clone();
+    let span = crate::monotime::Span::checked(2, 100)?;
+    engine.supply_monotime(&demand, span, times)?;
+    engine.replace_local_peer(PeerId([3; 32]))?;
+    if engine.jobs.len() != 1
+        || engine.buffered != challenge.encode().len()
+        || Challenge::decode(&engine.jobs[0].message)? != challenge
+        || engine.monotime_state().greatest_upper != span.last()
+        || engine.stamp(times)?.is_some()
+        || engine
+            .monotime_demand()
+            .is_none_or(|current| current.id() == &demand)
+    {
+        return Err(Error::Conflict);
+    }
+    Ok(())
 }
 
 #[cfg(test)]

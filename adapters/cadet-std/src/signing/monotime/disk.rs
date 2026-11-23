@@ -206,8 +206,8 @@ impl Store {
             .transpose()
             .map_err(|error| fail(Stage::Read, Outcome::NotCommitted, error))
     }
-    /// Last completed directory naming observation. Windows reports Unavailable;
-    /// an active uncertain replacement has no current observation. No I/O occurs.
+    /// Last completed native naming-barrier observation. An active uncertain
+    /// replacement has no current observation. No I/O occurs.
     #[must_use]
     pub fn directory_sync(&self) -> Option<DirectorySync> {
         if self.unknown.is_some() {

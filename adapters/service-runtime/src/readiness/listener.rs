@@ -21,6 +21,8 @@ pub struct RegisteredListener {
     // and performs no TCP protocol operation, address interpretation or I/O.
     #[cfg(windows)]
     inner: tokio::net::TcpStream,
+    #[cfg(windows)]
+    protection: Option<gnunet_native::local_path::EndpointProtection>,
 }
 impl RegisteredListener {
     /// Register this owned nonblocking stream socket on the caller's runtime.
@@ -56,9 +58,47 @@ impl RegisteredListener {
         #[cfg(windows)]
         {
             let original: std::net::TcpStream = socket.into();
-            tokio::net::TcpStream::from_std(original).map(|inner| Self { inner })
+            tokio::net::TcpStream::from_std(original).map(|inner| Self {
+                inner,
+                protection: None,
+            })
         }
     }
+
+    /// Register this prepared local socket for nonconsuming managed readiness.
+    /// Retain pre-listen ACL evidence and return the creator's path owner.
+    #[cfg(windows)]
+    pub fn from_prepared_local(
+        prepared: crate::local_listener::PreparedLocalListener,
+    ) -> io::Result<(Self, crate::CreatedPath, Vec<io::Error>)> {
+        let (socket, path, warnings, protection) = prepared.into_protected_parts();
+        let mut listener = Self::new(socket)?;
+        listener.protection = Some(protection);
+        Ok((listener, path, warnings))
+    }
+
+    /// Register an original activated local listener without adopting its path.
+    #[cfg(windows)]
+    pub fn from_activated_local(
+        socket: crate::activation::ActivatedLocalSocket,
+    ) -> io::Result<Self> {
+        let (socket, protection) = socket.into_parts();
+        let mut listener = Self::new(socket)?;
+        listener.protection = protection;
+        Ok(listener)
+    }
+
+    /// Preserve this original registered listener's pre-listen ACL evidence
+    /// when preparing a managed child launch.
+    #[cfg(windows)]
+    pub fn launch_source(&self) -> gnunet_native::socket_activation::Source<'_> {
+        let source = gnunet_native::socket_activation::Source::new(self.as_socket());
+        match &self.protection {
+            Some(protection) => source.with_protection(protection),
+            None => source,
+        }
+    }
+
     /// Confirm current readability independently of reactor cached hints.
     /// No current event is `WouldBlock`; exceptional flags remain explicit.
     pub fn level(&self) -> io::Result<Readiness> {

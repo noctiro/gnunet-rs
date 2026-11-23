@@ -3,7 +3,7 @@
 //! Owner remains the sole poller/drainer of its actual shared reservation worker.
 use crate::{
     Failure, Failures,
-    epoch::{RangeOrigin, ReservationOutcome},
+    generation::retirement::{RangeOrigin, ReservationOutcome},
     generation::{self, CommittedRange, Purpose, Request, Reservations},
     owner::{Event as OwnerEvent, Owner},
     sender::DvScope,

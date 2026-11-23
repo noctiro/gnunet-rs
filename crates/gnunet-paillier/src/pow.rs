@@ -21,7 +21,7 @@ impl<const N: usize> Pow<N> {
     ) -> Result<Self, Error> {
         if bits == 0
             || bits > Uint::<N>::BITS
-            || exponent.bits() > bits
+            || exponent.bit_width() > bits
             || *base >= *params.modulus().as_ref()
         {
             return Err(Error::Range);

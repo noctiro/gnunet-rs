@@ -7,6 +7,7 @@ license.workspace = true
 [features]
 default = []
 alloc = ["dep:miniz_oxide", "miniz_oxide/with-alloc"]
+fixed-zlib = ["dep:miniz_oxide"]
 [dependencies]
 gnunet-types.workspace = true
 miniz_oxide = { workspace = true, optional = true }

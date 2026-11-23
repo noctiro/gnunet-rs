@@ -1,16 +1,47 @@
 //! Bounded flat original-message reassembly, independent of communicator tokens.
-use crate::{PeerId, p2p::Fragment};
+use crate::{PeerId, Times, p2p::Fragment};
 use alloc::vec::Vec;
 use gnunet_types::Error;
+use gnunet_wire::official::AbsoluteTime;
 use zeroize::Zeroizing;
 
-pub(crate) const EXPIRY: u64 = 4 * 60 * 1_000_000;
+pub(crate) const EXPIRY: u64 = crate::direct_fragment::REASSEMBLY_LIFETIME.0;
+
+#[derive(Clone, Copy)]
+pub(crate) struct Expiry {
+    pub(crate) mono: u64,
+    pub(crate) absolute: Option<AbsoluteTime>,
+}
+impl Expiry {
+    pub(crate) const fn monotonic(mono: u64) -> Self {
+        Self {
+            mono,
+            absolute: None,
+        }
+    }
+
+    pub(crate) fn tighten(self, other: Self) -> Self {
+        Self {
+            mono: self.mono.min(other.mono),
+            absolute: match (self.absolute, other.absolute) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (a, b) => a.or(b),
+            },
+        }
+    }
+
+    pub(crate) fn expired(self, times: Times) -> bool {
+        (self.mono != u64::MAX && times.monotonic().0 >= self.mono)
+            || self.absolute.is_some_and(|at| times.absolute() >= at)
+    }
+}
 
 pub(crate) struct Assembly {
     pub(crate) source: Option<crate::dv_bridge::Source>,
     pub(crate) peer: PeerId,
     pub(crate) id: [u8; 8],
     pub(crate) expires: u64,
+    pub(crate) native_expiry: Option<Expiry>,
     body: Zeroizing<Vec<u8>>,
     seen: Vec<u8>,
     missing: usize,
@@ -34,6 +65,7 @@ impl Assembly {
             peer,
             id,
             expires: now.saturating_add(EXPIRY),
+            native_expiry: None,
             body: Zeroizing::new(body),
             seen,
             missing: length,

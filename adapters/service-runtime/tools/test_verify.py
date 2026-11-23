@@ -61,7 +61,7 @@ class RuntimeVerifierTests(unittest.TestCase):
                 return {'packages': [{
                     'source': None, 'manifest_path': str(root / 'package/Cargo.toml'),
                     'name': 'example', 'version': '1.0.0', 'edition': '2024',
-                    'license': 'MPL-2.0', 'rust_version': '1.99.1',
+                    'license': 'MPL-2.0', 'rust_version': '1.100.0',
                     'features': {'default': [], 'service': ['dep:socket2']},
                     'dependencies': [{'name': 'socket2', 'path': str(root / 'socket2'),
                                       'req': '*', 'kind': 'dev', 'rename': None,

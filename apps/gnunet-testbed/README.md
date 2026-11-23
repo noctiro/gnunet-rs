@@ -1,4 +1,4 @@
-# gnunet-testbed configuration utility
+# GNUnet testing tools
 
 `gnunet-testbed` creates unique GNUnet configurations from a loaded template on
 Linux, macOS, FreeBSD and Windows. PROGRAM supplies configuration, filename
@@ -46,3 +46,24 @@ failure returns a nonzero exit status.
 
 The executable generates files and releases its logical reservations; callers
 start and manage peers through ARM or the service runtime.
+
+## Linux netjail launcher
+
+```sh
+gnunet-testing-netjail-launcher topology.conf
+gnunet-testing-netjail-launcher --helper /absolute/path/to/helper -s "$topology"
+```
+
+The launcher reads a GNUnet netjail topology from a file or from `-s`. By
+default it creates a user namespace with mappings for the current account and
+primary group. Use `--current-user-namespace` when a fixture supervisor already
+owns an appropriate user namespace. Linux must permit namespace creation and
+provide bridge, veth and nftables support. All virtual links and NAT rules
+are scoped to networks created for the fixture.
+
+The installed `gnunet-cmds-helper` supplies the `ping` reference fixture. It
+sends one native IPv4 ICMP echo from `127.0.0.1` to `127.0.0.2` in the peer's
+network namespace and verifies the reply. The namespace must permit ICMP echo
+datagram sockets or grant the peer `CAP_NET_RAW`. For a custom program use
+`--helper` with the absolute path to an executable implementing the
+[TESTING command helper protocol](../../adapters/testbed-std/README.md#testing-command-helpers).

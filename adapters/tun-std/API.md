@@ -59,7 +59,10 @@ startup recovery. Managed transient devices also retain checkpoint ownership
 until kernel removal is observed. See [checkpoint and failure contracts](RECOVERY.md).
 
 `OwnedTun::open_freebsd_existing(name, limits)` opens an existing `tunN` and enables
-`TUN_IFHEAD`. Observed name/index replacement is refused. This API owns packet
+`TUN_IFHEAD`. It inventories the device directory before looking up the selected
+unit, since devfs can clone on lookup of an absent name. It verifies the listed
+character-node identity and native name/index against the opened descriptor before
+changing framing. This API owns packet
 access only; the existing interface's administrative lifetime stays with its
 caller. Persistent interfaces can survive close even when native link/address
 state is cleared.

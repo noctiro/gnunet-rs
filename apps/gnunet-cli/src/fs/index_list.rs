@@ -18,7 +18,7 @@ use std::{
 };
 use tokio::time::Instant;
 
-const DEFAULT_MAX_RECORDS: u64 = 65536;
+pub(super) const DEFAULT_MAX_RECORDS: u64 = 65536;
 const MAX_RECORDS: u64 = 1000000;
 fn maximum(raw: Option<&impl AsRef<OsStr>>) -> Result<u64, Box<dyn Error>> {
     let Some(raw) = raw else {
@@ -133,7 +133,12 @@ impl Error for Failure {
 // The serializer borrows only this one original Received frame. Byte slices are
 // serialized directly, without per-byte Value objects or a retained whole list.
 // Conventional Write/flush are synchronous OS boundaries, not preemptible waits.
-fn row(out: &mut impl Write, ordinal: u64, file_id: &[u8; 64], filename: &[u8]) -> io::Result<()> {
+fn json_row(
+    out: &mut impl Write,
+    ordinal: u64,
+    file_id: &[u8; 64],
+    filename: &[u8],
+) -> io::Result<()> {
     write!(
         out,
         "{{\"event\":\"fs_indexed_file\",\"observation\":{ordinal},\"file_id_bytes\":"
@@ -146,6 +151,37 @@ fn row(out: &mut impl Write, ordinal: u64, file_id: &[u8; 64], filename: &[u8]) 
     serde_json::to_writer(&mut *out, filename).map_err(io::Error::other)?;
     out.write_all(b"}\n")?;
     out.flush()
+}
+#[derive(Clone, Copy)]
+pub(super) enum Format {
+    Json,
+    Names { include_hash: bool },
+}
+
+impl Format {
+    fn row(
+        self,
+        out: &mut impl Write,
+        ordinal: u64,
+        file_id: &[u8; 64],
+        name: &[u8],
+    ) -> io::Result<()> {
+        match self {
+            Self::Json => json_row(out, ordinal, file_id, name),
+            Self::Names { include_hash } => {
+                if include_hash {
+                    let mut short = [0; 8];
+                    gnunet::gnsrecord::encode_base32(&file_id[..5], &mut short)
+                        .map_err(io::Error::other)?;
+                    out.write_all(&short)?;
+                    out.write_all(b": ")?;
+                }
+                out.write_all(name)?;
+                out.write_all(b"\n")?;
+                out.flush()
+            }
+        }
+    }
 }
 #[expect(
     clippy::large_enum_variant,
@@ -163,113 +199,253 @@ pub(super) fn run(
 ) -> Result<(), Box<dyn Error>> {
     let interval = duration(args.get(1))?;
     let maximum = maximum(args.get(2))?;
+    let source = ipc::EndpointSource::unix(Path::new(args[0].as_ref()).to_path_buf());
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?
+        .block_on(list(source, interval, maximum, Format::Json, out))
+}
+
+pub(super) async fn list(
+    source: ipc::EndpointSource,
+    interval: u64,
+    maximum: u64,
+    format: Format,
+    out: &mut super::Output<'_, impl Write>,
+) -> Result<(), Box<dyn Error>> {
     // Immutable native bound predates the first canonical sample and is never
     // renewed by a row, retry, blocked output or partial frame.
     let hard = Instant::now()
         .checked_add(Duration::from_micros(interval))
         .ok_or("list deadline is too large")?;
     out.deadline(hard);
-    let source = ipc::EndpointSource::unix(Path::new(args[0].as_ref()).to_path_buf());
-    out.interval(interval)?;
     let deadline = target(&source, interval)?;
-    tokio::runtime::Builder::new_current_thread().enable_all().build()?.block_on(async{
-        let mut signals=super::stop::StopEvents::new()?;
-        let mut alarm=Box::pin(tokio::time::sleep_until(hard));
-        if Instant::now()>=hard{return Err("list deadline elapsed during setup".into());}
-        let mut identity=ipc::Instance::new();
-        let mut client=ipc::Client::<0>::new(&mut identity,ipc::Request::IndexList,source,Default::default(),Default::default(),deadline)?;
-        let mut report=Report{observed:0,emitted:0,index_end:false,attached:false,initial_retries:0,initial_retry:None,
-            request_written_bytes:0,request_wholewritten:false,row_in_progress:false,maximum,retired:false,owner_dropped:false,native_failure:None,reason:"unsettled"};
-        let mut operation=None;let mut output=None;
-        loop{
-            let wake={
-                // This exact wait is retained across native wakeups. Canceling
-                // the wait for Stop/hard leaves state in the same actual client.
-                let mut pending=std::pin::pin!(client.drive(Some(hard)));
-                poll_fn(|cx|{
-                    if Instant::now()>=hard || alarm.as_mut().poll(cx).is_ready(){return Poll::Ready(Wake::NativeDeadline);}
-                    if signals.poll(cx) { return Poll::Ready(match signals.take_failure() {
-                        Some(error) => Wake::Signal(error), None => Wake::Stop,
-                    }); }
-                    pending.as_mut().poll(cx).map(Wake::Step)
-                }).await
-            };
-            let step=match wake{
-                Wake::NativeDeadline=>{report.reason="native_deadline";operation=Some(Cause::NativeDeadline);break;},
-                Wake::Stop=>{report.reason="caller_stop";operation=Some(Cause::Stop);break;},
-                Wake::Signal(e)=>{report.reason="signal_failure";operation=Some(Cause::Signal(e));break;},
-                Wake::Step(Err(e))=>{report.reason="source_or_protocol_failure";operation=Some(Cause::Native(e));break;},
-                Wake::Step(Ok(step))=>step,
-            };
-            match step{
-                ipc::Step::Connected=>{
-                    if report.attached{report.reason="source_changed";operation=Some(Cause::SecondAttachment);break;}
-                    report.attached=true;
+    let mut signals = super::stop::StopEvents::new()?;
+    let mut alarm = Box::pin(tokio::time::sleep_until(hard));
+    if Instant::now() >= hard {
+        return Err("list deadline elapsed during setup".into());
+    }
+    let mut identity = ipc::Instance::new();
+    let mut client = ipc::Client::<0>::new(
+        &mut identity,
+        ipc::Request::IndexList,
+        source,
+        Default::default(),
+        Default::default(),
+        deadline,
+    )?;
+    let mut report = Report {
+        observed: 0,
+        emitted: 0,
+        index_end: false,
+        attached: false,
+        initial_retries: 0,
+        initial_retry: None,
+        request_written_bytes: 0,
+        request_wholewritten: false,
+        row_in_progress: false,
+        maximum,
+        retired: false,
+        owner_dropped: false,
+        native_failure: None,
+        reason: "unsettled",
+    };
+    let mut operation = None;
+    let mut output = None;
+    loop {
+        let wake = {
+            // This exact wait is retained across native wakeups. Canceling
+            // the wait for Stop/hard leaves state in the same actual client.
+            let mut pending = std::pin::pin!(client.drive(Some(hard)));
+            poll_fn(|cx| {
+                if Instant::now() >= hard || alarm.as_mut().poll(cx).is_ready() {
+                    return Poll::Ready(Wake::NativeDeadline);
                 }
-                ipc::Step::Written{bytes,complete}=>{report.request_written_bytes+=bytes;report.request_wholewritten|=complete;}
-                ipc::Step::Event(response)=>match response.event(){
-                    Event::IndexEntry{file_id,filename}=>{
-                        // Observe first, then classify/output. Reading IndexEnd
-                        // remains allowed after exactly N entries: only entry
-                        // N+1 triggers this bound and is never silently discarded.
-                        report.observed+=1;
-                        if report.observed>maximum{report.reason="record_limit";operation=Some(Cause::Capacity);break;}
-                        if filename.len()>65535{report.reason="filename_bound";operation=Some(Cause::FilenameBound);break;}
-                        report.row_in_progress=true;
-                        match row(out,report.observed,&file_id,filename){
-                            Ok(())=>{report.row_in_progress=false;report.emitted+=1;}
-                            Err(e)=>{report.reason="output_failure";output=Some(e);break;}
+                if signals.poll(cx) {
+                    return Poll::Ready(match signals.take_failure() {
+                        Some(error) => Wake::Signal(error),
+                        None => Wake::Stop,
+                    });
+                }
+                pending.as_mut().poll(cx).map(Wake::Step)
+            })
+            .await
+        };
+        let step = match wake {
+            Wake::NativeDeadline => {
+                report.reason = "native_deadline";
+                operation = Some(Cause::NativeDeadline);
+                break;
+            }
+            Wake::Stop => {
+                report.reason = "caller_stop";
+                operation = Some(Cause::Stop);
+                break;
+            }
+            Wake::Signal(e) => {
+                report.reason = "signal_failure";
+                operation = Some(Cause::Signal(e));
+                break;
+            }
+            Wake::Step(Err(e)) => {
+                report.reason = "source_or_protocol_failure";
+                operation = Some(Cause::Native(e));
+                break;
+            }
+            Wake::Step(Ok(step)) => step,
+        };
+        match step {
+            ipc::Step::Connected => {
+                if report.attached {
+                    report.reason = "source_changed";
+                    operation = Some(Cause::SecondAttachment);
+                    break;
+                }
+                report.attached = true;
+            }
+            ipc::Step::Written { bytes, complete } => {
+                report.request_written_bytes += bytes;
+                report.request_wholewritten |= complete;
+            }
+            ipc::Step::Event(response) => match response.event() {
+                Event::IndexEntry { file_id, filename } => {
+                    // Observe first, then classify/output. Reading IndexEnd
+                    // remains allowed after exactly N entries: only entry
+                    // N+1 triggers this bound and is never silently discarded.
+                    report.observed += 1;
+                    if report.observed > maximum {
+                        report.reason = "record_limit";
+                        operation = Some(Cause::Capacity);
+                        break;
+                    }
+                    if filename.len() > 65535 {
+                        report.reason = "filename_bound";
+                        operation = Some(Cause::FilenameBound);
+                        break;
+                    }
+                    report.row_in_progress = true;
+                    match format.row(out, report.observed, &file_id, filename) {
+                        Ok(()) => {
+                            report.row_in_progress = false;
+                            report.emitted += 1;
+                        }
+                        Err(e) => {
+                            report.reason = "output_failure";
+                            output = Some(e);
+                            break;
                         }
                     }
-                    Event::IndexEnd=>{report.index_end=true;report.reason="index_end";break;}
-                    _=>{report.reason="unexpected_event";operation=Some(Cause::UnexpectedEvent);break;}
-                },
-                ipc::Step::Retry{cause,..}=>{
-                    if report.attached || client.failure().is_some(){report.reason="source_lost";operation=Some(Cause::Native(cause));break;}
-                    report.initial_retries=report.initial_retries.saturating_add(1);
-                    if report.initial_retry.is_none(){report.initial_retry=Some(cause);}
                 }
-                ipc::Step::Unavailable(e)=>{report.reason="source_unavailable";operation=Some(Cause::Native(e));break;}
-                ipc::Step::Finished=>{report.reason="missing_index_end";operation=Some(Cause::Finished);break;}
-                _=>{},
+                Event::IndexEnd => {
+                    report.index_end = true;
+                    report.reason = "index_end";
+                    break;
+                }
+                _ => {
+                    report.reason = "unexpected_event";
+                    operation = Some(Cause::UnexpectedEvent);
+                    break;
+                }
+            },
+            ipc::Step::Retry { cause, .. } => {
+                if report.attached || client.failure().is_some() {
+                    report.reason = "source_lost";
+                    operation = Some(Cause::Native(cause));
+                    break;
+                }
+                report.initial_retries = report.initial_retries.saturating_add(1);
+                if report.initial_retry.is_none() {
+                    report.initial_retry = Some(cause);
+                }
             }
-            tokio::task::yield_now().await;
+            ipc::Step::Unavailable(e) => {
+                report.reason = "source_unavailable";
+                operation = Some(Cause::Native(e));
+                break;
+            }
+            ipc::Step::Finished => {
+                report.reason = "missing_index_end";
+                operation = Some(Cause::Finished);
+                break;
+            }
+            _ => {}
         }
-        // A source error/partial list never starts another Client or splices
-        // rows from a replacement epoch. Retire the same actual owner without
-        // sampling a failed/expired clock; retain its independent original error.
-        let cause=match &operation {
-            Some(Cause::Native(ipc::Error::Protocol(cause)))=>*cause,
-            Some(Cause::NativeDeadline)=>Fault::Deadline,
-            Some(Cause::Stop)=>Fault::Cancelled,
-            Some(Cause::Capacity)=>Fault::Capacity,
-            Some(Cause::UnexpectedEvent | Cause::FilenameBound)=>Fault::Malformed,
-            Some(Cause::SecondAttachment)=>Fault::Stale,
-            Some(Cause::Finished)=>Fault::Closed,
-            Some(Cause::Native(_) | Cause::Signal(_))=>Fault::Io,
-            None if output.is_some()=>Fault::Io,
-            None=>Fault::Cancelled,
-        };
-        let close=client.abort_with_cause(cause).err();
-        report.retired=close.is_none();
-        report.native_failure=client.failure();
-        drop(client);report.owner_dropped=true;
-        let summary=json!({"event":"fs_index_list_stopped","reason":report.reason,
-            "index_end_observed":report.index_end,"complete":report.index_end,"partial":!report.index_end,
-            "observed_records":report.observed,"emitted_records":report.emitted,"max_records":report.maximum,
-            "row_output_in_progress":report.row_in_progress,"output_rows_complete":report.emitted==report.observed && !report.row_in_progress,
-            "source_attached":report.attached,"initial_retries":report.initial_retries,"initial_retry":report.initial_retry.as_ref().map(ToString::to_string),
-            "request_written_bytes":report.request_written_bytes,"request_wholewritten":report.request_wholewritten,
-            "original_retirement_succeeded":report.retired,"original_owner_dropped":report.owner_dropped,
-            "native_failure":report.native_failure.map(|failure|format!("{failure:?}")),
-            "operation_error":operation.as_ref().map(ToString::to_string),"close_error":close.as_ref().map(ToString::to_string),
-            "row_output_error":output.as_ref().map(ToString::to_string),
-            "scope":"one original query/source; filename/hash observations are not authority to open a path"});
-        out.cleanup()?;
-        let terminal_output=(||->io::Result<()>{serde_json::to_writer(&mut *out,&summary).map_err(io::Error::other)?;writeln!(out)?;out.flush()})().err();
-        if !report.index_end || operation.is_some() || close.is_some() || output.is_some() || terminal_output.is_some(){
-            return Err(Box::new(Failure{report,operation,close,output,terminal_output}) as Box<dyn Error>);
+        tokio::task::yield_now().await;
+    }
+    // A source error/partial list never starts another Client or splices
+    // rows from a replacement epoch. Retire the same actual owner without
+    // sampling a failed/expired clock; retain its independent original error.
+    let cause = match &operation {
+        Some(Cause::Native(ipc::Error::Protocol(cause))) => *cause,
+        Some(Cause::NativeDeadline) => Fault::Deadline,
+        Some(Cause::Stop) => Fault::Cancelled,
+        Some(Cause::Capacity) => Fault::Capacity,
+        Some(Cause::UnexpectedEvent | Cause::FilenameBound) => Fault::Malformed,
+        Some(Cause::SecondAttachment) => Fault::Stale,
+        Some(Cause::Finished) => Fault::Closed,
+        Some(Cause::Native(_) | Cause::Signal(_)) => Fault::Io,
+        None if output.is_some() => Fault::Io,
+        None => Fault::Cancelled,
+    };
+    let close = client.abort_with_cause(cause).err();
+    report.retired = close.is_none();
+    report.native_failure = client.failure();
+    drop(client);
+    report.owner_dropped = true;
+    let summary = json!({"event":"fs_index_list_stopped","reason":report.reason,
+        "index_end_observed":report.index_end,"complete":report.index_end,"partial":!report.index_end,
+        "observed_records":report.observed,"emitted_records":report.emitted,"max_records":report.maximum,
+        "row_output_in_progress":report.row_in_progress,"output_rows_complete":report.emitted==report.observed && !report.row_in_progress,
+        "source_attached":report.attached,"initial_retries":report.initial_retries,"initial_retry":report.initial_retry.as_ref().map(ToString::to_string),
+        "request_written_bytes":report.request_written_bytes,"request_wholewritten":report.request_wholewritten,
+        "original_retirement_succeeded":report.retired,"original_owner_dropped":report.owner_dropped,
+        "native_failure":report.native_failure.map(|failure|format!("{failure:?}")),
+        "operation_error":operation.as_ref().map(ToString::to_string),"close_error":close.as_ref().map(ToString::to_string),
+        "row_output_error":output.as_ref().map(ToString::to_string),
+        "scope":"one original query/source; filename/hash observations are not authority to open a path"});
+    out.cleanup()?;
+    let terminal_output = if matches!(format, Format::Json) {
+        (|| -> io::Result<()> {
+            serde_json::to_writer(&mut *out, &summary).map_err(io::Error::other)?;
+            writeln!(out)?;
+            out.flush()
+        })()
+        .err()
+    } else {
+        None
+    };
+    if !report.index_end
+        || operation.is_some()
+        || close.is_some()
+        || output.is_some()
+        || terminal_output.is_some()
+    {
+        return Err(Box::new(Failure {
+            report,
+            operation,
+            close,
+            output,
+            terminal_output,
+        }) as Box<dyn Error>);
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn installed_list_uses_short_hash_and_preserves_opaque_filename_bytes() -> io::Result<()> {
+        let mut output = Vec::new();
+        let mut hash = [0; 64];
+        hash[0] = 8;
+        Format::Names { include_hash: true }.row(&mut output, 1, &hash, b"file-\xff")?;
+        if output != b"10000000: file-\xff\n" {
+            return Err(io::Error::other(
+                "installed indexed-file output changed its hash or filename",
+            ));
         }
         Ok(())
-    })
+    }
 }

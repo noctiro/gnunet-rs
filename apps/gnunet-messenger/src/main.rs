@@ -33,7 +33,7 @@ fn main() -> ExitCode {
 fn run(startup: gnunet_service_startup::ClientStartup) -> Result<(), Failure> {
     use gnunet_program_host::{
         logging::Logger,
-        program::{self, Defaults, Invocation, NlsDisabled, Preparation},
+        program::{self, Defaults, Invocation, Preparation},
         reporting::Reporter,
         shared_clock::SharedClock,
     };
@@ -49,7 +49,7 @@ fn run(startup: gnunet_service_startup::ClientStartup) -> Result<(), Failure> {
         cfg!(debug_assertions),
     )?;
     let selected = options::Selection::new();
-    let preparation=program::prepare(config,Invocation {binary_name:b"gnunet-messenger",help:Some(b"Open or enter a Messenger room and exchange bounded stdin text or binary TALK data."),select_default_filename:true,defaults:Defaults::Native},selected.descriptors(),std::env::args_os(),&program::Environment::capture(),&mut NlsDisabled,&mut logger,&clock,&mut io::stdout().lock(),&mut io::stderr().lock());
+    let preparation=program::prepare_installed(config,Invocation {binary_name:b"gnunet-messenger",help:Some(b"Open or enter a Messenger room and exchange bounded stdin text or binary TALK data."),select_default_filename:true,defaults:Defaults::Native},selected.descriptors(),std::env::args_os(),&program::Environment::capture(),&mut logger,&clock,&mut io::stdout().lock(),&mut io::stderr().lock());
     let reporter = Reporter::new(logger, clock.clone());
     #[cfg(unix)]
     if let Some(notice) = startup.notice {

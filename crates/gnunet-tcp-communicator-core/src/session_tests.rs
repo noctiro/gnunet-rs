@@ -217,3 +217,38 @@ fn idle_finish_exposes_new_ciphertext_without_a_write_receipt() -> Result<(), Er
         Ok(())
     })
 }
+
+#[test]
+fn accepted_observed_box_survives_later_rekey_failure() -> Result<(), Error> {
+    struct EntropyFailure;
+    impl Entropy for EntropyFailure {
+        fn fill(&mut self, _: &mut [u8]) -> Result<(), Error> {
+            Err(Error::Entropy)
+        }
+    }
+
+    with_idle_write_owner(|session, time, random| {
+        session.rekey_left = u64::MAX;
+        session.send_observed(&[0, 6, 0, 42, 7, 9])?;
+        assert_eq!(session.take_native_write(), None);
+        let ticket = session.write_ready(time, random)?.ok_or(Error::NotReady)?;
+        let extent = session.write_bytes(ticket)?.len();
+        assert_eq!(extent, wire::BOX_PREFIX + 6);
+        assert_eq!(session.take_native_write(), None);
+
+        session.rekey_left = 0;
+        assert_eq!(
+            session.written(
+                ticket,
+                WriteResult::Bytes(extent),
+                time,
+                &mut EntropyFailure
+            ),
+            Err(Error::Entropy)
+        );
+        session.native_lost();
+        assert_eq!(session.take_native_write(), Some(Ok(())));
+        assert_eq!(session.take_native_write(), None);
+        Ok(())
+    })
+}

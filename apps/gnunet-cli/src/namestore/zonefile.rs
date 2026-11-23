@@ -1,6 +1,6 @@
 //! Public zonefile import over the original IDENTITY/NAMESTORE clients.
 use super::{KEY_BYTES, Result, bytes, row, text};
-use crate::control::Control;
+use crate::{configured, control::Control};
 use gnunet::{
     clients::{identity, namestore as ns},
     crypto::Entropy,
@@ -8,6 +8,10 @@ use gnunet::{
     gnsrecord_text::{self, Codec, Profile, Workspace, zonefile},
     idna,
     types::Error as Fault,
+};
+use gnunet_program_host::{
+    getopt::Options,
+    helpers::{self, Target},
 };
 use serde_json::json;
 use std::{
@@ -28,9 +32,6 @@ const FRAME_BYTES: usize = u16::MAX as usize;
 const RECORDS_PER_NAME: usize = 50;
 
 struct Settings {
-    socket: PathBuf,
-    identity: PathBuf,
-    input: Option<PathBuf>,
     zone: Option<String>,
     timeout: Duration,
     input_bytes: usize,
@@ -38,17 +39,30 @@ struct Settings {
     zones: usize,
     profile: Profile,
 }
-impl Settings {
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            zone: None,
+            timeout: Duration::from_secs(30),
+            input_bytes: 16 * 1024 * 1024,
+            records: 65536,
+            zones: 128,
+            profile: Profile::NATIVE_255,
+        }
+    }
+}
+struct Direct {
+    socket: PathBuf,
+    identity: PathBuf,
+    input: Option<PathBuf>,
+    settings: Settings,
+}
+impl Direct {
     fn read(args: &[OsString]) -> Result<Self> {
         let socket = PathBuf::from(args.first().ok_or("missing NAMESTORE UNIXPATH")?);
         let mut identity = None;
         let mut input = None;
-        let mut zone = None;
-        let mut timeout = 30_000u64;
-        let mut input_bytes = 16 * 1024 * 1024;
-        let mut records = 65536;
-        let mut zones = 128;
-        let mut profile = Profile::NATIVE_255;
+        let mut settings = Settings::default();
         let mut at = 1;
         while at < args.len() {
             let option = text(&args[at])?;
@@ -59,18 +73,14 @@ impl Settings {
                     input = (value != OsStr::new("-")).then(|| PathBuf::from(value));
                 }
                 "--zone" => {
-                    let name = text(value)?;
-                    if name.is_empty() || name.len() > 255 || name.as_bytes().contains(&0) {
-                        return Err("initial ego name must contain 1..=255 UTF-8 bytes".into());
-                    }
-                    zone = Some(name.to_owned());
+                    settings.zone = Some(zone_name(text(value)?)?);
                 }
-                "--timeout-ms" => timeout = text(value)?.parse()?,
-                "--max-input-bytes" => input_bytes = text(value)?.parse()?,
-                "--max-records" => records = text(value)?.parse()?,
-                "--max-zones" => zones = text(value)?.parse()?,
+                "--timeout-ms" => settings.timeout = Duration::from_millis(text(value)?.parse()?),
+                "--max-input-bytes" => settings.input_bytes = text(value)?.parse()?,
+                "--max-records" => settings.records = text(value)?.parse()?,
+                "--max-zones" => settings.zones = text(value)?.parse()?,
                 "--record-profile" => {
-                    profile = match text(value)? {
+                    settings.profile = match text(value)? {
                         "native" => Profile::NATIVE_255,
                         "little" => Profile::LITTLE_255,
                         "big" => Profile::BIG_255,
@@ -81,10 +91,10 @@ impl Settings {
             }
             at += 2;
         }
-        if !(1..=86_400_000).contains(&timeout)
-            || !(1..=64 * 1024 * 1024).contains(&input_bytes)
-            || !(1..=1_000_000).contains(&records)
-            || !(1..=128).contains(&zones)
+        if !(Duration::from_millis(1)..=Duration::from_secs(86_400)).contains(&settings.timeout)
+            || !(1..=64 * 1024 * 1024).contains(&settings.input_bytes)
+            || !(1..=1_000_000).contains(&settings.records)
+            || !(1..=128).contains(&settings.zones)
         {
             return Err("invalid finite zonefile time/input/record/origin bounds".into());
         }
@@ -92,14 +102,11 @@ impl Settings {
             socket,
             identity: identity.ok_or("required --identity-socket UNIXPATH")?,
             input,
-            zone,
-            timeout: Duration::from_millis(timeout),
-            input_bytes,
-            records,
-            zones,
-            profile,
+            settings,
         })
     }
+}
+impl Settings {
     fn parser_limits(&self) -> zonefile::Limits {
         zonefile::Limits {
             input_bytes: self.input_bytes,
@@ -107,6 +114,34 @@ impl Settings {
             records_per_name: RECORDS_PER_NAME,
             ..Default::default()
         }
+    }
+}
+
+fn zone_name(name: &str) -> Result<String> {
+    if name.is_empty() || name.len() > 255 || name.as_bytes().contains(&0) {
+        return Err("initial ego name must contain 1..=255 UTF-8 bytes".into());
+    }
+    Ok(name.to_owned())
+}
+
+#[derive(Debug)]
+struct MissingZone;
+impl fmt::Display for MissingZone {
+    fn fmt(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result {
+        out.write_str("initial zone ego does not exist")
+    }
+}
+impl Error for MissingZone {}
+
+pub(crate) fn missing_zone(mut error: &(dyn Error + 'static)) -> bool {
+    loop {
+        if error.is::<MissingZone>() {
+            return true;
+        }
+        let Some(source) = error.source() else {
+            return false;
+        };
+        error = source;
     }
 }
 
@@ -191,6 +226,7 @@ struct Failure {
     summary_output: Option<io::Error>,
     flush: Option<io::Error>,
     report: Report,
+    summary_only: bool,
 }
 impl Failure {
     fn failed(&self) -> bool {
@@ -201,7 +237,7 @@ impl Failure {
             || self.flush.is_some()
     }
     fn close_row(&mut self, out: &mut impl Write, source: &str, facts: CloseFacts) {
-        let value = facts.value();
+        let value = (!self.summary_only).then(|| facts.value());
         if facts.exposed != 0 {
             self.report.unknown |= (source == "namestore" && self.report.pending_store)
                 || (source == "identity" && self.report.pending_create);
@@ -211,13 +247,15 @@ impl Failure {
         } else {
             self.report.store_close = Some(facts);
         }
-        if let Err(error) = writeln!(
-            out,
-            "{}",
-            json!({
-                "event":"zonefile_source_closed","source":source,"facts":value
-            })
-        ) {
+        if let Some(value) = value
+            && let Err(error) = writeln!(
+                out,
+                "{}",
+                json!({
+                    "event":"zonefile_source_closed","source":source,"facts":value
+                })
+            )
+        {
             self.close_output.get_or_insert(error);
         }
     }
@@ -411,7 +449,9 @@ async fn create(
                         identity::Outcome::Result { code: 0, created: Some(key) } => {
                             failure.report.pending_create = false;
                             failure.report.created_egos += 1;
-                            row(out, json!({"event":"zonefile_ego_created","ego":String::from_utf8_lossy(name),"actual_result_code":0}))?;
+                            if !failure.summary_only {
+                                row(out, json!({"event":"zonefile_ego_created","ego":String::from_utf8_lossy(name),"actual_result_code":0}))?;
+                            }
                             Ok(key)
                         }
                         identity::Outcome::Result { code, .. } => {
@@ -468,7 +508,7 @@ async fn zone(
     let key = match found {
         Some(key) => key,
         None if initial => {
-            return Err("initial --zone ego does not exist; no key was created".into());
+            return Err(Box::new(MissingZone));
         }
         None => {
             execution.control.gate().await?;
@@ -720,10 +760,12 @@ async fn store(
                             failure.report.staged_records = 0;
                         }
                         // Receipt facts precede output. Output failure cannot erase a real commit result.
-                        row(
-                            out,
-                            json!({"event":"zonefile_store_result","origin":String::from_utf8_lossy(&group.origin),"label":String::from_utf8_lossy(&group.owner),"code":code,"stored_sets":failure.report.stored_sets,"stored_records":failure.report.stored_records}),
-                        )?;
+                        if !failure.summary_only {
+                            row(
+                                out,
+                                json!({"event":"zonefile_store_result","origin":String::from_utf8_lossy(&group.origin),"label":String::from_utf8_lossy(&group.owner),"code":code,"stored_sets":failure.report.stored_sets,"stored_records":failure.report.stored_records}),
+                            )?;
+                        }
                         if code != 0 {
                             return Err(
                                 format!("NAMESTORE STORE returned actual code {code}").into()
@@ -762,12 +804,20 @@ async fn store(
     }
 }
 
-async fn execute(settings: &Settings, input: &str, out: &mut impl Write) -> Result<()> {
+async fn execute(
+    settings: &Settings,
+    input: &str,
+    source: ns::EndpointSource,
+    identity_source: ns::EndpointSource,
+    summary_only: bool,
+    out: &mut impl Write,
+) -> Result<()> {
     let mut failure = Failure {
         report: Report {
             input_bytes: input.len(),
             ..Default::default()
         },
+        summary_only,
         ..Default::default()
     };
     // Freeze the original native budget before source/canonical preparation.
@@ -776,9 +826,6 @@ async fn execute(settings: &Settings, input: &str, out: &mut impl Write) -> Resu
         .ok_or("zonefile native deadline overflow")?;
     let mut control = Control::until(hard, "zonefile import")?;
     control.gate().await?;
-    let source = ns::EndpointSource::unix(settings.socket.clone());
-    let identity_source =
-        ns::EndpointSource::unix_with_clock(settings.identity.clone(), source.clock());
     let now = source.clock().sample()?.now.as_micros();
     let until = now
         .checked_add(u64::try_from(settings.timeout.as_micros())?)
@@ -888,10 +935,21 @@ async fn execute(settings: &Settings, input: &str, out: &mut impl Write) -> Resu
         failure.close_row(out, "namestore", CloseFacts::store(report));
     }
     let successful = !failure.failed() && failure.report.legal_eof && !failure.report.pending_store;
-    if let Err(error) = writeln!(
-        out,
-        "{}",
-        json!({"event":"zonefile_import_finished","successful":successful,
+    let summary = if summary_only {
+        if successful {
+            writeln!(
+                out,
+                "Published {} records sets with total {} records",
+                failure.report.stored_sets, failure.report.stored_records
+            )
+        } else {
+            Ok(())
+        }
+    } else {
+        writeln!(
+            out,
+            "{}",
+            json!({"event":"zonefile_import_finished","successful":successful,
         "input_bytes":failure.report.input_bytes,"converted_records":failure.report.converted_records,
         "admitted_sets":failure.report.admitted_sets,
         "stored_sets":failure.report.stored_sets,"stored_records":failure.report.stored_records,
@@ -901,9 +959,9 @@ async fn execute(settings: &Settings, input: &str, out: &mut impl Write) -> Resu
         "store_without_result":failure.report.pending_store,"unknown":failure.report.unknown,
         "identity_close":failure.report.identity_close.as_ref().map(CloseFacts::value),
         "namestore_close":failure.report.store_close.as_ref().map(CloseFacts::value)})
-    ) {
-        failure.summary_output = Some(error);
-    }
+        )
+    };
+    failure.summary_output = summary.err();
     failure.flush = out.flush().err();
     if failure.failed() {
         Err(Box::new(failure))
@@ -916,19 +974,80 @@ pub(super) fn run(args: &[OsString], out: &mut impl Write) -> Result<()> {
     if args.is_empty() || args.first().is_some_and(|arg| arg == OsStr::new("--help")) {
         return help(out);
     }
-    let settings = Settings::read(args)?;
+    let Direct {
+        settings,
+        socket,
+        identity,
+        input,
+    } = Direct::read(args)?;
     // No native protocol/ego/key capability exists during these synchronous OS
     // reads. Size is bounded; a blocked read is not advertised as cancelable by
     // an asynchronous deadline. The single protocol deadline starts afterwards.
-    let input = match &settings.input {
+    let input = match input {
         Some(path) => read_input(&mut File::open(path)?, settings.input_bytes)?,
         None => read_input(&mut io::stdin().lock(), settings.input_bytes)?,
     };
     let text = std::str::from_utf8(&input)?;
+    let source = ns::EndpointSource::unix(socket);
+    let identity_source = ns::EndpointSource::unix_with_clock(identity, source.clock());
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?
-        .block_on(execute(&settings, text, out))
+        .block_on(execute(
+            &settings,
+            text,
+            source,
+            identity_source,
+            false,
+            out,
+        ))
+}
+
+pub(crate) fn run_standalone() -> Result<()> {
+    let initial = Target::new(None::<Vec<u8>>);
+    let mut options = Options::new();
+    options.add(helpers::string(
+        b'z',
+        b"zone",
+        b"EGO",
+        b"Select the existing ego for the initial zone",
+        initial.clone(),
+    ));
+    let Some((prepared, clock)) = configured::prepare(
+        b"gnunet-namestore-zonefile",
+        b"Import a public zonefile from stdin into the configured NAMESTORE service. Use -z EGO to select an existing initial zone.",
+        options,
+    )? else { return Ok(()); };
+    let main = prepared.main();
+    if !main.arguments.is_empty() {
+        return Err("read the zonefile from standard input".into());
+    }
+    let initial = initial.get()?;
+    let settings = Settings {
+        zone: initial
+            .as_deref()
+            .map(|name| zone_name(std::str::from_utf8(name)?))
+            .transpose()?,
+        ..Settings::default()
+    };
+    let input = read_input(&mut io::stdin().lock(), settings.input_bytes)?;
+    let text = std::str::from_utf8(&input)?;
+    configured::run(
+        main.config,
+        clock,
+        [b"namestore", b"identity"],
+        move |[store, identity]| async move {
+            execute(
+                &settings,
+                text,
+                store,
+                identity,
+                true,
+                &mut io::stdout().lock(),
+            )
+            .await
+        },
+    )
 }
 
 pub(super) fn help(out: &mut impl Write) -> Result<()> {

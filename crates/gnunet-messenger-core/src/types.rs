@@ -22,10 +22,52 @@ impl Default for Instance {
 pub(crate) struct Brand<'id> {
     original: &'id Instance,
 }
-#[cfg(feature = "alloc")]
 impl<'id> Brand<'id> {
     pub(crate) const fn new(instance: &'id mut Instance) -> Self {
         Self { original: instance }
+    }
+
+    pub(crate) const fn room_id(self, slot: Slot) -> Room<'id> {
+        Room {
+            core: self,
+            room: slot,
+            slot,
+        }
+    }
+
+    pub(crate) const fn source_id(self, room: Slot, slot: Slot) -> Source<'id> {
+        Source {
+            core: self,
+            room,
+            slot,
+        }
+    }
+
+    pub(crate) const fn member_id(self, room: Slot, slot: Slot) -> MemberSession<'id> {
+        MemberSession {
+            core: self,
+            room,
+            slot,
+        }
+    }
+
+    pub(crate) const fn operation_id(self, room: Slot, slot: Slot) -> Operation<'id> {
+        Operation {
+            core: self,
+            room,
+            slot,
+        }
+    }
+
+    pub(crate) const fn contact_id(self, slot: Slot) -> Contact<'id> {
+        Contact {
+            core: self,
+            room: Slot {
+                index: usize::MAX,
+                generation: 0,
+            },
+            slot,
+        }
     }
 }
 impl PartialEq for Brand<'_> {
@@ -101,13 +143,24 @@ pub type Hash = [u8; 64];
 pub type ShortHash = [u8; 32];
 /// Exact supported serialized public key, including the network family tag.
 pub type PublicKey = [u8; 36];
+/// One opaque slot for a caller-owned message index or scheduling queue.
 #[derive(Clone, Copy, Eq, PartialEq)]
-pub(crate) struct Slot {
+pub struct HistorySlotCell {
     /// Original index value.
-    pub index: usize,
+    pub(crate) index: usize,
     /// Original generation value.
-    pub generation: u64,
+    pub(crate) generation: u64,
 }
+impl HistorySlotCell {
+    /// An unused index or queue cell.
+    pub const fn empty() -> Self {
+        Self {
+            index: 0,
+            generation: 0,
+        }
+    }
+}
+pub(crate) use HistorySlotCell as Slot;
 macro_rules! handle {
     ($name:ident, $doc:literal) => {
         #[doc = $doc]
@@ -284,7 +337,8 @@ pub struct Limits {
     pub messages_per_room: usize,
     /// Maximum immutable membership epoch slots.
     pub epochs_per_room: usize,
-    /// Maximum announcement/group slots in one epoch.
+    /// Maximum active announcements and groups in one membership epoch.
+    /// Closed GROUP negotiations and revoked keys use the history byte budget.
     pub groups_per_epoch: usize,
     /// Maximum member-lineage discourse subscriptions.
     pub subscriptions_per_room: usize,
@@ -363,19 +417,73 @@ impl Limits {
         Ok(())
     }
 }
+/// Hash-free location of an actual authenticated-frontier refusal.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FrontierProofStage {
+    /// Check the actual SYNC cursor against its retained original message.
+    Candidate,
+    /// Walk signed predecessors to the actual canonical epoch anchor.
+    EpochAncestry,
+    /// Validate the candidate's complete signed causal graph.
+    SignedAncestry,
+    /// Require coverage of every original captured frontier obligation.
+    CapturedRoots,
+    /// Reconcile only covered heads while preserving new observations.
+    Reconciliation,
+    /// Recheck original generations before publishing completion.
+    Commit,
+}
+/// Original security refusal, without hiding transient capacity/source errors.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FrontierProofCause {
+    /// The exact original protocol refusal.
+    Protocol(Fault),
+    /// Inconsistent original message/epoch attribution.
+    AttributionConflict,
+    /// A captured obligation is missing or outside the authenticated graph.
+    CapturedRoot {
+        /// Original protocol security refusal.
+        fault: Fault,
+        /// Retained original message kind, if the node is present.
+        root: Option<gnunet_wire::official::messenger::envelope::Kind>,
+        /// Retained original node state, independent from key availability.
+        phase: Option<MessagePhase>,
+        /// Actual candidate's retained original kind.
+        candidate: Option<gnunet_wire::official::messenger::envelope::Kind>,
+        /// The root is the candidate itself.
+        same: bool,
+        /// The candidate directly references this root as a parent.
+        parent: bool,
+        /// This root directly references the candidate as a parent.
+        child: bool,
+        /// The obligation was the original ordinary-control base.
+        base: bool,
+        /// The obligation was the original historical control hash.
+        control: bool,
+        /// Actual native RECENT observation was retained for this node.
+        recent: bool,
+        /// The original admission matched a local GET operation.
+        requested: bool,
+    },
+}
 /// Actual refusal, without fake cancellation, delivery, authorization or commit.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Error {
     /// Actual bounded protocol/state failure.
     Protocol(Fault),
+    /// Security refusal with bounded context; contains no hash or message data.
+    FrontierProof {
+        /// Exact validation boundary; no cursor or message bytes.
+        stage: FrontierProofStage,
+        /// Original security refusal; transient and source errors stay separate.
+        cause: FrontierProofCause,
+    },
     /// Actual M3 cryptographic failure.
     Crypto(gnunet_messenger::crypto::Error),
     /// The same hash was attributed to incompatible original author/context.
     AttributionConflict,
     /// Actual key/session owner lacks the requested history or deletion right.
     Permission,
-    /// Received AUTHORIZATION cannot establish a key without its omitted MAC.
-    AuthorizationMacOmitted,
 }
 impl From<Fault> for Error {
     fn from(e: Fault) -> Self {
@@ -384,12 +492,7 @@ impl From<Fault> for Error {
 }
 impl From<gnunet_messenger::crypto::Error> for Error {
     fn from(e: gnunet_messenger::crypto::Error) -> Self {
-        match e {
-            gnunet_messenger::crypto::Error::AuthorizationMacOmitted => {
-                Self::AuthorizationMacOmitted
-            }
-            e => Self::Crypto(e),
-        }
+        Self::Crypto(e)
     }
 }
 impl fmt::Display for Error {
@@ -401,13 +504,11 @@ impl core::error::Error for Error {}
 
 /// Historical committed acceptance from the explicit trusted owned-store port.
 /// It is not a source, signature result, live member or network identity proof.
-#[cfg(feature = "alloc")]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ArchivedFact {
     pub(crate) generation: u64,
     pub(crate) sequence: u64,
 }
-#[cfg(feature = "alloc")]
 impl ArchivedFact {
     /// Actual committed image generation, diagnostic only.
     pub const fn generation(self) -> u64 {
@@ -420,7 +521,6 @@ impl ArchivedFact {
 }
 /// Exact live original input versus trusted committed historical acceptance.
 /// Recovery never constructs a live Peer Source from disk metadata.
-#[cfg(feature = "alloc")]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MessageOrigin<'id> {
     /// Original real source; normal source-generation checks still apply.
@@ -428,7 +528,6 @@ pub enum MessageOrigin<'id> {
     /// Committed owned-store fact, with no current source or signature authority.
     Archived(ArchivedFact),
 }
-#[cfg(feature = "alloc")]
 impl<'id> MessageOrigin<'id> {
     /// Return a real original source only when this is not archive recovery.
     pub const fn live(self) -> Option<Source<'id>> {
@@ -437,28 +536,22 @@ impl<'id> MessageOrigin<'id> {
             Self::Archived(_) => None,
         }
     }
-    pub(crate) fn require_live(self) -> Result<Source<'id>, Error> {
-        self.live().ok_or_else(|| Fault::StaleGeneration.into())
-    }
 }
 
 /// Original room/source slot generations and role recorded by the real owner.
 /// These historical coordinates carry no identity domain or address and are not
 /// globally unique or a constructible live Source capability.
-#[cfg(feature = "alloc")]
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub struct SourceObservation {
     pub(crate) room: Slot,
     pub(crate) source: Slot,
     pub(crate) role: SourceRole,
 }
-#[cfg(feature = "alloc")]
 impl core::fmt::Debug for SourceObservation {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str("SourceObservation([REDACTED], historical only)")
     }
 }
-#[cfg(feature = "alloc")]
 impl SourceObservation {
     /// Original role observation, not current transport/identity authority.
     pub const fn role(self) -> SourceRole {

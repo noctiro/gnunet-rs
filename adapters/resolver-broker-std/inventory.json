@@ -150,13 +150,5 @@
     "Native FQDN profile delegates audited existing gnunet-native helper; no actual local_fqdn call is executed in these broker probes because it may trigger system DNS. Other platform compile profiles remain explicit."
   ],
   "owner_promotion": false,
-  "verification": null,
-  "candidate_witnesses": {
-    "literal_public_C_R": "/private/tmp/gnunet-shared-resolver-paired-trial2-20261027/result.json",
-    "generic_CLIENT_retained_DNS": "/private/tmp/gnunet-shared-client-retained-pair2-20261027/result.json",
-    "normal_C_daemon_local_hosts": "/private/tmp/gnunet-shared-resolver-normal-service-trial1-20261027/result.json",
-    "selected_cfg_readpoints": "/private/tmp/gnunet-shared-resolver-config-pair1-20261027/result.json",
-    "orphan_reconnect_component": "/private/tmp/gnunet-shared-resolver-orphan-component1-20261027/result.json",
-    "warning": "Historical source/binary/tool hashes only; no owner evidence promotion. Fresh portable wrapper will bind a new complete closure."
-  }
+  "verification": null
 }

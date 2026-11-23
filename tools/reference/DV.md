@@ -34,11 +34,7 @@ producer inputs stay immutable; rebuilt callers use separate source/output paths
 Every mutable endpoint, store, key and monotonic-time file belongs to its private
 node. HOME/home/CODEX_HOME retain their values.
 
-Run only within the authorized private scope:
-
-```
-python3 tools/reference/dv_private.py --manifest /ABS/manifest.json --output /ABS/new-evidence --middle c --execute
-```
+Start the controller with the [multi-node process budget](README.md#multi-node-process-budgets).
 
 The existing Controller owns each original process, native target, bounded
 capture and consuming wait. The case has at most3 nodes/64 original children,

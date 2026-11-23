@@ -1,10 +1,123 @@
-//! Prepared OS files plus the published GNS-specific GANA fallback.
-use gnunet_gns::assigned::Registry as Assigned;
+//! Native protocol and service lookups, explicit files, and published GANA assignments.
+use crate::Bounds;
+use gnunet_gns::{BoxSelector, assigned::Registry as Assigned};
+use gnunet_native::internet_registry::Database;
 use gnunet_types::Error as Fault;
 use std::{
+    ffi::CStr,
     io::{self, Read},
+    num::NonZeroU16,
     path::Path,
+    sync::Arc,
+    task::{Context, Poll},
 };
+
+mod operation;
+mod worker;
+pub(super) use operation::Lookup;
+
+#[cfg(test)]
+mod tests;
+
+type LookupResult = Result<Option<BoxSelector>, Error>;
+
+/// Actual result of the original registry operation after its work retired.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Outcome {
+    /// The selected backend completed the lookup. None is a real miss.
+    Resolved(Option<BoxSelector>),
+    /// This lookup stopped before a mapping or a miss was observed.
+    Cancelled,
+    /// The original lookup failed and its error was reported separately.
+    Failed,
+}
+
+pub(super) enum Source {
+    Prepared(Result<Files, Arc<Error>>),
+    Native(worker::Worker),
+}
+
+impl Source {
+    pub(super) fn native() -> Self {
+        match worker::Worker::spawn() {
+            Ok(worker) => Self::Native(worker),
+            Err(error) => Self::Prepared(Err(Arc::new(error.into()))),
+        }
+    }
+
+    pub(super) fn preparation_error(&self) -> Option<&Arc<Error>> {
+        match self {
+            Self::Prepared(Err(error)) => Some(error),
+            _ => None,
+        }
+    }
+
+    pub(super) fn start(
+        &mut self,
+        service: &str,
+        protocol: &str,
+        bounds: Bounds,
+    ) -> Result<Lookup, Arc<Error>> {
+        match self {
+            Self::Prepared(profile) => {
+                let value = match profile {
+                    Ok(files) => files.lookup(service, protocol),
+                    Err(error) => Some(assigned(service, protocol).ok_or_else(|| error.clone())?),
+                };
+                Ok(Lookup::prepared(value, bounds))
+            }
+            Self::Native(worker) => worker
+                .start(service, protocol, bounds)
+                .map(|query| Lookup::native(query, bounds))
+                .map_err(Arc::new),
+        }
+    }
+
+    pub(super) fn begin_close(&mut self) {
+        if let Self::Native(worker) = self {
+            worker.begin_close();
+        }
+    }
+
+    pub(super) fn poll_stopped(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        match self {
+            Self::Native(worker) => worker.poll_stopped(cx),
+            Self::Prepared(_) => Poll::Pending,
+        }
+    }
+
+    pub(super) fn is_stopped(&self) -> bool {
+        match self {
+            Self::Native(worker) => worker.is_stopped(),
+            Self::Prepared(_) => true,
+        }
+    }
+}
+
+fn native_lookup(
+    database: &mut Database,
+    service: &CStr,
+    protocol: &CStr,
+    guard: impl Fn() -> Result<(), Error>,
+) -> LookupResult {
+    let protocol_name = protocol.to_str().map_err(|_| Fault::Malformed)?;
+    guard()?;
+    let Some(number) = database
+        .protocol(protocol)?
+        .or_else(|| Assigned::Protocols.number(protocol_name))
+        .and_then(NonZeroU16::new)
+    else {
+        return Ok(None);
+    };
+    let service_name = service.to_str().map_err(|_| Fault::Malformed)?;
+    guard()?;
+    let port = database
+        .service(service, protocol)?
+        .or_else(|| Assigned::ServicePorts.number(service_name))
+        .and_then(NonZeroU16::new)
+        .or_else(|| service_name.parse().ok());
+    Ok(port.map(|port| BoxSelector::new(number, port)))
+}
 
 /// Bounded input/text/row resources for the files profile.
 #[derive(Clone, Copy, Debug)]
@@ -25,19 +138,19 @@ impl Default for Limits {
         }
     }
 }
-/// Actual preparation failure, not a guessed mapping or successful empty table.
+/// Actual registry preparation, lookup, or retirement failure.
 #[derive(Debug)]
 pub enum Error {
     /// Actual prepared registry capacity or parse refusal.
     Protocol(Fault),
-    /// Original registry file read error.
+    /// Original registry file or native operation error.
     Io(io::Error),
 }
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Protocol(error) => write!(f, "GNS files registry: {error}"),
-            Self::Io(error) => write!(f, "GNS files registry IO: {error}"),
+            Self::Protocol(error) => write!(f, "GNS registry: {error}"),
+            Self::Io(error) => write!(f, "GNS registry I/O: {error}"),
         }
     }
 }
@@ -194,7 +307,7 @@ impl Files {
     /// First actual file mapping wins, followed independently by the published
     /// GNS protocol and service-port assignments. A numeric service is the final
     /// choice. Names use ASCII case folding without rewriting their namespace.
-    pub fn lookup(&self, service: &str, protocol: &str) -> Option<(u16, u16)> {
+    pub fn lookup(&self, service: &str, protocol: &str) -> Option<BoxSelector> {
         let number = self
             .protocols
             .iter()
@@ -211,18 +324,21 @@ impl Files {
             .map(|entry| entry.port)
             .or_else(|| Assigned::ServicePorts.number(service))
             .or_else(|| service.parse::<u16>().ok())?;
-        (number != 0 && port != 0).then_some((number, port))
+        Some(BoxSelector::new(
+            NonZeroU16::new(number)?,
+            NonZeroU16::new(port)?,
+        ))
     }
 }
 
 /// Resolve an independently available GANA mapping while OS files are unavailable.
 /// An unknown name is not evidence that the unavailable OS database has no entry.
-pub(super) fn assigned(service: &str, protocol: &str) -> Option<(u16, u16)> {
-    let protocol = Assigned::Protocols.number(protocol)?;
+pub(super) fn assigned(service: &str, protocol: &str) -> Option<BoxSelector> {
+    let protocol = NonZeroU16::new(Assigned::Protocols.number(protocol)?)?;
     let port = Assigned::ServicePorts
         .number(service)
         .or_else(|| service.parse::<u16>().ok())?;
-    (port != 0).then_some((protocol, port))
+    Some(BoxSelector::new(protocol, NonZeroU16::new(port)?))
 }
 fn validate(limits: Limits) -> Result<(), Fault> {
     if limits.bytes == 0

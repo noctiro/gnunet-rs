@@ -21,6 +21,21 @@ struct Address {
     nl_groups: u32,
 }
 
+fn address() -> Address {
+    #[expect(
+        unsafe_code,
+        reason = "Native Netlink addresses contain scalar fields/padding; zero is valid before native length/family initialization"
+    )]
+    // SAFETY: zero is valid for every native Netlink address field and its padding.
+    let mut address: Address = unsafe { std::mem::zeroed() };
+    address.nl_family = FAMILY as libc::sa_family_t;
+    #[cfg(target_os = "freebsd")]
+    {
+        address.len = std::mem::size_of::<Address>() as u8;
+    }
+    address
+}
+
 pub(in crate::routes) fn open() -> io::Result<(OwnedFd, u32)> {
     let socket = socket2::Socket::new(
         socket2::Domain::from(FAMILY),
@@ -30,39 +45,42 @@ pub(in crate::routes) fn open() -> io::Result<(OwnedFd, u32)> {
     socket.set_recv_buffer_size(16_384)?;
     socket.set_send_buffer_size(4_096)?;
     let fd: OwnedFd = socket.into();
+    let mut local = address();
     #[expect(
         unsafe_code,
-        reason = "Native Netlink addresses contain scalar fields/padding; zero is valid before native length/family initialization"
+        reason = "bind receives one exact initialized native Netlink address and its native size; no pointer escapes"
     )]
-    // SAFETY: zero is valid for every native Netlink address field and its padding.
-    let (mut local, kernel): (Address, Address) = unsafe { std::mem::zeroed() };
-    local.nl_family = FAMILY as libc::sa_family_t;
-    #[cfg(target_os = "freebsd")]
-    {
-        local.len = std::mem::size_of::<Address>() as u8;
-    }
-    let mut kernel = kernel;
-    #[cfg(target_os = "freebsd")]
-    {
-        kernel.len = std::mem::size_of::<Address>() as u8;
-    }
-    kernel.nl_family = FAMILY as libc::sa_family_t;
-    #[expect(
-        unsafe_code,
-        reason = "bind/connect receive exact initialized native Netlink address objects and their native sizes; no pointer escapes"
-    )]
-    // SAFETY: both addresses are initialized and remain live for their synchronous calls.
+    // SAFETY: the initialized address remains live for the synchronous call.
     let result = unsafe {
-        let n = std::mem::size_of::<Address>() as libc::socklen_t;
-        let bound = libc::bind(fd.as_raw_fd(), (&local as *const Address).cast(), n);
-        if bound < 0 {
-            bound
-        } else {
-            libc::connect(fd.as_raw_fd(), (&kernel as *const Address).cast(), n)
-        }
+        libc::bind(
+            fd.as_raw_fd(),
+            (&local as *const Address).cast(),
+            std::mem::size_of::<Address>() as libc::socklen_t,
+        )
     };
     if result < 0 {
         return Err(io::Error::last_os_error());
+    }
+    // FreeBSD connects Netlink sockets to the kernel during socket attachment.
+    // Linux requires an explicit kernel peer before the shared write path.
+    #[cfg(target_os = "linux")]
+    {
+        let kernel = address();
+        #[expect(
+            unsafe_code,
+            reason = "connect receives an exact initialized kernel Netlink address and its native size; no pointer escapes"
+        )]
+        // SAFETY: the initialized kernel address remains live for this call.
+        let result = unsafe {
+            libc::connect(
+                fd.as_raw_fd(),
+                (&kernel as *const Address).cast(),
+                std::mem::size_of::<Address>() as libc::socklen_t,
+            )
+        };
+        if result < 0 {
+            return Err(io::Error::last_os_error());
+        }
     }
     let mut size = std::mem::size_of::<Address>() as libc::socklen_t;
     #[expect(

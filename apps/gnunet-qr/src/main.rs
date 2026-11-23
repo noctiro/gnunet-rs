@@ -52,7 +52,7 @@ fn entry() -> Result<(), Failure> {
     use gnunet_program_host::{
         logging::Logger,
         policy::Level,
-        program::{self, Defaults, Invocation, NlsDisabled, Preparation},
+        program::{self, Defaults, Invocation, Preparation},
         reporting::Reporter,
         shared_clock::SharedClock,
     };
@@ -65,8 +65,8 @@ fn entry() -> Result<(), Failure> {
     )?;
     let arguments = settings::Arguments::new();
     let mut logger = Logger::new(b"gnunet-qr", std::process::id(), false)?;
-    let help: &[u8] = b"Decode a PNG (--png FILE) or selected ZBar camera (--device DEVICE), then run the configured GNUnet URI action. --no-display disables the camera window; --timeout bounds scanning and handler exit. [qr-rust] selects provider paths, device and resource limits. Windows requires explicit LIBPNG/LIBZBAR DLL paths and camera device selection. See README configuration examples.";
-    let prepared = program::prepare(
+    let help: &[u8] = b"Decode a PNG (--png FILE) or scan with a ZBar camera (--device DEVICE), then run the configured GNUnet URI action. --no-display disables the camera window; --timeout bounds scanning and handler exit. [qr-rust] selects provider paths, device and resource limits. Linux defaults to /dev/video0; elsewhere camera input requires a device selection. Windows requires explicit provider DLL paths. See the QR configuration guide.";
+    let prepared = program::prepare_installed(
         config,
         Invocation {
             binary_name: b"gnunet-qr",
@@ -77,7 +77,6 @@ fn entry() -> Result<(), Failure> {
         arguments.options(),
         std::env::args_os(),
         &program::Environment::capture(),
-        &mut NlsDisabled,
         &mut logger,
         &clock,
         &mut io::stdout().lock(),
