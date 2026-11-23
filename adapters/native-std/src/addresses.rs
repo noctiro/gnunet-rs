@@ -12,6 +12,8 @@ mod unix;
 mod windows;
 #[cfg(unix)]
 pub use unix::resolve;
+#[cfg(target_env = "ohos")]
+pub(crate) use unix::resolve_native;
 #[cfg(windows)]
 pub use windows::resolve;
 

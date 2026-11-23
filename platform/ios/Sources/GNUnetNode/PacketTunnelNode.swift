@@ -516,15 +516,15 @@ public final class GNUnetPacketTunnelNode: Sendable {
                 try resources.read { [weak self] result in
                     self?.queue.async { [weak self] in
                         guard let self else { return }
-                        reading = false
-                        if !removalStarted, phase == .starting || phase == .running {
+                        self.reading = false
+                        if !self.removalStarted, self.phase == .starting || self.phase == .running {
                             switch result {
-                            case let .success(batch): ingress = batch; ingressIndex = 0
-                            case let .failure(error): fail(error)
+                            case let .success(batch): self.ingress = batch; self.ingressIndex = 0
+                            case let .failure(error): self.fail(error)
                             }
-                            pumpIngress()
+                            self.pumpIngress()
                         }
-                        finishIfReady()
+                        self.finishIfReady()
                     }
                 }
             } catch { reading = false; fail(error) }
