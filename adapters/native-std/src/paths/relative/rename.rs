@@ -1,5 +1,6 @@
 //! Atomic renames of captured links under one retained directory.
 use super::{
+    Directory,
     leaf::{Leaf, MAX_UNITS},
     open, status,
 };
@@ -19,7 +20,7 @@ use windows_sys::{
         NtSetInformationFile,
     },
     Win32::{
-        Foundation::HANDLE,
+        Foundation::{ERROR_SHARING_VIOLATION, HANDLE},
         Storage::FileSystem::{
             DELETE, FILE_GENERIC_READ, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
         },
@@ -55,7 +56,13 @@ enum EntryKind {
 struct RenameSource(File);
 
 impl RenameSource {
-    fn open(parent: &File, name: &OsStr, original: &File, kind: EntryKind) -> io::Result<Self> {
+    fn open(
+        parent: &File,
+        name: &OsStr,
+        original: &File,
+        kind: EntryKind,
+        share: u32,
+    ) -> io::Result<Self> {
         let mut source = Leaf::new(name)?;
         let options = match kind {
             EntryKind::File => FILE_NON_DIRECTORY_FILE,
@@ -65,7 +72,7 @@ impl RenameSource {
             parent,
             &mut source,
             FILE_GENERIC_READ | DELETE,
-            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            share,
             FILE_OPEN,
             options,
             None,
@@ -100,26 +107,86 @@ pub(super) fn regular_file(
     mode: Mode,
 ) -> io::Result<()> {
     let target = Leaf::new(target)?;
-    let source = RenameSource::open(parent, name, original, EntryKind::File)?;
-    rename(parent, source, &target, mode)
+    let source = RenameSource::open(
+        parent,
+        name,
+        original,
+        EntryKind::File,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+    )?;
+    rename(parent, &source, &target, mode)
 }
 
-pub(crate) fn publish_directory(
-    parent: &File,
-    name: &OsStr,
-    original: &File,
-    target: &OsStr,
-) -> io::Result<()> {
-    let target = Leaf::new(target)?;
-    let source = RenameSource::open(parent, name, original, EntryKind::Directory)?;
-    rename(parent, source, &target, Mode::Create)
+/// Exclusive DELETE access to one original directory link. Other owners may
+/// read and write the directory with compatible sharing, but cannot claim or
+/// rename the link until this lease closes.
+pub struct DirectoryClaim<'a> {
+    parent: &'a Directory,
+    original: &'a Directory,
+    source: RenameSource,
+}
+
+impl Directory {
+    /// Claim the original directory link without acquiring any child handles.
+    /// Incompatible native sharing returns `WouldBlock`.
+    pub fn claim_directory<'a>(
+        &'a self,
+        name: &OsStr,
+        original: &'a Directory,
+    ) -> io::Result<DirectoryClaim<'a>> {
+        let source = RenameSource::open(
+            self.as_file(),
+            name,
+            original.as_file(),
+            EntryKind::Directory,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+        )
+        .map_err(|error| {
+            if error
+                .get_ref()
+                .and_then(|cause| cause.downcast_ref::<status::StatusError>())
+                .is_some_and(|cause| cause.win32_code() == ERROR_SHARING_VIOLATION)
+            {
+                io::Error::new(io::ErrorKind::WouldBlock, error)
+            } else {
+                error
+            }
+        })?;
+        Ok(DirectoryClaim {
+            parent: self,
+            original,
+            source,
+        })
+    }
+}
+
+impl DirectoryClaim<'_> {
+    /// Publish at an absent name while retaining the exclusive link lease.
+    /// Close all open child handles before calling this method.
+    pub fn publish(&self, target: &OsStr) -> io::Result<()> {
+        let leaf = Leaf::new(target)?;
+        if self
+            .parent
+            .same_directory(target, self.original)
+            .is_ok_and(|same| same)
+        {
+            return Err(io::ErrorKind::AlreadyExists.into());
+        }
+        rename(self.parent.as_file(), &self.source, &leaf, Mode::Create)?;
+        // Never classify an error after the native rename as a collision.
+        match self.parent.same_directory(target, self.original) {
+            Ok(true) => Ok(()),
+            Ok(false) => Err(io::Error::other("published original directory changed")),
+            Err(error) => Err(io::Error::other(error)),
+        }
+    }
 }
 
 #[expect(
     unsafe_code,
     reason = "NtSetInformationFile synchronously borrows a fully initialized, SDK-layout-checked bounded rename record and an identity-checked synchronous original link handle"
 )]
-fn rename(parent: &File, source: RenameSource, target: &Leaf, mode: Mode) -> io::Result<()> {
+fn rename(parent: &File, source: &RenameSource, target: &Leaf, mode: Mode) -> io::Result<()> {
     let flags = match mode {
         Mode::Create => 0,
         Mode::Replace => FILE_RENAME_REPLACE_IF_EXISTS | FILE_RENAME_POSIX_SEMANTICS,

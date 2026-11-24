@@ -147,12 +147,9 @@ normal official C build receipt. Generated sources, binaries and logs belong in
 a fresh directory beneath the repository's `target/` tree. The template mirrors
 current dependency kinds, features and platform guards; a mismatch is a failure.
 
-On Unix, host process tests require building the shared helper first:
-
-```sh
-cargo build -p gnunet-arm-host --bin gnunet-arm-spawn-helper --locked
-cargo test -p gnunet-arm-service-host --all-features --locked
-```
+On Unix, `cargo xtask verify test` builds the production ARM spawn helper and
+passes its Cargo-reported path to the tests. For a direct package test run, set
+`GNUNET_TEST_ARM_SPAWN_HELPER` to that absolute executable path.
 
 The Windows `windows_reactor` target uses fresh native child processes, private
 working directories and loopback listeners. It covers queued listener transfer,

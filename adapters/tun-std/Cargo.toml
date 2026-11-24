@@ -5,11 +5,13 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 [dependencies]
-gnunet-crypto.workspace = true
 gnunet-native.workspace = true
+tokio = { workspace = true, features = ["net", "time", "rt", "process", "io-util"] }
+
+[target.'cfg(unix)'.dependencies]
+gnunet-crypto.workspace = true
 libc.workspace = true
 nix = { workspace = true, features = ["signal", "process", "fs", "ioctl"] }
 socket2.workspace = true
-tokio = { workspace = true, features = ["net", "time", "rt", "process", "io-util"] }
 [lints]
 workspace = true

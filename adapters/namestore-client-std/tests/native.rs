@@ -526,9 +526,13 @@ fn synchronized_follow_accepts_next_after_initial_deadline() -> Result<(), Failu
             let listener = UnixListener::bind(&path)?;
             let server = tokio::spawn(async move {
                 let (mut socket, _) = listener.accept().await?;
-                assert!(matches!(Request::decode(&frame(&mut socket).await?)?, Request::MonitorStart { iterate_first: 0, .. }));
+                if !matches!(Request::decode(&frame(&mut socket).await?)?, Request::MonitorStart { iterate_first: 0, .. }) {
+                    return Err("expected the original follow-only monitor start".into());
+                }
                 send(&mut socket, Response::MonitorSync).await?;
-                assert!(matches!(Request::decode(&frame(&mut socket).await?)?, Request::MonitorNext { limit: 1, .. }));
+                if !matches!(Request::decode(&frame(&mut socket).await?)?, Request::MonitorNext { limit: 1, .. }) {
+                    return Err("expected one follow credit on the synchronized stream".into());
+                }
                 record(&mut socket, 0, b"after-startup").await?;
                 eof(&mut socket).await
             });
@@ -546,11 +550,15 @@ fn synchronized_follow_accepts_next_after_initial_deadline() -> Result<(), Failu
             }
             tokio::time::sleep_until(started + Duration::from_millis(1100)).await;
             let next = clock.sample()?.now.as_micros() + 1_000_000;
-            assert!(next > startup);
+            if next <= startup {
+                return Err("the follow deadline did not advance past startup".into());
+            }
             monitor.next(1, next)?;
             loop {
                 if let Progress::Record { reply, .. } = monitor.drive(None).await? {
-                    assert!(matches!(reply.view()?, Response::Records { label, .. } if label.bytes() == b"after-startup"));
+                    if !matches!(reply.view()?, Response::Records { label, .. } if label.bytes() == b"after-startup") {
+                        return Err("the follow credit did not deliver the expected record".into());
+                    }
                     break;
                 }
             }

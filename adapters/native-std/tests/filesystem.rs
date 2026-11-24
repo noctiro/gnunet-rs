@@ -99,6 +99,51 @@ fn assert_published_snapshot(directory: &Directory, file: &File, expected: FileI
     );
 }
 
+#[cfg(target_os = "freebsd")]
+#[test]
+fn file_snapshot_rechecks_bytes_if_only_ctime_changed() -> Result {
+    use gnunet_native::filesystem::PrivateFileSnapshot;
+
+    let scratch = Scratch::create()?;
+    let directory = Directory::open(&scratch.0)?;
+    let name = OsStr::new("snapshot");
+    let (file, _) = publication::publish(
+        &directory,
+        name,
+        b"one",
+        publication::Destination::Create,
+        || Ok(()),
+    )?
+    .into_parts();
+    let mut before = private_data_file_info(&file)?;
+    // Reproduce the two observations around a delayed inode change without
+    // depending on when UFS happens to process its pending metadata work.
+    before.times.changed -= 1;
+    let confirmed =
+        PrivateFileSnapshot::new(before, b"one").confirm_read(&directory, name, &file)?;
+    assert_eq!(confirmed.initial().identity, before.identity);
+    assert_ne!(confirmed.initial().times.changed, before.times.changed);
+    confirmed.verify(&directory, name, &file)?;
+
+    let modified = file.metadata()?.modified()?;
+    let mut writer = directory.open_file_for_update(name)?;
+    writer.write_all(b"two")?;
+    writer.set_modified(modified)?;
+    writer.sync_all()?;
+    drop(writer);
+    let mut observed = private_data_file_info(&file)?;
+    assert_eq!(observed.identity, before.identity);
+    assert_eq!(observed.bytes, before.bytes);
+    assert_eq!(observed.times.modified, before.times.modified);
+    observed.times.changed -= 1;
+    assert!(
+        PrivateFileSnapshot::new(observed, b"one")
+            .confirm_read(&directory, name, &file)
+            .is_err()
+    );
+    Ok(())
+}
+
 #[test]
 fn prepared_directory_publication_refuses_existing_and_changed_names() -> Result {
     let scratch = Scratch::create()?;
@@ -113,6 +158,7 @@ fn prepared_directory_publication_refuses_existing_and_changed_names() -> Result
     assert!(parent.same_directory(OsStr::new("stage"), &source)?);
     assert!(parent.same_directory(OsStr::new("selected"), &destination)?);
     parent.remove_directory(OsStr::new("selected"), &destination)?;
+    drop(destination);
     parent.publish_directory(OsStr::new("stage"), &source, OsStr::new("selected"))?;
     assert!(parent.same_directory(OsStr::new("selected"), &source)?);
     let foreign = parent.create_private_directory(OsStr::new("stage"))?;
@@ -134,6 +180,7 @@ fn prepared_directory_publication_refuses_existing_and_changed_names() -> Result
             .is_err()
     );
     source.remove_file(OsStr::new("marker"), &file)?;
+    drop(file);
     parent.remove_directory(OsStr::new("selected"), &source)?;
     Ok(())
 }
@@ -301,9 +348,14 @@ fn private_file_identity_refuses_hard_link_aliases_and_native_lock_release_is_ob
         ExclusiveFile::try_lock(contender),
         Err(std::fs::TryLockError::WouldBlock)
     ));
+    // A concurrent Unix fork can temporarily retain the locked open file description.
+    #[cfg(unix)]
+    let inherited = owner.as_file().try_clone()?;
     drop(owner);
     let next = ExclusiveFile::try_lock(directory.open_file_for_update(OsStr::new("lock"))?)?;
     assert_eq!(FileIdentity::of(next.as_file())?, original);
+    #[cfg(unix)]
+    assert_eq!(FileIdentity::of(&inherited)?, original);
     Ok(())
 }
 #[cfg(windows)]

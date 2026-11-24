@@ -19,8 +19,8 @@ use crate::IpcError;
 use gnunet_client::{
     statistics::{Selector, Statistic, WatchValue},
     statistics_handle::{
-        ConnectionEpoch, DestroyReport, GetCompletion, GetFlow, GetId, Inbound, Outbound,
-        SetterAdmission, StatisticsHandle as Core, WatchId,
+        ConnectionEpoch, DestroyReport, GetCompletion, GetFlow, GetId, HeapNames, Inbound,
+        Outbound, SetterAdmission, StatisticsHandle as ProtocolCore, WatchId,
     },
 };
 use gnunet_client_host::{ConnectionAttempt as Connect, Endpoint, EndpointSource as Source};
@@ -44,6 +44,12 @@ use tokio::{
 
 /// Caller-owned allocation-free identity for one STATISTICS client owner.
 pub use gnunet_client::statistics_handle::Instance;
+
+type Core<'owner, const A: usize, const N: usize, const W: usize, const WW: usize, const T: usize> =
+    ProtocolCore<'owner, A, N, W, WW, T, HeapNames>;
+
+#[cfg(test)]
+mod tests;
 
 /// Host buffers and per-write fairness, independent of core action capacities.
 #[derive(Clone, Copy, Debug)]

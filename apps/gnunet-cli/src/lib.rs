@@ -257,10 +257,7 @@ pub fn run_namestore_zonefile() -> ExitCode {
 
 fn entry(args: &mut [OsString]) -> Result<(), Box<dyn Error>> {
     #[cfg(feature = "transport")]
-    if args
-        .first()
-        .is_some_and(|value| value == "transport")
-    {
+    if args.first().is_some_and(|value| value == "transport") {
         #[cfg(any(unix, windows))]
         {
             return transport::run(&args[1..]);
@@ -290,10 +287,7 @@ fn entry(args: &mut [OsString]) -> Result<(), Box<dyn Error>> {
 }
 fn run_os(args: &mut [OsString], out: &mut impl Write) -> Result<(), Box<dyn Error>> {
     #[cfg(feature = "revocation")]
-    if args
-        .first()
-        .is_some_and(|value| value == "revocation")
-    {
+    if args.first().is_some_and(|value| value == "revocation") {
         return revocation::run(&args[1..], out);
     }
     #[cfg(feature = "did")]
@@ -301,31 +295,19 @@ fn run_os(args: &mut [OsString], out: &mut impl Write) -> Result<(), Box<dyn Err
         return did::run(&args[1..], out);
     }
     #[cfg(feature = "reclaim")]
-    if args
-        .first()
-        .is_some_and(|value| value == "reclaim")
-    {
+    if args.first().is_some_and(|value| value == "reclaim") {
         return reclaim::run(&args[1..], out);
     }
     #[cfg(feature = "namestore")]
-    if args
-        .first()
-        .is_some_and(|value| value == "namestore")
-    {
+    if args.first().is_some_and(|value| value == "namestore") {
         return namestore::run(&args[1..], out);
     }
     #[cfg(feature = "identity")]
-    if args
-        .first()
-        .is_some_and(|value| value == "identity")
-    {
+    if args.first().is_some_and(|value| value == "identity") {
         return identity::run(&mut args[1..], out);
     }
     #[cfg(feature = "regex")]
-    if args
-        .first()
-        .is_some_and(|value| value == "regex")
-    {
+    if args.first().is_some_and(|value| value == "regex") {
         return regex::run(&args[1..], out);
     }
     #[cfg(feature = "vpn")]
@@ -333,17 +315,11 @@ fn run_os(args: &mut [OsString], out: &mut impl Write) -> Result<(), Box<dyn Err
         return vpn::run(&args[1..], out);
     }
     #[cfg(feature = "peerstore")]
-    if args
-        .first()
-        .is_some_and(|value| value == "peerstore")
-    {
+    if args.first().is_some_and(|value| value == "peerstore") {
         return peerstore::run(&args[1..], out);
     }
     #[cfg(feature = "cadet")]
-    if args
-        .first()
-        .is_some_and(|value| value == "cadet")
-    {
+    if args.first().is_some_and(|value| value == "cadet") {
         return cadet::run(&args[1..], out);
     }
     #[cfg(feature = "fs")]

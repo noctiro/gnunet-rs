@@ -114,11 +114,11 @@ async fn configured_bind_checks_activation_access_without_reading_addresses()
 }
 
 #[tokio::test]
-async fn prepared_listener_supplies_original_access_to_activation_export() -> io::Result<()> {
+async fn retained_listener_supplies_original_access_to_activation_export() -> io::Result<()> {
     use gnunet_native::{
         local_path::{EndpointAccess, EndpointProtection},
         local_socket,
-        socket_activation::ExportSection,
+        socket_activation::{ExportSection, Source},
     };
     use gnunet_service_runtime::local_listener::prepare;
 
@@ -126,8 +126,19 @@ async fn prepared_listener_supplies_original_access_to_activation_export() -> io
     let path = std::path::absolute(&fixture.socket)?;
     let prepared = prepare(path.clone(), LocalListenerAccess::Owner, 16).await?;
     {
-        let sources = [prepared.launch_source()];
+        let original = prepared.launch_source();
+        let retained = original.try_clone_to_owned()?;
+        let sources = [retained.as_source()];
         let [source] = &sources;
+        let mismatched = Source::new(source.as_socket()).with_protection(
+            original
+                .protection()
+                .ok_or_else(|| io::Error::other("missing local ACL evidence"))?,
+        );
+        assert!(matches!(
+            ExportSection::for_listeners(&[mismatched]),
+            Err(error) if error.kind() == io::ErrorKind::InvalidInput
+        ));
         assert_eq!(
             source.protection().map(EndpointProtection::access),
             Some(EndpointAccess::Owner)
@@ -255,10 +266,10 @@ async fn configured_cleanup_failure_retains_original_node_for_retry()
     let config = configuration(&fixture.socket)?;
     let mut bound =
         BoundListeners::bind_configured(&config, b"local", LocalListenerAccess::Owner).await?;
-    // READ_CONTROL, sharing read/write but not delete, and OPEN_REPARSE_POINT:
-    // deliberately deny a concurrent DELETE reopen of this original node.
+    // Request data access so this handle participates in share checks, then
+    // deny a DELETE reopen of the original reparse point.
     let blocker = fs::OpenOptions::new()
-        .access_mode(0x0002_0000)
+        .read(true)
         .share_mode(3)
         .custom_flags(0x0020_0000)
         .open(&fixture.socket)?;

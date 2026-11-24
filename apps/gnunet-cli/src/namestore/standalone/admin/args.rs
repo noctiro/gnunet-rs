@@ -32,83 +32,6 @@ pub(in crate::namestore::standalone) struct Arguments {
     value: Value,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::ffi::OsString;
-
-    #[test]
-    fn composite_actions_keep_record_selection_and_nickname_independent() -> Result<()> {
-        let common = crate::namestore::standalone::Arguments::new();
-        let parsed = common.options().run(
-            b"gnunet-namestore",
-            [
-                "gnunet-namestore",
-                "-a",
-                "-d",
-                "-D",
-                "-m",
-                "-i",
-                "local",
-                "-n",
-                "@",
-                "-t",
-                "A",
-                "-V",
-                "127.0.0.1",
-                "-e",
-                "10m",
-                "-s",
-                "-p",
-                "-z",
-                "demo",
-            ]
-            .map(OsString::from),
-            false,
-        );
-        assert!(parsed.remaining().is_some_and(<[_]>::is_empty));
-        let plan = common.admin.command(&common, None)?;
-        let [
-            Operation::Edit {
-                label: address_label,
-                edit: Edit::Add(address),
-            },
-            Operation::Edit {
-                label: delete_label,
-                edit: Edit::Delete(selector),
-            },
-            Operation::Edit {
-                label: nickname_label,
-                edit: Edit::Add(nickname),
-            },
-            Operation::Display(display),
-        ] = plan.operations.as_slice()
-        else {
-            return Err("wrong NAMESTORE mutation and observation order".into());
-        };
-        assert_eq!(address_label.as_slice(), b"@");
-        assert_eq!(delete_label, address_label);
-        assert_eq!(nickname_label, address_label);
-        assert_eq!(address.kind, RecordType::A);
-        assert_eq!(address.value.as_slice(), [127, 0, 0, 1]);
-        assert_eq!(address.expiration, 600_000_000);
-        assert_eq!(
-            address.flags,
-            RecordFlags::RELATIVE_EXPIRATION.union(RecordFlags::SHADOW)
-        );
-        assert_eq!(selector.kind, Some(RecordType::A));
-        assert_eq!(selector.filter, 0);
-        assert_eq!(nickname.kind, RecordType::NICK);
-        assert_eq!(nickname.expiration, u64::MAX);
-        assert_eq!(nickname.flags, RecordFlags::PRIVATE);
-        assert_eq!(display.kind, Some(RecordType::A));
-        assert_eq!(display.filter, OMIT_PRIVATE);
-        let monitor = plan.monitor.ok_or("missing continuous operation")?;
-        assert_eq!(monitor.label.as_deref(), Some(b"@".as_slice()));
-        Ok(())
-    }
-}
-
 impl Arguments {
     pub(in crate::namestore::standalone) fn new() -> Self {
         Self {
@@ -433,5 +356,92 @@ impl Arguments {
             operations,
             monitor,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::OsString;
+
+    #[test]
+    fn composite_actions_keep_record_selection_and_nickname_independent() -> Result<()> {
+        let common = crate::namestore::standalone::Arguments::new();
+        let parsed = common.options().run(
+            b"gnunet-namestore",
+            [
+                "gnunet-namestore",
+                "-a",
+                "-d",
+                "-D",
+                "-m",
+                "-i",
+                "local",
+                "-n",
+                "@",
+                "-t",
+                "A",
+                "-V",
+                "127.0.0.1",
+                "-e",
+                "10m",
+                "-s",
+                "-p",
+                "-z",
+                "demo",
+            ]
+            .map(OsString::from),
+            false,
+        );
+        if !matches!(parsed.remaining(), Some([])) {
+            return Err("unexpected positional NAMESTORE arguments".into());
+        }
+        let plan = common.admin.command(&common, None)?;
+        let [
+            Operation::Edit {
+                label: address_label,
+                edit: Edit::Add(address),
+            },
+            Operation::Edit {
+                label: delete_label,
+                edit: Edit::Delete(selector),
+            },
+            Operation::Edit {
+                label: nickname_label,
+                edit: Edit::Add(nickname),
+            },
+            Operation::Display(display),
+        ] = plan.operations.as_slice()
+        else {
+            return Err("wrong NAMESTORE mutation and observation order".into());
+        };
+        if address_label.as_slice() != b"@"
+            || delete_label != address_label
+            || nickname_label != address_label
+        {
+            return Err("expected all edits to target the same apex label".into());
+        }
+        if address.kind != RecordType::A
+            || address.value.as_slice() != [127, 0, 0, 1]
+            || address.expiration != 600_000_000
+            || address.flags != RecordFlags::RELATIVE_EXPIRATION.union(RecordFlags::SHADOW)
+            || selector.kind != Some(RecordType::A)
+            || selector.filter != 0
+        {
+            return Err("composite actions changed address creation or selection".into());
+        }
+        if nickname.kind != RecordType::NICK
+            || nickname.expiration != u64::MAX
+            || nickname.flags != RecordFlags::PRIVATE
+            || display.kind != Some(RecordType::A)
+            || display.filter != OMIT_PRIVATE
+        {
+            return Err("the nickname or display inherited unrelated record flags".into());
+        }
+        let monitor = plan.monitor.ok_or("missing continuous operation")?;
+        if monitor.label.as_deref() != Some(b"@".as_slice()) {
+            return Err("monitor selection lost the requested apex label".into());
+        }
+        Ok(())
     }
 }

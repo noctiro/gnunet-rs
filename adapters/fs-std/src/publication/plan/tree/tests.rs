@@ -231,8 +231,8 @@ fn full_tree_reauthenticates_after_the_original_source_is_removed_and_rejects_a_
     assert_eq!(measured.len(), tree.objects.len());
     for (expected, measured) in tree.objects.iter().zip(measured) {
         assert_eq!(
-            gnunet_native::os_bytes::encode(measured.relative.as_os_str()).as_ref(),
-            expected.path.as_slice()
+            crate::input_tree::protocol_path(&measured.relative)?,
+            expected.path
         );
         assert_eq!(measured.content, expected.content);
     }

@@ -131,7 +131,8 @@ impl MetadataProvider for OriginalMetadata {
 /// One actual object and its exact contiguous portion of the weighted PUT plan.
 #[derive(Clone, Debug)]
 pub struct TreeObject {
-    /// Literal root-relative Unix bytes; only the final root has an empty path.
+    /// Root-relative protocol basenames separated by '/', independent of the
+    /// host's path separator. Only the final root has an empty path.
     pub path: Vec<u8>,
     /// Genuine CHK of this file or complete directory artifact.
     pub content: Content,

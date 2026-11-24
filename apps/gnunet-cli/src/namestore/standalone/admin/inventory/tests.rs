@@ -71,7 +71,9 @@ fn live_inventory_uses_original_add_rename_and_delete_after_end() -> Result<()> 
             let (mut stream, _) = listener.accept().await?;
             let mut buffer = [0; 1024];
             stream.read_exact(&mut buffer[..4]).await?;
-            assert!(matches!(Request::decode(&buffer[..4])?, Request::Start));
+            if !matches!(Request::decode(&buffer[..4])?, Request::Start) {
+                return Err("expected IDENTITY START on the original stream".into());
+            }
             let size = Response::EndOfList.encode(&mut buffer)?;
             stream.write_all(&buffer[..size]).await?;
             let key = SecretKeyView::new(&KEY)?;
@@ -79,14 +81,16 @@ fn live_inventory_uses_original_add_rename_and_delete_after_end() -> Result<()> 
                 let size = Response::Update { name, key }.encode(&mut buffer)?;
                 stream.write_all(&buffer[..size]).await?;
             }
-            assert_eq!(stream.read(&mut buffer).await?, 0);
+            if stream.read(&mut buffer).await? != 0 {
+                return Err("the original stream remained active after close".into());
+            }
             Ok::<(), Box<dyn Error + Send + Sync>>(())
         });
         let instance = identity::Instance::new();
         let mut control = Control::new(Duration::from_secs(5), "NAMESTORE live identity test")?;
-        let mut names = Names::Live(
-            Inventory::open(&instance, EndpointSource::unix(socket), &mut control).await?,
-        );
+        let mut inventory =
+            Inventory::open(&instance, EndpointSource::unix(socket), &mut control).await?;
+        let mut names = Names::Live(&mut inventory);
         for name in [
             Some(b"initial".as_slice()),
             Some(b"renamed".as_slice()),

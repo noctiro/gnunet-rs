@@ -193,10 +193,14 @@ mod tests {
             ["gnunet-namestore", "-e", "1a", "-u", &uri].map(OsString::from),
             false,
         );
-        assert!(parsed.remaining().is_some_and(<[_]>::is_empty));
+        if !matches!(parsed.remaining(), Some([])) {
+            return Err("unexpected positional NAMESTORE arguments".into());
+        }
         let mut config =
             Configuration::create(Arc::new(ProjectData::default()), Default::default())?;
-        assert!(arguments.command(&config).is_err());
+        if arguments.command(&config).is_ok() {
+            return Err("configured import accepted an absent default ego".into());
+        }
         config.set_value(NAMESTORE, DEFAULT_EGO, Some(b"local-zone"))?;
         let configured = arguments.command(&config)?;
         let (direct, _) = super::super::parse(
@@ -215,15 +219,16 @@ mod tests {
             ]
             .map(OsString::from),
         )?;
-        assert_eq!(configured.ego, direct.ego);
-        assert_eq!(configured.label.as_slice(), b"shared");
+        if configured.ego != direct.ego || configured.label.as_slice() != b"shared" {
+            return Err("the configured import changed its zone or label".into());
+        }
         let configured_sets = configured.sets.ok_or("missing configured store")?;
         let direct_sets = direct.sets.ok_or("missing direct store")?;
-        assert_eq!(configured_sets.count, 1);
-        assert_eq!(
-            configured_sets.bytes.as_slice(),
-            direct_sets.bytes.as_slice()
-        );
+        if configured_sets.count != 1
+            || configured_sets.bytes.as_slice() != direct_sets.bytes.as_slice()
+        {
+            return Err("configured and direct imports did not produce the same record set".into());
+        }
         Ok(())
     }
 }

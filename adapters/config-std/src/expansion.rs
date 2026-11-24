@@ -493,7 +493,11 @@ impl Configuration {
         value: &[u8],
         environment: &impl Environment,
     ) -> Result<PathBuf, Error> {
-        let path = bytes_path(&self.expand_dollar(value, environment)?)?;
+        let expanded = self.expand_dollar(value, environment)?;
+        #[cfg(windows)]
+        let path = windows::decode_filename(&expanded)?;
+        #[cfg(not(windows))]
+        let path = bytes_path(&expanded)?;
         if !path.is_absolute() {
             return Err(Error::InvalidInput);
         }

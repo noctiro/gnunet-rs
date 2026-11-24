@@ -361,10 +361,7 @@ impl State {
         };
         let mut entries = BTreeMap::new();
         let mut path_index = BTreeMap::new();
-        path_index.insert(
-            gnunet_crypto::hash512(&gnunet_native::os_bytes::encode(binding.path.as_os_str())),
-            binding.id,
-        );
+        path_index.insert(path_key(&binding.path), binding.id);
         entries.insert(binding.id, EntryState::new(binding));
         let mut state = Self {
             manifest,
@@ -711,12 +708,7 @@ impl State {
         {
             return Err(ModelError::Limit);
         }
-        if self
-            .path_index
-            .contains_key(&gnunet_crypto::hash512(&gnunet_native::os_bytes::encode(
-                b.path.as_os_str(),
-            )))
-        {
+        if self.path_index.contains_key(&path_key(&b.path)) {
             return Err(ModelError::Binding);
         }
         Ok(())
@@ -726,10 +718,7 @@ impl State {
         if !self.entries.contains_key(&id) {
             self.path_bytes += gnunet_native::os_bytes::encode(b.path.as_os_str()).len();
             self.scheduled_bytes += u128::from(b.content.size);
-            self.path_index.insert(
-                gnunet_crypto::hash512(&gnunet_native::os_bytes::encode(b.path.as_os_str())),
-                id,
-            );
+            self.path_index.insert(path_key(&b.path), id);
             self.entries.insert(id, EntryState::new(b));
         }
         self.get_mut(&id)
@@ -766,4 +755,15 @@ pub(super) fn validate_path(path: &Path, empty: bool) -> Result<(), ModelError> 
         _ => ModelError::Format,
     })?;
     Ok(())
+}
+
+// Validated paths contain only nonempty, NUL-free normal components.
+// Different spellings of the Windows separator name the same binding.
+fn path_key(path: &Path) -> [u8; 64] {
+    let mut hash = gnunet_crypto::Hash512State::new();
+    for component in path.components() {
+        hash.update(&gnunet_native::os_bytes::encode(component.as_os_str()));
+        hash.update(b"\0");
+    }
+    hash.finish()
 }

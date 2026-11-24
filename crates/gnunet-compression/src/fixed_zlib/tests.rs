@@ -5,8 +5,8 @@ fn exact_member_accepts_overlap_and_rejects_nonmembers() -> Result<(), Error> {
     const EMPTY: [u8; 8] = [0x78, 0x01, 0x03, 0x00, 0x00, 0x00, 0x00, 0x01];
     let mut codec = FixedZlib::new();
     let mut raw = [0; 768];
-    for pattern in raw.chunks_exact_mut(3) {
-        pattern.copy_from_slice(b"xyz");
+    for pattern in raw.as_chunks_mut::<3>().0 {
+        *pattern = *b"xyz";
     }
     let mut encoded = [0; 64];
     let len = codec.compress(&raw, &mut encoded)?;
@@ -111,7 +111,7 @@ fn keeps_hash_sparse_setu_strata_inside_cadet_capacity() -> Result<(), Error> {
         let key = generator.to_le_bytes();
         let checksum = next(generator).to_le_bytes();
         let layers = generator.trailing_ones().min(32) as usize;
-        for layer in strata.chunks_exact_mut(STRIDE).take(layers) {
+        for layer in strata.as_chunks_mut::<STRIDE>().0.iter_mut().take(layers) {
             let first = (generator % BUCKETS as u64) as usize;
             for index in 0..3 {
                 let slot = (first + index * 23) % BUCKETS;

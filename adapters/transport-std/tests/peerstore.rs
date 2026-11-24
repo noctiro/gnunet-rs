@@ -10,15 +10,17 @@ use gnunet_tcp_communicator_core::{services, session::ReplayKind};
 use gnunet_transport_host::peerstore::{Journal, Server};
 use gnunet_types::Error;
 use std::{
-    future::poll_fn,
+    future::{Future, poll_fn},
     path::PathBuf,
     sync::atomic::{AtomicU64, Ordering},
+    time::Duration,
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
 };
 static NEXT: AtomicU64 = AtomicU64::new(0);
+type Test = Result<(), Box<dyn std::error::Error>>;
 struct Directory(PathBuf);
 impl Directory {
     fn new() -> Result<Self, std::io::Error> {
@@ -48,9 +50,37 @@ async fn receive(stream: &mut TcpStream) -> Result<Vec<u8>, std::io::Error> {
     stream.read_exact(&mut bytes[4..]).await?;
     Ok(bytes)
 }
+async fn drive(
+    server: &mut Server,
+    journal: &mut Journal,
+    work: impl Future<Output = Test>,
+) -> Test {
+    let result = tokio::time::timeout(Duration::from_secs(3), async {
+        tokio::select! {
+            result = work => result,
+            result = async {
+                loop {
+                    poll_fn(|cx| server.poll_step(cx, journal, 1)).await?;
+                }
+            } => result,
+        }
+    })
+    .await?;
+    result.map_err(|cause| {
+        let deferred = journal.take_deferred();
+        let failure = deferred
+            .as_ref()
+            .and_then(|transaction| transaction.failure());
+        format!(
+            "{cause}; requests={}, commits={}, deferred={failure:?}",
+            server.requests(),
+            journal.commits()
+        )
+        .into()
+    })
+}
 #[tokio::test(flavor = "current_thread")]
-async fn owned_backend_snapshots_and_commits_before_ack_and_never_rewinds()
--> Result<(), Box<dyn std::error::Error>> {
+async fn owned_backend_snapshots_and_commits_before_ack_and_never_rewinds() -> Test {
     let directory = Directory::new()?;
     let path = directory.0.join("history");
     let mut journal = Journal::open(&path)?;
@@ -100,9 +130,7 @@ async fn owned_backend_snapshots_and_commits_before_ack_and_never_rewinds()
         );
         Ok::<_, Box<dyn std::error::Error>>(())
     };
-    tokio::time::timeout(std::time::Duration::from_secs(3),async{
-  tokio::select!{result=work=>result,result=async{loop{poll_fn(|cx|server.poll_step(cx,&mut journal,1)).await?;}}=>result}
- }).await??;
+    drive(&mut server, &mut journal, work).await?;
     server.shutdown();
     drop(server);
     drop(journal);
@@ -124,7 +152,7 @@ async fn owned_backend_snapshots_and_commits_before_ack_and_never_rewinds()
         }
         Ok::<_, Box<dyn std::error::Error>>(())
     };
-    tokio::time::timeout(std::time::Duration::from_secs(3),async{tokio::select!{result=work=>result,result=async{loop{poll_fn(|cx|server.poll_step(cx,&mut journal,1)).await?;}}=>result}}).await??;
+    drive(&mut server, &mut journal, work).await?;
     server.shutdown();
     Ok(())
 }

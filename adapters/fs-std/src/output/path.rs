@@ -17,14 +17,18 @@ fn spelling(units: impl Iterator<Item = u32>) -> Result<()> {
         if length > MAX_UNITS {
             return Err(Error::Limit);
         }
-        if matches!(unit, 0 | 92) {
+        if unit == 0 {
+            return Err(invalid_name());
+        }
+        #[cfg(unix)]
+        if unit == u32::from(b'\\') {
             return Err(invalid_name());
         }
         #[cfg(windows)]
         if unit == u32::from(b':') {
             return Err(invalid_name());
         }
-        if unit == u32::from(b'/') {
+        if unit == u32::from(b'/') || cfg!(windows) && unit == u32::from(b'\\') {
             if component == 0 || component == dots && component <= 2 {
                 return Err(invalid_name());
             }

@@ -4,12 +4,12 @@ use super::{BYTES, Error, Lease, Outcome, Stage, fail};
 use gnunet_native::{
     DirectorySync,
     filesystem::{
-        Directory, ExclusiveFile, FileIdentity, FileReader, private_data_file_info,
-        private_single_file_identity, publication, validate_readonly,
+        Directory, ExclusiveFile, FileIdentity, FileReader, PrivateFileSnapshot,
+        private_data_file_info, private_single_file_identity, publication, validate_readonly,
     },
 };
 use std::{
-    ffi::OsString,
+    ffi::{OsStr, OsString},
     fs::{self, File, TryLockError},
     io,
     path::{Path, PathBuf},
@@ -75,7 +75,7 @@ impl Image {
             .map_err(|e| fail(Stage::Read, Outcome::NotCommitted, e))?;
         Ok(Self { file, reader })
     }
-    fn read(&self) -> Result<[u8; BYTES], Error> {
+    fn read(&self, directory: &Directory, name: &OsStr) -> Result<[u8; BYTES], Error> {
         let before = private_data_file_info(&self.file)
             .map_err(|e| fail(Stage::Read, Outcome::Unknown, e))?;
         if before.bytes != BYTES as u64 {
@@ -89,15 +89,9 @@ impl Image {
         self.reader
             .read_exact_at(&mut bytes, 0)
             .map_err(|e| fail(Stage::Read, Outcome::NotCommitted, e))?;
-        let after = private_data_file_info(&self.file)
+        PrivateFileSnapshot::new(before, &bytes)
+            .confirm_read(directory, name, &self.file)
             .map_err(|e| fail(Stage::Read, Outcome::Unknown, e))?;
-        if before != after {
-            return Err(fail(
-                Stage::Read,
-                Outcome::Unknown,
-                io::Error::other("monotime image changed during read"),
-            ));
-        }
         Ok(bytes)
     }
 }
@@ -235,7 +229,10 @@ impl Files {
     }
     pub(super) fn read(&self) -> Result<Option<[u8; BYTES]>, Error> {
         self.fence()?;
-        let bytes = self.current()?.map(Image::read).transpose()?;
+        let bytes = self
+            .current()?
+            .map(|image| image.read(&self.directory, &self.name))
+            .transpose()?;
         self.fence()?;
         Ok(bytes)
     }

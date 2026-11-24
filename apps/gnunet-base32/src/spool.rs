@@ -20,6 +20,7 @@ pub(super) struct Spool {
     removed: bool,
     cleanup_on_drop: bool,
 }
+
 #[derive(Debug)]
 struct Cleanup {
     namespace: Option<io::Error>,
@@ -42,6 +43,26 @@ impl std::error::Error for Cleanup {
             .map(|error| error as _)
     }
 }
+
+#[derive(Debug)]
+struct Operation {
+    action: &'static str,
+    source: io::Error,
+}
+impl std::fmt::Display for Operation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.action, self.source)
+    }
+}
+impl std::error::Error for Operation {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.source)
+    }
+}
+fn at<T>(action: &'static str, result: io::Result<T>) -> io::Result<T> {
+    result.map_err(|source| io::Error::new(source.kind(), Operation { action, source }))
+}
+
 impl Spool {
     pub fn create(owner: &mut Option<Self>) -> io::Result<()> {
         if owner.is_some() {
@@ -83,25 +104,21 @@ impl Spool {
                 Err(error) => return Err(error),
                 Ok(directory) => spool.directory = Some(directory),
             }
-            let directory = spool
-                .directory
-                .as_ref()
-                .ok_or_else(|| io::Error::other("spool directory lost"))?;
-            directory.validate_private()?;
-            spool.file = Some(directory.create_private_file(OsStr::new(DATA))?);
+            spool.validate_directory()?;
+            spool.file = Some(at(
+                "create spool file",
+                spool.directory()?.create_private_file(OsStr::new(DATA)),
+            )?);
             spool.named = true;
             let file = spool
                 .file
                 .as_ref()
                 .ok_or_else(|| io::Error::other("spool file lost"))?;
-            spool.identity = Some(filesystem::private_single_file_identity(file)?);
-            // Windows uses original-link POSIX disposition; Unix uses unlinkat
-            // through the held private directory. No file path is reopened.
-            directory.remove_file(OsStr::new(DATA), file)?;
-            spool.named = false;
-            spool.parent.remove_directory(&spool.name, directory)?;
-            spool.removed = true;
-            spool.directory = None;
+            spool.identity = Some(at(
+                "verify private spool file",
+                filesystem::private_single_file_identity(file),
+            )?);
+            spool.unlink_file()?;
             return Ok(());
         }
         Err(io::Error::other("private spool names unavailable"))
@@ -114,9 +131,7 @@ impl Spool {
             .file
             .as_mut()
             .ok_or_else(|| io::Error::other("spool file closed"))?;
-        if FileIdentity::of(file)? != identity
-            || filesystem::file_links(file)? != u64::from(self.named)
-        {
+        if self.named || FileIdentity::of(file)? != identity || filesystem::file_links(file)? != 0 {
             return Err(io::Error::other("original spool file changed"));
         }
         Ok(file)
@@ -130,41 +145,65 @@ impl Spool {
     pub fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
         self.file()?.read(bytes)
     }
-    pub fn path(&self) -> PathBuf {
-        self.path.clone()
+    pub fn retained_path(&self) -> Option<PathBuf> {
+        (!self.removed).then(|| self.path.clone())
     }
-    fn remove(&mut self) -> io::Result<()> {
-        if self.removed {
+    fn unlink_file(&mut self) -> io::Result<()> {
+        if !self.named {
             return Ok(());
         }
-        let directory = self
-            .directory
+        let directory = self.directory()?;
+        let file = self
+            .file
             .as_ref()
-            .ok_or_else(|| io::Error::other("original spool directory unconfirmed"))?;
-        directory.validate_private()?;
-        if self.named {
-            let file = self
-                .file
-                .as_ref()
-                .ok_or_else(|| io::Error::other("original named spool file lost"))?;
-            if Some(FileIdentity::of(file)?) != self.identity {
-                return Err(io::Error::other("original named spool file unconfirmed"));
-            }
-            directory.remove_file(OsStr::new(DATA), file)?;
-            self.named = false;
+            .ok_or_else(|| io::Error::other("original named spool file lost"))?;
+        if Some(FileIdentity::of(file)?) != self.identity {
+            return Err(io::Error::other("original named spool file unconfirmed"));
         }
-        self.parent.remove_directory(&self.name, directory)?;
+        at(
+            "unlink spool file",
+            directory.remove_file(OsStr::new(DATA), file),
+        )?;
+        self.named = false;
+        Ok(())
+    }
+    fn directory(&self) -> io::Result<&Directory> {
+        self.directory
+            .as_ref()
+            .ok_or_else(|| io::Error::other("original spool directory unconfirmed"))
+    }
+    fn validate_directory(&self) -> io::Result<()> {
+        at(
+            "verify private spool directory",
+            self.directory()?.validate_private(),
+        )
+    }
+    fn remove_directory(&mut self) -> io::Result<()> {
+        self.validate_directory()?;
+        at(
+            "remove spool directory",
+            self.parent.remove_directory(&self.name, self.directory()?),
+        )?;
         self.removed = true;
         self.directory = None;
         Ok(())
     }
     pub fn close(&mut self) -> io::Result<()> {
-        self.cleanup_on_drop = false;
-        let namespace = self.remove().err();
+        if !std::mem::take(&mut self.cleanup_on_drop) {
+            return Ok(());
+        }
+        let unlink = if self.named {
+            self.validate_directory().and_then(|()| self.unlink_file())
+        } else {
+            Ok(())
+        };
         let close = self
             .file
             .take()
             .and_then(|file| filesystem::close(file).err());
+        // Retire the directory after releasing the original child handle. Its
+        // file link was already removed before accepting data into the spool.
+        let namespace = unlink.and_then(|()| self.remove_directory()).err();
         if namespace.is_some() || close.is_some() {
             Err(io::Error::other(Cleanup { namespace, close }))
         } else {
@@ -174,8 +213,6 @@ impl Spool {
 }
 impl Drop for Spool {
     fn drop(&mut self) {
-        if self.cleanup_on_drop {
-            let _actual = self.close();
-        }
+        let _actual = self.close();
     }
 }

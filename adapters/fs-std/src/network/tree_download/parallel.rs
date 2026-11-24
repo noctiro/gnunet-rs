@@ -90,7 +90,7 @@ impl Files<'_> {
         let mut more = true;
         // Partition the one global request cap across file workers. A lone
         // lookup and its optional reorder window both consume this same share.
-        let per_file = NonZeroU32::new(self.transfer.request_parallelism.get() / self.slots.get())
+        let per_file = NonZeroU32::new(self.transfer.request_parallelism.get() / self.slots)
             .ok_or(Error::Corrupt)?;
         loop {
             while primary.is_none() && more && active.len() < self.slots.get() as usize {

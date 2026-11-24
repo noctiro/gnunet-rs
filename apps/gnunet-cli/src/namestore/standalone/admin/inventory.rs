@@ -17,7 +17,7 @@ mod tests;
 pub(super) enum Names<'a, 'id> {
     Zone(&'a Owner),
     Snapshot(&'a [Owner]),
-    Live(Inventory<'id>),
+    Live(&'a mut Inventory<'id>),
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]

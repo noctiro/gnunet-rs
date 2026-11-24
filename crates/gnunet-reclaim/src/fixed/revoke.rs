@@ -88,10 +88,8 @@ impl<'a> BoundRevoke<'a> {
                     }
                     descriptor = true;
                 }
-                RecordType::RECLAIM_ATTRIBUTE_REF => {
-                    if Identifier::decode(record.data)?.is_zero() {
-                        return Err(Error::Malformed);
-                    }
+                RecordType::RECLAIM_ATTRIBUTE_REF if Identifier::decode(record.data)?.is_zero() => {
+                    return Err(Error::Malformed);
                 }
                 _ => {}
             }

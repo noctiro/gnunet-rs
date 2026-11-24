@@ -266,7 +266,8 @@ fn prepared_nested_tree_reopens_publishes_original_objects_and_never_replays_com
                     _ => {}
                 }),
             )
-            .await??;
+            .await
+            .map_err(|error| format!("initial tree preparation: {error}"))??;
             assert_eq!(
                 (
                     prepared.prepared,
@@ -311,13 +312,19 @@ fn prepared_nested_tree_reopens_publishes_original_objects_and_never_replays_com
             let (published, (_, count)) = timeout(WAIT, async {
                 tokio::try_join!(
                     async {
-                        work.await
-                            .map_err(|error| error as Box<dyn std::error::Error>)
+                        let report = work.await?;
+                        if report.failures != 0 || report.blocked != 0 {
+                            return Err(
+                                format!("reopened tree failed to publish: {report:?}").into()
+                            );
+                        }
+                        Ok::<_, Box<dyn std::error::Error>>(report)
                     },
                     peers
                 )
             })
-            .await??;
+            .await
+            .map_err(|error| format!("reopened tree publication: {error}"))??;
             assert_eq!(
                 (
                     published.prepared,

@@ -252,7 +252,7 @@ fn over_limit_datagrams_never_deliver_silently_truncated_payload() -> Result {
         server.send_to(&[1; 64], peer).await?;
         server.send_to(&[2; 17], peer).await?;
         server.send_to(&[3; 16], peer).await?;
-        let (mut dropped, mut delivered) = (0, None);
+        let (mut dropped, mut rejected, mut delivered) = (0, 0, None);
         h.drive(
             Some(Instant::now() + StdDuration::from_secs(2)),
             |event, _| match event {
@@ -264,6 +264,12 @@ fn over_limit_datagrams_never_deliver_silently_truncated_payload() -> Result {
                     dropped += 1;
                     Flow::Continue
                 }
+                Event::ReceiveRejected { error, .. }
+                    if gnunet_native::network::datagram_size_error(&error) =>
+                {
+                    rejected += 1;
+                    Flow::Continue
+                }
                 Event::Datagram(data) => {
                     delivered = Some((data.request, data.bytes.to_vec()));
                     Flow::Return
@@ -272,7 +278,12 @@ fn over_limit_datagrams_never_deliver_silently_truncated_payload() -> Result {
             },
         )
         .await?;
-        assert_eq!(dropped, 2);
+        // Winsock reports a datagram larger than the buffer as WSAEMSGSIZE
+        // instead of supplying a truncated length and peer address.
+        assert_eq!(
+            (dropped, rejected),
+            if cfg!(windows) { (1, 1) } else { (2, 0) }
+        );
         assert_eq!(delivered, Some((id, vec![3; 16])));
         assert!(h.owns_request(id));
         assert_eq!(h.next_wakeup(), None);

@@ -116,8 +116,10 @@ fn snapshot_readback_uses_the_original_readonly_file_across_chunks() -> Result {
     let mut header = [0; HEADER];
     original.file.read_exact(&mut header)?;
     body[16_384] ^= 1;
-    assert!(matches!(image::verify(&mut original.file, &header, &body),
-        Err(error) if error.stage == "readback-mismatch"));
+    assert!(
+        matches!(image::verify(&reopened.dir, OsStr::new(namespace.image()), &mut original.file, &header, &body),
+        Err(error) if error.stage == "readback-mismatch")
+    );
     Ok(())
 }
 

@@ -2,7 +2,7 @@
 use super::{Failure, Outcome, Persisted, Stage, Store, failure, fence::Fence, staging::Candidate};
 use gnunet_native::{
     DirectorySync,
-    filesystem::{EntryInfo, FileInfo, private_data_file_info, publication, validate_readonly},
+    filesystem::{PrivateFileSnapshot, private_data_file_info, publication, validate_readonly},
 };
 use gnunet_tcp_replay_host::pairing::FRONTIER_BYTES;
 use std::{
@@ -15,11 +15,11 @@ use std::{
 pub(super) struct Snapshot {
     pub image: Persisted,
     pub file: File,
-    info: FileInfo,
+    snapshot: PrivateFileSnapshot,
 }
 struct Readback {
     image: Persisted,
-    info: FileInfo,
+    snapshot: PrivateFileSnapshot,
 }
 pub(super) struct Pending {
     image: Persisted,
@@ -32,16 +32,6 @@ pub(super) enum Settlement {
 }
 fn invalid(stage: Stage, why: &'static str) -> Failure {
     failure(stage, Outcome::Unknown, io::Error::other(why))
-}
-fn check_name(owner: &Fence, info: FileInfo) -> Result<(), Failure> {
-    let map = |cause| failure(Stage::Read, Outcome::Unknown, cause);
-    let named = owner.parent.entry_info(&owner.name).map_err(map)?;
-    if named != EntryInfo::File(info) {
-        return Err(map(io::Error::other(format!(
-            "TCP frontier no longer selects the original snapshot: held={info:?}, named={named:?}"
-        ))));
-    }
-    Ok(())
 }
 fn check_absent(owner: &Fence) -> Result<(), Failure> {
     match owner.parent.entry_info(&owner.name) {
@@ -64,7 +54,12 @@ fn read_original(owner: &Fence, file: &mut File) -> Result<Readback, Failure> {
             "original exact V2 TCP frontier is not bound",
         ));
     }
-    check_name(owner, before)?;
+    if !owner.parent.same_file(&owner.name, file).map_err(map)? {
+        return Err(invalid(
+            Stage::Read,
+            "TCP frontier no longer selects the original file",
+        ));
+    }
     file.seek(SeekFrom::Start(0)).map_err(map)?;
     let mut bytes = [0; FRONTIER_BYTES];
     file.read_exact(&mut bytes).map_err(map)?;
@@ -75,17 +70,13 @@ fn read_original(owner: &Fence, file: &mut File) -> Result<Readback, Failure> {
             "original TCP frontier changed during read: unexpected_tail={trailing_bytes}, before={before:?}"
         ))));
     }
-    let after = private_data_file_info(file).map_err(map)?;
-    if after != before {
-        return Err(map(io::Error::other(format!(
-            "original TCP frontier changed during read: before={before:?}, after={after:?}"
-        ))));
-    }
-    check_name(owner, after)?;
+    let snapshot = PrivateFileSnapshot::new(before, &bytes)
+        .confirm_read(&owner.parent, &owner.name, file)
+        .map_err(map)?;
     owner.check()?;
     Ok(Readback {
         image: Persisted::decode(bytes).map_err(map)?,
-        info: after,
+        snapshot,
     })
 }
 impl Snapshot {
@@ -93,39 +84,36 @@ impl Snapshot {
         Self {
             image: readback.image,
             file,
-            info: readback.info,
+            snapshot: readback.snapshot,
         }
     }
     fn check(&self, owner: &Fence) -> Result<(), Failure> {
         let map = |cause| failure(Stage::Read, Outcome::Unknown, cause);
         validate_readonly(&self.file).map_err(map)?;
-        let held = private_data_file_info(&self.file).map_err(map)?;
-        if held != self.info {
-            return Err(map(io::Error::other(format!(
-                "settled TCP frontier changed: expected={:?}, observed={held:?}",
-                self.info
-            ))));
-        }
-        check_name(owner, held)
+        self.snapshot
+            .verify(&owner.parent, &owner.name, &self.file)
+            .map_err(map)
     }
-    fn read_expected(&mut self, owner: &Fence) -> Result<FileInfo, Failure> {
+    fn read_expected(&mut self, owner: &Fence) -> Result<PrivateFileSnapshot, Failure> {
         let observed = read_original(owner, &mut self.file)?;
         // The fixed V2 codec interprets every byte. Equal images have equal
         // original bytes, and this read used the pinned file at its own name.
-        if observed.info.identity != self.info.identity || observed.image != self.image {
+        if observed.snapshot.initial().identity != self.snapshot.initial().identity
+            || observed.image != self.image
+        {
             return Err(invalid(
                 Stage::Recovery,
                 "restored TCP frontier differs from the last settled original",
             ));
         }
-        Ok(observed.info)
+        Ok(observed.snapshot)
     }
     fn refresh(&mut self, owner: &Fence) -> Result<(), Failure> {
-        if self.read_expected(owner)? != self.info {
+        if self.read_expected(owner)?.initial() != self.snapshot.initial() {
             let map = |cause| failure(Stage::Recovery, Outcome::Unknown, cause);
             publication::sync_original(&owner.parent, &owner.name, &self.file).map_err(map)?;
             owner.sync().map_err(map)?;
-            self.info = self.read_expected(owner)?;
+            self.snapshot = self.read_expected(owner)?;
         }
         Ok(())
     }
@@ -156,7 +144,7 @@ impl Store {
                     .map_err(|cause| failure(Stage::DirectorySync, Outcome::Unknown, cause))?;
                 let readback = read_original(&store.owner, &mut file)?;
                 if readback.image != initial.image
-                    || readback.info.identity != initial.info.identity
+                    || readback.snapshot.initial().identity != initial.snapshot.initial().identity
                 {
                     return Err(invalid(
                         Stage::Read,

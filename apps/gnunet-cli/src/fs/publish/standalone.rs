@@ -571,8 +571,17 @@ mod tests {
 
     #[test]
     fn official_publish_expiration_follows_the_utc_year_boundary() -> Result<()> {
-        assert_eq!(expiration(946_684_799)?.as_micros(), 978_307_200_000_000);
-        assert_eq!(expiration(946_684_800)?.as_micros(), 1_009_843_200_000_000);
+        for (at, expected) in [
+            (946_684_799, 978_307_200_000_000),
+            (946_684_800, 1_009_843_200_000_000),
+        ] {
+            let actual = expiration(at)?.as_micros();
+            if actual != expected {
+                return Err(
+                    format!("at {at}, expected expiration {expected}, got {actual}").into(),
+                );
+            }
+        }
         Ok(())
     }
 }

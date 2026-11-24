@@ -254,7 +254,7 @@ impl<'input, 'scratch> Parser<'input, 'scratch> {
             let Some(first) = token(text, &mut cursor) else {
                 continue;
             };
-            let head = &text[first.clone()];
+            let head = &text[first];
             if head.eq_ignore_ascii_case("$ORIGIN") {
                 let value = token(text, &mut cursor).ok_or(Error::Malformed)?;
                 if token(text, &mut cursor).is_some() {

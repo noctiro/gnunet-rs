@@ -1,5 +1,6 @@
 //! Bounded Linux original-destination and pktinfo control records.
 use super::{address, invalid_data};
+use crate::ancillary_abi;
 use std::{
     io,
     mem::{align_of, size_of},
@@ -61,7 +62,7 @@ impl Control {
             // SAFETY: header extent is initialized and contains integer fields;
             // the unaligned copy does not assume malicious lengths are aligned.
             let header = unsafe { remaining.as_ptr().cast::<libc::cmsghdr>().read_unaligned() };
-            let length = header.cmsg_len;
+            let length: usize = ancillary_abi::extent(header.cmsg_len)?;
             if length < HEADER || length > remaining.len() {
                 return Err(invalid_data("invalid transparent DNS ancillary length"));
             }
@@ -193,11 +194,7 @@ impl Control {
             .checked_add(space(size_of::<T>()))
             .filter(|end| *end <= self.capacity())
             .ok_or_else(|| invalid_data("transparent DNS control storage overflow"))?;
-        let header = libc::cmsghdr {
-            cmsg_len: length,
-            cmsg_level: level,
-            cmsg_type: kind,
-        };
+        let header = ancillary_abi::header(length, level, kind)?;
         // SAFETY: the checked complete extent is owned and initialized. The
         // original native payload is borrowed and its bytes remain live.
         unsafe {

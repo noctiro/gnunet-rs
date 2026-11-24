@@ -15,9 +15,8 @@ use windows_sys::Win32::Globalization::{
     GetCalendarInfoEx, GetLocaleInfoEx, LOCALE_ICALENDARTYPE, LOCALE_RETURN_NUMBER, MAP_FOLDDIGITS,
     TIME_NOSECONDS,
 };
-const MAX_PICTURE: usize = 256;
+const MAX_NLS_TEXT: usize = 256;
 const MAX_PICTURES: usize = 128;
-const MAX_NAME: usize = 256;
 mod conversion;
 use conversion::Conversion;
 mod symbols;
@@ -29,11 +28,10 @@ struct Pictures {
     failure: Option<io::Error>,
 }
 impl Pictures {
-    fn push(&mut self, value: &[u16]) -> io::Result<()> {
-        if value.is_empty() {
+    fn push(&mut self, owned: Vec<u16>) -> io::Result<()> {
+        if owned.is_empty() {
             return Err(io::ErrorKind::InvalidData.into());
         }
-        let owned = fold_digits(value)?;
         if self.values.iter().any(|previous| previous == &owned) {
             return Ok(());
         }
@@ -77,22 +75,8 @@ unsafe extern "system" fn time_picture(value: *const u16, context: isize) -> i32
 )]
 unsafe fn collect(value: *const u16, pictures: &mut Pictures) -> i32 {
     let result = catch_unwind(AssertUnwindSafe(|| {
-        if value.is_null() {
-            return Err(io::ErrorKind::InvalidData.into());
-        }
-        let mut buffer = [0; MAX_PICTURE];
-        for at in 0..MAX_PICTURE {
-            // SAFETY: NLS provides a terminated string, inspected only until NUL.
-            let unit = unsafe { *value.add(at) };
-            if unit == 0 {
-                return pictures.push(&buffer[..at]);
-            }
-            buffer[at] = unit;
-        }
-        Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "native date picture is too long",
-        ))
+        // SAFETY: the date/time enumerator borrows a terminated NLS string.
+        pictures.push(unsafe { callback_text(value) }?)
     }));
     match result {
         Ok(Ok(())) => 1,
@@ -105,6 +89,27 @@ unsafe fn collect(value: *const u16, pictures: &mut Pictures) -> i32 {
             0
         }
     }
+}
+
+#[expect(
+    unsafe_code,
+    reason = "The synchronous NLS callback guarantees a live terminated string; only the verified bounded prefix is borrowed"
+)]
+unsafe fn callback_text(value: *const u16) -> io::Result<Vec<u16>> {
+    if value.is_null() {
+        return Err(io::ErrorKind::InvalidData.into());
+    }
+    for len in 0..MAX_NLS_TEXT {
+        // SAFETY: the callback string stays live and reading stops at its NUL.
+        if unsafe { *value.add(len) } == 0 {
+            // SAFETY: all units before the terminator are in the same string.
+            return fold_digits(unsafe { std::slice::from_raw_parts(value, len) });
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "native calendar text is too long",
+    ))
 }
 
 pub(super) struct Formats {
@@ -373,7 +378,7 @@ fn fold_digits(input: &[u16]) -> io::Result<Vec<u16>> {
     reason = "Exact named calendar and string property are read into initialized fixed output; reserved and unused numeric output are null"
 )]
 fn calendar_text(name: &nls::Name, calendar: u32, property: u32) -> io::Result<Vec<u16>> {
-    let mut buffer = [0; MAX_NAME];
+    let mut buffer = [0; MAX_NLS_TEXT];
     // SAFETY: live terminated name and exclusive full declared output span.
     let count = unsafe {
         GetCalendarInfoEx(
@@ -396,7 +401,7 @@ fn calendar_text(name: &nls::Name, calendar: u32, property: u32) -> io::Result<V
     reason = "Named locale string queries use owned names and exact initialized output extents without locale installation"
 )]
 fn locale_text(name: &nls::Name, property: u32) -> io::Result<Vec<u16>> {
-    let mut buffer = [0; MAX_NAME];
+    let mut buffer = [0; MAX_NLS_TEXT];
     // SAFETY: string-only property and exclusive bounded output stay live.
     let count = unsafe {
         GetLocaleInfoEx(

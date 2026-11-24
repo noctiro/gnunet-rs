@@ -563,10 +563,9 @@ impl<C: FnMut(Progress) -> Control, M: MetadataProvider> Prepare<'_, C, M> {
         puts: Vec<Put>,
         source: Option<indexed::Source>,
     ) -> Result<(), Error> {
+        let path = crate::input_tree::protocol_path(path).map_err(source_error)?;
         let extra = path
-            .as_os_str()
-            .as_encoded_bytes()
-            .len()
+            .capacity()
             .checked_add(size_of::<TreeObject>())
             .and_then(|v| v.checked_add(puts.len().checked_mul(size_of::<Put>())?))
             .ok_or(Error::Limit)?;
@@ -597,11 +596,6 @@ impl<C: FnMut(Progress) -> Control, M: MetadataProvider> Prepare<'_, C, M> {
         } else {
             None
         };
-        let raw = gnunet_native::os_bytes::encode(path.as_os_str());
-        let mut path = Vec::new();
-        path.try_reserve_exact(raw.len())
-            .map_err(|_| Error::Limit)?;
-        path.extend_from_slice(&raw);
         self.objects.push(TreeObject {
             path,
             content,

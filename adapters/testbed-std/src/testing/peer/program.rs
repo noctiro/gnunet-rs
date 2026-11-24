@@ -256,7 +256,10 @@ impl Action {
                     .stdout(Stdio::null())
                     .kill_on_drop(true)
                     .spawn()?;
-                Ok(Running::Process { child, expected })
+                Ok(Running::Process {
+                    child: Box::new(child),
+                    expected,
+                })
             }
         }
     }
@@ -265,7 +268,7 @@ impl Action {
 enum Running {
     Future(ActionFuture),
     Process {
-        child: Child,
+        child: Box<Child>,
         expected: ExpectedExit,
     },
     Complete,

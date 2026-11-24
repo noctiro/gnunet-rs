@@ -1,6 +1,8 @@
 //! Original marked root, lock/counter fencing and native publication ownership.
 use crate::*;
-use gnunet_native::filesystem::{self, Directory as NativeDirectory, FileIdentity, FileInfo};
+use gnunet_native::filesystem::{
+    self, Directory as NativeDirectory, FileIdentity, FileInfo, PrivateFileSnapshot,
+};
 use std::{ffi::OsStr, fs::File, io::Read};
 mod publication;
 mod removal;
@@ -93,7 +95,7 @@ pub(crate) struct Directory {
     name: OsString,
     original: NativeDirectory,
     marker: File,
-    marker_info: FileInfo,
+    marker_snapshot: PrivateFileSnapshot,
     lock: File,
     limits: Limits,
     pub fenced: bool,
@@ -192,7 +194,7 @@ impl Directory {
             name,
             original,
             marker,
-            marker_info,
+            marker_snapshot: PrivateFileSnapshot::new(marker_info, MAGIC),
             lock,
             limits: options.limits,
             fenced: false,
@@ -255,16 +257,8 @@ impl Directory {
         {
             return Err(io::Error::other("original TESTBED root path changed"));
         }
-        let marker_info = filesystem::private_data_file_info(&self.marker)?;
-        if marker_info != self.marker_info {
-            return Err(io::Error::other(format!(
-                "held TESTBED marker snapshot changed (expected {:?}, observed {marker_info:?})",
-                self.marker_info,
-            )));
-        }
-        if !self.original.same_file(OsStr::new(MARK), &self.marker)? {
-            return Err(io::Error::other("original TESTBED marker name changed"));
-        }
+        self.marker_snapshot
+            .verify(&self.original, OsStr::new(MARK), &self.marker)?;
         if !self.original.same_file(OsStr::new(LOCK), &self.lock)? {
             return Err(io::Error::other("original TESTBED lock name changed"));
         }

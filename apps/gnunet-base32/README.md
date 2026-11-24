@@ -30,10 +30,10 @@ The shared native filesystem adapter creates a private directory and file
 relative to retained directory handles. Unix uses owner-only permissions;
 Windows uses a protected current-user DACL with trusted administrative access.
 Windows removes the original file link with [POSIX disposition](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntddk/ns-ntddk-_file_disposition_information_ex).
-The original file identity and link count are checked. Its name and empty
-parent directory are removed before conversion continues; the original open
-file remains until validation, rewind and bounded output finish. No file path
-is reopened. Unconfirmed or replaced entries are never deleted by guessed path.
+The original file identity and link count are checked. Its name is removed
+before any bytes are written, and validation and output use the original file
+handle. Cleanup closes that handle before removing the empty private directory.
+Unconfirmed or replaced entries are never deleted by guessed path.
 Temporary storage follows the native temporary-directory selection.
 
 Spool storage grows with decoded input and can fail. File operations remain

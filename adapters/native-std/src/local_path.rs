@@ -10,7 +10,9 @@ use std::{
     fs::File,
     io,
     mem::size_of,
-    os::windows::io::{AsRawHandle, AsRawSocket, BorrowedSocket, FromRawHandle, RawSocket},
+    os::windows::io::{
+        AsRawHandle, AsRawSocket, AsSocket, BorrowedSocket, FromRawHandle, OwnedSocket, RawSocket,
+    },
     path::{Path, PathBuf},
     ptr,
 };
@@ -44,6 +46,7 @@ pub enum EndpointAccess {
     Everyone,
 }
 
+#[derive(Clone)]
 pub(crate) enum ProtectedAccess {
     Owner,
     PrimaryGroup(Sid),
@@ -52,6 +55,7 @@ pub(crate) enum ProtectedAccess {
 
 /// Access policy selected from a verified primary token for a future local bind.
 /// A supervisor retains file custody and grants the target account connect access.
+#[derive(Clone)]
 pub struct EndpointPrincipals {
     pub(crate) custodian: Sid,
     pub(crate) user: Sid,
@@ -137,6 +141,26 @@ impl EndpointProtection {
     }
 
     pub(crate) fn verify_source(&self, socket: BorrowedSocket<'_>) -> io::Result<()> {
+        self.checked_node(socket).map(drop)
+    }
+
+    pub(crate) fn duplicate_source(
+        &self,
+        original: BorrowedSocket<'_>,
+    ) -> io::Result<(OwnedSocket, Self)> {
+        let node = self.checked_node(original)?;
+        let duplicate = original.try_clone_to_owned()?;
+        let protection = Self::retain(
+            duplicate.as_socket(),
+            self.0.path.clone(),
+            node,
+            self.0.identity,
+            self.0.principals.clone(),
+        );
+        Ok((duplicate, protection))
+    }
+
+    fn checked_node(&self, socket: BorrowedSocket<'_>) -> io::Result<File> {
         if socket.as_raw_socket() != self.0.socket
             || local_socket::local_address(socket)?.as_pathname() != Some(self.0.path.as_path())
         {
@@ -145,7 +169,7 @@ impl EndpointProtection {
                 "listener protection does not match the original socket and bound name",
             ));
         }
-        Self::matching_node(&self.0.path, self.0.identity).map(drop)
+        Self::matching_node(&self.0.path, self.0.identity)
     }
 
     pub(crate) fn import(
@@ -262,16 +286,17 @@ pub fn prepare_parents(path: &Path, access: EndpointAccess) -> io::Result<()> {
 pub fn prepare_parents_for(path: &Path, principals: &EndpointPrincipals) -> io::Result<()> {
     let absolute = parent(path)?;
     let descriptor = security::descriptor(principals, security::Object::Directory)?;
-    let mut component = PathBuf::new();
-    for part in absolute.components() {
-        component.push(part.as_os_str());
-        match std::fs::metadata(&component) {
+    // A Windows path prefix (for example `\\?\C:`) is not a directory.
+    // Inspect only actual ancestors, starting with the volume/share root.
+    let ancestors: Vec<_> = absolute.ancestors().collect();
+    for directory in ancestors.into_iter().rev() {
+        match std::fs::metadata(directory) {
             Ok(info) if info.is_dir() => continue,
             Ok(_) => return Err(io::ErrorKind::NotADirectory.into()),
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Err(error),
         }
-        security::create_directory(&component, &descriptor)?;
+        security::create_directory(directory, &descriptor)?;
     }
     validate_parent_directory(&absolute)
 }
@@ -491,6 +516,17 @@ mod tests {
             }
         }
         Ok(())
+    }
+
+    #[test]
+    fn verbatim_paths_prepare_only_real_directory_ancestors() -> io::Result<()> {
+        let directory = Directory::new()?;
+        let dir = fs::canonicalize(directory.0.parent().ok_or(io::ErrorKind::NotFound)?)?
+            .join(directory.0.file_name().ok_or(io::ErrorKind::NotFound)?)
+            .join("nested");
+        prepare_parents(&dir.join("service.sock"), EndpointAccess::Owner)?;
+        let file = open_node(&dir, READ_CONTROL | FILE_READ_ATTRIBUTES)?;
+        crate::identity::validate_parent(&file)
     }
 
     #[test]

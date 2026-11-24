@@ -4,18 +4,13 @@ use std::{
     error::Error,
     fs,
     io::Read,
-    path::PathBuf,
     process::{Child, Command, ExitStatus, Stdio},
     thread,
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant},
 };
+mod support;
+use support::Directory;
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
-struct Directory(PathBuf);
-impl Drop for Directory {
-    fn drop(&mut self) {
-        let _cleanup = fs::remove_dir_all(&self.0);
-    }
-}
 struct Original(Child);
 impl Drop for Original {
     fn drop(&mut self) {
@@ -43,12 +38,9 @@ fn check(value: bool) -> Result<()> {
     }
 }
 fn run(blocked: bool) -> Result<()> {
-    let nonce = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
-    let directory =
-        Directory(std::env::temp_dir().join(format!("gn-fs-out-{}-{nonce:x}", std::process::id())));
-    fs::create_dir(&directory.0)?;
-    let source = directory.0.join("source");
-    let repository = directory.0.join("repository");
+    let directory = Directory::create()?;
+    let source = directory.path().join("source");
+    let repository = directory.path().join("repository");
     fs::create_dir(&repository)?;
     // More than a native pipe buffer; includes every possible byte value.
     let expected: Vec<u8> = (0..2 * 1024 * 1024)
@@ -131,22 +123,19 @@ fn undrained_cat_pipe_exits_with_pending_receipt() -> Result<()> {
 
 #[test]
 fn extraction_deadline_settles_original_worker_under_backpressure() -> Result<()> {
-    let nonce = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
-    let directory = Directory(std::env::temp_dir().join(format!(
-        "gn-fs-extract-out-{}-{nonce:x}",
-        std::process::id()
-    )));
-    fs::create_dir(&directory.0)?;
+    let directory = Directory::create()?;
     for ordinal in 0..1024 {
         fs::write(
-            directory.0.join(format!("{ordinal:04}-{}", "n".repeat(96))),
+            directory
+                .path()
+                .join(format!("{ordinal:04}-{}", "n".repeat(96))),
             [],
         )?;
     }
     let mut child = Original(
         Command::new(env!("CARGO_BIN_EXE_gnunet-cli"))
             .args(["fs", "extract"])
-            .arg(&directory.0)
+            .arg(directory.path())
             .args(["-D", "--timeout", "2"])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

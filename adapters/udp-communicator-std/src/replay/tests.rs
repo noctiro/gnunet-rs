@@ -137,10 +137,9 @@ fn bounded_peer_namespace_and_monotime_reservations_survive_restart() -> Test {
     Ok(())
 }
 #[test]
-fn real_postrename_parent_loss_blocks_all_admission_until_original_recovered() -> Test {
+fn losing_the_writer_fence_after_rename_blocks_admission_until_recovery() -> Test {
     let scratch = Scratch::new()?;
     let live = scratch.0.join("live");
-    let moved = scratch.0.join("moved");
     crate::test_support::private_directory(&live)?;
     let local = [2; 32];
     let peer = [3; 32];
@@ -160,9 +159,13 @@ fn real_postrename_parent_loss_blocks_all_admission_until_original_recovered() -
             .ok_or("missing committed original")?
             .file,
     )?;
+    let fence = live.join(LOCK);
+    let moved_fence = live.join("moved-fence");
+    let mut moved = Ok(());
     let result = journal.commit_time_observed(local, peer, 11, || {
-        assert!(fs::rename(&live, &moved).is_ok());
+        moved = fs::rename(&fence, &moved_fence);
     });
+    moved?;
     assert!(matches!(
         result,
         Err(JournalError::Native(Failure {
@@ -178,7 +181,7 @@ fn real_postrename_parent_loss_blocks_all_admission_until_original_recovered() -
             .ok_or("missing uncertain original replacement")?
             .file,
     )?;
-    let pending = fs::read(moved.join(DATA))?;
+    let pending = fs::read(live.join(DATA))?;
     assert!(journal.quiescent().is_err());
     assert!(journal.latest(peer).is_err());
     assert!(matches!(
@@ -189,7 +192,7 @@ fn real_postrename_parent_loss_blocks_all_admission_until_original_recovered() -
     assert_eq!(failure.stage, Stage::Recovery);
     assert_eq!(failure.outcome, Outcome::Unknown);
     assert!(journal.recover().is_err());
-    fs::rename(&moved, &live)?;
+    fs::rename(&moved_fence, &fence)?;
     assert!(!journal.quiescent()?);
     // Equal bytes in another object do not settle the original write.
     let original_pending = live.join("original-pending");
@@ -211,8 +214,13 @@ fn real_postrename_parent_loss_blocks_all_admission_until_original_recovered() -
     fs::write(live.join(DATA), older)?;
     assert!(journal.recover().is_err());
     assert!(!journal.quiescent()?);
-    fs::write(live.join(DATA), &pending)?;
-    File::open(live.join(DATA))?.sync_all()?;
+    let mut restored = File::options()
+        .write(true)
+        .truncate(true)
+        .open(live.join(DATA))?;
+    restored.write_all(&pending)?;
+    restored.sync_all()?;
+    drop(restored);
     assert!(journal.recover()?);
     gnunet_native::filesystem::validate_readonly(
         &journal
@@ -245,7 +253,8 @@ fn changed_committed_inode_cannot_authorize_reads_or_replace_newer_state() -> Te
         .current
         .as_ref()
         .ok_or("missing original snapshot")?
-        .info;
+        .original
+        .initial();
 
     let path = scratch.0.join(DATA);
     let newer = Snapshot {

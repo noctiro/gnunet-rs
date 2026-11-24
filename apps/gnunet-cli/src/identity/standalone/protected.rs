@@ -151,28 +151,27 @@ mod tests {
         .map(OsString::from);
         let options = super::super::Arguments::new().options();
         let arguments = Protected::take(&mut argv, false, options.specs())?;
-        assert_eq!(argv[1], "-qPREDACTED");
-        assert_eq!(argv[2], "--read=REDACTED");
-        assert_eq!(argv[4], "REDACTED");
-        assert_eq!(argv[6], "-P-public-name");
-        assert_eq!(
-            arguments.private.ok_or("missing protected key")?.payload(),
-            b"secret"
-        );
-        assert_eq!(
-            arguments
+        if argv[1] != "-qPREDACTED"
+            || argv[2] != "--read=REDACTED"
+            || argv[4] != "REDACTED"
+            || argv[6] != "-P-public-name"
+        {
+            return Err("redaction changed public options or retained a sensitive argument".into());
+        }
+        if arguments.private.ok_or("missing protected key")?.payload() != b"secret"
+            || arguments
                 .read
                 .ok_or("missing protected ciphertext")?
-                .payload(),
-            b"cipher"
-        );
-        assert_eq!(
-            arguments
+                .payload()
+                != b"cipher"
+            || arguments
                 .write
                 .ok_or("missing protected message")?
-                .payload(),
-            b"plain"
-        );
+                .payload()
+                != b"plain"
+        {
+            return Err("the protected fields did not keep their original option payloads".into());
+        }
         Ok(())
     }
 }

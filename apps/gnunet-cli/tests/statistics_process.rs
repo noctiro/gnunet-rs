@@ -5,18 +5,13 @@ use std::{
     fs::{self, File},
     io::{self, Read, Write},
     net::{Ipv4Addr, TcpListener, TcpStream},
-    path::PathBuf,
     process::{Child, Command, Stdio},
     thread,
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant},
 };
+mod support;
+use support::Directory;
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
-struct Directory(PathBuf);
-impl Drop for Directory {
-    fn drop(&mut self) {
-        let _cleanup = fs::remove_dir_all(&self.0);
-    }
-}
 struct OriginalChild(Child);
 impl Drop for OriginalChild {
     fn drop(&mut self) {
@@ -89,14 +84,11 @@ enum Program {
 }
 
 fn run(program: Program, set: bool, blocked: bool) -> Result<()> {
-    let nonce = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
-    let directory =
-        Directory(std::env::temp_dir().join(format!("gn-cli-{}-{nonce:x}", std::process::id())));
-    fs::create_dir(&directory.0)?;
-    fs::create_dir(directory.0.join("config.d"))?;
+    let directory = Directory::create()?;
+    fs::create_dir(directory.path().join("config.d"))?;
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
     fs::write(
-        directory.0.join("config"),
+        directory.path().join("config"),
         format!(
             "[statistics]\nHOSTNAME = 127.0.0.1\nPORT = {}\n",
             listener.local_addr()?.port()
@@ -119,24 +111,17 @@ fn run(program: Program, set: bool, blocked: bool) -> Result<()> {
         Program::Grouped => {
             command
                 .args(["statistics", if set { "set" } else { "get" }, "-c"])
-                .arg(directory.0.join("config"))
+                .arg(directory.path().join("config"))
                 .args(["-", "s", "p"]);
             if set {
                 command.args(["9", "--persistent"]);
             }
         }
         Program::Standalone => {
-            command.arg("-c").arg(directory.0.join("config")).args([
-                "-s",
-                "s",
-                "-n",
-                "p",
-                "-r",
-                "127.0.0.1",
-                "-q",
-                "-S",
-                ",",
-            ]);
+            command
+                .arg("-c")
+                .arg(directory.path().join("config"))
+                .args(["-s", "s", "-n", "p", "-r", "127.0.0.1", "-q", "-S", ","]);
             if set {
                 command.args(["-p", "9"]);
             }
@@ -145,14 +130,14 @@ fn run(program: Program, set: bool, blocked: bool) -> Result<()> {
     let started = Instant::now();
     let mut child = OriginalChild(
         command
-            .env("GNUNET_BASE_CONFIG", directory.0.join("config.d"))
+            .env("GNUNET_BASE_CONFIG", directory.path().join("config.d"))
             .stdin(Stdio::null())
             .stdout(if blocked {
                 Stdio::piped()
             } else {
-                File::create(directory.0.join("out"))?.into()
+                File::create(directory.path().join("out"))?.into()
             })
-            .stderr(File::create(directory.0.join("err"))?)
+            .stderr(File::create(directory.path().join("err"))?)
             .spawn()?,
     );
     let deadline = Instant::now() + Duration::from_secs(12);
@@ -165,9 +150,13 @@ fn run(program: Program, set: bool, blocked: bool) -> Result<()> {
         }
         thread::sleep(Duration::from_millis(5));
     };
-    server
+    let peer_result = server
         .join()
-        .map_err(|_| io::Error::other("controlled peer panicked"))??;
+        .map_err(|_| io::Error::other("controlled peer panicked"))?;
+    if let Err(peer_error) = peer_result {
+        let errors = fs::read_to_string(directory.path().join("err"))?;
+        return Err(format!("controlled peer: {peer_error}; CLI: {status}: {errors}").into());
+    }
     if blocked {
         if status.success() {
             return Err("blocked stdout was reported as completed GET".into());
@@ -179,7 +168,7 @@ fn run(program: Program, set: bool, blocked: bool) -> Result<()> {
             .take()
             .ok_or("original stdout pipe missing")?
             .read_to_string(&mut output)?;
-        let errors = fs::read_to_string(directory.0.join("err"))?;
+        let errors = fs::read_to_string(directory.path().join("err"))?;
         if output.is_empty()
             || started.elapsed() < Duration::from_secs(9)
             || !errors.contains("deadline: true")
@@ -194,11 +183,11 @@ fn run(program: Program, set: bool, blocked: bool) -> Result<()> {
     if !status.success() {
         return Err(format!(
             "CLI failed: {}",
-            fs::read_to_string(directory.0.join("err"))?
+            fs::read_to_string(directory.path().join("err"))?
         )
         .into());
     }
-    let output = fs::read_to_string(directory.0.join("out"))?;
+    let output = fs::read_to_string(directory.path().join("out"))?;
     if program == Program::Standalone {
         let expected = if set {
             String::new()

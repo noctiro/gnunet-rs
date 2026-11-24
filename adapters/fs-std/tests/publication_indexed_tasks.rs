@@ -486,12 +486,12 @@ fn written_index_start_without_reply_remains_unknown_after_reopen_and_cancel() -
 fn actual_index_started_survives_wal_failure_and_original_receipt_records_without_resend()
 -> TestResult {
     runtime()?.block_on(async{
-        let temp=Temporary::new()?;let (mut task,_,binding,content,puts)=prepared(&temp)?;let task_path=temp.0.join("task");let saved=temp.0.join("original-task");let task_id=*task.task_id();
+        let temp=Temporary::new()?;let (mut task,_,binding,content,puts)=prepared(&temp)?;let task_path=temp.0.join("task");let lock_name=std::ffi::OsStr::new(".lock");let lock=task_path.join(lock_name);let saved=temp.0.join("original-task-lock");let task_id=*task.task_id();
         let (fs_socket,fs_listener)=Socket::bind(&temp.0,"fs.sock").await?;let (ds_socket,ds_listener)=Socket::bind(&temp.0,"ds.sock").await?;let ack=index_ack()?;
         let (fs_done_tx,fs_done_rx)=oneshot::channel();let (ds_done_tx,ds_done_rx)=oneshot::channel();let permitted=Arc::new(AtomicBool::new(false));let released=permitted.clone();
         let fs_peer=async{
             let (mut stream,_)=fs_listener.accept().await?;let original=frame(&mut stream).await?;let hash=inspect_index(&original,&binding)?;
-            fs::rename(&task_path,&saved)?;drop(gnunet_native::filesystem::Directory::open(&temp.0)?.create_private_directory("task".as_ref())?);
+            fs::rename(&lock,&saved)?;drop(gnunet_native::filesystem::Directory::open(&task_path)?.create_private_file(lock_name)?);
             stream.write_all(&ack).await?;closed(&mut stream).await?;fs_done_rx.await?;no_connection(&fs_listener).await?;Ok::<_,Box<dyn std::error::Error>>(hash)
         };
         let ds_peer=async{
@@ -504,7 +504,7 @@ fn actual_index_started_survives_wal_failure_and_original_receipt_records_withou
             assert!(matches!(&failure.cause,Some(Cause::Storage(error)) if error.failure().kind==store::FailureKind::Authority));assert!(failure.native.is_none());assert!(failure.progress.payloads_verified);assert_eq!(failure.progress.new_accepted,Counts::default());assert_eq!(failure.progress.indexes.new_accepted,1);assert_eq!(failure.progress.indexes.recorded,0);
             let native=failure.index.take().ok_or("WAL failure erased original IndexStarted owner")?;assert_eq!(native.registration(),IndexRegistration::Acknowledged);assert_eq!(native.response_bytes(),Some(ack.as_slice()));assert!(matches!(native.response()?,Some(IndexResponse::IndexStarted)));
             let pending=task.status().indexes.pending.ok_or("WAL failure erased original registration intent")?;assert_eq!(pending.attempt,native.attempt());assert_eq!(pending.disposition,IndexDisposition::Intent);assert!(task.status().fenced);assert!(task.status().uncertain);
-            fs::remove_dir(&task_path)?;fs::rename(&saved,&task_path)?;assert!(native.record(&mut task).is_err());assert!(task.status().fenced);drop(task);
+            fs::remove_file(&lock)?;fs::rename(&saved,&lock)?;assert!(native.record(&mut task).is_err());assert!(task.status().fenced);drop(task);
             let mut task=Task::open(&task_path,store::Limits::default())?;assert_eq!(task.task_id(),&task_id);assert!(!task.status().fenced);assert_eq!(task.status().indexes.pending,Some(pending));assert_eq!(native.record(&mut task)?,Effect::Accepted);assert_eq!(task.status().indexes.recorded,1);assert!(task.status().indexes.pending.is_none());assert!(!task.status().uncertain);
             let records=task.status().state_records;assert_eq!(native.record(&mut task)?,Effect::Accepted);assert_eq!(task.status().state_records,records);let index_hash=native.attempt().request_hash;
             permitted.store(true,Ordering::SeqCst);let (fs,ds,deadline)=endpoints(&fs_socket,&ds_socket)?;let done=task.run_indexed(fs,ds,&mut buffers,deadline,|_|Control::Continue).await?;

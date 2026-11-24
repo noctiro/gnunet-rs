@@ -2,18 +2,17 @@
 use super::{JournalError, LOCK, Outcome, Stage, invalid, native};
 use gnunet_native::{
     DirectorySync,
-    filesystem::{Directory, FileIdentity, private_single_file_identity},
+    filesystem::{Directory, ExclusiveFile, FileIdentity, private_single_file_identity},
 };
 use std::{
     ffi::OsStr,
-    fs::{self, File},
-    io,
+    fs, io,
     path::{Path, PathBuf},
 };
 pub(super) struct Fence {
     pub directory: PathBuf,
     pub parent: Directory,
-    guard: File,
+    guard: ExclusiveFile,
     parent_id: FileIdentity,
     pub identity: FileIdentity,
     pub fresh: bool,
@@ -45,8 +44,7 @@ impl Fence {
         };
         let identity = private_single_file_identity(&guard)
             .map_err(|cause| native(Stage::Fence, Outcome::NotCommitted, cause))?;
-        guard
-            .try_lock()
+        let guard = ExclusiveFile::try_lock(guard)
             .map_err(|cause| native(Stage::Fence, Outcome::NotCommitted, cause.into()))?;
         let barrier = parent
             .sync()
@@ -69,8 +67,10 @@ impl Fence {
             self.parent.validate_private()?;
             Ok(FileIdentity::of(selected.as_file())? == self.parent_id
                 && FileIdentity::of(self.parent.as_file())? == self.parent_id
-                && private_single_file_identity(&self.guard)? == self.identity
-                && self.parent.same_file(OsStr::new(LOCK), &self.guard)?)
+                && private_single_file_identity(self.guard.as_file())? == self.identity
+                && self
+                    .parent
+                    .same_file(OsStr::new(LOCK), self.guard.as_file())?)
         })()
         .map_err(|cause| native(Stage::Fence, Outcome::Unknown, cause))?;
         if !observed {

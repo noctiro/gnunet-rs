@@ -34,14 +34,14 @@ impl Error for ReportingFailure {
     }
 }
 
-pub(super) fn combine(original: CheckResult<()>, reporting: CheckResult<()>) -> CheckResult<()> {
+pub(super) fn combine<T>(original: CheckResult<T>, reporting: CheckResult<()>) -> CheckResult<T> {
     match (original, reporting) {
         (Err(original), Err(reporting)) => Err(Box::new(ReportingFailure {
             original,
             reporting,
         })),
-        (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
-        (Ok(()), Ok(())) => Ok(()),
+        (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
+        (Ok(value), Ok(())) => Ok(value),
     }
 }
 
@@ -78,11 +78,11 @@ impl Recorder {
         self.persist("running", None)
     }
 
-    pub(super) fn check(
+    pub(super) fn check<T>(
         &mut self,
         name: &str,
-        action: impl FnOnce() -> CheckResult<()>,
-    ) -> CheckResult<()> {
+        action: impl FnOnce() -> CheckResult<T>,
+    ) -> CheckResult<T> {
         let started = Instant::now();
         let result = action();
         self.steps.push(json!({
@@ -97,13 +97,16 @@ impl Recorder {
     }
 
     pub(super) fn command(&mut self, program: &str, args: &[impl AsRef<OsStr>]) -> CheckResult<()> {
-        self.command_with(program, args, io::stdout(), io::stderr())
+        self.run(Command::new(program).args(args))
+    }
+
+    pub(super) fn run(&mut self, command: &mut Command) -> CheckResult<()> {
+        self.command_with(command, io::stdout(), io::stderr())
     }
 
     fn command_with(
         &mut self,
-        program: &str,
-        args: &[impl AsRef<OsStr>],
+        command: &mut Command,
         stdout: impl Write + Send,
         stderr: impl Write + Send,
     ) -> CheckResult<()> {
@@ -111,11 +114,9 @@ impl Recorder {
         let index = self.steps.len() + 1;
         let stdout_name = format!("{index:03}-stdout.log");
         let stderr_name = format!("{index:03}-stderr.log");
-        let mut command = Command::new(program);
-        command.args(args);
         let (exit, result) = if let Some(directory) = &self.directory {
             logged(
-                &mut command,
+                command,
                 &directory.join(&stdout_name),
                 &directory.join(&stderr_name),
                 stdout,
@@ -124,9 +125,9 @@ impl Recorder {
         } else {
             completed(command.status())
         };
-        let argv: Vec<_> = std::iter::once(OsStr::new(program))
-            .chain(args.iter().map(AsRef::as_ref))
-            .map(|arg| arg.to_string_lossy())
+        let argv: Vec<_> = std::iter::once(command.get_program())
+            .chain(command.get_args())
+            .map(OsStr::to_string_lossy)
             .collect();
         self.steps.push(json!({
             "stage": self.stage,
@@ -338,17 +339,13 @@ mod tests {
         let mut recorder = Recorder::new("fixture", Some(&directory.0))?;
         recorder.begin_stage("test")?;
         let executable = std::env::current_exe()?;
-        let program = executable
-            .to_str()
-            .ok_or("test executable is not Unicode")?;
         let result = recorder.command_with(
-            program,
-            &[
+            Command::new(executable).args([
                 "--exact",
                 "verify::output::tests::failed_child",
                 "--ignored",
                 "--nocapture",
-            ],
+            ]),
             io::sink(),
             io::sink(),
         );
@@ -401,7 +398,9 @@ mod tests {
         let destination = run.join("result.json");
         fs::remove_file(&destination)?;
         fs::create_dir(&destination)?;
-        let result = recorder.check("boundary", || Err("original boundary refusal".into()));
+        let result = recorder.check("boundary", || {
+            Err::<(), _>("original boundary refusal".into())
+        });
         let error = result.err().ok_or("reporting fault returned success")?;
         if !error.to_string().contains("original boundary refusal")
             || error

@@ -1339,6 +1339,7 @@ const POLICIES: &[Policy] = &[
             "ed25519-dalek",
             "getrandom",
             "hmac",
+            "macula-mldsa",
             "ml-kem",
             "p256",
             "p384",
@@ -4160,6 +4161,7 @@ const POLICIES: &[Policy] = &[
             "nix",
             "objc2",
             "objc2-foundation",
+            "sha2", // Bounded readback after FreeBSD UFS ctime drift.
             "socket2",
             "windows-sys",
             "zeroize",

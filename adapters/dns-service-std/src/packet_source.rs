@@ -119,14 +119,17 @@ impl<'id> PacketSource<'id> {
     }
     pub(crate) fn defers_settlement(&self) -> bool {
         #[cfg(windows)]
-        if matches!(&self.0, Backend::Wfp(_)) {
-            return true;
+        {
+            matches!(&self.0, Backend::Wfp(_))
         }
         #[cfg(any(target_os = "macos", target_os = "ios"))]
-        if matches!(&self.0, Backend::Flows(_)) {
-            return true;
+        {
+            matches!(&self.0, Backend::Flows(_))
         }
-        false
+        #[cfg(not(any(windows, target_os = "macos", target_os = "ios")))]
+        {
+            false
+        }
     }
     /// Open an explicit installed WinDivert provider with the original bound
     /// upstream sockets excluded from capture for the lifetime of this source.

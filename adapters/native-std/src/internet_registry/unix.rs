@@ -1,7 +1,12 @@
 //! Native Unix Internet protocol and service database queries.
 
 use std::{ffi::CStr, io};
-#[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "android")))]
+#[cfg(not(any(
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "android",
+    target_env = "ohos"
+)))]
 use std::{mem::MaybeUninit, ptr};
 
 #[cfg(any(target_env = "musl", target_env = "ohos"))]
@@ -9,7 +14,12 @@ mod musl;
 
 /// Synchronous access to the system protocol and service databases.
 pub struct Database {
-    #[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "android")))]
+    #[cfg(not(any(
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "android",
+        target_env = "ohos"
+    )))]
     scratch: Vec<MaybeUninit<usize>>,
 }
 
@@ -17,7 +27,12 @@ impl Database {
     /// Create a database handle for native lookups.
     pub fn open() -> io::Result<Self> {
         Ok(Self {
-            #[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "android")))]
+            #[cfg(not(any(
+                target_os = "macos",
+                target_os = "ios",
+                target_os = "android",
+                target_env = "ohos"
+            )))]
             scratch: Vec::new(),
         })
     }
@@ -67,10 +82,15 @@ impl Database {
     }
 
     /// Look up a service for the exact protocol name and return its host-order port.
-    #[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "android")))]
+    #[cfg(not(any(
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "android",
+        target_env = "ohos"
+    )))]
     #[expect(unsafe_code, reason = "libc fills a caller-owned service record")]
     pub fn service(&mut self, service: &CStr, protocol: &CStr) -> io::Result<Option<u16>> {
-        let musl_semantics = cfg!(any(target_env = "musl", target_env = "ohos"));
+        let musl_semantics = cfg!(target_env = "musl");
         if musl_semantics && !matches!(protocol.to_bytes(), b"tcp" | b"udp") {
             // musl returns EINVAL for these protocols before searching /etc/services.
             // https://git.musl-libc.org/cgit/musl/tree/src/network/getservbyname_r.c
@@ -102,6 +122,34 @@ impl Database {
     }
 
     /// Look up a service for the exact protocol name and return its host-order port.
+    #[cfg(target_env = "ohos")]
+    pub fn service(&mut self, service: &CStr, protocol: &CStr) -> io::Result<Option<u16>> {
+        use crate::addresses::{Error, Hints, resolve_native};
+
+        let (socket_type, protocol) = match protocol.to_bytes() {
+            b"tcp" => (libc::SOCK_STREAM, libc::IPPROTO_TCP),
+            b"udp" => (libc::SOCK_DGRAM, libc::IPPROTO_UDP),
+            _ => return Ok(None),
+        };
+        // The Public SDK exports getaddrinfo rather than getservbyname_r.
+        // A numeric host confines the lookup to the service database.
+        let hints = Hints {
+            family: libc::AF_INET,
+            socket_type,
+            protocol,
+            flags: libc::AI_NUMERICHOST,
+        };
+        match resolve_native(c"127.0.0.1", Some(service), hints, 1) {
+            Ok(addresses) => Ok(addresses.first().map(|entry| entry.address.port())),
+            Err(Error::Resolution {
+                code: libc::EAI_SERVICE | libc::EAI_NONAME,
+                ..
+            }) => Ok(None),
+            Err(error) => Err(io::Error::other(error)),
+        }
+    }
+
+    /// Look up a service for the exact protocol name and return its host-order port.
     #[cfg(any(target_os = "macos", target_os = "ios", target_os = "android"))]
     #[expect(
         unsafe_code,
@@ -119,7 +167,12 @@ impl Database {
 
     /// The callback must initialize the supplied record if it returns success
     /// with a nonnull match pointer.
-    #[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "android")))]
+    #[cfg(not(any(
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "android",
+        target_env = "ohos"
+    )))]
     #[expect(
         unsafe_code,
         reason = "the caller supplies the native initialization contract"
@@ -163,7 +216,12 @@ impl Database {
         }
     }
 
-    #[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "android")))]
+    #[cfg(not(any(
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "android",
+        target_env = "ohos"
+    )))]
     fn resize_scratch(&mut self, words: usize) -> io::Result<()> {
         // The scratch stores native alias pointers as well as string bytes.
         self.scratch
@@ -174,6 +232,7 @@ impl Database {
     }
 }
 
+#[cfg(not(target_env = "ohos"))]
 fn number(value: libc::c_int) -> io::Result<u16> {
     u16::try_from(value).map_err(|_| {
         io::Error::new(
@@ -209,7 +268,12 @@ fn with_errno<T>(lookup: impl FnOnce() -> Option<T>) -> io::Result<Option<T>> {
     Ok(matched)
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "android")))]
+#[cfg(not(any(
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "android",
+    target_env = "ohos"
+)))]
 #[expect(
     unsafe_code,
     reason = "native libc reentrant lookup symbols from netdb.h"

@@ -72,7 +72,7 @@ impl LocalDatagram {
                 msg.msg_iov = &raw mut iov;
                 msg.msg_iovlen = 1;
                 msg.msg_control = control.as_mut_ptr();
-                msg.msg_controllen = control.capacity() as _;
+                msg.msg_controllen = crate::ancillary_abi::extent(control.capacity())?;
                 let bytes = libc::recvmsg(self.socket.as_raw_fd(), &raw mut msg, 0);
                 if bytes < 0 {
                     return Err(io::Error::last_os_error());
@@ -93,7 +93,10 @@ impl LocalDatagram {
                     return Err(invalid("unexpected UDP peer address family"));
                 }
                 *length = msg.msg_namelen;
-                Ok((bytes as usize, metadata::native_size(msg.msg_controllen)?))
+                Ok((
+                    bytes as usize,
+                    crate::ancillary_abi::extent(msg.msg_controllen)?,
+                ))
             })?
         };
         let peer = peer
@@ -142,7 +145,7 @@ impl LocalDatagram {
             msg.msg_iov = &raw mut iov;
             msg.msg_iovlen = 1;
             msg.msg_control = control.as_mut_ptr();
-            msg.msg_controllen = used as _;
+            msg.msg_controllen = crate::ancillary_abi::extent(used)?;
             libc::sendmsg(self.socket.as_raw_fd(), &raw const msg, 0)
         };
         if bytes < 0 {

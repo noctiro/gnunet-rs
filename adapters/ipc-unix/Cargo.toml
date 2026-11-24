@@ -10,7 +10,7 @@ default = []
 
 [dependencies]
 gnunet-client-host.workspace = true
-gnunet-client = { path = "../../crates/gnunet-client" }
+gnunet-client = { path = "../../crates/gnunet-client", features = ["alloc"] }
 gnunet-statistics = { path = "../../crates/gnunet-statistics", features = ["alloc"] }
 gnunet-types.workspace = true
 gnunet-wire.workspace = true

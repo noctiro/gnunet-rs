@@ -31,18 +31,15 @@ impl OwnedTun {
 }
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 fn get(fd: &OwnedFd, command: libc::c_ulong, request: &mut libc::ifreq) -> io::Result<()> {
-    #[cfg(all(target_os = "linux", target_env = "musl"))]
-    let request_code = libc::c_int::try_from(command)
-        .map_err(|_| platform::invalid("read-only ioctl command overflow"))?;
-    #[cfg(not(all(target_os = "linux", target_env = "musl")))]
-    let request_code = command;
     #[expect(
         unsafe_code,
         reason = "Private callers select only four exact read-only ifreq getters with initialized exclusive ABI storage and a bounded interface name"
     )]
     // SAFETY: request layout/size agree with each selected getter; synchronous
-    // ioctl retains no pointer and mutates no network configuration.
-    let result = unsafe { libc::ioctl(fd.as_raw_fd(), request_code, request as *mut libc::ifreq) };
+    // ioctl retains no pointer and mutates no network configuration. The
+    // native request parameter is signed on musl and unsigned on glibc/BSD;
+    // the cast preserves the fixed ioctl command bits.
+    let result = unsafe { libc::ioctl(fd.as_raw_fd(), command as _, request as *mut libc::ifreq) };
     if result < 0 {
         Err(io::Error::last_os_error())
     } else {

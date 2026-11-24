@@ -343,9 +343,11 @@ mod tests {
             .rows
             .get(b"core\0peers".as_slice())
             .ok_or("missing statistic")?;
-        assert_eq!(row.columns(4).collect::<Vec<_>>(), [2, 0, 8, 0]);
-        assert!(row.persistent);
-        assert_eq!(table.values, 2);
+        if !row.columns(4).eq([2, 0, 8, 0]) || !row.persistent || table.values != 2 {
+            return Err(
+                "the table lost sparse node columns, persistence, or its value count".into(),
+            );
+        }
         Ok(())
     }
 
@@ -375,13 +377,16 @@ mod tests {
             fs::write(directory.0.join(name), b"")?;
         }
         let nodes = discover(&directory.0, Instant::now() + Duration::from_secs(1))?;
-        assert_eq!(
-            nodes,
-            [
+        if nodes
+            != [
                 directory.0.join("2/config-a"),
-                directory.0.join("10/config")
+                directory.0.join("10/config"),
             ]
-        );
+        {
+            return Err(
+                format!("unexpected node order or configuration selection: {nodes:?}").into(),
+            );
+        }
         Ok(())
     }
 }

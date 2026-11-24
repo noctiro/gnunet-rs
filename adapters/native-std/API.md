@@ -270,6 +270,13 @@ administration across identity checks and POSIX name-based link/unlink requests.
 Windows publication/deletion acts on captured original objects. `sync` reports
 `DirectorySync` independently of data-file synchronization.
 
+`PrivateFileSnapshot` checks the selected name and the held private file
+against a previously verified byte snapshot. Use `confirm_read` with metadata
+captured before reading to finish capturing the snapshot. If FreeBSD UFS
+changes only ctime after publication, confirmation and later checks require
+bounded SHA-256 readback from the same file, with stable metadata and a matching
+name, before caching the new timestamp.
+
 On Windows, `Directory::sync` qualifies the original handle's volume as local
 NTFS and reopens that same directory with `FILE_ADD_FILE` access. If access is
 denied, it retries with `FILE_ADD_SUBDIRECTORY` access. Either lease can request
@@ -340,10 +347,11 @@ changes the file's permissions, link count or selected name.
 
 `ExclusiveFile` owns the original physical lock file. It uses the standard
 [nonblocking native lock](https://doc.rust-lang.org/std/fs/struct.File.html#method.try_lock),
-preserves contention and native errors, and releases its handle on drop without
-unlinking the name. Unix locks are advisory; Windows locks also constrain data
-access. Borrowing the original file does not grant permission to clone, unlock
-or replace an application's lock owner.
+preserves contention and native errors, and unlocks before closing the handle
+without unlinking its name. Closing alone can leave a Unix lock held by a
+temporarily inherited file descriptor. Unix locks are advisory; Windows locks
+also constrain data access. Borrowing the original file does not grant
+permission to clone, unlock or replace an application's lock owner.
 
 Windows `ReadMapping` owns an unnamed read-only original-file section and view.
 It exposes a raw address for trusted synchronous native consumers, without a Rust

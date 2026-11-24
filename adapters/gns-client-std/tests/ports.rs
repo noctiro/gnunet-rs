@@ -8,10 +8,12 @@ use gnunet_gns_client_host::{
     clock::{ClockSample, ClockSubscription, RuntimeClock},
     resolution::{AddressLookup, PortError, ResolutionContext, ResolutionTimer},
 };
+use gnunet_service_runtime::local::Stream;
 use gnunet_types::Error as ProtocolError;
 use std::{
     error::Error as StdError,
     io,
+    path::PathBuf,
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -100,12 +102,13 @@ fn ports(refused: bool) -> Arc<Ports> {
         refuse_timer: AtomicBool::new(false),
     })
 }
+fn missing_socket() -> PathBuf {
+    std::env::temp_dir().join(format!("gns-missing-{}.sock", std::process::id()))
+}
 fn source(ports: Arc<Ports>) -> Result<EndpointSource, Failure> {
     let mut cfg = gnunet_config::Configuration::default();
-    let path = format!(
-        "/private/tmp/gnrs-gns-port-missing-{}.sock",
-        std::process::id()
-    );
+    let path = missing_socket();
+    let path = path.to_str().ok_or("non-Unicode fixture path")?;
     cfg.set_value(b"gns", b"UNIXPATH", Some(path.as_bytes()))?;
     Ok(EndpointSource::configuration(cfg, b"gns", ports))
 }
@@ -171,13 +174,19 @@ fn distinct_clients_hold_distinct_clock_subscriptions_and_invalid_limits_create_
 #[tokio::test(flavor = "current_thread")]
 async fn actual_connect_failure_and_timer_refusal_remain_distinct_until_explicit_recovery()
 -> Result<(), Failure> {
+    let expected = Stream::connect(missing_socket())
+        .await
+        .err()
+        .ok_or("fixture endpoint unexpectedly connected")?;
+    assert!(expected.raw_os_error().is_some());
     let p = ports(false);
     p.refuse_timer.store(true, Ordering::SeqCst);
     let mut instance = Instance::new();
     let mut c = BoundedClient::<2, 32>::new(&mut instance, source(p.clone())?, Limits::default())?;
     match c.drive(None).await? {
         Progress::ConnectRetry { error, retry_after } => {
-            assert_eq!(error.kind(), io::ErrorKind::NotFound);
+            assert_eq!(error.raw_os_error(), expected.raw_os_error());
+            assert!(PortError::from_io(&error).is_none());
             assert_eq!(retry_after, Duration::ZERO);
         }
         _ => return Err("actual Unix connect error not reported".into()),
@@ -200,7 +209,7 @@ async fn actual_connect_failure_and_timer_refusal_remain_distinct_until_explicit
     assert_eq!(p.clock.subscriptions.load(Ordering::SeqCst), 1);
     match c.drive(None).await? {
         Progress::ConnectRetry { error, retry_after } => {
-            assert_eq!(error.kind(), io::ErrorKind::NotFound);
+            assert_eq!(error.raw_os_error(), expected.raw_os_error());
             assert_eq!(retry_after, Duration::from_millis(1));
         }
         _ => return Err("original retry did not resume".into()),

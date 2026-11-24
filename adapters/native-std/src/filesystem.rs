@@ -13,14 +13,18 @@ mod mapping;
 mod mount;
 mod open;
 mod private_data;
+mod private_snapshot;
 pub mod publication;
 mod reader;
 mod special;
+#[cfg(windows)]
+pub use crate::paths::relative::DirectoryClaim;
 pub use links::file_links;
 pub use lock::ExclusiveFile;
 #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
 pub use mount::MountPoint;
 pub use private_data::private_data_file_info;
+pub use private_snapshot::{PrivateFileSnapshot, PrivateSnapshotError};
 mod readonly;
 mod times;
 pub use identity::{FileIdentity, FileIdentityParts, InvalidIdentity};
@@ -41,6 +45,15 @@ pub use crate::paths::Directory;
 pub use times::{FileTimes, file_times};
 #[cfg(unix)]
 pub use unix::{Directory, validate_private_file};
+
+/// Read the file-kind bits from a Unix stat result, excluding permission bits.
+#[cfg(unix)]
+pub fn stat_file_kind(stat: &libc::stat) -> libc::mode_t {
+    // On 32-bit Android the stat field is wider than mode_t. Only the file
+    // type bits are needed and all are representable by mode_t.
+    let mode: libc::mode_t = stat.st_mode as _;
+    mode & libc::S_IFMT
+}
 
 #[cfg(windows)]
 /// Qualify an ordinary file's process-user owner and restrictive DACL.

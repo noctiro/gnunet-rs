@@ -12,31 +12,30 @@ async fn native_failure() -> Test {
     let good = Identity::from_seed([7; 32]);
     let destination = UdpSocket::bind("127.0.0.1:0").await?;
     let target = destination.local_addr()?;
+    let socket = DatagramSocket::bind("127.0.0.1:0".parse()?, Default::default())?;
+    #[cfg(any(windows, target_os = "macos", target_os = "freebsd"))]
+    let options = socket.shared()?;
     #[cfg(any(target_os = "macos", target_os = "freebsd"))]
-    let (socket, options, send_bytes) = {
+    let send_bytes = {
         // A buffer below one atomic datagram yields a native refusal.
-        // This reference only observes/restores options on the original
-        // socket; it performs no send or receive and is dropped before stop.
-        let socket = DatagramSocket::bind("127.0.0.1:0".parse()?, Default::default())?;
-        let options = socket.shared()?;
         let native = socket2::SockRef::from(options.as_ref());
         let bytes = native.send_buffer_size()?;
         native.set_send_buffer_size(1)?;
-        (socket, options, bytes)
+        bytes
     };
-    #[cfg(not(any(target_os = "macos", target_os = "freebsd")))]
-    let socket = DatagramSocket::bind("127.0.0.1:0".parse()?, Default::default())?;
     #[cfg(any(target_os = "macos", target_os = "freebsd"))]
     let refused = target;
-    #[cfg(not(any(target_os = "macos", target_os = "freebsd")))]
+    #[cfg(windows)]
+    let refused = SocketAddr::from((std::net::Ipv4Addr::BROADCAST, target.port()));
+    #[cfg(not(any(windows, target_os = "macos", target_os = "freebsd")))]
     let refused: SocketAddr = "127.0.0.1:0".parse()?;
     let (mut owner, mut service) = owner_on(&local, socket).await?;
     owner.enable_discovery(Default::default())?;
     owner.update_interfaces(&[])?;
     let original_socket = owner.sockets[0].local_address();
     let original_generation = owner.transport_generation();
-    // The optional LAN send uses the production native send path but an opaque
-    // fixture packet and a private loopback target. No LAN announcement escapes.
+    // Use the native discovery send with an opaque fixture packet on a socket
+    // bound to loopback; the platform-specific refusal precedes transmission.
     let interface = crate::discovery::Interface {
         source: original_socket,
         index: 1,
@@ -44,6 +43,14 @@ async fn native_failure() -> Test {
     };
     let hard = Instant::now() + Duration::from_secs(2);
     owner.sockets[0].queue_discovery(original_socket, 1, refused, 1, [0; 96], hard)?;
+    #[cfg(windows)]
+    {
+        // Winsock can accept destination port zero. Disable broadcast admission
+        // after discovery prepares the socket to get a native access refusal.
+        let native = socket2::SockRef::from(options.as_ref());
+        native.set_broadcast(false)?;
+        check(!native.broadcast()?)?;
+    }
     owner.discovery.as_mut().ok_or(Error::Stale)?.pending[0] = Some(crate::discovery::Pending {
         operation: 1,
         interface,
@@ -55,11 +62,14 @@ async fn native_failure() -> Test {
         Err(error) => Poll::Ready(Err(error)),
     })
     .await?;
-    check(matches!(event, Activity::DiscoveryFailed {
+    if !matches!(&event, Activity::DiscoveryFailed {
         socket: 0,
         operation: crate::discovery::Operation::Send { interface: original, target: intended },
         error: SocketError::Io(error),
-    } if original == interface && intended == refused && error.raw_os_error().is_some()))?;
+    } if *original == interface && *intended == refused && error.raw_os_error().is_some())
+    {
+        return Err(format!("unexpected native discovery send result: {event:?}").into());
+    }
     check(
         !owner.sockets[0].has_pending_send()
             && owner.discovery.as_ref().ok_or(Error::Stale)?.pending[0].is_none(),
@@ -159,16 +169,22 @@ async fn native_failure() -> Test {
         )
         .into()
     })?;
-    stage.set("original socket and surviving endpoint");
-    check(
-        failures.get() == 1
-            && sent.get() == 1
-            && owner.endpoints() == 1
-            && owner.sockets[0].local_address() == original_socket
-            && owner.transport_generation() == original_generation
-            && owner.transport_attached(),
-    )?;
-    #[cfg(any(target_os = "macos", target_os = "freebsd"))]
+    if failures.get() != 1
+        || sent.get() != 1
+        || owner.endpoints() != 1
+        || owner.sockets[0].local_address() != original_socket
+        || owner.transport_generation() != original_generation
+        || !owner.transport_attached()
+    {
+        return Err(format!(
+            "original socket or surviving endpoint changed: failed={}, sent={}, endpoints={}",
+            failures.get(),
+            sent.get(),
+            owner.endpoints(),
+        )
+        .into());
+    }
+    #[cfg(any(windows, target_os = "macos", target_os = "freebsd"))]
     drop(options);
     owner.close();
     Ok(())

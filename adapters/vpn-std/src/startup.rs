@@ -531,11 +531,11 @@ async fn drive_embedded(
             if duplicate_refusal {
                 return Poll::Ready(Err(gnunet_types::Error::Capacity.into()));
             }
-            if let Some(rejected) = rejected {
-                if let Err(error) = discovery::Provider::reject(rejected, vpn, &mut |_| {}) {
-                    failures.failures.push(error.into());
-                    vpn.request_shutdown();
-                }
+            if let Some(rejected) = rejected
+                && let Err(error) = discovery::Provider::reject(rejected, vpn, &mut |_| {})
+            {
+                failures.failures.push(error.into());
+                vpn.request_shutdown();
             }
             let discovery_changed = match discovery
                 .as_mut()

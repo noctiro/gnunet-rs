@@ -427,10 +427,10 @@ fn ready_failure_and_node_sharing_failure_retain_both_errors_and_retry_owner() -
                     .unix_paths()
                     .next()
                     .ok_or_else(|| io::Error::other("no owned endpoint"))?;
-                // READ_CONTROL, read/write sharing without delete, and no reparse following.
+                // Request data access so the open denies delete sharing.
                 *blocker.borrow_mut() = Some(
                     std::fs::OpenOptions::new()
-                        .access_mode(0x0002_0000)
+                        .read(true)
                         .share_mode(3)
                         .custom_flags(0x0020_0000)
                         .open(path)?,

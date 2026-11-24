@@ -513,16 +513,16 @@ async fn staged_range_retains_absolute_offsets_and_revalidates_only_selected_byt
     let selected = root.0.join("selected");
     fs::create_dir(&selected)?;
     let mut output = OutputDir::open(&selected)?;
-    let owner = [73; 32];
-    let mut staging = output
-        .create_owned_directory("stage", owner)
-        .map_err(|error| io::Error::other(error.to_string()))?;
     let parent_id = output.identity()?;
-    let stage_id = staging.identity()?;
     let moved = root.0.join("original");
     fs::rename(&selected, &moved)?;
     fs::create_dir(&selected)?;
     fs::write(selected.join("sentinel"), b"foreign")?;
+    let owner = [73; 32];
+    let mut staging = output
+        .create_owned_directory("stage", owner)
+        .map_err(|error| io::Error::other(error.to_string()))?;
+    let stage_id = staging.identity()?;
     let bytes = input();
     let mut cache = crate::Repository::open(root.0.join("cache"))?;
     let mut buffers = Buffers::new();

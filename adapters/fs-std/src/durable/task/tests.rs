@@ -221,7 +221,7 @@ fn interrupted_cancel_reconciles_real_original_link_without_replacing_foreign_na
     file.sync_all()?;
     lock(&task.session)?.append(Event::CommitIntent { id: binding.id })?;
     fs::hard_link(&temp_path, &final_path)?;
-    File::open(&tree)?.sync_all()?;
+    gnunet_native::filesystem::Directory::open(&tree)?.sync()?;
     drop(file);
     // The physical link exists, but FileCommitted/Cleanup never reached WAL.
     // The cancellation request itself is durable; this is an intentionally
@@ -272,7 +272,10 @@ fn interrupted_cancel_reconciles_real_original_link_without_replacing_foreign_na
     let mut corrupt = bytes.clone();
     corrupt[0] ^= 1;
     fs::write(&final_path, &corrupt)?;
-    File::open(&final_path)?.sync_all()?;
+    fs::OpenOptions::new()
+        .write(true)
+        .open(&final_path)?
+        .sync_all()?;
     let refused = task.settle_cancel(&mut parent, &mut buffers, &mut cache, |_| Control::Continue);
     assert!(matches!(refused, Err(error) if matches!(&error.cause,
         Cause::Revalidate(failure) if matches!(&failure.operation, crate::Error::SourceChanged))));
@@ -281,7 +284,10 @@ fn interrupted_cancel_reconciles_real_original_link_without_replacing_foreign_na
     assert_eq!(fs::read(&final_path)?, corrupt);
     assert_eq!(FileIdentity::of(&File::open(&final_path)?)?, original);
     fs::write(&final_path, &bytes)?; // Explicit fixture restoration, same inode.
-    File::open(&final_path)?.sync_all()?;
+    fs::OpenOptions::new()
+        .write(true)
+        .open(&final_path)?
+        .sync_all()?;
 
     // Retain a foreign temporary replacement. Actual final revalidation and its
     // barriers must remain known when precise original-temp cleanup then fails.

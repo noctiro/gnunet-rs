@@ -422,11 +422,14 @@ pub(super) async fn execute(
     result?;
     if let Some(spec) = command.monitor {
         let identity_instance = identity::Instance::new();
+        let mut inventory;
         let names = match owner {
             Some(owner) => Names::Zone(owner),
-            None => Names::Live(
-                Inventory::open(&identity_instance, identity, &mut session.control).await?,
-            ),
+            None => {
+                inventory =
+                    Inventory::open(&identity_instance, identity, &mut session.control).await?;
+                Names::Live(&mut inventory)
+            }
         };
         subscribe(&mut session, source, names, spec, true, out).await?;
     }

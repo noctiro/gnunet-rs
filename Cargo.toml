@@ -83,6 +83,7 @@ jpxl-decode = { version = "0.3.0", default-features = false }
 jpxl-entropy = { version = "0.3.0", default-features = false }
 libc = { version = "0.2.191", default-features = false }
 libm = { version = "0.2.16", default-features = false }
+macula-mldsa = { version = "0.3.0", default-features = false, features = ["internal"] }
 md-5 = { version = "0.11.0", default-features = false, features = ["zeroize"] }
 miniz_oxide = { version = "0.9.1", default-features = false }
 ml-kem = { version = "0.3.4", default-features = false, features = ["zeroize"] }
@@ -110,7 +111,7 @@ time = { version = "0.3.55", default-features = false }
 tokio = { version = "1.54.1", default-features = false }
 tokio-rustls = { version = "0.26.6", default-features = false, features = ["tls12"] }
 unicode-normalization = { version = "0.1.26", default-features = false }
-url = { version = "2.5.8", default-features = false, features = ["std"] }
+url = { version = "2.5.9", default-features = false, features = ["std"] }
 webpki = { package = "rustls-webpki", version = "0.103.17", default-features = false, features = ["std"] }
 webpki-roots = { version = "1.0.12", default-features = false }
 windows-sys = { version = "0.61.2", default-features = false }

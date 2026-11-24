@@ -670,15 +670,21 @@ mod tests {
             }
         )?);
         assert_eq!(answer, Some(hash));
+        let mut unrelated_answer = None;
         assert!(core.visit_service_local_history(
             unrelated,
             &hash,
             Some(committed),
             &mut workspace,
-            |_| {
-                panic!("an unrelated lineage must not learn the original hash");
+            |seen| {
+                unrelated_answer = Some(seen);
+                Ok(())
             }
         )?);
+        assert_eq!(
+            unrelated_answer, None,
+            "an unrelated lineage must not learn the original hash"
+        );
         assert!(
             core.service_local_original(author, &hash, Some(committed))
                 .is_err()

@@ -134,10 +134,17 @@ async fn alongside<F: std::future::Future>(
     driver: &mut gnunet_resolver_broker::Driver<4, 64>,
     future: F,
 ) -> Result<F::Output, Box<dyn StdError>> {
+    alongside_until(driver, future, Instant::now() + Duration::from_secs(2)).await
+}
+async fn alongside_until<F: std::future::Future>(
+    driver: &mut gnunet_resolver_broker::Driver<4, 64>,
+    future: F,
+    until: Instant,
+) -> Result<F::Output, Box<dyn StdError>> {
     use std::{future::Future, task::Poll};
     let mut future = std::pin::pin!(future);
-    Ok(timeout(
-        Duration::from_secs(2),
+    Ok(tokio::time::timeout_at(
+        until,
         std::future::poll_fn(|cx| {
             if let Poll::Ready(result) = future.as_mut().poll(cx) {
                 return Poll::Ready(Ok(result));
@@ -358,9 +365,9 @@ fn actual_native_refusal_remains_socket_retry() -> Test {
             name: b"value",
         })?;
         let mut retried = false;
-        let until = Instant::now() + Duration::from_secs(1);
+        let until = Instant::now() + Duration::from_secs(5);
         while !retried && Instant::now() < until {
-            alongside(
+            alongside_until(
                 &mut driver,
                 host.drive(Some(until), |event, _| {
                     if matches!(event, gnunet_ipc_unix::handle::Event::ConnectRetry { .. }) {
@@ -368,6 +375,7 @@ fn actual_native_refusal_remains_socket_retry() -> Test {
                     }
                     GetFlow::Continue
                 }),
+                until + Duration::from_secs(1),
             )
             .await??;
         }

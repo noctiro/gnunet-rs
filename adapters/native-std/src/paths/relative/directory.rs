@@ -52,22 +52,23 @@ impl Directory {
     /// Reopen this exact original directory for ordinary metadata operations.
     /// The borrowed original stays with the caller on either outcome.
     pub fn from_file(file: &File) -> io::Result<Self> {
-        Self::checked(open::reopen(
-            file,
-            FILE_GENERIC_READ,
-            DIRECTORY_SHARING,
-            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
-        )?)
+        Self::reopen(file, DIRECTORY_SHARING)
     }
     /// Reopen the same source object with an independent read-only sharing fence.
     /// The original remains with its caller; no pathname is resolved.
     pub fn from_source_file(file: &File) -> io::Result<Self> {
-        Self::checked(open::reopen(
-            file,
-            FILE_GENERIC_READ,
-            SOURCE_SHARING,
-            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
-        )?)
+        Self::reopen(file, SOURCE_SHARING)
+    }
+    fn reopen(file: &File, share: u32) -> io::Result<Self> {
+        Self::validate_handle(file)?;
+        let reopened = Self::checked(open::directory(file, FILE_GENERIC_READ, share)?)?;
+        if metadata::FileIdentity::of(reopened.as_file())? != metadata::FileIdentity::of(file)? {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "reopened directory lost its original identity",
+            ));
+        }
+        Ok(reopened)
     }
     fn checked(file: File) -> io::Result<Self> {
         Self::validate_handle(&file)?;

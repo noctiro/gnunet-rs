@@ -330,7 +330,7 @@ pub(super) fn recover(
         next,
     };
     let mut bytes = 0usize;
-    for row in 0..grants {
+    for slot in state.grants.get_mut(..grants).ok_or(Fault::Capacity)? {
         let serial = r.u64()?;
         let until = r.u64()?;
         let wall_until = r.u64()?;
@@ -362,7 +362,7 @@ pub(super) fn recover(
             return Err(Fault::Capacity.into());
         }
         if let Some(bound) = recover_bound(until, wall_until, now, wall, anchor)? {
-            state.grants[row] = Some(Grant {
+            *slot = Some(Grant {
                 serial,
                 bound,
                 state: GrantState::Issued {
@@ -374,7 +374,7 @@ pub(super) fn recover(
             });
         }
     }
-    for row in 0..accesses {
+    for slot in state.accesses.get_mut(..accesses).ok_or(Fault::Capacity)? {
         let until = r.u64()?;
         let wall_until = r.u64()?;
         let subject = ZoneKey::from_wire(r.take(36)?)?;
@@ -387,7 +387,7 @@ pub(super) fn recover(
             return Err(Fault::Capacity.into());
         }
         if let Some(bound) = recover_bound(until, wall_until, now, wall, anchor)? {
-            state.accesses[row] = Some(Access {
+            *slot = Some(Access {
                 bound,
                 token: copy(token)?,
                 subject,

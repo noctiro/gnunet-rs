@@ -3,7 +3,10 @@
 use gnunet_crypto::EddsaPublicKey;
 use gnunet_native::{
     DirectorySync,
-    filesystem::{Directory, EntryInfo, FileIdentity, file_info, private_single_file_identity},
+    filesystem::{
+        Directory, EntryInfo, FileIdentity, PrivateFileSnapshot, file_info, private_data_file_info,
+        private_single_file_identity,
+    },
 };
 use std::{
     ffi::OsStr,
@@ -161,9 +164,7 @@ pub(crate) fn inspect(path: &Path) -> io::Result<Inspection> {
     } = prepare(&directory, name, directory.open_file_for_sync(name)?)?;
     // File synchronization and the actual sync-handle close finish before the
     // immutable read fence begins. Full fences still guard the original reader.
-    let EntryInfo::File(info) = file_info(&file)? else {
-        return Err(io::Error::other("ordinary TCP frontier required"));
-    };
+    let info = private_data_file_info(&file)?;
     if info.identity != file_id || info.bytes != FRONTIER_BYTES as u64 {
         return Err(io::Error::other(format!(
             "original TCP frontier changed while preparing read lease: original_identity={file_id:?}, after_close={info:?}"
@@ -185,23 +186,7 @@ pub(crate) fn inspect(path: &Path) -> io::Result<Inspection> {
             "original frontier or directory changed during pairing: unexpected_tail={trailing_bytes}, before={info:?}"
         )));
     }
-    let after = file_info(&file)?;
-    if after != EntryInfo::File(info) {
-        return Err(io::Error::other(format!(
-            "original frontier or directory changed during pairing: before={info:?}, after={after:?}"
-        )));
-    }
-    let private = private_single_file_identity(&file)?;
-    if private != file_id {
-        return Err(io::Error::other(format!(
-            "original frontier or directory changed during pairing: before_identity={file_id:?}, private_identity={private:?}"
-        )));
-    }
-    if !directory.same_file(name, &file)? {
-        return Err(io::Error::other(format!(
-            "original frontier or directory changed during pairing: named_match=false, held={info:?}"
-        )));
-    }
+    PrivateFileSnapshot::new(info, &actual).verify(&directory, name, &file)?;
     let selected_id = FileIdentity::of(selected.as_file())?;
     if selected_id != parent_id {
         return Err(io::Error::other(format!(

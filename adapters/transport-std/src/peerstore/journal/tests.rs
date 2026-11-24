@@ -530,12 +530,15 @@ fn rename_error_retains_original_io_and_recovery_proves_unchanged_predecessor() 
     assert!(j.take_deferred().is_none());
     let failure = tx.failure().ok_or(Error::NotReady)?;
     assert_eq!(failure.stage, "rename");
+    let cause = failure.io.as_ref().ok_or(Error::NotReady)?;
+    #[cfg(unix)]
+    assert!(cause.raw_os_error().is_some());
+    #[cfg(windows)]
     assert!(
-        failure
-            .io
-            .as_ref()
-            .and_then(io::Error::raw_os_error)
-            .is_some()
+        cause.raw_os_error().is_some()
+            || cause
+                .get_ref()
+                .is_some_and(|source| source.is::<gnunet_native::paths::StatusError>())
     );
     fs::remove_dir(&j.path).map_err(|_| Error::Storage)?;
     j.test_hook = None;

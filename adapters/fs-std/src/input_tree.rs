@@ -196,21 +196,21 @@ pub(crate) fn protocol_name(name: &OsStr) -> Result<&[u8], SourceError> {
     }
 }
 
-#[cfg(feature = "auto-share")]
+/// Encode a native relative source coordinate using protocol basenames and
+/// slash separators. The descriptor walk itself keeps native paths.
+#[cfg(feature = "network")]
 pub(crate) fn protocol_path(path: &Path) -> Result<Vec<u8>, SourceError> {
     let mut bytes = Vec::new();
+    // Separators are one byte with either spelling; Windows rejects names
+    // that cannot be represented in protocol text.
+    bytes
+        .try_reserve_exact(path.as_os_str().as_encoded_bytes().len())
+        .map_err(|_| SourceError::Protocol(ProtocolError::Capacity))?;
     for component in path.components() {
         let std::path::Component::Normal(name) = component else {
             return Err(SourceError::Protocol(ProtocolError::InvalidInput));
         };
         let name = protocol_name(name)?;
-        bytes
-            .try_reserve(
-                name.len()
-                    .checked_add(1)
-                    .ok_or(SourceError::Protocol(ProtocolError::Overflow))?,
-            )
-            .map_err(|_| SourceError::Protocol(ProtocolError::Capacity))?;
         if !bytes.is_empty() {
             bytes.push(b'/');
         }

@@ -18,9 +18,25 @@ import tarfile
 import time
 
 PACKAGES = (
-    ("libsodium-1.0.22", "https://download.libsodium.org/libsodium/releases/libsodium-1.0.22.tar.gz", "adbdd8f16149e81ac6078a03aca6fc03b592b89ef7b5ed83841c086191be3349"),
-    ("jansson-2.15.1", "https://github.com/akheron/jansson/releases/download/v2.15.1/jansson-2.15.1.tar.gz", "0c7114dc0b2d22a670724a1f95922029d7077c19dbf79a584cb8084d2f267f2f"),
-    ("libmicrohttpd-1.0.10", "https://ftp.gnu.org/gnu/libmicrohttpd/libmicrohttpd-1.0.10.tar.gz", "04bfe8ef75db7d629a33de767599765cecadc56274a39822d5d081030d577685"),
+    (
+        "libsodium-1.0.22",
+        "adbdd8f16149e81ac6078a03aca6fc03b592b89ef7b5ed83841c086191be3349",
+        ("https://download.libsodium.org/libsodium/releases/libsodium-1.0.22.tar.gz",),
+    ),
+    (
+        "jansson-2.15.1",
+        "0c7114dc0b2d22a670724a1f95922029d7077c19dbf79a584cb8084d2f267f2f",
+        ("https://github.com/akheron/jansson/releases/download/v2.15.1/jansson-2.15.1.tar.gz",),
+    ),
+    (
+        "libmicrohttpd-1.0.10",
+        "04bfe8ef75db7d629a33de767599765cecadc56274a39822d5d081030d577685",
+        (
+            "https://mirrors.kernel.org/gnu/libmicrohttpd/libmicrohttpd-1.0.10.tar.gz",
+            "https://ftpmirror.gnu.org/libmicrohttpd/libmicrohttpd-1.0.10.tar.gz",
+            "https://ftp.gnu.org/gnu/libmicrohttpd/libmicrohttpd-1.0.10.tar.gz",
+        ),
+    ),
 )
 
 
@@ -39,6 +55,22 @@ def unpack(path, target):
         archive.extractall(target)
 
 
+def download(package, expected, urls, archive, run):
+    for attempt, url in enumerate(urls, start=1):
+        name = f"{package}-download-{attempt}"
+        if run(name, ["curl", "--fail", "--location", "--proto", "=https",
+                      "--proto-redir", "=https", "--connect-timeout", "10", "--max-time", "60",
+                      "--retry", "1", "--retry-max-time", "60",
+                      "--output", str(archive), url], check=False):
+            archive.unlink(missing_ok=True)
+            continue
+        observed = digest(archive)
+        if observed != expected:
+            raise ValueError("download checksum mismatch: " + package)
+        return {"name": package, "url": url, "archive_sha256": observed}
+    raise ValueError(f"all download sources failed for {package}; see {archive.parent.parent}")
+
+
 def bootstrap(args):
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
@@ -46,7 +78,7 @@ def bootstrap(args):
     report = {"schema": 1, "kind": "isolated-reference-c-dependencies", "status": "failed", "packages": [], "commands": [],
               "prefix": str(prefix), "meson": str(venv / "bin/meson"), "ninja": str(venv / "bin/ninja"),
               "host": {"system": platform.system(), "machine": platform.machine()}, "global_installation": False}
-    def run(name, command, cwd=None):
+    def run(name, command, cwd=None, *, check=True):
         log = output / (name + ".log")
         started = time.monotonic()
         with log.open("wb") as stream:
@@ -54,8 +86,9 @@ def bootstrap(args):
         row = {"name": name, "argv": [str(arg) for arg in command], "cwd": str(cwd) if cwd else None,
                "exit_code": result.returncode, "elapsed_seconds": round(time.monotonic() - started, 6), "log": log.name, "log_sha256": digest(log)}
         report["commands"].append(row)
-        if result.returncode:
+        if check and result.returncode:
             raise ValueError("dependency command failed: " + name + "; see " + str(log))
+        return result.returncode
     try:
         if platform.system() not in ("Darwin", "Linux"):
             raise ValueError("the reference bootstrap currently supports macOS and Linux")
@@ -66,13 +99,9 @@ def bootstrap(args):
         run("python-venv", [sys.executable, "-m", "venv", str(venv)])
         run("build-tools", [str(venv / "bin/python"), "-m", "pip", "install", "--disable-pip-version-check",
                             "--require-hashes", "--only-binary=:all:", "--no-deps", "--requirement", str(requirements)])
-        for package, url, expected in PACKAGES:
+        for package, expected, urls in PACKAGES:
             archive = downloads / (package + ".tar.gz")
-            run(package + "-download", ["curl", "--fail", "--location", "--retry", "2", "--output", str(archive), url])
-            observed = digest(archive)
-            if observed != expected:
-                raise ValueError("download checksum mismatch: " + package)
-            report["packages"].append({"name": package, "url": url, "archive_sha256": observed})
+            report["packages"].append(download(package, expected, urls, archive, run))
             unpack(archive, output)
             source = output / package
             configure = ["./configure", "--prefix=" + str(prefix), "--enable-shared", "--disable-static"]

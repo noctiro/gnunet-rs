@@ -273,25 +273,25 @@ mod tests {
         let first_length = a.encode(&mut buffers)?;
         let mut batch = Batch::new(2, first_length + next_length);
         batch.stage(0, a, &buffers.sets[..first_length])?;
-        assert!(!batch.accepts(1, &zones, next_length));
-        assert!(!batch.accepts(2, &zones, next_length + 1));
-        assert!(batch.accepts(2, &zones, next_length));
+        if batch.accepts(1, &zones, next_length)
+            || batch.accepts(2, &zones, next_length + 1)
+            || !batch.accepts(2, &zones, next_length)
+        {
+            return Err("batch admission did not respect authority and frame bounds".into());
+        }
         let length = b.encode(&mut buffers)?;
         batch.stage(2, b, &buffers.sets[..length])?;
-        assert!(batch.full());
-        assert_eq!(batch.zone, Some(0));
-        assert_eq!(batch.records(), 2);
+        if !batch.full() || batch.zone != Some(0) || batch.records() != 2 {
+            return Err("the completed batch has the wrong owner or record count".into());
+        }
         let packed = ns::ipc::RecordSets::new(&batch.bytes, 2)?;
         let mut labels = packed.iter();
-        assert_eq!(
-            labels.next().ok_or("missing first label")??.label.bytes(),
-            b"a"
-        );
-        assert_eq!(
-            labels.next().ok_or("missing second label")??.label.bytes(),
-            b"b"
-        );
-        assert!(labels.next().is_none());
+        if labels.next().ok_or("missing first label")??.label.bytes() != b"a"
+            || labels.next().ok_or("missing second label")??.label.bytes() != b"b"
+            || labels.next().is_some()
+        {
+            return Err("the packed frame changed the admitted labels".into());
+        }
         Ok(())
     }
 }

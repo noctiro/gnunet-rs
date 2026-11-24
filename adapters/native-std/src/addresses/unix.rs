@@ -29,16 +29,28 @@ fn own(bytes: &[u8]) -> Result<OsString, Error> {
 /// Raw host bytes are copied into a CString without Unicode/IDNA transformation.
 /// This can consult native NSS/DNS for ordinary names; local tests use only numeric
 /// addresses or explicitly verified local hosts aliases inside an IP-denying sandbox.
-#[expect(
-    unsafe_code,
-    reason = "Initialized native hints and CString/output pointers remain live; successful ownership is guarded through every sockaddr/string copy"
-)]
 pub fn resolve(host: &OsStr, hints: Hints, maximum: usize) -> Result<Vec<Address>, Error> {
     if maximum == 0 {
         return Err(Error::Capacity);
     }
     let name = CString::new(host.as_bytes())
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "BINDTO contains NUL"))?;
+    resolve_native(&name, None, hints, maximum)
+}
+
+#[expect(
+    unsafe_code,
+    reason = "Initialized native hints and C strings remain live; successful ownership is guarded through every sockaddr/string copy"
+)]
+pub(crate) fn resolve_native(
+    name: &CStr,
+    service: Option<&CStr>,
+    hints: Hints,
+    maximum: usize,
+) -> Result<Vec<Address>, Error> {
+    if maximum == 0 {
+        return Err(Error::Capacity);
+    }
     // SAFETY: addrinfo is native C integer/pointer storage, all-zero is the same
     // initialization used by the official source before its four scalar hints.
     let mut native: libc::addrinfo = unsafe { std::mem::zeroed() };
@@ -47,9 +59,16 @@ pub fn resolve(host: &OsStr, hints: Hints, maximum: usize) -> Result<Vec<Address
     native.ai_protocol = hints.protocol;
     native.ai_flags = hints.flags;
     let mut head = ptr::null_mut();
-    // SAFETY: name is NUL terminated, service is truly NULL, initialized hints
-    // and writable output slot remain live, and no pointer is borrowed by Rust.
-    let code = unsafe { libc::getaddrinfo(name.as_ptr(), ptr::null(), &native, &mut head) };
+    // SAFETY: name and optional service are NUL terminated. Hints and the
+    // writable output slot remain live through the call.
+    let code = unsafe {
+        libc::getaddrinfo(
+            name.as_ptr(),
+            service.map_or(ptr::null(), CStr::as_ptr),
+            &native,
+            &mut head,
+        )
+    };
     if code != 0 {
         // SAFETY: native gai_strerror returns a static diagnostic or NULL.
         let raw = unsafe { libc::gai_strerror(code) };

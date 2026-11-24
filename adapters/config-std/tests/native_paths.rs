@@ -92,6 +92,7 @@ mod windows {
     use super::*;
     use gnunet_config::{Configuration, Error, Limits, ProcessEnvironment};
     use std::{
+        ffi::OsStr,
         fs,
         sync::atomic::{AtomicU64, Ordering},
     };
@@ -314,6 +315,17 @@ mod windows {
             config.get_filename(b"test", b"FILE", &context)?,
             Path::new(r"D:\service\gnunet.conf")
         );
+        config.set_value(b"PATHS", b"ROOT", Some(br"\\?\D:\service"))?;
+        config.set_value(b"test", b"FILE", Some(br"${ROOT}/data/gnunet.conf"))?;
+        for expanded in [
+            config.get_filename(b"test", b"FILE", &context)?,
+            config.get_absolute_filename(b"test", b"FILE", &context)?,
+        ] {
+            assert_eq!(
+                expanded.as_os_str(),
+                OsStr::new(r"\\?\D:\service\data\gnunet.conf")
+            );
+        }
         Ok(())
     }
 

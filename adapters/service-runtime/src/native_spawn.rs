@@ -6,6 +6,12 @@ use std::{
     mem::MaybeUninit,
     os::fd::{AsRawFd, BorrowedFd},
 };
+#[cfg(target_os = "android")]
+mod android;
+#[cfg(target_os = "android")]
+pub(crate) use android::spawn;
+
+#[cfg(any(not(target_os = "android"), test))]
 fn status(code: libc::c_int) -> io::Result<()> {
     if code == 0 {
         Ok(())
@@ -15,7 +21,9 @@ fn status(code: libc::c_int) -> io::Result<()> {
         Err(io::Error::last_os_error())
     }
 }
+#[cfg(not(target_os = "android"))]
 struct Actions(libc::posix_spawn_file_actions_t);
+#[cfg(not(target_os = "android"))]
 impl Actions {
     #[expect(
         unsafe_code,
@@ -44,6 +52,7 @@ impl Actions {
         })
     }
 }
+#[cfg(not(target_os = "android"))]
 impl Drop for Actions {
     #[expect(
         unsafe_code,
@@ -55,6 +64,7 @@ impl Drop for Actions {
         let _ = unsafe { libc::posix_spawn_file_actions_destroy(&mut self.0) };
     }
 }
+#[cfg(not(target_os = "android"))]
 #[expect(
     unsafe_code,
     reason = "Checked POSIX spawn consumes only live CString arrays and initialized RAII file actions; the kernel creates a separate child, with no raw FD owner construction"

@@ -262,16 +262,10 @@ pub(super) async fn run(decode: bool) -> Result<(), Problem> {
     facts.spool_created |= spool.is_some();
     let mut retained_spool_directory = None;
     let spool_cleanup = if let Some(spool) = spool.as_mut() {
-        match spool.close() {
-            Ok(()) => {
-                facts.spool_removed = true;
-                None
-            }
-            Err(error) => {
-                retained_spool_directory = Some(spool.path());
-                Some(error)
-            }
-        }
+        let cleanup = spool.close().err();
+        retained_spool_directory = spool.retained_path();
+        facts.spool_removed = retained_spool_directory.is_none();
+        cleanup
     } else {
         None
     };

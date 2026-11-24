@@ -86,16 +86,17 @@ impl Drop for Children {
 }
 fn helper() -> &'static Path {
     static HELPER: OnceLock<PathBuf> = OnceLock::new();
-    HELPER
-        .get_or_init(|| {
-            std::env::current_exe()
-                .expect("current actual test executable")
-                .parent()
-                .and_then(Path::parent)
-                .expect("Cargo target debug directory")
-                .join("gnunet-arm-spawn-helper")
-        })
-        .as_path()
+    HELPER.get_or_init(|| {
+        let path = PathBuf::from(std::env::var_os("GNUNET_TEST_ARM_SPAWN_HELPER").expect(
+            "run cargo xtask verify test or set GNUNET_TEST_ARM_SPAWN_HELPER to the built helper",
+        ));
+        assert!(
+            path.is_absolute() && path.is_file(),
+            "invalid ARM spawn helper: {}",
+            path.display()
+        );
+        path
+    })
 }
 fn runtime() -> io::Result<tokio::runtime::Runtime> {
     tokio::runtime::Builder::new_current_thread()

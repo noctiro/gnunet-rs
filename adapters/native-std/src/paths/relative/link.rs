@@ -111,7 +111,7 @@ fn remove_link(parent: &File, name: &OsStr, original: &File, kind: u32) -> io::R
         None,
     )?;
     if kind == FILE_DIRECTORY_FILE {
-        super::Directory::from_file(&file)?;
+        super::Directory::validate_handle(&file)?;
     } else if !metadata::is_regular_file(&file)? {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,

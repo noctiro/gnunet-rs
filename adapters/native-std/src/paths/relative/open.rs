@@ -11,11 +11,12 @@ use windows_sys::{
     Wdk::{
         Foundation::OBJECT_ATTRIBUTES,
         Storage::FileSystem::{
-            FILE_OPEN_REPARSE_POINT, FILE_SYNCHRONOUS_IO_NONALERT, NtCreateFile,
+            FILE_DIRECTORY_FILE, FILE_OPEN, FILE_OPEN_REPARSE_POINT, FILE_SYNCHRONOUS_IO_NONALERT,
+            NtCreateFile,
         },
     },
     Win32::{
-        Foundation::INVALID_HANDLE_VALUE,
+        Foundation::{INVALID_HANDLE_VALUE, UNICODE_STRING},
         Security::SECURITY_DESCRIPTOR,
         Storage::FileSystem::{
             FILE_ATTRIBUTE_NORMAL, FILE_FLAG_OVERLAPPED, ReOpenFile, SYNCHRONIZE,
@@ -24,10 +25,6 @@ use windows_sys::{
     },
 };
 
-#[expect(
-    unsafe_code,
-    reason = "NtCreateFile synchronously borrows an exact SDK object description, bounded native name, optional live security descriptor and original parent; success transfers one noninheritable synchronous file handle"
-)]
 pub(super) fn child(
     parent: &File,
     leaf: &mut Leaf,
@@ -37,11 +34,49 @@ pub(super) fn child(
     options: u32,
     descriptor: Option<&crate::identity::SecurityDescriptor>,
 ) -> io::Result<(File, usize)> {
-    let mut name = leaf.unicode();
+    at(
+        parent,
+        &mut leaf.unicode(),
+        access,
+        share,
+        disposition,
+        options | FILE_OPEN_REPARSE_POINT,
+        descriptor,
+    )
+}
+
+pub(super) fn directory(original: &File, access: u32, share: u32) -> io::Result<File> {
+    // An empty relative name opens the directory itself without going through
+    // the original pathname. This supplies a fresh file object for enumeration.
+    let (file, _) = at(
+        original,
+        &mut UNICODE_STRING::default(),
+        access,
+        share,
+        FILE_OPEN,
+        FILE_DIRECTORY_FILE,
+        None,
+    )?;
+    Ok(file)
+}
+
+#[expect(
+    unsafe_code,
+    reason = "NtCreateFile synchronously borrows an exact SDK object description, bounded relative name, optional live security descriptor and original parent; success transfers one noninheritable synchronous file handle"
+)]
+fn at(
+    parent: &File,
+    name: &mut UNICODE_STRING,
+    access: u32,
+    share: u32,
+    disposition: u32,
+    options: u32,
+    descriptor: Option<&crate::identity::SecurityDescriptor>,
+) -> io::Result<(File, usize)> {
     let attributes = OBJECT_ATTRIBUTES {
         Length: size_of::<OBJECT_ATTRIBUTES>() as u32,
         RootDirectory: parent.as_raw_handle(),
-        ObjectName: &mut name,
+        ObjectName: name,
         Attributes: 0,
         SecurityDescriptor: descriptor.map_or(ptr::null(), |descriptor| {
             descriptor.0.cast::<SECURITY_DESCRIPTOR>().cast_const()
@@ -63,7 +98,7 @@ pub(super) fn child(
             FILE_ATTRIBUTE_NORMAL,
             share,
             disposition,
-            options | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
+            options | FILE_SYNCHRONOUS_IO_NONALERT,
             ptr::null(),
             0,
         )

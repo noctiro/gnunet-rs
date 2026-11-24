@@ -2,7 +2,10 @@
 use super::{Error, IMAGE, MAX_IMAGE, NEXT, io as failure};
 use gnunet_native::{
     DirectorySync,
-    filesystem::{self, Directory, EntryInfo, FileInfo, private_data_file_info, publication},
+    filesystem::{
+        self, Directory, EntryInfo, FileInfo, PrivateFileSnapshot, PrivateSnapshotError,
+        private_data_file_info, publication,
+    },
 };
 use std::{
     ffi::OsStr,
@@ -20,7 +23,7 @@ pub(super) struct Image {
 }
 struct Original {
     file: File,
-    info: FileInfo,
+    snapshot: PrivateFileSnapshot,
 }
 #[derive(Debug)]
 struct FenceError {
@@ -146,27 +149,45 @@ impl Image {
             ));
         }
         self.selected_name("read name", &file, info)?;
-        self.original = Some(Original { file, info });
+        self.original = Some(Original {
+            file,
+            snapshot: PrivateFileSnapshot::new(info, &bytes),
+        });
         Ok(Some(bytes))
     }
     pub(super) fn selected(&self) -> Result<(), Error> {
         match &self.original {
-            Some(original) => {
-                let after = observe(
-                    "selected file policy",
-                    private_data_file_info(&original.file),
-                )?;
-                if after != original.info {
-                    return Err(refusal(
+            Some(original) => original
+                .snapshot
+                .verify_detailed(&self.directory, OsStr::new(IMAGE), &original.file)
+                .map_err(|error| match error {
+                    PrivateSnapshotError::Held(error) => {
+                        refusal("selected file policy", FenceCause::Native(error))
+                    }
+                    PrivateSnapshotError::Metadata { before, after } => refusal(
                         "selected",
                         FenceCause::Metadata {
-                            before: original.info,
-                            after,
+                            before,
+                            after: *after,
                         },
-                    ));
-                }
-                self.selected_name("selected name", &original.file, original.info)?;
-            }
+                    ),
+                    PrivateSnapshotError::Name { held, observed } => {
+                        if let Err(error) = *observed {
+                            refusal("selected name", FenceCause::Native(error))
+                        } else {
+                            refusal(
+                                "selected name",
+                                FenceCause::Named {
+                                    held,
+                                    observed_after_rejection: *observed,
+                                },
+                            )
+                        }
+                    }
+                    PrivateSnapshotError::Readback(error) => {
+                        refusal("selected readback", FenceCause::Native(error))
+                    }
+                })?,
             None => match self.directory.entry_info(OsStr::new(IMAGE)) {
                 Err(error) if error.kind() == io::ErrorKind::NotFound => {}
                 Err(error) => return Err(error.into()),
@@ -257,7 +278,10 @@ impl Image {
             private_data_file_info(&file)
         })()
         .map_err(|error| failure("atomic catalog commit", true, error, None))?;
-        self.original = Some(Original { file, info });
+        self.original = Some(Original {
+            file,
+            snapshot: PrivateFileSnapshot::new(info, bytes),
+        });
         Ok(())
     }
     pub(super) fn create_version(&mut self, name: &OsStr) -> Result<(), Error> {

@@ -163,13 +163,28 @@ async fn daemon(listener: UnixListener, public: PublicKey) -> Result<(), Failure
         return Err(Fault::Conflict.into());
     };
     let request = Message::decode(message.expose(), PROFILE, padding::Decode::Absent)?;
-    crypto::signature::verify_member(request, pubkey)?;
+    let checked_hint = crypto::signature::verify_member(request, pubkey)?;
     if key != &ROOM
         || request.header().sender_id != &MEMBER
         || !matches!(request.body(), Body::Request { hash } if hash == &HINT)
     {
         return Err(Fault::Authentication.into());
     }
+    // The echo follows every notice on the stream. The client must apply it
+    // before closing, so an unread duplicate cannot cause a socket reset.
+    send(
+        &mut stream,
+        Response::Receive {
+            key: &ROOM,
+            sender: &gnunet_crypto::hash512(&public),
+            context: &[0; 64],
+            hash: checked_hint.digest(),
+            epoch: head,
+            flags: 8,
+            message,
+        },
+    )
+    .await?;
     if stream.read(&mut [0]).await? != 0 {
         return Err(Fault::Replay.into());
     }
@@ -212,6 +227,19 @@ async fn scenario() -> Result<(), Failure> {
         listener,
         *api.identity_public(api.default_identity()?)?,
     ));
+    let client = during("client history scenario", exercise(&mut api)).await;
+    api.close();
+    let daemon = during("daemon receipt", async { server.await? }).await;
+    match (client, daemon) {
+        (Err(client), Err(daemon)) => {
+            Err(format!("Messenger client: {client}; test daemon: {daemon}").into())
+        }
+        (result, Ok(())) => result,
+        (Ok(()), Err(daemon)) => Err(daemon),
+    }
+}
+
+async fn exercise(api: &mut Api<'_, OsEntropy, 1024>) -> Result<(), Failure> {
     let epoch = during("CREATE", async {
         loop {
             match api.progress().await? {
@@ -245,9 +273,12 @@ async fn scenario() -> Result<(), Failure> {
     }
     let mut observed = false;
     let mut wrote_correlated = false;
+    let mut wrote_hint = false;
     loop {
         match during(
-            if wrote_correlated {
+            if wrote_hint {
+                "signed hint REQUEST echo"
+            } else if wrote_correlated {
                 "hint REQUEST"
             } else {
                 "correlated REQUEST"
@@ -286,19 +317,32 @@ async fn scenario() -> Result<(), Failure> {
                 if !observed || !matches!(job.intent, Intent::HistoryRequest { dependency: true }) {
                     return Err(Fault::Conflict.into());
                 }
+                if wrote_hint {
+                    return Err(Fault::Replay.into());
+                }
                 if wrote_correlated {
-                    break;
+                    wrote_hint = true;
+                } else {
+                    if job.span.hard != span.hard || job.span.logical != span.logical {
+                        return Err(Fault::Conflict.into());
+                    }
+                    wrote_correlated = true;
                 }
-                if job.span.hard != span.hard || job.span.logical != span.logical {
-                    return Err(Fault::Conflict.into());
-                }
-                wrote_correlated = true;
             }
-            Progress::Lost(_) => return Err(Fault::Closed.into()),
+            Progress::State(domain::Event::MessageChanged(original_room, hash, _))
+                if wrote_hint && original_room == room =>
+            {
+                let echoed = api.message(room, &hash)?;
+                if echoed.original_signer().is_some()
+                    && matches!(echoed.body()?, Body::Request { hash } if hash == &HINT)
+                {
+                    return Ok(());
+                }
+            }
+            Progress::Lost(loss) => {
+                return Err(format!("lost Messenger history source: {:?}", loss.cause()).into());
+            }
             _ => {}
         }
     }
-    api.close();
-    during("daemon receipt", async { server.await? }).await?;
-    Ok(())
 }

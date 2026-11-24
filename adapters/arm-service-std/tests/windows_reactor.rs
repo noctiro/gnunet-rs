@@ -35,6 +35,7 @@ mod windows {
         time::Duration,
     };
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::time::timeout;
     type Failure = Box<dyn Error>;
     const ROLE: &str = "GNUNET_ARM_NATIVE_FIXTURE";
     fn check(condition: bool, message: &'static str) -> io::Result<()> {
@@ -154,11 +155,27 @@ mod windows {
             }
         }
     }
-    #[derive(Clone, Copy)]
+    #[derive(Clone, Copy, Debug)]
     enum StopRoute {
         Pipe,
         Native,
         BeforeImport,
+    }
+    async fn drive(
+        driver: &mut Driver<'_, '_, '_, '_, '_, SystemClock>,
+        stage: &'static str,
+    ) -> Result<(), Failure> {
+        let result = timeout(Duration::from_secs(10), driver.drive()).await;
+        if let Some(diagnostic) = driver.take_diagnostic() {
+            return Err(format!("{stage}: {diagnostic:?}").into());
+        }
+        let _activity = result.map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::TimedOut,
+                format!("{stage}: {:?}", driver.counters()),
+            )
+        })??;
+        Ok(())
     }
     async fn child(captured: CapturedStartup, activation: Activation) -> Result<(), Failure> {
         check(activation.len() == 1, "original managed listener was lost")?;
@@ -371,12 +388,12 @@ mod windows {
             )?;
             if matches!(route, StopRoute::BeforeImport) {
                 while driver.counters().spawned == 0 {
-                    let _activity = driver.drive().await?;
+                    drive(&mut driver, "admit before listener import").await?;
                 }
                 driver.shutdown();
             } else {
                 while driver.counters().startup_ready == 0 {
-                    let _activity = driver.drive().await?;
+                    drive(&mut driver, "observe child startup").await?;
                 }
                 let mut echo = [0; 3];
                 queued.read_exact(&mut echo).await?;
@@ -461,7 +478,7 @@ mod windows {
             )?;
             driver.shutdown();
             while driver.phase() != Phase::Closed {
-                let _activity = driver.drive().await?;
+                drive(&mut driver, "retire supervised child").await?;
             }
             let counters = driver.counters();
             check(
@@ -473,9 +490,6 @@ mod windows {
                     && counters.preparation_retired == 0,
                 "native lifecycle manufactured or lost an observation",
             )?;
-            if let Some(diagnostic) = driver.take_diagnostic() {
-                return Err(format!("native ARM diagnostic: {diagnostic:?}").into());
-            }
         }
         check(
             directory.0.join("cooperative-stop").exists() == matches!(route, StopRoute::Pipe),
@@ -525,18 +539,25 @@ mod windows {
             .enable_all()
             .build()?
             .block_on(async {
-                tokio::time::timeout(Duration::from_secs(30), async {
-                    if let Some(captured) = captured {
-                        child(captured, activation).await
-                    } else {
-                        invalid_local_policy_preserves_alternative_listeners().await?;
-                        parent(StopRoute::Pipe).await?;
-                        parent(StopRoute::Native).await?;
-                        parent(StopRoute::BeforeImport).await
-                    }
-                })
+                let limit = Duration::from_secs(30);
+                if let Some(captured) = captured {
+                    return timeout(limit, child(captured, activation))
+                        .await
+                        .map_err(|_| "ARM reactor fixture child timed out")?;
+                }
+                timeout(
+                    limit,
+                    invalid_local_policy_preserves_alternative_listeners(),
+                )
                 .await
-                .map_err(io::Error::other)?
+                .map_err(|_| "ARM alternate listener fixture timed out")??;
+                for route in [StopRoute::Pipe, StopRoute::Native, StopRoute::BeforeImport] {
+                    timeout(limit, parent(route))
+                        .await
+                        .map_err(|_| format!("ARM reactor fixture {route:?} timed out"))?
+                        .map_err(|error| format!("ARM reactor fixture {route:?}: {error}"))?;
+                }
+                Ok(())
             })
     }
 }

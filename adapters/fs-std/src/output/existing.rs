@@ -42,13 +42,9 @@ impl<R> RevalidateFailure<R> {
     }
     fn can_stabilize(&self) -> bool {
         matches!(&self.operation, Error::SourceChanged)
-            && self.fence.is_some_and(|(_, expected, observed)| {
-                expected != observed
-                    && Stamp {
-                        changed: observed.changed,
-                        ..expected
-                    } == observed
-            })
+            && self
+                .fence
+                .is_some_and(|(_, expected, observed)| expected.only_ctime_changed(observed))
     }
 }
 // Soft updates may retire a prior unlink after fsync and update only ctime.
@@ -116,6 +112,14 @@ pub(super) struct Stamp {
 }
 pub(super) type Fence = Option<(&'static str, Stamp, Stamp)>;
 impl Stamp {
+    pub(super) fn only_ctime_changed(self, observed: Self) -> bool {
+        self != observed
+            && Self {
+                changed: observed.changed,
+                ..self
+            } == observed
+    }
+
     pub(super) fn file(file: &File) -> Result<Self> {
         let metadata = file.metadata()?;
         if !metadata.is_file() {

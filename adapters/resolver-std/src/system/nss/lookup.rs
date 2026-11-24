@@ -115,15 +115,10 @@ fn reverse(address: IpAddr) -> io::Result<Vec<Answer>> {
 }
 
 fn no_name(code: libc::c_int) -> bool {
-    if code == libc::EAI_NONAME {
-        return true;
-    }
-    #[cfg(target_os = "linux")]
-    {
-        code == libc::EAI_NODATA
-    }
-    #[cfg(target_os = "freebsd")]
-    {
-        false
-    }
+    const NO_NAME_CODES: &[libc::c_int] = &[
+        libc::EAI_NONAME,
+        #[cfg(target_os = "linux")]
+        libc::EAI_NODATA,
+    ];
+    NO_NAME_CODES.contains(&code)
 }

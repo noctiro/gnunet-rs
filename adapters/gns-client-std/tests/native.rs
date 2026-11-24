@@ -15,9 +15,10 @@ use std::{
     path::PathBuf,
     sync::atomic::{AtomicU64, Ordering},
     task::{Context, Poll, Waker},
-    time::{Duration, Instant},
+    time::Duration,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::time::Instant;
 type Failure = Box<dyn Error + Send + Sync>;
 static NEXT: AtomicU64 = AtomicU64::new(0);
 struct Directory(PathBuf);
@@ -73,17 +74,17 @@ fn reply(request: &[u8], count: usize) -> Result<Vec<u8>, Failure> {
 }
 async fn step<'a, const R: usize, const N: usize>(
     client: &mut BoundedClient<'a, R, N>,
-) -> Result<Option<Progress<'a>>, Failure> {
+    until: Instant,
+) -> Result<Progress<'a>, Failure> {
     let result = {
-        let future = client.drive(None);
+        let future = client.drive(Some(until));
         let mut future = std::pin::pin!(future);
         let mut cx = Context::from_waker(Waker::noop());
         future.as_mut().poll(&mut cx)
     };
-    tokio::time::sleep(Duration::from_millis(1)).await;
     match result {
-        Poll::Ready(result) => Ok(Some(result?)),
-        Poll::Pending => Ok(None),
+        Poll::Ready(result) => Ok(result?),
+        Poll::Pending => Ok(client.drive(Some(until)).await?),
     }
 }
 #[tokio::test(flavor = "current_thread")]
@@ -119,22 +120,22 @@ async fn canceled_partial_frame_drains_same_mq_then_live_reply_survives_close()
     let mut receipt = false;
     let mut answer = None;
     while answer.is_none() && Instant::now() < until {
-        match step(&mut client).await? {
-            Some(Progress::Activity {
+        match step(&mut client, until).await? {
+            Progress::Activity {
                 written_bytes: 1, ..
-            }) if !canceled => {
+            } if !canceled => {
                 client.cancel(old)?;
                 canceled = true;
                 assert!(!client.live(old));
                 assert!(client.pending_writes() > 0);
             }
-            Some(Progress::Written { query, .. }) if query == old => receipt = true,
-            Some(Progress::Ignored(_)) => ignored += 1,
-            Some(Progress::Answer(value)) => {
+            Progress::Written { query, .. } if query == old => receipt = true,
+            Progress::Ignored(_) => ignored += 1,
+            Progress::Answer(value) => {
                 assert_eq!(value.query(), healthy);
                 answer = Some(value);
             }
-            Some(Progress::Lost { .. }) => {
+            Progress::Lost { .. } => {
                 return Err("partial cancellation replaced original physical MQ".into());
             }
             _ => {}
@@ -201,27 +202,27 @@ async fn partial_reply_eof_retires_exact_epoch_and_restores_only_original_live_l
     let mut losses = 0;
     let mut done = false;
     while !done && Instant::now() < until {
-        match step(&mut client).await? {
-            Some(Progress::Connected(epoch)) => epochs.push(epoch),
-            Some(Progress::Lost {
+        match step(&mut client, until).await? {
+            Progress::Connected(epoch) => epochs.push(epoch),
+            Progress::Lost {
                 epoch,
                 cause: LossCause::Io(error),
                 retained_queries,
-            }) => {
+            } => {
                 assert_eq!(error.kind(), std::io::ErrorKind::UnexpectedEof);
                 assert_eq!(Some(&epoch), epochs.first());
                 assert_eq!(retained_queries, 1);
                 assert!(client.live(live));
                 losses += 1;
             }
-            Some(Progress::Answer(answer)) => {
+            Progress::Answer(answer) => {
                 assert_eq!(answer.query(), live);
                 assert_eq!(epochs.len(), 2);
                 assert_ne!(epochs[0], epochs[1]);
                 assert_eq!(answer.epoch(), epochs[1]);
                 done = true;
             }
-            Some(Progress::Lost { .. }) => return Err("unexpected original loss cause".into()),
+            Progress::Lost { .. } => return Err("unexpected original loss cause".into()),
             _ => {}
         }
     }
@@ -311,16 +312,16 @@ async fn one_record_budget_refusal_keeps_another_original_query_on_the_same_mq()
     let mut refused = 0;
     let mut original_epoch = None;
     while !done && Instant::now() < until {
-        match step(&mut client).await? {
-            Some(Progress::Connected(epoch)) => {
+        match step(&mut client, until).await? {
+            Progress::Connected(epoch) => {
                 assert!(original_epoch.is_none());
                 original_epoch = Some(epoch);
             }
-            Some(Progress::Refused {
+            Progress::Refused {
                 epoch,
                 query,
                 reason,
-            }) => {
+            } => {
                 assert_eq!(Some(epoch), original_epoch);
                 assert_eq!(query, large);
                 assert_eq!(reason, gnunet_types::Error::Capacity);
@@ -328,12 +329,12 @@ async fn one_record_budget_refusal_keeps_another_original_query_on_the_same_mq()
                 assert!(client.live(healthy));
                 refused += 1;
             }
-            Some(Progress::Answer(answer)) => {
+            Progress::Answer(answer) => {
                 assert_eq!(answer.query(), healthy);
                 assert_eq!(Some(answer.epoch()), original_epoch);
                 done = true;
             }
-            Some(Progress::Lost { .. }) => {
+            Progress::Lost { .. } => {
                 return Err("one local reply budget retired unrelated original query/MQ".into());
             }
             _ => {}

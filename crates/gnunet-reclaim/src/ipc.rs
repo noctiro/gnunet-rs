@@ -756,7 +756,11 @@ fn consumed_plan<'a>(
     put16(&mut plan.fixed, 12, reserved);
     put16(&mut plan.fixed, 14, len16(attribute_bytes)?);
     put16(&mut plan.fixed, 16, len16(presentation_bytes)?);
-    put16(&mut plan.fixed, 18, len16(if identity { KEY_LEN } else { 0 })?);
+    put16(
+        &mut plan.fixed,
+        18,
+        len16(if identity { KEY_LEN } else { 0 })?,
+    );
     Ok(plan)
 }
 
