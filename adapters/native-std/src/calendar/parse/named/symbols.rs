@@ -7,6 +7,7 @@ use windows_sys::Win32::Globalization::{
     CAL_RETURN_GENITIVE_NAMES, CAL_SABBREVDAYNAME1, CAL_SABBREVMONTHNAME1, CAL_SDAYNAME1,
     CAL_SERASTRING, CAL_SMONTHNAME1, LOCALE_S1159, LOCALE_S2359,
 };
+mod eras;
 struct Symbol {
     kind: Word,
     value: u16,
@@ -116,11 +117,7 @@ impl Symbols {
             }
         }
         if let Some(conversion) = conversion {
-            for era in conversion.eras() {
-                for short in [false, true] {
-                    symbols.push(Word::Era, era, conversion.era_name(name, era, short)?)?;
-                }
-            }
+            eras::append(&mut symbols, name, calendar, conversion.eras())?;
         } else {
             symbols.push(Word::Era, 0, calendar_text(name, calendar, CAL_SERASTRING)?)?;
         }

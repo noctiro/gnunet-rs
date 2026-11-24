@@ -148,26 +148,27 @@ fn published_file_flush_refusal_preserves_the_replacement() -> Result {
     use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_DELETE, FILE_SHARE_READ};
 
     let s = Scratch::new()?;
+    let stage = OsStr::new("stage");
     let name = OsStr::new("config");
-    let mut read_fence = None;
-    let Err(failure) = publish(&s.directory, name, b"new", Destination::Replace, || {
-        let stage = std::fs::read_dir(&s.path)?
-            .next()
-            .ok_or(io::ErrorKind::NotFound)??;
-        read_fence = Some(
-            File::options()
-                .read(true)
-                .share_mode(FILE_SHARE_READ | FILE_SHARE_DELETE)
-                .open(stage.path())?,
-        );
-        Ok(())
-    }) else {
+    let mut writer = s.directory.create_private_file(stage)?;
+    writer.write_all(b"new")?;
+    let (original, replacement) = seal(&s.directory, stage, writer, 3)?.replace(name)?;
+    replacement?;
+
+    // Apply both fences after the rename, which needs FILE_ADD_FILE access
+    // to the directory. Only the post-publication durability barriers fail.
+    let _directory_fence = Directory::open_source(&s.path)?;
+    let _read_fence = File::options()
+        .read(true)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_DELETE)
+        .open(s.path.join(name))?;
+    assert_eq!(s.directory.sync()?, crate::DirectorySync::Unavailable);
+    let Err(failure) = synchronize_published(&s.directory, name, &original) else {
         return Err("publication without a successful original-file flush was acknowledged".into());
     };
     assert_eq!(failure.stage, "published-file-sync");
     assert!(failure.may_have_published);
     assert!(matches!(failure.cleanup, Cleanup::Retired));
-    let original = read_fence.ok_or("missing original read fence")?;
     assert!(s.directory.same_file(name, &original)?);
     assert_eq!(bytes(&original)?, b"new");
     assert_eq!(std::fs::read_dir(&s.path)?.count(), 1);

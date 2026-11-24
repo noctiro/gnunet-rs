@@ -142,6 +142,13 @@ fn unsafe_or_changed_seed_authority_is_refused_without_overwrite_or_unlink() -> 
     assert!(matches!(original.revalidate(),Err(error) if matches!(error.cause,Cause::Changed)));
     assert_eq!(fs::read(&path)?, vec![9; 32]);
     assert_eq!(fs::metadata(&held)?.len(), 32);
+    Ok(())
+}
+
+#[cfg(unix)] // Windows does not rename a directory with an open descendant file.
+#[test]
+fn changed_seed_parent_is_refused_while_the_original_file_remains_open() -> TestResult {
+    let temporary = Temporary::new()?;
     let selected_parent = temporary.0.join("parent");
     fs::create_dir(&selected_parent)?;
     fixture(&selected_parent.join("key"), &[10; 32])?;

@@ -41,17 +41,21 @@ type Test = Result<(), Box<dyn std::error::Error>>;
 fn equal_bytes_cannot_settle_an_unknown_original_publication() -> Test {
     let scratch = Scratch::new()?;
     let parent = scratch.0.join("frontier");
-    let moved = scratch.0.join("moved");
     gnunet_service_runtime::private_parents(&parent.join("state"))?;
     let path = parent.join("state");
     let mut store = Store::open(path.clone())?;
     store.update_bound(image(10), || {})?;
+    let fence = path.with_extension("tcp-lock");
+    let moved_fence = parent.join("moved-fence");
+    let mut moved = Ok(());
     let failed = store.update_bound(image(11), || {
-        assert!(fs::rename(&parent, &moved).is_ok());
+        moved = fs::rename(&fence, &moved_fence);
     });
+    moved?;
     assert!(matches!(
         failed,
         Err(Failure {
+            stage: Stage::Fence,
             outcome: Outcome::Unknown,
             ..
         })
@@ -64,7 +68,7 @@ fn equal_bytes_cannot_settle_an_unknown_original_publication() -> Test {
         .original()?;
     validate_readonly(candidate)?;
     assert!(candidate.write(b"changed").is_err());
-    fs::rename(&moved, &parent)?;
+    fs::rename(&moved_fence, &fence)?;
     let original = parent.join("original-publication");
     fs::rename(&path, &original)?;
     fs::copy(&original, &path)?;

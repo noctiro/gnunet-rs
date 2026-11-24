@@ -3,29 +3,21 @@ use crate::{
     calendar_fields::{self, Date, Fields},
     calendar_pattern::Components,
     library::Library,
-    locale::nls,
 };
-use std::{ffi::c_void, io};
-use windows_sys::Win32::{Foundation::SYSTEMTIME, Globalization::CALDATETIME};
+use std::{ffi::c_void, io, ops::RangeInclusive};
+use windows_sys::Win32::{
+    Foundation::{ERROR_INVALID_PARAMETER, ERROR_INVALID_TIME, SYSTEMTIME},
+    Globalization::CALDATETIME,
+};
 type ToCivil = unsafe extern "system" fn(*const CALDATETIME, *mut SYSTEMTIME) -> i32;
 type FromCivil = unsafe extern "system" fn(*const SYSTEMTIME, u32, *mut CALDATETIME) -> i32;
 type Range = unsafe extern "system" fn(u32, *mut CALDATETIME, *mut CALDATETIME) -> i32;
-type Format = unsafe extern "system" fn(
-    *const u16,
-    u32,
-    *const CALDATETIME,
-    *const u16,
-    *mut u16,
-    i32,
-) -> i32;
 type Leap = unsafe extern "system" fn(u32, u32, u32) -> i32;
 pub(super) struct Conversion {
     id: u32,
-    minimum: CALDATETIME,
-    maximum: CALDATETIME,
+    eras: RangeInclusive<u16>,
     to_civil: ToCivil,
     from_civil: FromCivil,
-    format: Format,
     leap: Option<Leap>,
 }
 impl Conversion {
@@ -49,7 +41,6 @@ impl Conversion {
         let to_civil = export!(c"ConvertCalDateTimeToSystemTime", ToCivil);
         let from_civil = export!(c"ConvertSystemTimeToCalDateTime", FromCivil);
         let range = export!(c"GetCalendarSupportedDateRange", Range);
-        let format = export!(c"GetCalendarDateFormatEx", Format);
         let leap = if id == windows_sys::Win32::Globalization::CAL_HEBREW {
             Some(export!(c"IsCalendarLeapYear", Leap))
         } else {
@@ -73,69 +64,22 @@ impl Conversion {
                 "invalid native calendar era inventory",
             ));
         }
-        let mut probe = SYSTEMTIME::default();
-        // SAFETY: the provider advertised this exact initialized minimum as a
-        // supported date. A failure here is provider setup, not user input.
-        if unsafe { to_civil(&minimum, &mut probe) } == 0 {
-            return Err(io::Error::last_os_error());
-        }
+        // The calendar inventory can include dates before the conversion
+        // function's Gregorian lower bound. Validate actual dates on use.
         library.pin_for_process()?;
         Ok(Self {
             id,
-            minimum,
-            maximum,
+            eras: minimum.Era as u16..=maximum.Era as u16,
             to_civil,
             from_civil,
-            format,
             leap,
         })
     }
     pub(super) fn current_era(&self) -> u16 {
-        self.maximum.Era as u16
+        *self.eras.end()
     }
-    pub(super) fn eras(&self) -> std::ops::RangeInclusive<u16> {
-        self.minimum.Era as u16..=self.maximum.Era as u16
-    }
-    fn representative(&self, era: u16) -> CALDATETIME {
-        if u32::from(era) == self.minimum.Era {
-            return self.minimum;
-        }
-        if u32::from(era) == self.maximum.Era {
-            return self.maximum;
-        }
-        // Interior Japanese eras have a full second year, unlike partial year one.
-        CALDATETIME {
-            CalId: self.id,
-            Era: u32::from(era),
-            Year: 2,
-            Month: 1,
-            Day: 1,
-            ..Default::default()
-        }
-    }
-    #[expect(
-        unsafe_code,
-        reason = "Owned validated locale, explicit calendar record, terminated picture and bounded exclusive output remain live for synchronous native formatting"
-    )]
-    pub(super) fn era_name(&self, name: &nls::Name, era: u16, short: bool) -> io::Result<Vec<u16>> {
-        let value = self.representative(era);
-        let picture: &[u16] = if short { &[103, 0] } else { &[103, 103, 0] };
-        let mut buffer = [0u16; 256];
-        // SAFETY: exact explicit calendar, no process/thread locale mutation.
-        let count = unsafe {
-            (self.format)(
-                name.as_ptr(),
-                0,
-                &value,
-                picture.as_ptr(),
-                buffer.as_mut_ptr(),
-                buffer.len() as i32,
-            )
-        };
-        if count == 0 {
-            return Err(io::Error::last_os_error());
-        }
-        super::text(&buffer, count)
+    pub(super) fn eras(&self) -> RangeInclusive<u16> {
+        self.eras.clone()
     }
     #[expect(
         unsafe_code,
@@ -164,11 +108,7 @@ impl Conversion {
                 }
             }
         }
-        let mut civil = SYSTEMTIME::default();
-        // SAFETY: stable input and independent initialized full output.
-        if unsafe { (self.to_civil)(&original, &mut civil) } == 0 {
-            return Err(date_error());
-        }
+        let civil = self.civil(original)?;
         let mut returned = CALDATETIME::default();
         // SAFETY: successful native Gregorian output and selected original CALID.
         if unsafe { (self.from_civil)(&civil, self.id, &mut returned) } == 0 {
@@ -198,14 +138,31 @@ impl Conversion {
             parts.time,
         )
     }
-}
-fn date_error() -> io::Error {
-    let error = io::Error::last_os_error();
-    match error.raw_os_error() {
-        // Invalid native date input retains the underlying Win32 diagnostic;
-        // other provider failures must not become an ordinary picture mismatch.
-        Some(87 | 1901) => io::Error::new(io::ErrorKind::InvalidInput, error),
-        _ => error,
+
+    #[expect(
+        unsafe_code,
+        reason = "each synchronous conversion borrows initialized calendar data and a separate full-width SYSTEMTIME output"
+    )]
+    fn civil(&self, mut original: CALDATETIME) -> io::Result<SYSTEMTIME> {
+        // The native function validates DayOfWeek even for numeric pictures
+        // that omit it. Try the seven possible values before rejecting the date.
+        for weekday in 0..7 {
+            original.DayOfWeek = weekday;
+            let mut civil = SYSTEMTIME::default();
+            // SAFETY: ABI-sized input and independent output live for the call.
+            if unsafe { (self.to_civil)(&original, &mut civil) } != 0 {
+                return Ok(civil);
+            }
+            let error = io::Error::last_os_error();
+            match error.raw_os_error().map(|code| code as u32) {
+                Some(ERROR_INVALID_PARAMETER) => {}
+                Some(ERROR_INVALID_TIME) => {
+                    return Err(io::Error::new(io::ErrorKind::InvalidInput, error));
+                }
+                _ => return Err(error),
+            }
+        }
+        Err(calendar_fields::invalid())
     }
 }
 #[cfg(test)]
