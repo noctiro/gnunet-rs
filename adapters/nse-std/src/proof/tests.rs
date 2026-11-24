@@ -36,18 +36,21 @@ fn actual_raw8_is_atomic_and_kernel_fence_releases_without_pid_guessing()
     Ok(())
 }
 #[test]
-fn real_postrename_directory_failure_retains_original_unknown_until_readback()
+fn lost_fence_after_rename_retains_original_unknown_until_readback()
 -> Result<(), Box<dyn std::error::Error>> {
     let scratch = Scratch::new()?;
     let live = scratch.0.join("live");
-    let moved = scratch.0.join("moved");
     fs::create_dir(&live)?;
     let path = live.join("proof");
     fs::write(&path, [1; 8])?;
-    let mut store = Store::open(path)?;
+    let mut store = Store::open(path.clone())?;
+    let fence = live.join("proof.nse-lock");
+    let moved = scratch.0.join("moved-fence");
+    let mut displaced = Ok(());
     let result = store.commit_observed([2; 8], || {
-        assert!(fs::rename(&live, &moved).is_ok());
+        displaced = fs::rename(&fence, &moved);
     });
+    displaced?;
     assert!(matches!(
         result,
         Err(Error {
@@ -56,7 +59,7 @@ fn real_postrename_directory_failure_retains_original_unknown_until_readback()
             ..
         })
     ));
-    assert_eq!(fs::read(moved.join("proof"))?, [2; 8]);
+    assert_eq!(fs::read(&path)?, [2; 8]);
     assert!(store.quiescent().is_err());
     assert!(store.loaded().is_err());
     assert!(matches!(
@@ -68,7 +71,7 @@ fn real_postrename_directory_failure_retains_original_unknown_until_readback()
         })
     ));
     assert!(store.recover().is_err());
-    fs::rename(&moved, &live)?;
+    fs::rename(&moved, &fence)?;
     assert!(!store.quiescent()?);
     assert_eq!(store.recover()?, Some([2; 8]));
     assert!(store.quiescent()?);

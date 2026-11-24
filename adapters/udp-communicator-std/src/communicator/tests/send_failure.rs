@@ -55,11 +55,14 @@ async fn native_failure() -> Test {
         Err(error) => Poll::Ready(Err(error)),
     })
     .await?;
-    check(matches!(event, Activity::DiscoveryFailed {
+    if !matches!(&event, Activity::DiscoveryFailed {
         socket: 0,
         operation: crate::discovery::Operation::Send { interface: original, target: intended },
         error: SocketError::Io(error),
-    } if original == interface && intended == refused && error.raw_os_error().is_some()))?;
+    } if *original == interface && *intended == refused && error.raw_os_error().is_some())
+    {
+        return Err(format!("unexpected native discovery send result: {event:?}").into());
+    }
     check(
         !owner.sockets[0].has_pending_send()
             && owner.discovery.as_ref().ok_or(Error::Stale)?.pending[0].is_none(),
@@ -159,15 +162,21 @@ async fn native_failure() -> Test {
         )
         .into()
     })?;
-    stage.set("original socket and surviving endpoint");
-    check(
-        failures.get() == 1
-            && sent.get() == 1
-            && owner.endpoints() == 1
-            && owner.sockets[0].local_address() == original_socket
-            && owner.transport_generation() == original_generation
-            && owner.transport_attached(),
-    )?;
+    if failures.get() != 1
+        || sent.get() != 1
+        || owner.endpoints() != 1
+        || owner.sockets[0].local_address() != original_socket
+        || owner.transport_generation() != original_generation
+        || !owner.transport_attached()
+    {
+        return Err(format!(
+            "original socket or surviving endpoint changed: failed={}, sent={}, endpoints={}",
+            failures.get(),
+            sent.get(),
+            owner.endpoints(),
+        )
+        .into());
+    }
     #[cfg(any(target_os = "macos", target_os = "freebsd"))]
     drop(options);
     owner.close();

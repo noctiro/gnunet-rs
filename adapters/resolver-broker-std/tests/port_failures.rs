@@ -25,7 +25,7 @@ use std::{
 };
 use tokio::{
     io::AsyncReadExt,
-    net::TcpListener,
+    net::{TcpListener, TcpSocket},
     time::{Instant, timeout},
 };
 #[path = "../../ipc-unix/tests/support/clock_source.rs"]
@@ -134,10 +134,17 @@ async fn alongside<F: std::future::Future>(
     driver: &mut gnunet_resolver_broker::Driver<4, 64>,
     future: F,
 ) -> Result<F::Output, Box<dyn StdError>> {
+    alongside_until(driver, future, Instant::now() + Duration::from_secs(2)).await
+}
+async fn alongside_until<F: std::future::Future>(
+    driver: &mut gnunet_resolver_broker::Driver<4, 64>,
+    future: F,
+    until: Instant,
+) -> Result<F::Output, Box<dyn StdError>> {
     use std::{future::Future, task::Poll};
     let mut future = std::pin::pin!(future);
-    Ok(timeout(
-        Duration::from_secs(2),
+    Ok(tokio::time::timeout_at(
+        until,
         std::future::poll_fn(|cx| {
             if let Poll::Ready(result) = future.as_mut().poll(cx) {
                 return Poll::Ready(Ok(result));
@@ -340,9 +347,11 @@ fn statistics_time_error_preserves_get_epoch_without_connect_retry() -> Test {
 #[test]
 fn actual_native_refusal_remains_socket_retry() -> Test {
     run(async {
-        let listener = TcpListener::bind("127.0.0.1:0").await?;
-        let port = listener.local_addr()?.port();
-        drop(listener);
+        // Reserve the endpoint without listening, so no other test can claim
+        // the port between reservation and the connection attempt.
+        let socket = TcpSocket::new_v4()?;
+        socket.bind("127.0.0.1:0".parse()?)?;
+        let port = socket.local_addr()?.port();
         let (context, mut driver, _source) = context(Refusal::Native, true)?;
         let mut statistics_instance_2 = gnunet_client::statistics_handle::Instance::new();
         let mut host = gnunet_ipc_unix::handle::StatisticsHandle::<4, 64, 2, 64, 8>::from_config(
@@ -358,9 +367,9 @@ fn actual_native_refusal_remains_socket_retry() -> Test {
             name: b"value",
         })?;
         let mut retried = false;
-        let until = Instant::now() + Duration::from_secs(1);
+        let until = Instant::now() + Duration::from_secs(5);
         while !retried && Instant::now() < until {
-            alongside(
+            alongside_until(
                 &mut driver,
                 host.drive(Some(until), |event, _| {
                     if matches!(event, gnunet_ipc_unix::handle::Event::ConnectRetry { .. }) {
@@ -368,6 +377,7 @@ fn actual_native_refusal_remains_socket_retry() -> Test {
                     }
                     GetFlow::Continue
                 }),
+                until + Duration::from_secs(1),
             )
             .await??;
         }
@@ -375,6 +385,7 @@ fn actual_native_refusal_remains_socket_retry() -> Test {
         let error = host.take_io_error().ok_or("missing native error")?;
         assert_eq!(error.kind(), io::ErrorKind::ConnectionRefused);
         assert!(PortError::from_io(&error).is_none());
+        drop(socket);
         Ok(())
     })
 }

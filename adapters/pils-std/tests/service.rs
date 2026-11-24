@@ -14,6 +14,7 @@ use gnunet_pils_host::{
     startup,
 };
 use gnunet_service_runtime::{
+    BoundListeners, LocalListenerAccess,
     clock::{RuntimeClock, SystemClock},
     service::Listener,
 };
@@ -39,7 +40,7 @@ use zeroize::Zeroizing;
 type Failure = Box<dyn Error>;
 mod support;
 use gnunet_service_runtime::local::Stream as UnixStream;
-use support::{LocalListener as UnixListener, Scratch};
+use support::Scratch;
 fn hello_limits() -> HelloLimits {
     HelloLimits {
         maximum_input_bytes: 65535,
@@ -222,9 +223,11 @@ fn native_normal_service_all_handlers_fifo_crypto_and_restart() -> Result<(), Fa
     runtime.block_on(async {
         let mut host = prepared.into_host();
         let unix_path = scratch.0.join("p");
-        let unix = UnixListener::bind(&unix_path).await?;
+        let unix =
+            BoundListeners::bind_local(unix_path.clone(), LocalListenerAccess::Owner).await?;
         let tcp = TcpListener::bind("127.0.0.1:0").await?;
-        let listeners = [Listener::Unix(&unix.socket), Listener::Tcp(&tcp)];
+        let mut listeners = unix.listeners();
+        listeners.push(Listener::Tcp(&tcp));
         let mut client = std::pin::pin!(original_clients(
             unix_path,
             tcp.local_addr()?,
@@ -313,8 +316,8 @@ fn configured_conditional_service_rotates_real_feed_and_keeps_original_signing_m
     runtime.block_on(async {
         let mut host = prepared.into_host();
         let path = scratch.0.join("conditional");
-        let listener = UnixListener::bind(&path).await?;
-        let listeners = [Listener::Unix(&listener.socket)];
+        let listener = BoundListeners::bind_local(path.clone(), LocalListenerAccess::Owner).await?;
+        let listeners = listener.listeners();
         let mut client = std::pin::pin!(async {
             let mut stream = UnixStream::connect(&path).await?;
             let initial = frame(&mut stream).await?;

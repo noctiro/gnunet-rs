@@ -104,8 +104,7 @@ fn replaced_home_and_root_cannot_redirect_a_canonical_publication() -> Result<()
     let moved = fixture.path.join("original-home");
     std::fs::rename(home, &moved)?;
     let root = Directory::open(system.directory())?;
-    let _replacement =
-        root.create_private_directory(home.file_name().ok_or("home has no leaf")?)?;
+    drop(root.create_private_directory(home.file_name().ok_or("home has no leaf")?)?);
     std::fs::write(home.join("keep"), b"replacement home")?;
     check(
         system
@@ -122,7 +121,20 @@ fn replaced_home_and_root_cannot_redirect_a_canonical_publication() -> Result<()
         "replacement home was altered",
     )?;
     let selected_root = fixture.path.join("owned");
-    std::fs::rename(&selected_root, fixture.path.join("original-root"))?;
+    let original_root = fixture.path.join("original-root");
+    // Keep the original marker and fence handles live while releasing their
+    // descendant paths for the Windows directory rename.
+    #[cfg(windows)]
+    let retained = [".testbed-rust-owner", ".testbed-rust.lock"];
+    #[cfg(windows)]
+    for name in retained {
+        std::fs::rename(selected_root.join(name), fixture.path.join(name))?;
+    }
+    std::fs::rename(&selected_root, &original_root)?;
+    #[cfg(windows)]
+    for name in retained {
+        std::fs::rename(fixture.path.join(name), original_root.join(name))?;
+    }
     let parent = Directory::open(&fixture.path)?;
     let _replacement = parent.create_private_directory(OsStr::new("owned"))?;
     check(

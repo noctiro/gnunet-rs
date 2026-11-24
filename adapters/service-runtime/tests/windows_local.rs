@@ -255,10 +255,10 @@ async fn configured_cleanup_failure_retains_original_node_for_retry()
     let config = configuration(&fixture.socket)?;
     let mut bound =
         BoundListeners::bind_configured(&config, b"local", LocalListenerAccess::Owner).await?;
-    // READ_CONTROL, sharing read/write but not delete, and OPEN_REPARSE_POINT:
-    // deliberately deny a concurrent DELETE reopen of this original node.
+    // Request data access so this handle participates in share checks, then
+    // deny a DELETE reopen of the original reparse point.
     let blocker = fs::OpenOptions::new()
-        .access_mode(0x0002_0000)
+        .read(true)
         .share_mode(3)
         .custom_flags(0x0020_0000)
         .open(&fixture.socket)?;

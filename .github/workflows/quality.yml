@@ -108,6 +108,8 @@ jobs:
         env:
           # Keep Darwin paths short without using /tmp's final symlink.
           TMPDIR: ${{ runner.os == 'Windows' && runner.temp || runner.os == 'macOS' && '/private/tmp' || '/tmp' }}
+          # Bound peak compiler and linker memory on hosted Windows runners.
+          CARGO_BUILD_JOBS: ${{ runner.os == 'Windows' && '1' || '2' }}
           # GNU ld overflows CALL26 relocations in the large FS test executable.
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: clang
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS: -C link-arg=-fuse-ld=lld

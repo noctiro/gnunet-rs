@@ -32,7 +32,13 @@ fn cleanup_uses_the_original_directory_after_its_path_is_replaced() -> Result<()
     Staging::create(&source.join("keys"), &mut owner)?;
     let mut stage = owner.ok_or("missing ECC test staging owner")?;
     let sibling = stage.name.clone();
+    // Windows refuses a directory rename with a live descendant handle.
+    // Move the held file out and back without replacing its original object.
+    #[cfg(windows)]
+    std::fs::rename(source.join(&sibling), scratch.0.join(&sibling))?;
     std::fs::rename(&source, &moved)?;
+    #[cfg(windows)]
+    std::fs::rename(scratch.0.join(&sibling), moved.join(&sibling))?;
     drop(root.create_private_directory(OsStr::new("source"))?);
     let replacement = source.join(&sibling);
     std::fs::write(&replacement, b"replacement")?;

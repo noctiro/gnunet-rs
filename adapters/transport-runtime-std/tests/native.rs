@@ -691,7 +691,7 @@ async fn mismatched_local_capability_never_activates_before_actual_matching_ikm(
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn real_backend_path_loss_closes_original_clients_without_input_or_epoch_replay()
+async fn real_backend_fence_loss_closes_original_clients_without_input_or_epoch_replay()
 -> Result<(), Failure> {
     let d = Directory::new()?;
     let pp = d.0.join("pils");
@@ -726,8 +726,9 @@ async fn real_backend_path_loss_closes_original_clients_without_input_or_epoch_r
         let _progress = step(&mut runtime, &mut service, &tr, &ps).await?;
     }
     assert_eq!(runtime.report().transport_connections, 1);
-    let old = d.0.join("original-state");
-    std::fs::rename(&state, &old)?;
+    let fence = state.join(".gnunet-peerstore-owner.lock");
+    let old = d.0.join("original-fence");
+    std::fs::rename(&fence, &old)?;
     tokio::time::sleep(Duration::from_millis(1100)).await;
     let trl = [Listener::Unix(&tr)];
     let psl = [Listener::Unix(&ps)];
@@ -749,13 +750,14 @@ async fn real_backend_path_loss_closes_original_clients_without_input_or_epoch_r
     let mut b = [0; 1];
     assert_eq!(app.read(&mut b).await?, 0);
     assert_eq!(runtime.report().activations, 1);
-    assert!(Journal::open(old.join("journal")).is_err());
+    std::fs::rename(&old, &fence)?;
+    assert!(Journal::open(&path).is_err());
     assert!(matches!(
         runtime.drive(&trl, &psl, &mut observe).await?,
         Progress::Closed
     ));
     drop(runtime);
-    let _recovered = Journal::open(old.join("journal"))?;
+    let _recovered = Journal::open(&path)?;
     Ok(())
 }
 

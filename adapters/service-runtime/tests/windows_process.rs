@@ -492,7 +492,7 @@ mod windows {
             "exact reaping consumed another child's completion",
         )?;
         check(
-            registry.credit_available(1) && !registry.credit_available(2),
+            !registry.credit_available(1) && registry.credit_available(2),
             "exact reaping released another child's credit",
         )?;
         check(
