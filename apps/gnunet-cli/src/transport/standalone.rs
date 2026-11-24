@@ -232,19 +232,18 @@ mod tests {
         let argv = ["gnunet-transport", "-aVp", std::str::from_utf8(&public)?].map(OsString::from);
         let parsed = arguments.options().run(BINARY, argv, false);
         let request = arguments.request(parsed.remaining().ok_or("options did not parse")?)?;
-        assert_eq!(
+        if !matches!(
             request.command.query,
             Query::Links {
                 include_unconfirmed: true,
-                peer
-            }
-        );
-        assert!(matches!(
-            request.command.style,
-            Style::Links { verbose: true }
-        ));
-        assert!(!request.command.continuous);
-        assert!(request.unix.is_none());
+                peer: actual,
+            } if actual == peer
+        ) || !matches!(request.command.style, Style::Links { verbose: true })
+            || request.command.continuous
+            || request.unix.is_some()
+        {
+            return Err("transport flags did not select the expected one-shot link query".into());
+        }
         Ok(())
     }
 }

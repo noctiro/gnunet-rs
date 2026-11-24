@@ -65,17 +65,11 @@ fn isolated(error: &SocketError) -> bool {
     match error {
         SocketError::Core(Error::Deadline) => true,
         SocketError::Io(error) => {
-            if gnunet_native::network::isolated_datagram_send_error(error) {
+            #[cfg(unix)]
+            if matches!(error.raw_os_error(), Some(libc::ENODEV | libc::ENXIO)) {
                 return true;
             }
-            #[cfg(unix)]
-            {
-                matches!(error.raw_os_error(), Some(libc::ENODEV | libc::ENXIO))
-            }
-            #[cfg(not(unix))]
-            {
-                false
-            }
+            gnunet_native::network::isolated_datagram_send_error(error)
         }
         _ => false,
     }

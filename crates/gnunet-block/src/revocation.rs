@@ -412,8 +412,13 @@ mod boundaries {
         let signer = gnunet_crypto::EddsaPrivateKey::from_seed([9; 32]);
         let mut original = [0; PROOF_BYTES];
         original[..8].copy_from_slice(&10_u64.to_be_bytes());
-        for (index, nonce) in original[16..272].chunks_exact_mut(8).enumerate() {
-            nonce.copy_from_slice(&(index as u64).to_be_bytes());
+        for (index, nonce) in original[16..272]
+            .as_chunks_mut::<8>()
+            .0
+            .iter_mut()
+            .enumerate()
+        {
+            *nonce = (index as u64).to_be_bytes();
         }
         let mut public = [0; 36];
         public[..4].copy_from_slice(&65556_u32.to_be_bytes());

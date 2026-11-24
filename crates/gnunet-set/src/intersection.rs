@@ -292,8 +292,9 @@ impl Intersection {
             tx.header.salt,
             native(snapshot.abi().order),
         )?;
-        for index in self.cursor..end {
-            if self.active[index] == 1 {
+        let active = self.active.get(self.cursor..end).ok_or(Error::Stale)?;
+        for (index, &present) in (self.cursor..end).zip(active) {
+            if present == 1 {
                 group.test_and_set(snapshot.hash(index).ok_or(Error::Stale)?);
             }
         }

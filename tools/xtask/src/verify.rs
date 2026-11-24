@@ -122,6 +122,7 @@ fn commands(stage: Stage) -> Vec<Vec<&'static str>> {
             vec![
                 "cargo",
                 "clippy",
+                "--keep-going",
                 "--workspace",
                 "--all-targets",
                 "--all-features",

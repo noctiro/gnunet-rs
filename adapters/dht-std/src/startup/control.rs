@@ -44,25 +44,6 @@ impl Reports<'_> {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn embedded_stop_is_consumed_before_native_drain() -> Result<(), Cause> {
-        let mut source = std::pin::pin!(std::future::ready(Ok(())));
-        let mut notify = |_| Err(io::Error::other("unexpected readiness"));
-        let mut mode = Mode::Embedded {
-            stop: Some(source.as_mut()),
-            notify: &mut notify,
-        };
-        if !mode.stopping().await? || mode.stopping().await? {
-            return Err("DHT stop was not observed exactly once".into());
-        }
-        Ok(())
-    }
-}
-
 pub(super) enum Mode<'a> {
     Process {
         signals: StopSignals,
@@ -156,6 +137,25 @@ impl<'a> Mode<'a> {
             let mut out = io::stdout().lock();
             writeln!(out, "STOPPED dht original={report:?}")?;
             out.flush()?;
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn embedded_stop_is_consumed_before_native_drain() -> Result<(), Cause> {
+        let mut source = std::pin::pin!(std::future::ready(Ok(())));
+        let mut notify = |_| Err(io::Error::other("unexpected readiness"));
+        let mut mode = Mode::Embedded {
+            stop: Some(source.as_mut()),
+            notify: &mut notify,
+        };
+        if !mode.stopping().await? || mode.stopping().await? {
+            return Err("DHT stop was not observed exactly once".into());
         }
         Ok(())
     }

@@ -332,21 +332,28 @@ mod tests {
         .map(OsString::from);
         let protected = Protected::take(&mut argv, false, options.specs())?;
         let parsed = options.run(b"gnunet-identity", argv, false);
-        assert!(matches!(parsed.remaining(), Some([])));
+        if !matches!(parsed.remaining(), Some([])) {
+            return Err("unexpected positional IDENTITY arguments".into());
+        }
         let (encryption, service) = arguments.select(protected)?;
         let encryption = encryption.ok_or("expected IDENTITY encryption")?;
         let create = service.create.ok_or("expected IDENTITY create")?;
-        assert_eq!(encryption.recipient, b"recipient");
-        assert_eq!(encryption.plaintext.as_slice(), b"text");
-        assert_eq!(create.name, b"same");
-        assert_eq!(service.delete.as_deref(), Some(b"same".as_slice()));
-        assert_eq!(service.filter.as_deref(), Some(b"same".as_slice()));
-        assert_eq!(
-            service.encrypted.as_ref().map(|bytes| bytes.as_slice()),
-            Some(b"cipher".as_slice())
-        );
-        assert!(service.list && service.monitor);
-        assert!(service.limits.reconnect);
+        if encryption.recipient != b"recipient"
+            || encryption.plaintext.as_slice() != b"text"
+            || service.encrypted.as_ref().map(|bytes| bytes.as_slice())
+                != Some(b"cipher".as_slice())
+        {
+            return Err("mixed operations changed the encryption options".into());
+        }
+        if create.name != b"same"
+            || service.delete.as_deref() != Some(b"same".as_slice())
+            || service.filter.as_deref() != Some(b"same".as_slice())
+            || !service.list
+            || !service.monitor
+            || !service.limits.reconnect
+        {
+            return Err("mixed operations changed the inventory or mutation options".into());
+        }
         Ok(())
     }
 }
