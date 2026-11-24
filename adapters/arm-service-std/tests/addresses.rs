@@ -11,12 +11,18 @@ use std::{
     path::PathBuf,
 };
 struct Env;
+#[cfg(unix)]
+const FIXTURE_ROOT: &str = "/addresses-test";
+#[cfg(windows)]
+const FIXTURE_ROOT: &str = r"C:\addresses-test";
+const SOCKET_NAME: &str = "service.sock";
+
 impl Environment for Env {
     fn variable(&self, _: &[u8]) -> Option<Vec<u8>> {
         None
     }
     fn current_dir(&self) -> io::Result<PathBuf> {
-        Ok(std::env::temp_dir())
+        Ok(PathBuf::from(FIXTURE_ROOT))
     }
 }
 fn put(c: &mut Configuration, key: &[u8], value: &[u8]) {
@@ -30,11 +36,7 @@ fn v4() -> Configuration {
 #[test]
 fn malformed_port_is_zero_but_range_and_boolean_are_fatal() {
     let mut c = v4();
-    put(
-        &mut c,
-        b"UNIXPATH",
-        b"/private/tmp/addresses-only-never-bound",
-    );
+    put(&mut c, b"UNIXPATH", SOCKET_NAME.as_bytes());
     put(&mut c, b"PORT", b"not-port");
     let a = Addresses::from_config(&c, b"svc", &Env, 4).expect("Unix survives bad port");
     assert_eq!(a.diagnostics, vec![Diagnostic::InvalidPort]);
@@ -56,18 +58,16 @@ fn native_numeric_input_has_exact_family_protocol_and_source_order() {
     let mut c = v4();
     put(&mut c, b"PORT", b"12345");
     put(&mut c, b"BINDTO", b"127.0.0.1");
-    put(
-        &mut c,
-        b"UNIXPATH",
-        b"/private/tmp/addresses-only-never-bound",
-    );
+    put(&mut c, b"UNIXPATH", SOCKET_NAME.as_bytes());
     let a = Addresses::from_config(&c, b"svc", &Env, 8).expect("numeric native");
-    assert!(
-        matches!(&a.addresses[0],Address::Unix(path) if path==std::path::Path::new("/private/tmp/addresses-only-never-bound"))
+    let (first, rest) = a.addresses.split_first().expect("Unix address comes first");
+    assert_eq!(
+        first,
+        &Address::Unix(PathBuf::from(FIXTURE_ROOT).join(SOCKET_NAME))
     );
+    assert!(!rest.is_empty(), "numeric bind must include a TCP address");
     assert!(
-        a.addresses[1..]
-            .iter()
+        rest.iter()
             .all(|a| *a == Address::Tcp(SocketAddr::from((Ipv4Addr::LOCALHOST, 12345))))
     );
     assert!(matches!(
@@ -108,11 +108,7 @@ fn no_endpoint_and_zero_port_do_not_invent_ephemeral_listener() {
 #[test]
 fn unix_only_does_not_resolve_an_irrelevant_bindto() {
     let mut c = v4();
-    put(
-        &mut c,
-        b"UNIXPATH",
-        b"/private/tmp/addresses-only-never-bound",
-    );
+    put(&mut c, b"UNIXPATH", SOCKET_NAME.as_bytes());
     put(&mut c, b"BINDTO", b"\xff\xfe");
     let a = Addresses::from_config(&c, b"svc", &Env, 1).expect("zero port skips native resolver");
     assert_eq!(a.addresses.len(), 1);

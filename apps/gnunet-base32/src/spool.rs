@@ -25,6 +25,26 @@ struct Cleanup {
     namespace: Option<io::Error>,
     close: Option<io::Error>,
 }
+
+#[derive(Debug)]
+struct Operation {
+    action: &'static str,
+    source: io::Error,
+}
+impl std::fmt::Display for Operation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.action, self.source)
+    }
+}
+impl std::error::Error for Operation {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.source)
+    }
+}
+fn at<T>(action: &'static str, result: io::Result<T>) -> io::Result<T> {
+    result.map_err(|source| io::Error::new(source.kind(), Operation { action, source }))
+}
+
 impl std::fmt::Display for Cleanup {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
@@ -87,19 +107,34 @@ impl Spool {
                 .directory
                 .as_ref()
                 .ok_or_else(|| io::Error::other("spool directory lost"))?;
-            directory.validate_private()?;
-            spool.file = Some(directory.create_private_file(OsStr::new(DATA))?);
+            at(
+                "verify private spool directory",
+                directory.validate_private(),
+            )?;
+            spool.file = Some(at(
+                "create spool file",
+                directory.create_private_file(OsStr::new(DATA)),
+            )?);
             spool.named = true;
             let file = spool
                 .file
                 .as_ref()
                 .ok_or_else(|| io::Error::other("spool file lost"))?;
-            spool.identity = Some(filesystem::private_single_file_identity(file)?);
+            spool.identity = Some(at(
+                "verify private spool file",
+                filesystem::private_single_file_identity(file),
+            )?);
             // Windows uses original-link POSIX disposition; Unix uses unlinkat
             // through the held private directory. No file path is reopened.
-            directory.remove_file(OsStr::new(DATA), file)?;
+            at(
+                "unlink spool file",
+                directory.remove_file(OsStr::new(DATA), file),
+            )?;
             spool.named = false;
-            spool.parent.remove_directory(&spool.name, directory)?;
+            at(
+                "remove spool directory",
+                spool.parent.remove_directory(&spool.name, directory),
+            )?;
             spool.removed = true;
             spool.directory = None;
             return Ok(());
@@ -141,7 +176,10 @@ impl Spool {
             .directory
             .as_ref()
             .ok_or_else(|| io::Error::other("original spool directory unconfirmed"))?;
-        directory.validate_private()?;
+        at(
+            "verify private spool directory",
+            directory.validate_private(),
+        )?;
         if self.named {
             let file = self
                 .file
@@ -150,10 +188,16 @@ impl Spool {
             if Some(FileIdentity::of(file)?) != self.identity {
                 return Err(io::Error::other("original named spool file unconfirmed"));
             }
-            directory.remove_file(OsStr::new(DATA), file)?;
+            at(
+                "unlink spool file",
+                directory.remove_file(OsStr::new(DATA), file),
+            )?;
             self.named = false;
         }
-        self.parent.remove_directory(&self.name, directory)?;
+        at(
+            "remove spool directory",
+            self.parent.remove_directory(&self.name, directory),
+        )?;
         self.removed = true;
         self.directory = None;
         Ok(())

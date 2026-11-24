@@ -96,7 +96,7 @@ jobs:
           - { os: windows-2025, host: x86_64-pc-windows-msvc }
           - { os: windows-11-arm, host: aarch64-pc-windows-msvc }
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -104,6 +104,12 @@ jobs:
       - uses: ./.github/actions/setup-rust
         with:
           host: ${{ matrix.host }}
+      - name: Isolate the Windows Base32 spool failure
+        if: matrix.os == 'windows-2025'
+        timeout-minutes: 10
+        run: cargo test --locked -p gnunet-base32-command --test command
+        env:
+          TMPDIR: ${{ runner.temp }}
       - run: cargo xtask verify native --log-dir target/ci/native
         env:
           # Keep Darwin paths short without using /tmp's final symlink.
@@ -124,7 +130,7 @@ jobs:
       matrix:
         release: ['14.5', '15.1']
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

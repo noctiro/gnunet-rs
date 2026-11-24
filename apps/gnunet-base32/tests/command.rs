@@ -84,7 +84,11 @@ fn native_streams_validate_before_output_and_remove_the_spool() -> Result<(), Fa
     ] {
         let (status, output, errors) = directory.run(input, args)?;
         if !status.success() || output != expected {
-            return Err(format!("Base32 golden: {status}; {errors:?}; {output:?}").into());
+            return Err(format!(
+                "Base32 golden: {status}; {}; {output:?}",
+                String::from_utf8_lossy(&errors)
+            )
+            .into());
         }
     }
     // Multiple conversion groups and native worker chunks, including all byte

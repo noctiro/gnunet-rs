@@ -153,6 +153,13 @@ struct Peer {
     returned: Arc<AtomicBool>,
     until: Instant,
 }
+
+fn accept_nonblocking(listener: &UnixListener) -> io::Result<UnixStream> {
+    let (stream, _) = listener.accept()?;
+    stream.set_nonblocking(true)?;
+    Ok(stream)
+}
+
 impl Peer {
     fn guard(&self) -> io::Result<()> {
         if self.stop.load(Ordering::SeqCst) || Instant::now() >= self.until {
@@ -167,12 +174,8 @@ impl Peer {
     fn accept(&self, listener: &UnixListener) -> io::Result<UnixStream> {
         loop {
             self.guard()?;
-            match listener.accept() {
-                Ok((stream, _)) => {
-                    stream.set_read_timeout(Some(Duration::from_millis(20)))?;
-                    stream.set_write_timeout(Some(Duration::from_millis(20)))?;
-                    return Ok(stream);
-                }
+            match accept_nonblocking(listener) {
+                Ok(stream) => return Ok(stream),
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
                     thread::sleep(Duration::from_millis(1))
                 }
@@ -277,7 +280,11 @@ impl Peer {
                     thread::sleep(Duration::from_millis(1))
                 }
                 Err(error) => return Err(error),
-                Ok(_) => return Err(io::Error::other("unexpected extra NAMESTORE connection")),
+                Ok(_) => {
+                    return Err(io::Error::other(
+                        "NAMESTORE connected before IDENTITY EndOfList",
+                    ));
+                }
             }
         }
         Ok(())
@@ -495,12 +502,11 @@ fn recovered(line: &[u8]) -> io::Result<SecretKey> {
 #[test]
 fn list_routes_after_identity_end_and_exports_only_recoverable_orphan_keys() -> Result {
     let mut fixture = Fixture::new()?;
-    let listener = fixture.listener("namestore")?;
-    let before_end = listener.try_clone()?;
+    let namestore_listener = fixture.listener("namestore")?;
     let identity_listener = fixture.listener("identity")?;
-    fixture.spawn(identity_listener, move |peer, listener| {
-        let mut stream = peer.accept(&listener)?;
-        let bytes = peer.frame(&mut stream)?;
+    fixture.spawn(identity_listener, move |peer, identity_listener| {
+        let mut identity = peer.accept(&identity_listener)?;
+        let bytes = peer.frame(&mut identity)?;
         check(
             matches!(
                 id::Request::decode(&bytes).map_err(io::Error::other)?,
@@ -510,19 +516,17 @@ fn list_routes_after_identity_end_and_exports_only_recoverable_orphan_keys() -> 
         )?;
         let owned = key(1)?;
         peer.identity(
-            &mut stream,
+            &mut identity,
             id::Response::Update {
                 name: Some(b"owned"),
                 key: owned.view().map_err(io::Error::other)?,
             },
         )?;
-        // A nonempty partial initial enumeration grants no all-zone scan yet.
-        peer.no_connection(&before_end)?;
-        peer.identity(&mut stream, id::Response::EndOfList)?;
-        peer.eof(&mut stream)
-    });
-    fixture.spawn(listener, |peer, listener| {
-        let mut stream = peer.accept(&listener)?;
+        // Keep a single accept owner so an early connection cannot be consumed
+        // by the NAMESTORE peer while IDENTITY is still sending the inventory.
+        peer.no_connection(&namestore_listener)?;
+        peer.identity(&mut identity, id::Response::EndOfList)?;
+        let mut stream = peer.accept(&namestore_listener)?;
         let rid = start(&peer, &mut stream, None)?;
         for (seed, label) in [
             (1, b"owned-label".as_slice()),
@@ -534,7 +538,8 @@ fn list_routes_after_identity_end_and_exports_only_recoverable_orphan_keys() -> 
         }
         peer.namestore(&mut stream, ns::Response::End { rid })?;
         peer.eof(&mut stream)?;
-        peer.no_replay(&listener)
+        peer.eof(&mut identity)?;
+        peer.no_replay(&namestore_listener)
     });
     let mut output = Zeroizing::new(Vec::new());
     let result = fixture.run(&fixture.args("list-orphans"), &mut *output);
@@ -879,7 +884,10 @@ fn retained_partial_identity_update_blocks_store_until_same_key_rename_is_comple
                             io::ErrorKind::WouldBlock
                                 | io::ErrorKind::TimedOut
                                 | io::ErrorKind::Interrupted
-                        ) => {}
+                        ) =>
+                    {
+                        thread::sleep(Duration::from_millis(1))
+                    }
                     Err(error) => return Err(error),
                     Ok(0) => {
                         return Err(io::Error::other(
@@ -893,12 +901,8 @@ fn retained_partial_identity_update_blocks_store_until_same_key_rename_is_comple
                     }
                 }
             } else {
-                match listener.accept() {
-                    Ok((stream, _)) => {
-                        stream.set_read_timeout(Some(Duration::from_millis(5)))?;
-                        stream.set_write_timeout(Some(Duration::from_millis(20)))?;
-                        writer = Some(stream);
-                    }
+                match accept_nonblocking(&listener) {
+                    Ok(stream) => writer = Some(stream),
                     Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
                         thread::sleep(Duration::from_millis(1))
                     }
