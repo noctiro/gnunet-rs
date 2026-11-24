@@ -8,6 +8,11 @@ pub use crate::statistics_owner::Instance;
 use gnunet_types::{AbsoluteTime, Duration, Error, GenerationalId};
 use gnunet_wire::official::{Frame, message_type};
 
+mod storage;
+#[cfg(all(feature = "alloc", target_has_atomic = "ptr"))]
+pub use storage::HeapNames;
+pub use storage::{InlineNames, NameStorage};
+
 /// Official `GNUNET_STATISTICS_VERSION` API constant. This is not a new wire field.
 pub const VERSION: u32 = 0;
 
@@ -160,39 +165,36 @@ pub struct DestroyReport {
     pub unconfirmed_persistent_mutations: u64,
 }
 
-#[derive(Clone, Copy)]
-struct Names<const N: usize> {
-    bytes: [u8; N],
+#[derive(Clone)]
+struct Names<B> {
+    bytes: B,
     subsystem: usize,
     name: usize,
 }
-impl<const N: usize> Names<N> {
-    fn new(selector: Selector<'_>) -> Result<Self, Error> {
+impl<B: NameStorage> Names<B> {
+    fn checked_len(selector: Selector<'_>) -> Result<usize, Error> {
         if selector.subsystem.contains(&0) || selector.name.contains(&0) {
             return Err(Error::InvalidInput);
         }
-        let size = selector
+        selector
             .subsystem
             .len()
             .checked_add(selector.name.len())
             .and_then(|n| n.checked_add(2))
-            .ok_or(Error::Overflow)?;
-        if size > N {
-            return Err(Error::Capacity);
-        }
-        let mut bytes = [0; N];
-        bytes[..selector.subsystem.len()].copy_from_slice(selector.subsystem);
-        bytes[selector.subsystem.len() + 1..size - 1].copy_from_slice(selector.name);
+            .ok_or(Error::Overflow)
+    }
+    fn copy(selector: Selector<'_>) -> Result<Self, Error> {
         Ok(Self {
-            bytes,
+            bytes: B::copy_parts(&[selector.subsystem, b"\0", selector.name, b"\0"])?,
             subsystem: selector.subsystem.len(),
             name: selector.name.len(),
         })
     }
     fn selector(&self) -> Selector<'_> {
+        let bytes = self.bytes.as_ref();
         Selector {
-            subsystem: &self.bytes[..self.subsystem],
-            name: &self.bytes[self.subsystem + 1..self.subsystem + 1 + self.name],
+            subsystem: &bytes[..self.subsystem],
+            name: &bytes[self.subsystem + 1..self.subsystem + 1 + self.name],
         }
     }
     fn byte_len(&self) -> usize {
@@ -206,9 +208,8 @@ enum ActionKind<'owner> {
     Update,
     Watch(WatchId<'owner>),
 }
-#[derive(Clone, Copy)]
-struct Action<'owner, const N: usize> {
-    names: Names<N>,
+struct Action<'owner, B> {
+    names: Names<B>,
     kind: ActionKind<'owner>,
     value: u64,
     persistent: bool,
@@ -217,31 +218,28 @@ struct Action<'owner, const N: usize> {
     aborted: bool,
     continuation: bool,
 }
-#[derive(Clone, Copy)]
-struct Slot<'owner, const N: usize> {
+struct Slot<'owner, B> {
     generation: u32,
     retired: bool,
-    action: Option<Action<'owner, N>>,
+    action: Option<Action<'owner, B>>,
 }
-impl<'owner, const N: usize> Slot<'owner, N> {
+impl<B> Slot<'_, B> {
     const EMPTY: Self = Self {
         generation: 0,
         retired: false,
         action: None,
     };
 }
-#[derive(Clone, Copy)]
-struct Watch<const N: usize> {
-    names: Names<N>,
+struct Watch<B> {
+    names: Names<B>,
     order: u64,
 }
-#[derive(Clone, Copy)]
-struct WatchSlot<const N: usize> {
+struct WatchSlot<B> {
     generation: u32,
     retired: bool,
-    watch: Option<Watch<N>>,
+    watch: Option<Watch<B>>,
 }
-impl<const N: usize> WatchSlot<N> {
+impl<B> WatchSlot<B> {
     const EMPTY: Self = Self {
         generation: 0,
         retired: false,
@@ -271,7 +269,7 @@ enum DestroyState {
     Closed,
 }
 
-/// Fixed-capacity implementation of the official long-lived statistics handle.
+/// Bounded implementation of the official long-lived statistics handle.
 ///
 /// A bounds action slots, N bounds two owned selector strings including NULs,
 /// W bounds live subscriptions, WW bounds all WIDs in one connection including
@@ -285,15 +283,16 @@ pub struct StatisticsHandle<
     const W: usize,
     const WW: usize,
     const T: usize,
+    B = InlineNames<N>,
 > {
     instance: Brand<'owner>,
-    subsystem: [u8; N],
+    subsystem: B,
     subsystem_len: usize,
-    actions: [Slot<'owner, N>; A],
+    actions: [Slot<'owner, B>; A],
     head: Option<usize>,
     tail: Option<usize>,
     current: Option<usize>,
-    watches: [WatchSlot<N>; W],
+    watches: [WatchSlot<B>; W],
     watch_order: u64,
     wire: [Option<WatchId<'owner>>; WW],
     wire_issued: usize,
@@ -316,8 +315,15 @@ pub struct StatisticsHandle<
     current_unconfirmed_persistent: u64,
 }
 
-impl<'owner, const A: usize, const N: usize, const W: usize, const WW: usize, const T: usize>
-    StatisticsHandle<'owner, A, N, W, WW, T>
+impl<
+    'owner,
+    const A: usize,
+    const N: usize,
+    const W: usize,
+    const WW: usize,
+    const T: usize,
+    B: NameStorage,
+> StatisticsHandle<'owner, A, N, W, WW, T, B>
 {
     /// Create an enabled lazy owner or return None for official DISABLE=YES.
     /// Construction submits no connection or message.
@@ -335,11 +341,9 @@ impl<'owner, const A: usize, const N: usize, const W: usize, const WW: usize, co
         if subsystem.len() > N {
             return Err(Error::Capacity);
         }
-        let mut own = [0; N];
-        own[..subsystem.len()].copy_from_slice(subsystem);
         Ok(Some(Self {
             instance: Brand::new(instance),
-            subsystem: own,
+            subsystem: B::copy_parts(&[subsystem])?,
             subsystem_len: subsystem.len(),
             actions: [Slot::EMPTY; A],
             head: None,
@@ -382,16 +386,18 @@ impl<'owner, const A: usize, const N: usize, const W: usize, const WW: usize, co
             Err(Error::StaleGeneration)
         }
     }
-    fn names(selector: Selector<'_>, fixed: usize) -> Result<Names<N>, Error> {
-        let names = Names::new(selector)?;
-        if names
-            .byte_len()
+    fn check_names(selector: Selector<'_>, fixed: usize) -> Result<(), Error> {
+        let size = Names::<B>::checked_len(selector)?;
+        if size > N {
+            return Err(Error::Capacity);
+        }
+        if size
             .checked_add(fixed)
             .is_none_or(|size| size > usize::from(u16::MAX))
         {
             return Err(Error::TooLarge);
         }
-        Ok(names)
+        Ok(())
     }
     fn free_action_index(&self) -> Result<usize, Error> {
         let index = self
@@ -435,6 +441,7 @@ impl<'owner, const A: usize, const N: usize, const W: usize, const WW: usize, co
             slot.generation == id.0.generation
                 && slot
                     .action
+                    .as_ref()
                     .is_some_and(|action| action.kind == ActionKind::Get)
         }) {
             Ok(index)
@@ -449,7 +456,7 @@ impl<'owner, const A: usize, const N: usize, const W: usize, const WW: usize, co
             .filter(|(index, slot)| {
                 slot.watch.is_some()
                     && !self.actions.iter().any(|action| {
-                        action.action.is_some_and(|action| {
+                        action.action.as_ref().is_some_and(|action| {
                             action.kind == ActionKind::Watch(self.live_watch_id(*index))
                         })
                     })
@@ -468,7 +475,7 @@ impl<'owner, const A: usize, const N: usize, const W: usize, const WW: usize, co
             Ok(())
         }
     }
-    fn enqueue(&mut self, mut action: Action<'owner, N>) -> Result<usize, Error> {
+    fn enqueue(&mut self, mut action: Action<'owner, B>) -> Result<usize, Error> {
         let index = self.free_action_index()?;
         if self.tail.is_some_and(|tail| {
             self.actions
@@ -491,32 +498,33 @@ impl<'owner, const A: usize, const N: usize, const W: usize, const WW: usize, co
         self.tail = Some(index);
         Ok(index)
     }
-    fn unlink(&mut self, index: usize) -> Result<Action<'owner, N>, Error> {
+    fn unlink(&mut self, index: usize) -> Result<ActionKind<'owner>, Error> {
         let mut current = self.head;
         let mut previous: Option<usize> = None;
         for _ in 0..A {
             let Some(position) = current else {
                 break;
             };
-            let mut action = self.actions[position].action.ok_or(Error::Stale)?;
+            let action = self.actions[position].action.as_ref().ok_or(Error::Stale)?;
+            let next = action.next;
             if position == index {
                 if let Some(previous) = previous {
                     if let Some(prior) = self.actions[previous].action.as_mut() {
-                        prior.next = action.next;
+                        prior.next = next;
                     }
                 } else {
-                    self.head = action.next;
+                    self.head = next;
                 }
                 if self.tail == Some(index) {
                     self.tail = previous;
                 }
+                let action = self.actions[index].action.as_mut().ok_or(Error::Stale)?;
                 action.queued = false;
                 action.next = None;
-                self.actions[index].action = Some(action);
-                return Ok(action);
+                return Ok(action.kind);
             }
             previous = Some(position);
-            current = action.next;
+            current = next;
         }
         Err(Error::Stale)
     }
@@ -549,11 +557,11 @@ impl<'owner, const A: usize, const N: usize, const W: usize, const WW: usize, co
         Ok(())
     }
     fn action(
-        names: Names<N>,
+        names: Names<B>,
         kind: ActionKind<'owner>,
         value: u64,
         persistent: bool,
-    ) -> Action<'owner, N> {
+    ) -> Action<'owner, B> {
         Action {
             names,
             kind,
@@ -573,22 +581,20 @@ impl<'owner, const A: usize, const N: usize, const W: usize, const WW: usize, co
         kind: ActionKind<'owner>,
     ) -> Result<SetterAdmission, Error> {
         self.open()?;
-        let names = Self::names(
-            Selector {
-                subsystem: &self.subsystem[..self.subsystem_len],
-                name,
-            },
-            16,
-        )?;
+        let selector = Selector {
+            subsystem: &self.subsystem.as_ref()[..self.subsystem_len],
+            name,
+        };
+        Self::check_names(selector, 16)?;
         let mut current = self.head;
         for _ in 0..A {
             let Some(index) = current else {
                 break;
             };
-            let mut action = self.actions[index].action.ok_or(Error::Stale)?;
+            let action = self.actions[index].action.as_mut().ok_or(Error::Stale)?;
             current = action.next;
             if !matches!(action.kind, ActionKind::Set | ActionKind::Update)
-                || action.names.selector() != names.selector()
+                || action.names.selector() != selector
             {
                 continue;
             }
@@ -606,11 +612,15 @@ impl<'owner, const A: usize, const N: usize, const W: usize, const WW: usize, co
                 action.value = action.value.wrapping_add(value);
             }
             action.persistent = persistent;
-            self.actions[index].action = Some(action);
             return Ok(SetterAdmission::Coalesced);
         }
         self.action_admission()?;
-        self.enqueue(Self::action(names, kind, value, persistent))?;
+        self.enqueue(Self::action(
+            Names::copy(selector)?,
+            kind,
+            value,
+            persistent,
+        ))?;
         Ok(SetterAdmission::Queued)
     }
     /// Queue an absolute SET, coalescing the first same-name pending setter even
@@ -639,12 +649,17 @@ impl<'owner, const A: usize, const N: usize, const W: usize, const WW: usize, co
     /// Admit one GET and reserve its eventual continuation before any state changes.
     pub fn get(&mut self, selector: Selector<'_>) -> Result<GetId<'owner>, Error> {
         self.open()?;
-        let names = Self::names(selector, 4)?;
+        Self::check_names(selector, 4)?;
         if self.get_reservations >= T {
             return Err(Error::Capacity);
         }
         self.action_admission()?;
-        let index = self.enqueue(Self::action(names, ActionKind::Get, 0, false))?;
+        let index = self.enqueue(Self::action(
+            Names::copy(selector)?,
+            ActionKind::Get,
+            0,
+            false,
+        ))?;
         self.get_reservations += 1;
         Ok(GetId(
             GenerationalId {
@@ -669,14 +684,13 @@ impl<'owner, const A: usize, const N: usize, const W: usize, const WW: usize, co
             return Ok(());
         }
         let index = self.get_index(id)?;
-        let mut action = self.actions[index].action.ok_or(Error::Stale)?;
+        let action = self.actions[index].action.as_mut().ok_or(Error::Stale)?;
         if action.queued {
             self.unlink(index)?;
             self.finish_get(index, None)?;
         } else if self.current == Some(index) {
             action.aborted = true;
             action.continuation = false;
-            self.actions[index].action = Some(action);
         } else {
             return Err(Error::Stale);
         }
@@ -700,7 +714,7 @@ impl<'owner, const A: usize, const N: usize, const W: usize, const WW: usize, co
     /// be reused only with a fresh generation; connection WIDs are never reused.
     pub fn watch(&mut self, selector: Selector<'_>) -> Result<WatchId<'owner>, Error> {
         self.open()?;
-        let names = Self::names(selector, 4)?;
+        Self::check_names(selector, 4)?;
         let index = self
             .watches
             .iter()
@@ -712,6 +726,7 @@ impl<'owner, const A: usize, const N: usize, const W: usize, const WW: usize, co
             .iter()
             .filter(|slot| {
                 slot.action
+                    .as_ref()
                     .is_some_and(|a| matches!(a.kind, ActionKind::Watch(_)) && a.queued)
             })
             .count();
@@ -733,7 +748,8 @@ impl<'owner, const A: usize, const N: usize, const W: usize, const WW: usize, co
         self.action_admission()?;
         let order = self.watch_order.checked_add(1).ok_or(Error::Overflow)?;
         let id = self.live_watch_id(index);
-        self.enqueue(Self::action(names, ActionKind::Watch(id), 0, false))?;
+        let names = Names::copy(selector)?;
+        self.enqueue(Self::action(names.clone(), ActionKind::Watch(id), 0, false))?;
         self.watches[index].watch = Some(Watch { names, order });
         self.watch_order = order;
         Ok(id)
@@ -763,11 +779,15 @@ impl<'owner, const A: usize, const N: usize, const W: usize, const WW: usize, co
         output: &'a mut [u8],
     ) -> Result<Selector<'a>, Error> {
         let index = self.watch_index(id)?;
-        let names = self.watches[index].watch.ok_or(Error::Stale)?.names;
+        let names = &self.watches[index]
+            .watch
+            .as_ref()
+            .ok_or(Error::Stale)?
+            .names;
         if output.len() < names.byte_len() {
             return Err(Error::Capacity);
         }
-        output[..names.byte_len()].copy_from_slice(&names.bytes[..names.byte_len()]);
+        output[..names.byte_len()].copy_from_slice(&names.bytes.as_ref()[..names.byte_len()]);
         Ok(Selector {
             subsystem: &output[..names.subsystem],
             name: &output[names.subsystem + 1..names.subsystem + 1 + names.name],
@@ -810,7 +830,7 @@ impl<'owner, const A: usize, const N: usize, const W: usize, const WW: usize, co
             .filter(|slot| {
                 !slot.retired
                     && (slot.action.is_none()
-                        || slot.action.is_some_and(|action| {
+                        || slot.action.as_ref().is_some_and(|action| {
                             action.queued
                                 && matches!(action.kind, ActionKind::Watch(_))
                                 && slot.generation < u32::MAX
@@ -823,6 +843,7 @@ impl<'owner, const A: usize, const N: usize, const W: usize, const WW: usize, co
         for index in 0..A {
             if self.actions[index]
                 .action
+                .as_ref()
                 .is_some_and(|action| matches!(action.kind, ActionKind::Watch(_)) && action.queued)
             {
                 self.unlink(index)?;
@@ -835,17 +856,17 @@ impl<'owner, const A: usize, const N: usize, const W: usize, const WW: usize, co
                 .watches
                 .iter()
                 .enumerate()
-                .filter_map(|(index, slot)| slot.watch.map(|watch| (index, watch)))
+                .filter_map(|(index, slot)| slot.watch.as_ref().map(|watch| (index, watch)))
                 .filter(|(_, watch)| watch.order > after)
                 .min_by_key(|(_, watch)| watch.order)
                 .ok_or(Error::Stale)?;
+            after = next.1.order;
             self.enqueue(Self::action(
-                next.1.names,
+                next.1.names.clone(),
                 ActionKind::Watch(self.live_watch_id(next.0)),
                 0,
                 false,
             ))?;
-            after = next.1.order;
         }
         self.wire.fill(None);
         self.wire_issued = 0;
@@ -877,7 +898,7 @@ impl<'owner, const A: usize, const N: usize, const W: usize, const WW: usize, co
             self.instance,
         );
         let (len, kind, index) = if let Some(index) = self.head {
-            let action = self.actions[index].action.ok_or(Error::Stale)?;
+            let action = self.actions[index].action.as_ref().ok_or(Error::Stale)?;
             let selector = action.names.selector();
             match action.kind {
                 ActionKind::Get => (
@@ -1071,7 +1092,7 @@ impl<'owner, const A: usize, const N: usize, const W: usize, const WW: usize, co
                     return Err(Error::Malformed);
                 };
                 let index = self.current.ok_or(Error::Malformed)?;
-                let action = self.actions[index].action.ok_or(Error::Stale)?;
+                let action = self.actions[index].action.as_ref().ok_or(Error::Stale)?;
                 if action.kind != ActionKind::Get {
                     return Err(Error::Malformed);
                 }
@@ -1094,7 +1115,7 @@ impl<'owner, const A: usize, const N: usize, const W: usize, const WW: usize, co
                     return Err(Error::Malformed);
                 }
                 let index = self.current.ok_or(Error::Malformed)?;
-                let action = self.actions[index].action.ok_or(Error::Stale)?;
+                let action = self.actions[index].action.as_ref().ok_or(Error::Stale)?;
                 self.finish_get(
                     index,
                     if action.continuation {
@@ -1218,7 +1239,7 @@ impl<'owner, const A: usize, const N: usize, const W: usize, const WW: usize, co
             return self.finish_destroy(DestroyOutcome::ConnectionLost, cause);
         }
         if let Some(index) = self.current {
-            let action = self.actions[index].action.ok_or(Error::Stale)?;
+            let action = self.actions[index].action.as_ref().ok_or(Error::Stale)?;
             self.finish_get(
                 index,
                 if action.continuation && !action.aborted {
@@ -1243,7 +1264,7 @@ impl<'owner, const A: usize, const N: usize, const W: usize, const WW: usize, co
         self.actions
             .iter()
             .filter(|slot| {
-                slot.action.is_some_and(|action| {
+                slot.action.as_ref().is_some_and(|action| {
                     action.queued && matches!(action.kind, ActionKind::Set | ActionKind::Update)
                 })
             })
@@ -1252,7 +1273,7 @@ impl<'owner, const A: usize, const N: usize, const W: usize, const WW: usize, co
     fn finish_destroy(&mut self, outcome: DestroyOutcome, cause: Error) -> Result<(), Error> {
         let queued = self.queued_mutations();
         if let Some(index) = self.current {
-            let action = self.actions[index].action.ok_or(Error::Stale)?;
+            let action = self.actions[index].action.as_ref().ok_or(Error::Stale)?;
             self.finish_get(
                 index,
                 if action.continuation && !action.aborted {
@@ -1264,7 +1285,7 @@ impl<'owner, const A: usize, const N: usize, const W: usize, const WW: usize, co
             self.current = None;
         }
         for index in 0..A {
-            if let Some(action) = self.actions[index].action {
+            if let Some(action) = self.actions[index].action.as_ref() {
                 if action.kind == ActionKind::Get {
                     self.get_reservations -= 1;
                 }
@@ -1364,11 +1385,10 @@ impl<'owner, const A: usize, const N: usize, const W: usize, const WW: usize, co
     }
     fn begin_draining(&mut self, deadline: AbsoluteTime) -> Result<(), Error> {
         for index in 0..A {
-            if self.actions[index].action.is_some_and(|action| {
+            if self.actions[index].action.as_ref().is_some_and(|action| {
                 action.queued && matches!(action.kind, ActionKind::Get | ActionKind::Watch(_))
             }) {
-                let action = self.unlink(index)?;
-                if action.kind == ActionKind::Get {
+                if self.unlink(index)? == ActionKind::Get {
                     self.finish_get(index, None)?;
                 } else {
                     self.free_action(index);
@@ -1482,7 +1502,7 @@ impl<'owner, const A: usize, const N: usize, const W: usize, const WW: usize, co
     pub fn pending_actions(&self) -> usize {
         self.actions
             .iter()
-            .filter(|slot| slot.action.is_some_and(|action| action.queued))
+            .filter(|slot| slot.action.as_ref().is_some_and(|action| action.queued))
             .count()
     }
     /// Current GET owner, including a cancelled stream tombstone until END.
@@ -1522,7 +1542,7 @@ impl<'owner, const A: usize, const N: usize, const W: usize, const WW: usize, co
     pub fn get_callbacks_enabled(&self, id: GetId<'owner>) -> bool {
         self.get_index(id)
             .ok()
-            .and_then(|index| self.actions[index].action)
+            .and_then(|index| self.actions[index].action.as_ref())
             .is_some_and(|action| action.continuation)
             || self.completions[..self.completion_len]
                 .iter()
