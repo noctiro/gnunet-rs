@@ -2226,8 +2226,14 @@ async fn shutdown_forever_sentinel_is_rejected_without_retiring_original_owners(
     while addresses.read(&service)? != vec![b"tcp://127.0.0.1:42".to_vec()]
         || runtime.report().pending_address_publications != 0
     {
-        assert!(Instant::now() < until);
-        let _event = step(&mut runtime, &mut service, &tr, &ps).await?;
+        if Instant::now() >= until {
+            return Err(
+                format!("initial address was not published: {:?}", runtime.report()).into(),
+            );
+        }
+        if step(&mut runtime, &mut service, &tr, &ps).await?.is_none() {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
     }
     let subscriptions = tracking.0.subscriptions.load(Ordering::SeqCst);
     let active = tracking.active();
@@ -2253,8 +2259,12 @@ async fn shutdown_forever_sentinel_is_rejected_without_retiring_original_owners(
     let until = Instant::now() + Duration::from_secs(4);
     while addresses.read(&service)?.len() != 2 || runtime.report().pending_address_publications != 0
     {
-        assert!(Instant::now() < until);
-        let _event = step(&mut runtime, &mut service, &tr, &ps).await?;
+        if Instant::now() >= until {
+            return Err(format!("second address was not published: {:?}", runtime.report()).into());
+        }
+        if step(&mut runtime, &mut service, &tr, &ps).await?.is_none() {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
     }
     assert_eq!(runtime.report().activations, 1);
     assert_eq!(runtime.report().transport_connections, 1);

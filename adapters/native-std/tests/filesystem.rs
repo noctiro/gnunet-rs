@@ -119,7 +119,11 @@ fn file_snapshot_rechecks_bytes_if_only_ctime_changed() -> Result {
     // Reproduce the two observations around a delayed inode change without
     // depending on when UFS happens to process its pending metadata work.
     before.times.changed -= 1;
-    PrivateFileSnapshot::new(before, b"one").verify(&directory, name, &file)?;
+    let confirmed =
+        PrivateFileSnapshot::new(before, b"one").confirm_read(&directory, name, &file)?;
+    assert_eq!(confirmed.initial().identity, before.identity);
+    assert_ne!(confirmed.initial().times.changed, before.times.changed);
+    confirmed.verify(&directory, name, &file)?;
 
     let modified = file.metadata()?.modified()?;
     let mut writer = directory.open_file_for_update(name)?;
@@ -134,7 +138,7 @@ fn file_snapshot_rechecks_bytes_if_only_ctime_changed() -> Result {
     observed.times.changed -= 1;
     assert!(
         PrivateFileSnapshot::new(observed, b"one")
-            .verify(&directory, name, &file)
+            .confirm_read(&directory, name, &file)
             .is_err()
     );
     Ok(())

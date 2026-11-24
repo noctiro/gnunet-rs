@@ -271,10 +271,11 @@ Windows publication/deletion acts on captured original objects. `sync` reports
 `DirectorySync` independently of data-file synchronization.
 
 `PrivateFileSnapshot` checks the selected name and the held private file
-against a previously verified byte snapshot. FreeBSD UFS can change ctime
-after the publishing operation returns. If only ctime changes, the snapshot
-requires bounded SHA-256 readback from the same file, with stable metadata
-and a matching name, before caching the new timestamp.
+against a previously verified byte snapshot. Use `confirm_read` with metadata
+captured before reading to finish capturing the snapshot. If FreeBSD UFS
+changes only ctime after publication, confirmation and later checks require
+bounded SHA-256 readback from the same file, with stable metadata and a matching
+name, before caching the new timestamp.
 
 On Windows, `Directory::sync` qualifies the original handle's volume as local
 NTFS and reopens that same directory with `FILE_ADD_FILE` access. If access is

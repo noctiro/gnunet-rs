@@ -2,7 +2,10 @@
 use super::{JournalFailure, MAX_BYTES, OWNER_FILE, TEMP_PREFIX};
 use gnunet_native::{
     DirectorySync,
-    filesystem::{Directory, EntryInfo, FileIdentity, file_info, private_single_file_identity},
+    filesystem::{
+        Directory, EntryInfo, FileIdentity, PrivateFileSnapshot, file_info,
+        private_single_file_identity,
+    },
 };
 use gnunet_types::Error;
 use std::{
@@ -125,17 +128,29 @@ impl Authority {
         {
             return Err(JournalFailure::protocol("read-growth", Error::Capacity));
         }
-        if file_info(&file).map_err(|cause| JournalFailure::io("readback-metadata", cause))?
-            != EntryInfo::File(before)
-            || !self
-                .directory
-                .same_file(name, &file)
-                .map_err(|cause| JournalFailure::io("readback-name", cause))?
+        let after =
+            file_info(&file).map_err(|cause| JournalFailure::io("readback-metadata", cause))?;
+        if !self
+            .directory
+            .same_file(name, &file)
+            .map_err(|cause| JournalFailure::io("readback-name", cause))?
         {
             return Err(JournalFailure::protocol(
                 "readback-changed",
                 Error::Conflict,
             ));
+        }
+        if after != EntryInfo::File(before) {
+            // Late metadata updates can only be settled by the original
+            // private file and an independent match against the actual bytes.
+            PrivateFileSnapshot::new(before, &raw)
+                .verify(&self.directory, name, &file)
+                .map_err(|cause| JournalFailure {
+                    stage: "readback-changed",
+                    classification: Error::Conflict,
+                    io: Some(cause),
+                    cleanup: None,
+                })?;
         }
         Ok(Some((raw, before.identity)))
     }

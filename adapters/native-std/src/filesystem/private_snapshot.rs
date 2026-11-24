@@ -114,6 +114,19 @@ impl PrivateFileSnapshot {
         self.info
     }
 
+    /// Finish capturing a newly read snapshot at the same selected private file.
+    /// The initial observation was taken before reading the bytes. FreeBSD may
+    /// advance its ctime only after an independent, stable read of the same bytes.
+    pub fn confirm_read(
+        mut self,
+        directory: &Directory,
+        name: &OsStr,
+        file: &File,
+    ) -> io::Result<Self> {
+        self.info = self.observe(directory, name, file)?;
+        Ok(self)
+    }
+
     /// Require the held exact private file to remain selected by its name.
     /// The fast path observes metadata only; a permitted FreeBSD ctime change
     /// is cached only after bounded readback from the same held file.
@@ -129,6 +142,15 @@ impl PrivateFileSnapshot {
         name: &OsStr,
         file: &File,
     ) -> Result<(), PrivateSnapshotError> {
+        self.observe(directory, name, file).map(|_| ())
+    }
+
+    fn observe(
+        &self,
+        directory: &Directory,
+        name: &OsStr,
+        file: &File,
+    ) -> Result<FileInfo, PrivateSnapshotError> {
         let held = private_data_file_info(file).map_err(PrivateSnapshotError::Held)?;
         #[cfg(target_os = "freebsd")]
         let expected = self.readback.current(self.info);
@@ -146,7 +168,7 @@ impl PrivateFileSnapshot {
         }
         let named = directory.entry_info(name);
         if held == expected && matches!(named, Ok(EntryInfo::File(info)) if info == held) {
-            return Ok(());
+            return Ok(held);
         }
         #[cfg(target_os = "freebsd")]
         if matches!(named, Ok(EntryInfo::File(info)) if same_data(expected, info)) {
@@ -191,18 +213,19 @@ impl Readback {
         name: &OsStr,
         file: &File,
         expected: FileInfo,
-    ) -> io::Result<()> {
+    ) -> io::Result<FileInfo> {
         use sha2::{Digest, Sha256};
-        let before = private_data_file_info(file)?;
+        const ATTEMPTS: usize = 3;
         let invalid =
             || io::Error::new(io::ErrorKind::InvalidData, "original file readback changed");
-        if !same_data(expected, before) {
-            return Err(invalid());
-        }
-        let mut hash = Sha256::new();
-        {
-            let reader = super::FileReader::from_file(file)?;
-            let mut block = zeroize::Zeroizing::new([0; 8192]);
+        let reader = super::FileReader::from_file(file)?;
+        let mut block = zeroize::Zeroizing::new([0; 8192]);
+        for _ in 0..ATTEMPTS {
+            let before = private_data_file_info(file)?;
+            if !same_data(expected, before) {
+                return Err(invalid());
+            }
+            let mut hash = Sha256::new();
             let mut at = 0;
             while at < before.bytes {
                 let count = (before.bytes - at).min(block.len() as u64) as usize;
@@ -213,19 +236,23 @@ impl Readback {
             if reader.read_at(&mut block[..1], at)? != 0 {
                 return Err(invalid());
             }
+            let digest: [u8; 32] = hash.finalize().into();
+            let after = private_data_file_info(file)?;
+            let named = directory.entry_info(name)?;
+            if digest != self.digest
+                || !same_data(expected, after)
+                || !matches!(named, EntryInfo::File(info) if same_data(expected, info))
+            {
+                return Err(invalid());
+            }
+            if before == after && named == EntryInfo::File(after) {
+                *self
+                    .changed
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = after.times.changed;
+                return Ok(after);
+            }
         }
-        let digest: [u8; 32] = hash.finalize().into();
-        let after = private_data_file_info(file)?;
-        if digest != self.digest
-            || before != after
-            || directory.entry_info(name)? != EntryInfo::File(after)
-        {
-            return Err(invalid());
-        }
-        *self
-            .changed
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = after.times.changed;
-        Ok(())
+        Err(invalid())
     }
 }
