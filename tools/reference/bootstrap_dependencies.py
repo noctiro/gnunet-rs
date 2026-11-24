@@ -32,6 +32,7 @@ PACKAGES = (
         "libmicrohttpd-1.0.10",
         "04bfe8ef75db7d629a33de767599765cecadc56274a39822d5d081030d577685",
         (
+            "https://mirrors.kernel.org/gnu/libmicrohttpd/libmicrohttpd-1.0.10.tar.gz",
             "https://ftpmirror.gnu.org/libmicrohttpd/libmicrohttpd-1.0.10.tar.gz",
             "https://ftp.gnu.org/gnu/libmicrohttpd/libmicrohttpd-1.0.10.tar.gz",
         ),
