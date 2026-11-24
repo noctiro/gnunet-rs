@@ -3,13 +3,17 @@
     clippy::panic_in_result_fn,
     reason = "Actual owned stream and original request assertions"
 )]
+#[path = "../../ipc-unix/tests/support/clock_source.rs"]
+pub mod clock_source;
 #[path = "support/assertions.rs"]
 mod support;
+use clock_source::Adjustable;
 use gnunet_client::resolver::{Reply as WireReply, Request};
+use gnunet_client_host::ConnectError;
 use gnunet_config::Configuration;
 use gnunet_resolver_broker::{
-    BrokerError, Completion, DriverEvent, Family, Limits, LiveConfiguration, Progress, SystemClock,
-    broker,
+    BrokerError, Completion, Driver, DriverEvent, Family, Limits, LiveConfiguration, Progress,
+    SystemClock, broker,
 };
 use gnunet_types::{Duration as QueryDuration, Error as CoreError};
 use gnunet_wire::official::Frame;
@@ -29,6 +33,26 @@ use tokio::{
     net::TcpListener,
     time::{Instant, sleep, timeout},
 };
+
+const CLOCK_START: u64 = 1_000_000;
+const QUERY_TIMEOUT: QueryDuration = QueryDuration(15_000);
+
+async fn drive_until_event<const R: usize, const N: usize, T>(
+    driver: &mut Driver<R, N>,
+    mut select: impl FnMut(DriverEvent) -> Option<T>,
+) -> Result<T> {
+    let until = Instant::now() + Duration::from_secs(3);
+    loop {
+        let mut event = None;
+        let progress = driver.drive(Some(until), |e| event = select(e)).await?;
+        if let Some(event) = event {
+            return Ok(event);
+        }
+        if progress != Progress::Activity {
+            return Err(format!("expected resolver event, driver returned {progress:?}").into());
+        }
+    }
+}
 
 #[test]
 fn invalid_configuration_fastpaths_are_lazy_async_and_cancel_between_callbacks() -> Result {
@@ -209,16 +233,10 @@ fn dropping_drive_after_real_short_writes_preserves_immutable_tx_cursor() -> Res
             Arc::new(SystemClock),
         )?;
         let mut query = ctx.ip_get(&name, Family::Any, QueryDuration(1_000_000))?;
-        let mut connected = false;
-        while !connected {
-            driver
-                .drive(Some(Instant::now() + Duration::from_secs(1)), |event| {
-                    if matches!(event, DriverEvent::Connected(_)) {
-                        connected = true;
-                    }
-                })
-                .await?;
-        }
+        drive_until_event(&mut driver, |event| {
+            matches!(event, DriverEvent::Connected(_)).then_some(())
+        })
+        .await?;
         for _ in 0..3 {
             let mut step = Box::pin(driver.drive(None, |_| {}));
             poll_fn(|cx| {
@@ -241,13 +259,31 @@ fn dropping_drive_after_real_short_writes_preserves_immutable_tx_cursor() -> Res
     })
 }
 #[test]
-fn configured_mq_failure_times_out_without_blocking_numeric_fast_requests() -> Result {
+fn configured_mq_failure_times_out_without_blocking_local_fast_requests() -> Result {
     runtime()?.block_on(async {
         let mut cfg = Configuration::default();
         cfg.set_value(b"resolver", b"HOSTNAME", Some(b"127.0.0.1"))?;
         assert!(gnunet_resolver_broker::check_config(&cfg));
-        let (ctx, mut driver) = setup::<8, 128>(LiveConfiguration::new(cfg))?;
-        let mut remote = ctx.ip_get(b"missing", Family::Any, QueryDuration(15_000))?;
+        let clock = Arc::new(Adjustable::frozen(CLOCK_START, 4)?);
+        let (ctx, mut driver) = broker::<8, 128>(
+            LiveConfiguration::new(cfg),
+            Limits::default(),
+            profile()?,
+            clock.clone(),
+        )?;
+        let mut remote = ctx.ip_get(b"missing", Family::Any, QUERY_TIMEOUT)?;
+        // Make MQ creation due while the original request deadline is still in the future.
+        clock.set(CLOCK_START + QUERY_TIMEOUT.0 / 2)?;
+        drive_until_event(&mut driver, |event| {
+            matches!(event, DriverEvent::Unavailable).then_some(())
+        })
+        .await?;
+        assert!(matches!(
+            driver.take_connect_error(),
+            Some(BrokerError::Ipc(ConnectError::Configuration(
+                gnunet_config::Error::InvalidValue
+            )))
+        ));
         let mut local = ctx.ip_get(b"localhost", Family::Any, QueryDuration(0))?;
         assert_eq!(
             next(&mut driver, &mut local).await?,
@@ -261,11 +297,12 @@ fn configured_mq_failure_times_out_without_blocking_numeric_fast_requests() -> R
             next(&mut driver, &mut local).await?,
             Value::Complete(Completion::End)
         );
+        assert_eq!(ctx.pending_requests()?, 1);
+        clock.set(CLOCK_START + QUERY_TIMEOUT.0)?;
         assert_eq!(
             next(&mut driver, &mut remote).await?,
             Value::Complete(Completion::Timeout)
         );
-        assert!(driver.take_connect_error().is_some());
         Ok(())
     })
 }
@@ -321,9 +358,15 @@ fn initial_socket_retries_keep_original_virtual_epoch_and_request() -> Result {
     runtime()?.block_on(async {
         let dir = Dir::new()?;
         let path = dir.0.join("r");
+        let (ctx, mut driver) = setup::<8, 128>(LiveConfiguration::new(cfg(&path)?))?;
+        let mut q = ctx.ip_get(b"fixture.invalid", Family::Any, QueryDuration(u64::MAX))?;
+        let failed_epoch = drive_until_event(&mut driver, |event| match event {
+            DriverEvent::SocketRetry { epoch, .. } => Some(epoch),
+            _ => None,
+        })
+        .await?;
+        let listener = LocalListener::bind(&path).await?;
         let peer = tokio::spawn(async move {
-            sleep(Duration::from_millis(25)).await;
-            let listener = LocalListener::bind(path).await?;
             let (mut s, _) = listener.accept().await?;
             let bytes = frame(&mut s).await?;
             assert_eq!(&bytes[12..16], &1u32.to_ne_bytes());
@@ -331,21 +374,16 @@ fn initial_socket_retries_keep_original_virtual_epoch_and_request() -> Result {
             s.write_all(&response(q.id(), WireReply::End)?).await?;
             Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
         });
-        let (ctx, mut driver) = setup::<8, 128>(LiveConfiguration::new(cfg(&dir.0.join("r"))?))?;
-        let mut q = ctx.ip_get(b"fixture.invalid", Family::Any, QueryDuration(1_000_000))?;
-        let mut epochs: Vec<(gnunet_client::resolver_handle::ConnectionEpoch, bool)> = Vec::new();
-        let until = Instant::now() + Duration::from_secs(1);
-        while epochs.iter().all(|(_, connected)| !*connected) {
-            driver
-                .drive(Some(until), |event| match event {
-                    DriverEvent::SocketRetry { epoch, .. } => epochs.push((epoch, false)),
-                    DriverEvent::Connected(epoch) => epochs.push((epoch, true)),
-                    _ => {}
-                })
-                .await?;
-        }
-        assert!(epochs.len() > 1);
-        assert!(epochs.iter().all(|(epoch, _)| *epoch == epochs[0].0));
+        let connected_epoch = drive_until_event(&mut driver, |event| match event {
+            DriverEvent::SocketRetry { epoch, .. } => {
+                assert_eq!(epoch, failed_epoch);
+                None
+            }
+            DriverEvent::Connected(epoch) => Some(epoch),
+            _ => None,
+        })
+        .await?;
+        assert_eq!(connected_epoch, failed_epoch);
         assert_eq!(
             next(&mut driver, &mut q).await?,
             Value::Complete(Completion::End)
@@ -359,9 +397,12 @@ fn late_timed_out_id_reconnects_next_query_with_its_original_id() -> Result {
     runtime()?.block_on(async {
         let dir = Dir::new()?;
         let listener = LocalListener::bind(dir.0.join("r")).await?;
+        let clock = Arc::new(Adjustable::frozen(CLOCK_START, 4)?);
+        let peer_clock = clock.clone();
         let peer = tokio::spawn(async move {
             let (mut s, _) = listener.accept().await?;
             let a = frame(&mut s).await?;
+            peer_clock.set(CLOCK_START + QUERY_TIMEOUT.0)?;
             let b = frame(&mut s).await?;
             assert_ne!(&a[12..16], &b[12..16]);
             s.write_all(
@@ -372,20 +413,34 @@ fn late_timed_out_id_reconnects_next_query_with_its_original_id() -> Result {
                     .collect::<Vec<_>>(),
             )
             .await?;
-            drop(s);
-            let (mut s, _) = listener.accept().await?;
-            assert_eq!(frame(&mut s).await?, b);
+            let (mut reconnected, _) = listener.accept().await?;
+            assert_eq!(frame(&mut reconnected).await?, b);
             let q = Request::decode(Frame::decode(&b)?, profile()?)?;
-            s.write_all(&response(q.id(), WireReply::End)?).await?;
+            reconnected
+                .write_all(&response(q.id(), WireReply::End)?)
+                .await?;
             Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
         });
-        let (ctx, mut driver) = setup::<8, 128>(LiveConfiguration::new(cfg(&dir.0.join("r"))?))?;
-        let mut a = ctx.ip_get(b"a.invalid", Family::Any, QueryDuration(15_000))?;
+        let (ctx, mut driver) = broker::<8, 128>(
+            LiveConfiguration::new(cfg(&dir.0.join("r"))?),
+            Limits::default(),
+            profile()?,
+            clock.clone(),
+        )?;
+        let mut a = ctx.ip_get(b"a.invalid", Family::Any, QUERY_TIMEOUT)?;
+        clock.set(CLOCK_START + QUERY_TIMEOUT.0 / 2)?;
         assert_eq!(
             next(&mut driver, &mut a).await?,
             Value::Complete(Completion::Timeout)
         );
         let mut b = ctx.ip_get(b"b.invalid", Family::Any, QueryDuration(u64::MAX))?;
+        let cause = drive_until_event(&mut driver, |event| match event {
+            DriverEvent::Lost { cause, .. } => Some(cause),
+            _ => None,
+        })
+        .await?;
+        assert_eq!(cause, CoreError::Malformed);
+        clock.set(CLOCK_START + 2 * QUERY_TIMEOUT.0)?;
         assert_eq!(
             next(&mut driver, &mut b).await?,
             Value::Complete(Completion::End)
@@ -403,9 +458,9 @@ fn oversized_response_is_explicit_capacity_loss_and_never_successful_empty_resul
             let (mut s, _) = listener.accept().await?;
             frame(&mut s).await?;
             s.write_all(&[0, 64, 0, 5]).await?;
-            sleep(Duration::from_millis(50)).await;
             Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
         });
+        let clock = Arc::new(Adjustable::frozen(CLOCK_START, 4)?);
         let (ctx, mut driver) = broker::<8, 128>(
             LiveConfiguration::new(cfg(&dir.0.join("r"))?),
             Limits {
@@ -414,31 +469,21 @@ fn oversized_response_is_explicit_capacity_loss_and_never_successful_empty_resul
                 ..Default::default()
             },
             profile()?,
-            Arc::new(SystemClock),
+            clock.clone(),
         )?;
-        let mut q = ctx.ip_get(b"fixture", Family::Any, QueryDuration(20_000))?;
-        let until = Instant::now() + Duration::from_secs(1);
-        let mut cap = 0;
-        while cap == 0 {
-            driver
-                .drive(Some(until), |e| {
-                    if matches!(
-                        e,
-                        DriverEvent::Lost {
-                            cause: CoreError::Capacity,
-                            ..
-                        }
-                    ) {
-                        cap += 1;
-                    }
-                })
-                .await?;
-        }
+        let mut q = ctx.ip_get(b"fixture", Family::Any, QUERY_TIMEOUT)?;
+        clock.set(CLOCK_START + QUERY_TIMEOUT.0 / 2)?;
+        let cause = drive_until_event(&mut driver, |event| match event {
+            DriverEvent::Lost { cause, .. } => Some(cause),
+            _ => None,
+        })
+        .await?;
+        assert_eq!(cause, CoreError::Capacity);
+        clock.set(CLOCK_START + QUERY_TIMEOUT.0)?;
         assert_eq!(
             next(&mut driver, &mut q).await?,
             Value::Complete(Completion::Timeout)
         );
-        assert_eq!(cap, 1);
         peer.await??;
         Ok(())
     })
