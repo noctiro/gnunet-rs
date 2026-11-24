@@ -1,6 +1,6 @@
 //! Actual bounded semantic application, member lineage and timer progression.
 use crate::{
-    archive::{CommittedRoomHistory, DetachedDeleteTarget, DetachedDeletion},
+    archive::{CommittedRoomHistory, DetachedDeletion},
     engine::Core,
     graph::*,
     state::*,
@@ -629,23 +629,25 @@ impl<'id, const ROOMS: usize> Core<'id, ROOMS> {
                     n.delete_at = Some(n.delete_at.map_or(due, |old| old.min(due)));
                     n.deleted_by = Some(hash);
                 } else {
-                    let target_row = match history {
-                        Some(history) => {
-                            history.plan_detached_deletion(target, session, due, hash, now)?
-                        }
-                        None => DetachedDeleteTarget::Missing,
+                    let found = match history {
+                        Some(history) => history.stage_detached_deletion(
+                            target,
+                            session,
+                            due,
+                            hash,
+                            now,
+                            |mutation| {
+                                *archive.deletion.as_deref_mut().ok_or(Fault::WouldBlock)? =
+                                    Some(mutation);
+                                Ok(())
+                            },
+                        )?,
+                        None => false,
                     };
-                    match target_row {
-                        DetachedDeleteTarget::Missing => {
-                            let source = origin.origin.require_live(self.instance)?;
-                            self.note_dependency(r, *target, source)?;
-                            return Err(Fault::NotReady.into());
-                        }
-                        DetachedDeleteTarget::Deleted => (),
-                        DetachedDeleteTarget::Mutation(mutation) => {
-                            *archive.deletion.as_deref_mut().ok_or(Fault::WouldBlock)? =
-                                Some(mutation);
-                        }
+                    if !found {
+                        let source = origin.origin.require_live(self.instance)?;
+                        self.note_dependency(r, *target, source)?;
+                        return Err(Fault::NotReady.into());
                     }
                 }
             }

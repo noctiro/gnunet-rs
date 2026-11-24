@@ -175,10 +175,10 @@ impl Device {
 /// The original actual packet owner. Helper pipe acceptance is distinguished
 /// from a native TUN syscall and never treated as helper kernel completion.
 #[cfg_attr(
-    unix,
+    any(unix, windows),
     expect(
         clippy::large_enum_variant,
-        reason = "One bounded original packet source lives inline for the coordinator lifetime; avoid a heap allocation solely to equalize native/helper variant sizes"
+        reason = "Each coordinator holds one packet source inline for its lifetime, without a separate allocation"
     )
 )]
 pub enum PacketIo {

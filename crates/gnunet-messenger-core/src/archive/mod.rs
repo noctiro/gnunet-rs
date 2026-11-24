@@ -19,8 +19,8 @@ mod write;
 use codec::*;
 pub use detach::GraphDetachment;
 use detach::Selection;
+pub(crate) use history::ArchivedLocalOriginal;
 pub use history::{ArchiveHistoryCell, CommittedGraphSequence, CommittedRoomHistory};
-pub(crate) use history::{ArchivedLocalOriginal, DetachedDeleteTarget};
 pub use originals::{ArchiveOriginalCell, ArchiveOriginalRange, ArchiveOriginals};
 pub(crate) use page::DetachedKind;
 pub use page::{

@@ -98,12 +98,6 @@ pub(crate) struct DetachedParent {
     pub(crate) epoch: Hash,
 }
 
-pub(crate) enum DetachedDeleteTarget {
-    Missing,
-    Deleted,
-    Mutation(DetachedDeletion),
-}
-
 impl<'archive, 'index> CommittedRoomHistory<'archive, 'index> {
     /// Select one room and index its immutable archived message records. A
     /// single scan reads the existing archive; only the selected room consumes
@@ -311,25 +305,26 @@ impl<'archive, 'index> CommittedRoomHistory<'archive, 'index> {
         Ok(self.detached_record(hash)?.map(|row| row.sequence))
     }
 
-    pub(crate) fn plan_detached_deletion(
+    // A found target is already deleted or has its authorized mutation
+    // staged in the caller's original transaction slot.
+    pub(crate) fn stage_detached_deletion(
         &self,
         target: &Hash,
         session: &SessionRow,
         deadline: u64,
         cause: Hash,
         now: u64,
-    ) -> Result<DetachedDeleteTarget, Error> {
+        stage: impl FnOnce(DetachedDeletion) -> Result<(), Error>,
+    ) -> Result<bool, Error> {
         for page in self.detached {
             if let Some(index) = page.position(target) {
-                return Ok(page
-                    .plan_deletion(index, session, deadline, cause, now)?
-                    .map_or(
-                        DetachedDeleteTarget::Deleted,
-                        DetachedDeleteTarget::Mutation,
-                    ));
+                if let Some(mutation) = page.plan_deletion(index, session, deadline, cause, now)? {
+                    stage(mutation)?;
+                }
+                return Ok(true);
             }
         }
-        Ok(DetachedDeleteTarget::Missing)
+        Ok(false)
     }
 
     /// The earliest admitted detached DELETE timer from the selected pages.
