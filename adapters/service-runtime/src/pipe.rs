@@ -4,8 +4,11 @@ use gnunet_native::pipe::{Endpoint, StartupPipe};
 use gnunet_native::process::ProcessIdentity;
 use std::{
     error::Error,
-    fmt, io,
+    fmt,
+    future::{Future, poll_fn},
+    io,
     os::windows::io::{AsHandle, BorrowedHandle, IntoRawHandle},
+    pin::Pin,
     sync::Arc,
     task::{Context, Poll},
 };
@@ -45,12 +48,14 @@ impl From<io::Error> for PipeError {
     }
 }
 
+type PendingConnection = Pin<Box<dyn Future<Output = io::Result<NamedPipeServer>> + Send>>;
+
 /// One first-instance, owner-only local pipe waiting for its one child connection.
 /// No numeric foreign handle is captured or reconstructed. Call from an entered
 /// Tokio runtime with I/O enabled; a runtime without I/O may panic on registration.
 pub struct PipeListener {
     endpoint: Endpoint,
-    server: Option<NamedPipeServer>,
+    pending: Option<PendingConnection>,
 }
 impl PipeListener {
     /// Reserve one random local pipe name with a protected owner-only DACL,
@@ -87,7 +92,10 @@ impl PipeListener {
         }?;
         Ok(Self {
             endpoint,
-            server: Some(server),
+            pending: Some(Box::pin(async move {
+                server.connect().await?;
+                Ok(server)
+            })),
         })
     }
     /// Captured local location, not readiness or peer-authentication evidence.
@@ -100,28 +108,32 @@ impl PipeListener {
     /// The identity lease pins its
     /// process object; qualification proves identity, not continued liveness.
     pub async fn accept(&mut self, expected: &ProcessIdentity) -> io::Result<PipeConnection> {
-        let server = self
-            .server
-            .as_ref()
-            .ok_or_else(|| io::Error::from(io::ErrorKind::AlreadyExists))?;
-        server.connect().await?;
+        poll_fn(|cx| self.poll_accept(cx, expected)).await
+    }
+
+    /// Poll the original pending connection, retaining its reactor waiter
+    /// even when the caller drops an individual accept future.
+    pub fn poll_accept(
+        &mut self,
+        cx: &mut Context<'_>,
+        expected: &ProcessIdentity,
+    ) -> Poll<io::Result<PipeConnection>> {
+        let pending = self.pending.as_mut().ok_or(io::ErrorKind::AlreadyExists)?;
+        let result = std::task::ready!(pending.as_mut().poll(cx));
+        self.pending = None;
+        let server = result?;
         match expected.matches_pipe_client(server.as_handle()) {
             Ok(true) => {}
             result => {
-                self.server = None;
-                return Err(result.err().unwrap_or_else(|| {
+                return Poll::Ready(Err(result.err().unwrap_or_else(|| {
                     io::Error::new(
                         io::ErrorKind::PermissionDenied,
                         "private pipe client is not the original child",
                     )
-                }));
+                })));
             }
         }
-        let server = self
-            .server
-            .take()
-            .ok_or_else(|| io::Error::from(io::ErrorKind::AlreadyExists))?;
-        Ok(PipeConnection(Arc::new(Io::Server(server))))
+        Poll::Ready(Ok(PipeConnection(Arc::new(Io::Server(server)))))
     }
 }
 enum Io {
@@ -439,8 +451,10 @@ mod tests {
         let mut listener = PipeListener::bind()?;
         let identity = ProcessIdentity::current()?;
         cancel_pending(listener.accept(&identity))?;
-        let client = PipeConnection::connect(listener.endpoint())?;
+        let endpoint = listener.endpoint().clone();
+        let client = tokio::spawn(async move { PipeConnection::connect(&endpoint) });
         let server = listener.accept(&identity).await?;
+        let client = client.await??;
         let (mut reader, server_writer) = server.split();
         let (client_reader, mut writer) = client.split();
         cancel_pending(poll_fn(|cx| reader.poll_byte(cx)))?;

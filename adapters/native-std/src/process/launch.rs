@@ -20,9 +20,10 @@ use std::{
     sync::{Arc, Mutex},
 };
 use windows_sys::Win32::Foundation::{
-    DUPLICATE_SAME_ACCESS, DuplicateHandle, HANDLE, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE,
-    SetHandleInformation, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT,
+    DUPLICATE_SAME_ACCESS, DuplicateHandle, ERROR_BAD_EXE_FORMAT, HANDLE, HANDLE_FLAG_INHERIT,
+    INVALID_HANDLE_VALUE, SetHandleInformation, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
+use windows_sys::Win32::Storage::FileSystem::GetBinaryTypeW;
 use windows_sys::Win32::System::Console::{
     GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
 };
@@ -34,6 +35,7 @@ use windows_sys::Win32::System::Threading::{
     STARTF_USESTDHANDLES, STARTUPINFOEXW, STARTUPINFOW, TerminateProcess,
     UpdateProcThreadAttribute, WaitForSingleObject,
 };
+use windows_sys::Win32::System::WindowsProgramming::{SCS_32BIT_BINARY, SCS_64BIT_BINARY};
 static INHERITANCE: Mutex<()> = Mutex::new(());
 
 /// Native process launch bounds. Limits count input UTF-16 units and resource
@@ -382,7 +384,7 @@ pub(super) struct Created {
 }
 impl Spawn<'_> {
     /// Create one real process, retaining the original handle. Success means
-    /// CreateProcessW admission only; image initialization and service readiness
+    /// CreateProcessW admission of a native Windows image only. Image initialization and service readiness
     /// remain separate observations. Failed creation closes all private copies,
     /// preserving callers' originals and the Win32 error. Input/resource failures
     /// occur before creation. Exported resources are kernel handles, not sockets.
@@ -538,6 +540,15 @@ impl Spawn<'_> {
             ));
         }
         let executable = absolute_wide_path(self.executable)?;
+        // An explicit lpApplicationName alone does not rule out batch dispatch.
+        let mut binary_type = 0;
+        // SAFETY: the path is NUL-terminated, with one writable result slot.
+        if unsafe { GetBinaryTypeW(executable.as_ptr(), &mut binary_type) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if !matches!(binary_type, SCS_32BIT_BINARY | SCS_64BIT_BINARY) {
+            return Err(io::Error::from_raw_os_error(ERROR_BAD_EXE_FORMAT as i32));
+        }
         let directory = absolute_wide_path(self.directory)?;
         let process_security = match token {
             Some(token) if matches!(start, Start::SocketPublication(_)) => {

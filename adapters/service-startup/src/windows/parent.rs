@@ -9,7 +9,7 @@ use gnunet_service_runtime::{
 use std::{
     error::Error,
     fmt,
-    future::{Future, poll_fn},
+    future::poll_fn,
     io,
     sync::Arc,
     task::{Context, Poll},
@@ -129,21 +129,14 @@ impl ParentBootstrap {
                 listener,
                 identity,
                 exit,
-            } => {
-                let mut accepting = std::pin::pin!(listener.accept(identity));
-                match accepting.as_mut().poll(cx) {
-                    Poll::Ready(result) => {
-                        result.map_err(|error| ParentFailure::Pipe(error.into()))
-                    }
-                    Poll::Pending => match exit.poll_exit(cx) {
-                        Poll::Ready(Ok(code)) => Err(ParentFailure::Exited(code)),
-                        Poll::Ready(Err(error)) => {
-                            Err(ParentFailure::ExitObservation(Arc::new(error)))
-                        }
-                        Poll::Pending => return Poll::Pending,
-                    },
-                }
-            }
+            } => match listener.poll_accept(cx, identity) {
+                Poll::Ready(result) => result.map_err(|error| ParentFailure::Pipe(error.into())),
+                Poll::Pending => match exit.poll_exit(cx) {
+                    Poll::Ready(Ok(code)) => Err(ParentFailure::Exited(code)),
+                    Poll::Ready(Err(error)) => Err(ParentFailure::ExitObservation(Arc::new(error))),
+                    Poll::Pending => return Poll::Pending,
+                },
+            },
         };
         match connection {
             Ok(connection) => {

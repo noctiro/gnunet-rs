@@ -127,8 +127,8 @@ pub(super) fn spawn(mut settings: crate::Settings) -> io::Result<Child> {
     } else {
         [Stdio::Null, Stdio::Null, Stdio::Null]
     };
-    // Explicit application name uses CreateProcessW directly. Batch scripts
-    // cannot silently dispatch through cmd.exe with an untrusted URI argument.
+    // NativeCommand admits executable images, so the URI is passed as one
+    // argument without batch dispatch.
     let native = NativeCommand {
         executable: &executable,
         argv0: &settings.handler,
