@@ -60,10 +60,13 @@ primary-token user and, for group access, its exact primary group. In account
 mode, the supervisor keeps the node's owner and maintenance rights. The selected
 user and whichever other principals the mode allows receive connect access.
 
-The launcher retains the original node handle and checks the original socket,
-native bound name and full file identity. Account transfers qualify the
-supervisor's SID against the kernel owner of the section. Ordinary inherited
-sections must have the same owner as the receiving primary token to carry
+The launcher retains the original node handle and checks the socket descriptor,
+native bound name and full file identity. When a supervisor needs its own copy of
+a source socket, `Source::try_clone_to_owned` performs those checks before
+duplication and binds the same node identity and access policy to the new
+descriptor. Account transfers qualify the supervisor's SID against the kernel
+owner of the section. Ordinary inherited sections must have the same owner as
+the receiving primary token to carry
 local protection. The child checks the installed user and group claims against
 its own primary token before native import. The imported name must identify the
 same original file object. TCP and bare external descriptors carry no local

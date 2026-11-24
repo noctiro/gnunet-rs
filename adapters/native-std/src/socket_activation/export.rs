@@ -17,7 +17,9 @@ use std::{
     error::Error,
     ffi::{OsStr, OsString},
     fmt, io,
-    os::windows::io::{AsHandle, AsRawSocket, AsSocket, BorrowedHandle, BorrowedSocket},
+    os::windows::io::{
+        AsHandle, AsRawSocket, AsSocket, BorrowedHandle, BorrowedSocket, OwnedSocket,
+    },
     sync::atomic::{AtomicU32, Ordering},
 };
 use windows_sys::Win32::Networking::WinSock::{
@@ -40,7 +42,7 @@ impl<'a> Source<'a> {
     }
 
     /// Attach protection retained from the original pre-listen installation.
-    /// Publication checks the actual bound name. The publisher
+    /// Publication checks the descriptor and actual bound name. The publisher
     /// retains the original node and its policy through handoff.
     pub const fn with_protection(self, protection: &'a EndpointProtection) -> Self {
         Self {
@@ -53,12 +55,44 @@ impl<'a> Source<'a> {
     pub const fn protection(self) -> Option<&'a EndpointProtection> {
         self.protection
     }
+
+    /// Duplicate this socket for retention through handoff. Protected sources
+    /// must still identify their original bound socket and filesystem node.
+    /// The duplicate never owns path cleanup.
+    pub fn try_clone_to_owned(self) -> io::Result<OwnedSource> {
+        let (socket, protection) = match self.protection {
+            Some(protection) => {
+                let (socket, protection) = protection.duplicate_source(self.socket)?;
+                (socket, Some(protection))
+            }
+            None => (self.socket.try_clone_to_owned()?, None),
+        };
+        Ok(OwnedSource { socket, protection })
+    }
 }
 impl AsSocket for Source<'_> {
     fn as_socket(&self) -> BorrowedSocket<'_> {
         self.socket
     }
 }
+
+/// A private socket duplicate and any pre-listen protection bound to it.
+/// Keep it alive until the child confirms import or exits.
+#[derive(Debug)]
+pub struct OwnedSource {
+    socket: OwnedSocket,
+    protection: Option<EndpointProtection>,
+}
+impl OwnedSource {
+    /// Borrow the retained socket and its associated protection for publication.
+    pub fn as_source(&self) -> Source<'_> {
+        Source {
+            socket: self.socket.as_socket(),
+            protection: self.protection.as_ref(),
+        }
+    }
+}
+
 /// Qualified original listeners and their reserved native transfer section.
 /// The child receives only read-only access to the section.
 pub struct ExportSection<'a> {

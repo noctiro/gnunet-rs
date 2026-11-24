@@ -6,6 +6,7 @@ mod record;
 pub use export::AccountExportSection;
 pub use export::BootstrapGrant;
 pub use export::ExportSection;
+pub use export::OwnedSource;
 pub use export::Publication;
 pub use export::PublishFailure;
 pub use export::Source;
