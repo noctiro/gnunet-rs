@@ -1,7 +1,8 @@
 #!/bin/sh
 # Run inside the VM as an ordinary user, from the repository root.
 set -eu
-export TMPDIR=/tmp CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=2
+# Bound concurrent rustc and linker memory inside the native test VM.
+export TMPDIR=/tmp CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=1
 export CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0
 export RUSTDOCFLAGS='-D warnings' PYTHONDONTWRITEBYTECODE=1 PYTHONOPTIMIZE=
 rustup-init -y --profile minimal --default-toolchain none

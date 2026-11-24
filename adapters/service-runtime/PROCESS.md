@@ -142,8 +142,10 @@ Remaining Windows service/supervisor composition and native qualification are tr
 in [implementation status](../../IMPLEMENTATION_STATUS.md). Process creation does
 not establish those higher-level capabilities.
 
-`cargo test -p gnunet-service-runtime --all-targets --all-features --locked` runs
-the host's native cases. Windows standalone children cover literal arguments,
+`cargo xtask verify test` runs the host's native cases and builds the production
+ARM spawn helper on Unix. For a direct package test run on Unix, set
+`GNUNET_TEST_ARM_SPAWN_HELPER` to the absolute path Cargo reports for that binary.
+Windows standalone children cover literal arguments,
 handle export, full-width exit codes, registry credit, stale tokens, canceled
 waits and teardown while caller Wake code is blocked. These require execution on
 Windows; cross compilation alone does not qualify their runtime behavior.

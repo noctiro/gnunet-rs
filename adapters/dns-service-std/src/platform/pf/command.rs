@@ -565,7 +565,9 @@ mod tests {
             .create_new(true)
             .mode(0o600)
             .open(&path)?;
-        original.try_lock().map_err(io::Error::other)?;
+        original.try_lock().map_err(|error| {
+            io::Error::other(format!("could not acquire the fixture lease: {error}"))
+        })?;
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?
@@ -594,7 +596,24 @@ mod tests {
                     runner.idle(),
                     "original child must be reaped before replacement"
                 );
-                contender.try_lock().map_err(io::Error::other)?;
+                // A concurrent fork may still be closing its inherited
+                // CLOEXEC descriptors even after our own child was reaped.
+                let deadline = Instant::now() + Duration::from_secs(1);
+                loop {
+                    match contender.try_lock() {
+                        Ok(()) => break,
+                        Err(TryLockError::WouldBlock) if Instant::now() < deadline => {
+                            tokio::time::sleep(Duration::from_millis(5)).await;
+                        }
+                        Err(TryLockError::WouldBlock) => {
+                            return Err(io::Error::new(
+                                io::ErrorKind::TimedOut,
+                                "fixture lease remained held after the original child was reaped",
+                            ));
+                        }
+                        Err(TryLockError::Error(error)) => return Err(error),
+                    }
+                }
                 Ok(())
             })
     }

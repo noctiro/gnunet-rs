@@ -1149,12 +1149,12 @@ mod boundaries {
         registry: &mut ChildRegistry,
         command: NativeCommand<'_>,
     ) -> Result<Spawned, LaunchError> {
-        let executable = std::env::current_exe()?;
-        let debug = executable
-            .parent()
-            .and_then(Path::parent)
-            .ok_or(LaunchError::InvalidInput)?;
-        let helper = debug.join("gnunet-arm-spawn-helper");
+        let helper = std::env::var_os("GNUNET_TEST_ARM_SPAWN_HELPER")
+            .map(std::path::PathBuf::from)
+            .filter(|path| path.is_absolute() && path.is_file())
+            .ok_or_else(|| io::Error::other(
+                "run cargo xtask verify test or set GNUNET_TEST_ARM_SPAWN_HELPER to the built helper",
+            ))?;
         match spawn(
             &Configuration::default(),
             &helper,

@@ -17,6 +17,7 @@ sys.dont_write_bytecode = True
 PACKAGE = Path(__file__).resolve().parents[1]
 TOOLS = PACKAGE.parents[1] / "tools"
 sys.path.insert(0, str(TOOLS))
+from cargo_artifacts import CargoArtifacts
 from rust_toolchain import rust_channel
 PACKAGES = ("gnunet-arm-service-host", "gnunet-service-runtime", "gnunet-native")
 REQUIRED = {
@@ -218,9 +219,12 @@ def main():
         selection = sum((["-p", name] for name in PACKAGES), [])
         common = ["--locked", "--offline"]
         run("production-format", cargo + ["fmt", "--all", "--check"])
-        run("shared-process-helper", cargo + ["build", "-p", "gnunet-arm-host",
-            "--bin", "gnunet-arm-spawn-helper", *common])
-        text = run("production-tests", cargo + ["test", *selection, *common, "--", "--test-threads=1"])
+        helper_build = run("shared-process-helper", cargo + ["build", "-p", "gnunet-arm-host",
+            "--bin", "gnunet-arm-spawn-helper", "--message-format=json", *common])
+        helper = CargoArtifacts(helper_build).binary("gnunet-arm-spawn-helper", repo / "adapters/arm-std/Cargo.toml")
+        helper_env = {"GNUNET_TEST_ARM_SPAWN_HELPER": str(helper)}
+        text = run("production-tests", cargo + ["test", *selection, *common, "--", "--test-threads=1"],
+                   extra=helper_env)
         names, docs = test_names(text, 78, REQUIRED)
         expected_doc = "adapters/service-runtime/src/listeners.rs - listeners::BoundListeners (line 34) - compile fail"
         if (expected_doc not in docs or len(docs) != 3
@@ -231,7 +235,7 @@ def main():
         run("production-rustdoc", cargo + ["doc", *selection, "--no-deps", *common],
             extra={"RUSTDOCFLAGS": "-D warnings"})
         isolated_text = run("portable-tests", cargo + ["test", "--manifest-path", generated / "Cargo.toml",
-                                                     *common, "--", "--test-threads=1"])
+                                                     *common, "--", "--test-threads=1"], extra=helper_env)
         shared_names = {name for name in REQUIRED if name.startswith(("activation::", "readiness::", "native_spawn::", "process::", "network::"))} | {
             "actual_native_ipv4_uses_exact_arm_hints_and_null_service_port",
             "actual_native_family_refusal_does_not_resolve_unspecified_then_filter",

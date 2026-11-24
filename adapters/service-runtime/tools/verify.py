@@ -66,8 +66,8 @@ def main():
     generated = output / "rust"
     env = dict(os.environ, CARGO_TARGET_DIR=str(output / "target"),
                PYTHONDONTWRITEBYTECODE="1", PYTHONOPTIMIZE="")
-    def run(name, argv, timeout=180):
-        result = subprocess.run(list(map(str, argv)), cwd=generated if generated.exists() else repository, env=env, text=True, capture_output=True, timeout=timeout)
+    def run(name, argv, timeout=180, extra=None):
+        result = subprocess.run(list(map(str, argv)), cwd=generated if generated.exists() else repository, env=env | (extra or {}), text=True, capture_output=True, timeout=timeout)
         (output / (name + ".stdout")).write_text(result.stdout)
         (output / (name + ".stderr")).write_text(result.stderr)
         commands.append({"name": name, "argv": list(map(str, argv)), "exit_code": result.returncode})
@@ -118,7 +118,8 @@ def main():
             "-p", "gnunet-arm-host", "--bin", "gnunet-arm-spawn-helper", "--locked", "--offline", "--message-format=json"])
         helper = CargoArtifacts(helper_build.stdout).binary("gnunet-arm-spawn-helper", generated / "adapters/arm-std/Cargo.toml")
         helper_before = digest(helper)
-        tests = run("tests", cargo + ["test", *base, "--lib", "--test", "listeners", "--test", "readiness", "--test", "tcp", "--", "--test-threads=1"])
+        tests = run("tests", cargo + ["test", *base, "--lib", "--test", "listeners", "--test", "readiness", "--test", "tcp", "--", "--test-threads=1"],
+                    extra={"GNUNET_TEST_ARM_SPAWN_HELPER": str(helper)})
         rust_tests = require_rust_tests(tests.stdout)
         run("rustdoc", cargo + ["doc", *base, "--no-deps"])
         probe_build = run("probe-build", cargo + ["build", *base, "--example", "runtime_activation_probe", "--message-format=json"])

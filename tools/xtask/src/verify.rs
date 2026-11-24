@@ -5,8 +5,11 @@ use std::{
     ffi::OsString,
     io::{self, Write},
     path::{Path, PathBuf},
+    process::Command,
     time::{SystemTime, UNIX_EPOCH},
 };
+#[cfg(unix)]
+mod fixtures;
 mod output;
 use output::{Recorder, combine};
 
@@ -333,25 +336,14 @@ fn commands(stage: Stage) -> Vec<Vec<&'static str>> {
                 "--help",
             ],
         ],
-        Stage::Test => vec![
-            vec![
-                "cargo",
-                "build",
-                "-p",
-                "gnunet-arm-host",
-                "--bin",
-                "gnunet-arm-spawn-helper",
-                "--locked",
-            ],
-            vec![
-                "cargo",
-                "test",
-                "--workspace",
-                "--all-features",
-                "--locked",
-                "--no-fail-fast",
-            ],
-        ],
+        Stage::Test => vec![vec![
+            "cargo",
+            "test",
+            "--workspace",
+            "--all-features",
+            "--locked",
+            "--no-fail-fast",
+        ]],
         Stage::Tools => vec![vec!["python3", "-B", "tools/check_tools.py"]],
         Stage::Portable => {
             let packages: Vec<_> = crate::checks::portable_packages().collect();
@@ -575,9 +567,19 @@ fn verify_stage(stage: Stage, recorder: &mut Recorder) -> CheckResult<()> {
             crate::external_contracts::check_external_release(false)
         })?;
     }
+    #[cfg(unix)]
+    let arm_helper = matches!(stage, Stage::Test | Stage::Runtime)
+        .then(|| recorder.check("build gnunet-arm-spawn-helper", fixtures::arm_spawn_helper))
+        .transpose()?;
     for command in commands(stage) {
         let (program, args) = command.split_first().ok_or("empty matrix command")?;
-        recorder.command(program, args)?;
+        let mut command = Command::new(program);
+        command.args(args);
+        #[cfg(unix)]
+        if let Some(helper) = &arm_helper {
+            command.env(fixtures::ARM_SPAWN_HELPER_ENV, helper);
+        }
+        recorder.run(&mut command)?;
     }
     if stage == Stage::Embedded {
         recorder.check("noalloc", crate::checks::check_noalloc)?;
