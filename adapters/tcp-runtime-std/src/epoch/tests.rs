@@ -138,7 +138,8 @@ fn same_inode_frontier_edit_revokes_loaded_state_and_cannot_be_overwritten() -> 
         .current
         .as_ref()
         .ok_or("missing settled frontier")?
-        .info;
+        .snapshot
+        .initial();
     let bytes = image(100).bytes();
     let mut edited = File::options().write(true).open(&path)?;
     edited.write_all(&bytes)?;

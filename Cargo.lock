@@ -2759,6 +2759,7 @@ dependencies = [
  "nix",
  "objc2",
  "objc2-foundation",
+ "sha2",
  "socket2",
  "windows-sys 0.61.2",
  "zeroize",

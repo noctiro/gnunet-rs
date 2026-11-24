@@ -279,17 +279,10 @@ impl DatagramSocket {
     /// Whether an encrypted or discovery datagram owns the native send slot.
     #[must_use]
     pub const fn has_pending_send(&self) -> bool {
-        if self.pending.is_some() {
-            return true;
-        }
+        let pending = self.pending.is_some();
         #[cfg(feature = "transport")]
-        {
-            self.discovery.is_some()
-        }
-        #[cfg(not(feature = "transport"))]
-        {
-            false
-        }
+        let pending = pending || self.discovery.is_some();
+        pending
     }
     /// Admit exactly one original immutable prepared packet. Refusal returns that
     /// same owner. There is no implicit send, payload copy or nonce regeneration.

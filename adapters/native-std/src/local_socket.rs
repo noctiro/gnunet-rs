@@ -112,7 +112,9 @@ pub fn peer_process_id(socket: BorrowedSocket<'_>) -> io::Result<u32> {
     {
         return Err(error());
     }
-    if returned != size_of::<u32>() as u32 || pid == 0 {
+    // Some Winsock versions fill the ULONG but report zero bytes for this
+    // control code. The zero-initialized output still rejects a missing PID.
+    if pid == 0 || (returned != 0 && returned != size_of::<u32>() as u32) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "invalid native AF_UNIX peer PID extent or value",

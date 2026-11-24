@@ -802,6 +802,7 @@ dependencies = [
  "getrandom",
  "libc",
  "nix",
+ "sha2",
  "windows-sys",
  "zeroize",
 ]

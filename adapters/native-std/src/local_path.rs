@@ -262,16 +262,17 @@ pub fn prepare_parents(path: &Path, access: EndpointAccess) -> io::Result<()> {
 pub fn prepare_parents_for(path: &Path, principals: &EndpointPrincipals) -> io::Result<()> {
     let absolute = parent(path)?;
     let descriptor = security::descriptor(principals, security::Object::Directory)?;
-    let mut component = PathBuf::new();
-    for part in absolute.components() {
-        component.push(part.as_os_str());
-        match std::fs::metadata(&component) {
+    // A Windows path prefix (for example `\\?\C:`) is not a directory.
+    // Inspect only actual ancestors, starting with the volume/share root.
+    let ancestors: Vec<_> = absolute.ancestors().collect();
+    for directory in ancestors.into_iter().rev() {
+        match std::fs::metadata(directory) {
             Ok(info) if info.is_dir() => continue,
             Ok(_) => return Err(io::ErrorKind::NotADirectory.into()),
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Err(error),
         }
-        security::create_directory(&component, &descriptor)?;
+        security::create_directory(directory, &descriptor)?;
     }
     validate_parent_directory(&absolute)
 }
@@ -491,6 +492,17 @@ mod tests {
             }
         }
         Ok(())
+    }
+
+    #[test]
+    fn verbatim_paths_prepare_only_real_directory_ancestors() -> io::Result<()> {
+        let directory = Directory::new()?;
+        let dir = fs::canonicalize(directory.0.parent().ok_or(io::ErrorKind::NotFound)?)?
+            .join(directory.0.file_name().ok_or(io::ErrorKind::NotFound)?)
+            .join("nested");
+        prepare_parents(&dir.join("service.sock"), EndpointAccess::Owner)?;
+        let file = open_node(&dir, READ_CONTROL | FILE_READ_ATTRIBUTES)?;
+        crate::identity::validate_parent(&file)
     }
 
     #[test]

@@ -32,8 +32,7 @@ fn created_master_retains_only_the_original_readonly_key_lease() -> Result {
     validate_readonly(&lease.key)?;
     let info = exact(&lease.key)?;
     assert_eq!(info.bytes, 32);
-    assert_eq!(info, lease.snapshot);
-    lease.namespace.verify_key(info)?;
+    assert_eq!(info.identity, lease.snapshot.initial().identity);
     lease.verify_fence()?;
     assert_eq!(fs::read_dir(&scratch.0)?.count(), 2);
     Ok(())
@@ -44,14 +43,13 @@ fn reopened_master_retains_only_the_original_readonly_key_lease() -> Result {
     let scratch = Scratch::new()?;
     let path = scratch.0.join("private.key");
     let (master, lease) = load_or_create(&path)?;
-    let identity = lease.snapshot.identity;
+    let identity = lease.snapshot.initial().identity;
     let public = master.initial_public_key();
     drop(lease);
     let (reloaded, lease) = load_or_create(&path)?;
     validate_readonly(&lease.key)?;
     assert!((&lease.key).write(&[0x55; 32]).is_err());
-    assert_eq!(lease.snapshot.identity, identity);
-    assert_eq!(exact(&lease.key)?, lease.snapshot);
+    assert_eq!(lease.snapshot.initial().identity, identity);
     assert_eq!(reloaded.initial_public_key(), public);
     lease.verify_fence()?;
     assert_eq!(fs::read_dir(&scratch.0)?.count(), 2);
@@ -63,7 +61,7 @@ fn same_inode_key_rewrite_refuses_the_original_startup_lease() -> Result {
     let scratch = Scratch::new()?;
     let path = scratch.0.join("private.key");
     let (master, lease) = load_or_create(&path)?;
-    let before = lease.snapshot;
+    let before = lease.snapshot.initial();
     let mut writer =
         Directory::open(&scratch.0)?.open_file_for_update(OsStr::new("private.key"))?;
     let mut seed = Zeroizing::new([0; 32]);
@@ -85,7 +83,7 @@ fn same_inode_key_rewrite_refuses_the_original_startup_lease() -> Result {
     drop(lease);
     let (reloaded, lease) = load_or_create(&path)?;
     assert_ne!(reloaded.initial_public_key(), master.initial_public_key());
-    assert_eq!(lease.snapshot.identity, before.identity);
+    assert_eq!(lease.snapshot.initial().identity, before.identity);
     lease.verify_fence()?;
     Ok(())
 }
@@ -113,8 +111,8 @@ fn key_publication_collision_preserves_the_original_and_native_failure() -> Resu
     assert!(failure.may_have_published);
     assert!(failure.writer_close.is_none());
     assert!(matches!(failure.cleanup, publication::Cleanup::Retired));
-    namespace.verify_key(before)?;
-    assert_eq!(exact(&file)?, before);
+    let snapshot = PrivateFileSnapshot::new(before, &seed);
+    namespace.verify_key_snapshot(&file, &snapshot)?;
     let mut actual = [0; 32];
     (&file).read_exact(&mut actual)?;
     assert_eq!(actual, seed);

@@ -46,6 +46,9 @@ fn writer_lock_error(error: fs::TryLockError) -> Failure {
     }
 }
 
+#[cfg(windows)]
+mod windows;
+
 pub(super) fn open(path: &Path, namespace: Namespace) -> Result<Opened, Failure> {
     let name = path
         .file_name()
@@ -98,6 +101,8 @@ pub(super) fn open(path: &Path, namespace: Namespace) -> Result<Opened, Failure>
     let (marker, writer) = match initial {
         Some(originals) => originals,
         None => {
+            #[cfg(windows)]
+            let _claim = windows::claim(&parent, name, &directory)?;
             // The fixed public marker is the only content read before namespace
             // qualification. No lock is created in an unmarked existing store.
             let marker = match directory.open_file(OsStr::new(namespace.mark())) {
@@ -197,6 +202,32 @@ impl Stage {
         verify_staging_directory(parent, self)?;
         self.directory.remove_file(name, file)
     }
+
+    #[cfg(unix)]
+    fn publish(
+        &mut self,
+        parent: &Directory,
+        target: &OsStr,
+        _namespace: Namespace,
+        attempted: &mut bool,
+    ) -> Result<bool, Failure> {
+        *attempted = true;
+        publication_result(
+            parent.publish_directory(OsStr::new(&self.name), &self.directory, target),
+            attempted,
+        )
+    }
+}
+
+fn publication_result(result: io::Result<()>, attempted: &mut bool) -> Result<bool, Failure> {
+    match result {
+        Ok(()) => Ok(true),
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+            *attempted = false;
+            Ok(false)
+        }
+        Err(error) => Err(os("publish-store-directory", error)),
+    }
 }
 
 fn create(
@@ -292,14 +323,8 @@ fn create(
             return Err(failure("staging-source-replaced", Error::Conflict, None));
         }
         fence()?;
-        attempted = true;
-        match parent.publish_directory(OsStr::new(&stage.name), &stage.directory, target) {
-            Ok(()) => {}
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-                attempted = false;
-                return Ok(false);
-            }
-            Err(error) => return Err(os("publish-store-directory", error)),
+        if !stage.publish(parent, target, namespace, &mut attempted)? {
+            return Ok(false);
         }
         parent.sync().map_err(|error| os("sync-parent", error))?;
         fence()?;
@@ -316,7 +341,7 @@ fn create(
             Ok(Some((stage.directory, marker, writer)))
         }
         Ok(false) => {
-            cleanup(parent, &stage, namespace)
+            cleanup(parent, &mut stage, namespace)
                 .map_err(|error| os("cleanup-competing-staging", error))?;
             Ok(None)
         }
@@ -325,7 +350,7 @@ fn create(
                 error.exposure = super::Exposure::Unknown;
             }
             if !attempted {
-                let staging_cleanup = cleanup(parent, &stage, namespace).err();
+                let staging_cleanup = cleanup(parent, &mut stage, namespace).err();
                 error.cleanup = error.cleanup.or(staging_cleanup);
             }
             Err(error)
@@ -340,7 +365,7 @@ fn verify_staging_directory(parent: &Directory, stage: &Stage) -> io::Result<()>
     Ok(())
 }
 
-fn cleanup(parent: &Directory, stage: &Stage, namespace: Namespace) -> io::Result<()> {
+fn cleanup(parent: &Directory, stage: &mut Stage, namespace: Namespace) -> io::Result<()> {
     verify_staging_directory(parent, stage)?;
     let marker = stage.marker.as_ref().map_or(Ok(()), |marker| {
         stage
@@ -353,6 +378,8 @@ fn cleanup(parent: &Directory, stage: &Stage, namespace: Namespace) -> io::Resul
             .remove_file(OsStr::new(namespace.lock()), writer.as_file())
     });
     // Retire each held child independently, then retain the first failure.
+    drop(stage.marker.take());
+    drop(stage.writer.take());
     let sync = stage.directory.sync();
     marker.and(writer).and(sync)?;
     parent.remove_directory(OsStr::new(&stage.name), &stage.directory)?;

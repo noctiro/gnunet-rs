@@ -245,7 +245,8 @@ fn changed_committed_inode_cannot_authorize_reads_or_replace_newer_state() -> Te
         .current
         .as_ref()
         .ok_or("missing original snapshot")?
-        .info;
+        .original
+        .initial();
 
     let path = scratch.0.join(DATA);
     let newer = Snapshot {

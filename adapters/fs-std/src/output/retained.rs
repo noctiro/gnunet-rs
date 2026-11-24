@@ -184,20 +184,29 @@ impl OutputDir {
         };
         let mut blocks =
             network::retained::Blocks::new(file, output.existing.map(|stamp| stamp.bytes), inline);
-        let read = transfer.run(buffers, &mut blocks, &mut control).await;
+        let mut stamp = output.existing;
+        let read = transfer
+            .run(buffers, &mut blocks, &mut control, || {
+                use network::retained::ExistingFence;
+                let expected = stamp.ok_or(Error::Corrupt)?;
+                let observed = Stamp::file(&output.file)?;
+                if observed == expected {
+                    return Ok(ExistingFence::Stable);
+                }
+                if cfg!(target_os = "freebsd") && expected.only_ctime_changed(observed) {
+                    // A deferred unlink of the staging link may advance ctime.
+                    // Reauthenticate the original plaintext in the same budget.
+                    stamp = Some(observed);
+                    return Ok(ExistingFence::Recheck);
+                }
+                Err(Error::SourceChanged)
+            })
+            .await;
         let admitted = blocks.may_delete();
-        let verified_existing = blocks.verified_existing_file;
         // Retire original Tokio file work before any final truncation or unlink.
         drop(blocks.file.into_std().await);
         match read {
             Ok(mut completed) => {
-                if verified_existing {
-                    output.existing.ok_or(Error::Corrupt)?.check(
-                        &output.file,
-                        "after-reconstructing-download",
-                        &mut None,
-                    )?;
-                }
                 output.check()?;
                 if control(completed.read.progress) == Control::Cancel {
                     return Err(output.interrupted(incomplete, admitted, Error::Cancelled));
@@ -207,7 +216,7 @@ impl OutputDir {
                 }
                 output.finish(content, completed.read)
             }
-            Err(error) => Err(output.interrupted(incomplete, admitted, error.into())),
+            Err(error) => Err(output.interrupted(incomplete, admitted, error)),
         }
     }
 }

@@ -42,7 +42,6 @@ pub(crate) struct Blocks<'hint> {
     pub file: File,
     original_size: Option<u64>,
     inline: Option<&'hint mut InlineBlocks>,
-    pub verified_existing_file: bool,
     // An untouched existing input never becomes eligible for cancellation deletion.
     retained: bool,
 }
@@ -56,7 +55,6 @@ impl<'hint> Blocks<'hint> {
             file,
             original_size,
             inline,
-            verified_existing_file: false,
             retained: original_size.is_none(),
         }
     }
@@ -167,6 +165,10 @@ pub(crate) struct Completed {
     pub read: ReadFile,
     pub time: super::TimeLimit,
 }
+pub(crate) enum ExistingFence {
+    Stable,
+    Recheck,
+}
 impl Transfer {
     pub(crate) fn prepare(
         buffers: &mut Buffers,
@@ -188,13 +190,32 @@ impl Transfer {
         buffers: &mut Buffers,
         output: &mut Blocks<'_>,
         mut control: impl FnMut(Progress) -> Control,
-    ) -> Result<Completed, Error> {
+        mut confirm: impl FnMut() -> crate::Result<ExistingFence>,
+    ) -> crate::Result<Completed> {
         if output.original_size == Some(self.content.size)
-            && let Some(read) = buffers
-                .existing_content(self.content, output, &mut self.lookup, &mut control)
+            && let Some(mut read) = buffers
+                .existing_content(
+                    self.content,
+                    &mut output.file,
+                    &mut self.lookup,
+                    &mut control,
+                )
                 .await?
         {
-            output.verified_existing_file = true;
+            if matches!(confirm()?, ExistingFence::Recheck) {
+                read = buffers
+                    .existing_content(
+                        self.content,
+                        &mut output.file,
+                        &mut self.lookup,
+                        &mut control,
+                    )
+                    .await?
+                    .ok_or(crate::Error::SourceChanged)?;
+                if !matches!(confirm()?, ExistingFence::Stable) {
+                    return Err(crate::Error::SourceChanged);
+                }
+            }
             return Ok(Completed {
                 read,
                 time: self.lookup.time,
@@ -220,14 +241,14 @@ impl Buffers {
     async fn existing_content(
         &mut self,
         content: Content,
-        output: &mut Blocks<'_>,
+        file: &mut File,
         lookup: &mut Lookup,
         control: &mut impl FnMut(Progress) -> Control,
     ) -> Result<Option<ReadFile>, Error> {
         let mut encoder = FileEncoder::new(content.size, &mut self.keys)?;
         let mut progress = Progress::default();
         controlled(
-            lookup.during(output.file.seek(SeekFrom::Start(0))),
+            lookup.during(file.seek(SeekFrom::Start(0))),
             progress,
             control,
         )
@@ -239,13 +260,7 @@ impl Buffers {
             }
             let encoded = if node.level() == 0 {
                 let plain = &mut self.plain[..node.plaintext_bytes()];
-                match controlled(
-                    lookup.during(output.file.read_exact(plain)),
-                    progress,
-                    control,
-                )
-                .await?
-                {
+                match controlled(lookup.during(file.read_exact(plain)), progress, control).await? {
                     Ok(_) => {}
                     Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => return Ok(None),
                     Err(error) => return Err(error.into()),

@@ -36,7 +36,8 @@ pub use datagram::source::DatagramSource;
 #[cfg(windows)]
 pub use datagram::suppress_udp_connection_resets;
 pub use datagram::{
-    isolated_datagram_receive_error, isolated_datagram_send_error, socket_family_unavailable,
+    datagram_size_error, isolated_datagram_receive_error, isolated_datagram_send_error,
+    socket_family_unavailable,
 };
 #[cfg(unix)]
 pub use descriptor::StableFd;

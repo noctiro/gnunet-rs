@@ -108,6 +108,9 @@ jobs:
         env:
           # Keep Darwin paths short without using /tmp's final symlink.
           TMPDIR: ${{ runner.os == 'Windows' && runner.temp || runner.os == 'macOS' && '/private/tmp' || '/tmp' }}
+          # GNU ld overflows CALL26 relocations in the large FS test executable.
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: clang
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS: -C link-arg=-fuse-ld=lld
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: failure()
         with:

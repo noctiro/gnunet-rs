@@ -15,7 +15,8 @@ mod staging;
 use gnunet_native::{
     DirectorySync,
     filesystem::{
-        EntryInfo, FileInfo, private_data_file_info, private_single_file_identity, publication,
+        EntryInfo, FileInfo, PrivateFileSnapshot, private_data_file_info,
+        private_single_file_identity, publication,
     },
 };
 use staging::Staging;
@@ -147,8 +148,17 @@ struct Readback {
 }
 struct Current {
     file: File,
-    info: FileInfo,
+    original: PrivateFileSnapshot,
     bytes_hash: [u8; 32],
+}
+impl Current {
+    fn new(file: File, info: FileInfo, bytes_hash: [u8; 32]) -> Self {
+        Self {
+            file,
+            original: PrivateFileSnapshot::with_sha256(info, bytes_hash),
+            bytes_hash,
+        }
+    }
 }
 #[derive(Debug)]
 struct ReadLeaseFailure {
@@ -266,11 +276,11 @@ impl Journal {
                     ));
                 }
                 journal.snapshot = original.snapshot;
-                journal.current = Some(Current {
-                    file: original.file,
-                    info: verified.info,
-                    bytes_hash: verified.bytes_hash,
-                });
+                journal.current = Some(Current::new(
+                    original.file,
+                    verified.info,
+                    verified.bytes_hash,
+                ));
             }
             None if fresh => {
                 // Establish canonical state before any packet or stamp can use
@@ -413,27 +423,12 @@ impl Journal {
             ));
         }
         self.fence()?;
-        if let Some(current) = &self.current {
-            let held = private_data_file_info(&current.file)
-                .map_err(|cause| native(Stage::Read, Outcome::Unknown, cause))?;
-            if held != current.info {
-                return Err(native(
-                    Stage::Read,
-                    Outcome::Unknown,
-                    io::Error::other(format!(
-                        "UDP held snapshot changed: expected={:?}, observed={held:?}",
-                        current.info
-                    )),
-                ));
-            }
-        }
         self.check_snapshot_name()
     }
     fn check_snapshot_name(&self) -> Result<(), JournalError> {
         let name = OsStr::new(DATA);
-        let named = self.owner.parent.entry_info(name);
         let Some(current) = &self.current else {
-            return match named {
+            return match self.owner.parent.entry_info(name) {
                 Err(cause) if cause.kind() == io::ErrorKind::NotFound => Ok(()),
                 Err(cause) => Err(native(Stage::Read, Outcome::Unknown, cause)),
                 Ok(_) => Err(invalid(
@@ -443,21 +438,10 @@ impl Journal {
                 )),
             };
         };
-        let named = named.map_err(|cause| native(Stage::Read, Outcome::Unknown, cause))?;
-        // The read-only lease pins the qualified original against identity
-        // reuse. The relative query observes the full fence without rereading
-        // the snapshot or reopening it for data access on each poll.
-        if named != EntryInfo::File(current.info) {
-            return Err(native(
-                Stage::Read,
-                Outcome::Unknown,
-                io::Error::other(format!(
-                    "UDP committed snapshot changed: expected={:?}, observed={named:?}",
-                    current.info
-                )),
-            ));
-        }
-        Ok(())
+        current
+            .original
+            .verify(&self.owner.parent, name, &current.file)
+            .map_err(|cause| native(Stage::Read, Outcome::Unknown, cause))
     }
     /// Read the committed strictly-newer remote-peer bound under the original
     /// active namespace/fence. Unknown outcomes expose no ready admission state.
@@ -588,6 +572,7 @@ impl Journal {
         });
         publication.map_err(|cause| native(Stage::Rename, Outcome::Unknown, cause))?;
         after_rename();
+        self.fence()?;
         self.sync_directory()
             .map_err(|e| native(Stage::DirectorySync, Outcome::Unknown, e))?;
         self.settle()?;
@@ -629,11 +614,7 @@ impl Journal {
         let info = valid?;
         let original = self.pending.take().ok_or(Error::Stale)?;
         self.snapshot = original.snapshot;
-        self.current = Some(Current {
-            file: original.file,
-            info,
-            bytes_hash: original.bytes_hash,
-        });
+        self.current = Some(Current::new(original.file, info, original.bytes_hash));
         Ok(())
     }
     fn read_committed(&self, current: &mut Current) -> Result<FileInfo, JournalError> {
@@ -648,7 +629,7 @@ impl Journal {
                 error
             }
         })?;
-        if observed.info.identity != current.info.identity
+        if observed.info.identity != current.original.initial().identity
             || observed.bytes_hash != current.bytes_hash
             || observed.snapshot != self.snapshot
         {
@@ -661,14 +642,15 @@ impl Journal {
         Ok(observed.info)
     }
     fn restore_committed(&self, current: &mut Current) -> Result<bool, JournalError> {
-        if self.read_committed(current)? == current.info {
+        if self.read_committed(current)? == current.original.initial() {
             return Ok(false);
         }
         publication::sync_original(&self.owner.parent, OsStr::new(DATA), &current.file)
             .map_err(|cause| native(Stage::Recovery, Outcome::Unknown, cause))?;
         self.sync_directory()
             .map_err(|cause| native(Stage::Recovery, Outcome::Unknown, cause))?;
-        current.info = self.read_committed(current)?;
+        current.original =
+            PrivateFileSnapshot::with_sha256(self.read_committed(current)?, current.bytes_hash);
         Ok(true)
     }
     /// Settle the original unknown replacement or refresh a restored committed

@@ -38,8 +38,8 @@ pub struct Entries {
 }
 impl Entries {
     pub(crate) fn open(directory: &File) -> io::Result<Self> {
-        // ReOpenFile creates an independent native enumeration cursor while
-        // selecting the same held object, without rebuilding its pathname.
+        // The independent native cursor selects the same held directory
+        // without rebuilding its pathname.
         let directory = Directory::from_file(directory)?;
         Ok(Self {
             directory: directory.into_file(),

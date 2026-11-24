@@ -53,7 +53,7 @@ fn changed_held_contents_report_metadata_without_claiming_name_replacement() -> 
     let mut image = Image::new(directory.as_file())?;
     image.write(b"original")?;
     let original = image.original.as_ref().ok_or("missing original image")?;
-    let before = original.info;
+    let before = original.snapshot.initial();
     let mut writer = directory.open_file_for_update(OsStr::new(IMAGE))?;
     writer.write_all(b" appended")?;
     writer.sync_all()?;
@@ -73,7 +73,15 @@ fn changed_held_contents_report_metadata_without_claiming_name_replacement() -> 
     assert_eq!(after.identity, before.identity);
     assert_ne!(after.bytes, before.bytes);
     assert!(error.to_string().contains("bytes=true"));
-    assert_eq!(image.original.as_ref().ok_or("original lost")?.info, before);
+    assert_eq!(
+        image
+            .original
+            .as_ref()
+            .ok_or("original lost")?
+            .snapshot
+            .initial(),
+        before
+    );
     Ok(())
 }
 
@@ -122,7 +130,10 @@ fn unchanged_held_file_reports_the_distinct_selected_name() -> Result {
     // Neither equal bytes nor metadata can authorize that foreign name.
     let image = Image {
         directory,
-        original: Some(Original { file: held, info }),
+        original: Some(Original {
+            file: held,
+            snapshot: PrivateFileSnapshot::new(info, b"original"),
+        }),
         naming_sync: None,
     };
     let error = image.selected().err().ok_or("foreign name accepted")?;

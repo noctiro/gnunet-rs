@@ -98,6 +98,39 @@ fn directory_barrier_uses_the_held_object_after_its_name_is_removed() -> io::Res
 }
 
 #[test]
+fn directory_claim_excludes_other_publishers_across_a_populated_rename() -> io::Result<()> {
+    let fixture = Fixture::new()?;
+    let parent = Directory::open(&fixture.0)?;
+    let (stage, target, marker) = ("stage", "target", "marker");
+    let directory = parent.create_private_directory(stage.as_ref())?;
+    let mut file = directory.create_private_file(marker.as_ref())?;
+    file.write_all(b"staged contents")?;
+    file.sync_all()?;
+    let id = FileIdentity::of(&file)?;
+    crate::filesystem::close(file)?;
+
+    let original = parent.claim_directory(stage.as_ref(), &directory)?;
+    original.publish(target.as_ref())?;
+    let selected = parent.open_directory(target.as_ref())?;
+    require(
+        parent
+            .claim_directory(target.as_ref(), &selected)
+            .is_err_and(|error| error.kind() == io::ErrorKind::WouldBlock),
+        "another initializer acquired a published directory before the owner released it",
+    )?;
+    let mut file = selected.open_file(marker.as_ref())?;
+    let mut text = String::new();
+    file.read_to_string(&mut text)?;
+    require(
+        FileIdentity::of(&file)? == id && text == "staged contents",
+        "publication lost the original closed child",
+    )?;
+    drop(original);
+    parent.claim_directory(target.as_ref(), &selected)?;
+    Ok(())
+}
+
+#[test]
 fn hard_links_preserve_source_and_cleanup_refuses_a_replacement() -> io::Result<()> {
     let fixture = Fixture::new()?;
     let root = Directory::open(&fixture.0)?;

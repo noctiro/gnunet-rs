@@ -38,4 +38,8 @@ impl ExclusiveFile {
     pub fn sync_all(&self) -> io::Result<()> {
         self.file.sync_all()
     }
+    /// Close the original handle and release its lock.
+    pub fn close(self) -> io::Result<()> {
+        super::close(self.file)
+    }
 }

@@ -237,7 +237,7 @@ impl Store {
         Ok(Some(expected))
     }
 }
-fn read_original(namespace: &Namespace, mut file: &File) -> io::Result<[u8; 8]> {
+fn read_original(namespace: &Namespace, file: &File) -> io::Result<[u8; 8]> {
     namespace.verify_proof(file)?;
     let before = match file_info(file)? {
         EntryInfo::File(info) if info.bytes == 8 => info,
@@ -248,15 +248,37 @@ fn read_original(namespace: &Namespace, mut file: &File) -> io::Result<[u8; 8]> 
             ));
         }
     };
-    file.seek(SeekFrom::Start(0))?;
-    let mut bytes = [0; 8];
-    file.read_exact(&mut bytes)?;
-    let mut trailing = [0];
-    if file.read(&mut trailing)? != 0 || file_info(file)? != EntryInfo::File(before) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "NSE proof changed during read",
-        ));
+    let changed = || io::Error::new(io::ErrorKind::InvalidData, "NSE proof changed during read");
+    let read = |mut file: &File| {
+        file.seek(SeekFrom::Start(0))?;
+        let mut bytes = [0; 8];
+        file.read_exact(&mut bytes)?;
+        let mut trailing = [0];
+        if file.read(&mut trailing)? != 0 {
+            return Err(changed());
+        }
+        Ok::<_, io::Error>(bytes)
+    };
+    let bytes = read(file)?;
+    let after = file_info(file)?;
+    if after != EntryInfo::File(before) {
+        #[cfg(target_os = "freebsd")]
+        {
+            // A deferred name update may advance ctime alone. Reread the same
+            // object and keep the result only if the new fence stays stable.
+            let mut adjusted = before;
+            if let EntryInfo::File(info) = after {
+                adjusted.times.changed = info.times.changed;
+            }
+            if after != EntryInfo::File(adjusted)
+                || read(file)? != bytes
+                || file_info(file)? != after
+            {
+                return Err(changed());
+            }
+        }
+        #[cfg(not(target_os = "freebsd"))]
+        return Err(changed());
     }
     namespace.verify_proof(file)?;
     Ok(bytes)

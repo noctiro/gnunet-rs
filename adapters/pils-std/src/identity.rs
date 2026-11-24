@@ -3,7 +3,9 @@
 mod namespace;
 use gnunet_native::{
     DirectorySync,
-    filesystem::{EntryInfo, FileInfo, file_info, private_single_file_identity},
+    filesystem::{
+        EntryInfo, FileInfo, PrivateFileSnapshot, file_info, private_single_file_identity,
+    },
 };
 use gnunet_pils::MasterKey;
 use namespace::Namespace;
@@ -38,11 +40,11 @@ fn exact(file: &File) -> io::Result<FileInfo> {
 struct RawKey {
     file: File,
     bytes: Zeroizing<[u8; 32]>,
-    snapshot: FileInfo,
+    snapshot: PrivateFileSnapshot,
 }
 fn read_key(namespace: &Namespace, mut file: File) -> io::Result<RawKey> {
     let before = exact(&file)?;
-    namespace.verify_key(before)?;
+    namespace.verify_key_name(before.identity)?;
     file.seek(SeekFrom::Start(0))?;
     let mut bytes = Zeroizing::new([0; 32]);
     file.read_exact(bytes.as_mut())?;
@@ -63,34 +65,30 @@ fn read_key(namespace: &Namespace, mut file: File) -> io::Result<RawKey> {
             format!("PILS key changed during read: before={before:?}, after={after:?}"),
         ));
     }
-    namespace.verify_key(after)?;
+    let snapshot = PrivateFileSnapshot::new(after, bytes.as_ref());
+    namespace.verify_key_snapshot(&file, &snapshot)?;
     Ok(RawKey {
         file,
         bytes,
-        snapshot: after,
+        snapshot,
     })
 }
 /// Original key and exclusive cooperating-writer fence. Retain this lease until
 /// physical streams close and the pure secret owner has been erased.
 pub struct KeyLease {
     key: File,
-    snapshot: FileInfo,
+    snapshot: PrivateFileSnapshot,
     namespace: Namespace,
     directory_sync: DirectorySync,
 }
 impl KeyLease {
     /// Check the original directory and lock, and match the held private file
     /// and its current name to the snapshot captured at the final readback.
-    /// No key reload, write or synchronization occurs here.
+    /// A FreeBSD ctime change can trigger exact byte verification without
+    /// changing the active key.
     pub fn verify_fence(&self) -> io::Result<()> {
-        let observed = exact(&self.key)?;
-        if observed != self.snapshot {
-            return Err(io::Error::other(format!(
-                "PILS held key snapshot changed: expected={:?}, observed={observed:?}",
-                self.snapshot,
-            )));
-        }
-        self.namespace.verify_key(self.snapshot)
+        self.namespace
+            .verify_key_snapshot(&self.key, &self.snapshot)
     }
     /// Actual naming-barrier capability, independently of successful file sync.
     /// Windows reports Unavailable; that is never a durable-name receipt.
@@ -121,7 +119,7 @@ pub fn load_or_create(path: &Path) -> io::Result<(MasterKey, KeyLease)> {
     namespace.sync_key(&raw.file)?;
     let directory_sync = namespace.sync()?;
     let reread = read_key(&namespace, raw.file)?;
-    if reread.snapshot.identity != raw.snapshot.identity
+    if reread.snapshot.initial().identity != raw.snapshot.initial().identity
         || reread.bytes.as_ref() != raw.bytes.as_ref()
     {
         return Err(io::Error::other("PILS synchronized key changed"));

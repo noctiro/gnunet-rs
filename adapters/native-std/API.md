@@ -270,6 +270,12 @@ administration across identity checks and POSIX name-based link/unlink requests.
 Windows publication/deletion acts on captured original objects. `sync` reports
 `DirectorySync` independently of data-file synchronization.
 
+`PrivateFileSnapshot` checks the selected name and the held private file
+against a previously verified byte snapshot. FreeBSD UFS can change ctime
+after the publishing operation returns. If only ctime changes, the snapshot
+requires bounded SHA-256 readback from the same file, with stable metadata
+and a matching name, before caching the new timestamp.
+
 On Windows, `Directory::sync` qualifies the original handle's volume as local
 NTFS and reopens that same directory with `FILE_ADD_FILE` access. If access is
 denied, it retries with `FILE_ADD_SUBDIRECTORY` access. Either lease can request

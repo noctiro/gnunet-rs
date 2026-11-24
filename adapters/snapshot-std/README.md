@@ -47,8 +47,11 @@ legacy import, migration or silent reset.
 
 The parent must exist; `TransportTcp` additionally requires a private parent to
 protect replay-ledger naming authority. `Store::open` prepares a private sibling
-containing the complete flushed marker and held writer lease, then publishes the
-whole directory without replacing an existing entry. Losing concurrent creators
+containing the complete flushed marker and writer file, then publishes the whole
+directory without replacing an existing entry. Unix holds the writer lock across
+the rename. Windows retains an exclusive directory link claim while closing the
+staged children for rename and reacquiring the verified original writer lock.
+Losing concurrent creators
 retire only their own original marker, lock and empty staging directory. Stale
 sibling stages are never adopted or recursively removed. Existing unmarked,
 malformed or foreign stores are refused unchanged. `GnsPublication` retains its

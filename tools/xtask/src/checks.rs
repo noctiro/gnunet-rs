@@ -4161,6 +4161,7 @@ const POLICIES: &[Policy] = &[
             "nix",
             "objc2",
             "objc2-foundation",
+            "sha2", // Bounded readback after FreeBSD UFS ctime drift.
             "socket2",
             "windows-sys",
             "zeroize",

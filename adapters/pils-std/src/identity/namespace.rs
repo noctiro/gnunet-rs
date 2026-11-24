@@ -2,7 +2,8 @@
 use gnunet_native::{
     DirectorySync,
     filesystem::{
-        Directory, EntryInfo, FileIdentity, FileInfo, private_single_file_identity, publication,
+        Directory, EntryInfo, FileIdentity, PrivateFileSnapshot, private_single_file_identity,
+        publication,
     },
 };
 use std::{
@@ -103,15 +104,21 @@ impl Namespace {
         }
         Ok(())
     }
-    pub(super) fn verify_key(&self, snapshot: FileInfo) -> io::Result<()> {
+    pub(super) fn verify_key_name(&self, identity: FileIdentity) -> io::Result<()> {
         self.verify()?;
         let named = self.directory.entry_info(&self.key)?;
-        if named != EntryInfo::File(snapshot) {
-            return Err(io::Error::other(format!(
-                "PILS named key snapshot changed: held={snapshot:?}, named={named:?}",
-            )));
+        if !matches!(named, EntryInfo::File(info) if info.identity == identity) {
+            return Err(io::Error::other("PILS original named key changed"));
         }
         Ok(())
+    }
+    pub(super) fn verify_key_snapshot(
+        &self,
+        file: &File,
+        snapshot: &PrivateFileSnapshot,
+    ) -> io::Result<()> {
+        self.verify()?;
+        snapshot.verify(&self.directory, &self.key, file)
     }
     pub(super) fn open_key(&self) -> io::Result<File> {
         self.directory.open_file(&self.key)

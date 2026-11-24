@@ -56,13 +56,29 @@ impl Directory {
     /// check through the published identity check. Cooperating publishers
     /// and removers use the same lock. Linux, macOS and FreeBSD with
     /// `renameat2` request kernel no-replacement. Windows renames a captured
-    /// handle.
+    /// handle and requires all handles to descendants to be closed.
     /// No file or directory synchronization is performed here.
     ///
     /// # Errors
     /// `AlreadyExists` leaves the source unpublished. Any other error can follow
     /// publication, including a failed post-publication identity observation.
     pub fn publish_directory(
+        &self,
+        source_name: &OsStr,
+        original: &Self,
+        target_name: &OsStr,
+    ) -> io::Result<()> {
+        #[cfg(windows)]
+        {
+            self.claim_directory(source_name, original)?
+                .publish(target_name)
+        }
+        #[cfg(unix)]
+        self.publish_unix(source_name, original, target_name)
+    }
+
+    #[cfg(unix)]
+    fn publish_unix(
         &self,
         source_name: &OsStr,
         original: &Self,
@@ -75,15 +91,7 @@ impl Directory {
                 "original directory publication source changed",
             ));
         }
-        #[cfg(unix)]
         unix::publish(self, source_name, target_name)?;
-        #[cfg(windows)]
-        crate::paths::relative::publish_directory(
-            self.as_file(),
-            source_name,
-            original.as_file(),
-            target_name,
-        )?;
         // Never classify a post-publication failure as an unattempted collision.
         match self.same_directory(target_name, original) {
             Ok(true) => Ok(()),

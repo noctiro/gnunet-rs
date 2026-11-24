@@ -14,9 +14,8 @@ use windows_sys::{
     Win32::{
         Foundation::{ERROR_ACCESS_DENIED, ERROR_SHARING_VIOLATION, STATUS_SUCCESS},
         Storage::FileSystem::{
-            FILE_APPEND_DATA, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
-            FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_WRITE_DATA,
-            GetVolumeInformationByHandleW,
+            FILE_APPEND_DATA, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+            FILE_WRITE_DATA, GetVolumeInformationByHandleW,
         },
         System::IO::IO_STATUS_BLOCK,
     },
@@ -31,16 +30,15 @@ impl LocalDirectory {
             return Ok(None);
         }
         let reopen = |access| {
-            open::reopen(
+            open::directory(
                 original,
                 access,
                 FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
             )
         };
         let reopened = match reopen(FILE_WRITE_DATA) {
             // The flush also accepts FILE_APPEND_DATA (FILE_ADD_SUBDIRECTORY).
-            Err(error) if error.raw_os_error() == Some(ERROR_ACCESS_DENIED as i32) => {
+            Err(error) if open_status(&error) == Some(ERROR_ACCESS_DENIED) => {
                 reopen(FILE_APPEND_DATA)
             }
             result => result,
@@ -49,9 +47,10 @@ impl LocalDirectory {
             Ok(directory) => Ok(Some(Self(directory))),
             // Directory access or a read-only source fence can exclude the lease.
             Err(error)
-                if error.raw_os_error().is_some_and(|code| {
-                    matches!(code as u32, ERROR_ACCESS_DENIED | ERROR_SHARING_VIOLATION)
-                }) =>
+                if matches!(
+                    open_status(&error),
+                    Some(ERROR_ACCESS_DENIED | ERROR_SHARING_VIOLATION)
+                ) =>
             {
                 Ok(None)
             }
@@ -77,6 +76,13 @@ impl LocalDirectory {
         }
         Ok(DirectorySync::Synchronized)
     }
+}
+
+fn open_status(error: &io::Error) -> Option<u32> {
+    error
+        .get_ref()?
+        .downcast_ref::<status::StatusError>()
+        .map(status::StatusError::win32_code)
 }
 
 pub(super) fn directory(original: &File) -> io::Result<DirectorySync> {

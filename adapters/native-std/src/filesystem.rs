@@ -13,14 +13,18 @@ mod mapping;
 mod mount;
 mod open;
 mod private_data;
+mod private_snapshot;
 pub mod publication;
 mod reader;
 mod special;
+#[cfg(windows)]
+pub use crate::paths::relative::DirectoryClaim;
 pub use links::file_links;
 pub use lock::ExclusiveFile;
 #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
 pub use mount::MountPoint;
 pub use private_data::private_data_file_info;
+pub use private_snapshot::{PrivateFileSnapshot, PrivateSnapshotError};
 mod readonly;
 mod times;
 pub use identity::{FileIdentity, FileIdentityParts, InvalidIdentity};

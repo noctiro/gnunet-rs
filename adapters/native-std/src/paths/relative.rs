@@ -8,7 +8,7 @@ pub(crate) mod status;
 mod sync;
 pub use directory::Directory;
 pub(crate) use link::{remove_directory, remove_special};
-pub(crate) use rename::publish_directory;
+pub use rename::DirectoryClaim;
 pub use status::StatusError;
 pub(crate) fn validate_name(name: &std::ffi::OsStr) -> std::io::Result<()> {
     leaf::Leaf::new(name).map(|_| ())

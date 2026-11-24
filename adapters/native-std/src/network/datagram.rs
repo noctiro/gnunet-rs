@@ -21,36 +21,35 @@ mod tests;
 /// identify the peer that caused it. Lifecycle, allocation and short-write
 /// failures remain terminal to the owner.
 pub fn isolated_datagram_send_error(error: &io::Error) -> bool {
-    if matches!(
-        error.kind(),
-        io::ErrorKind::PermissionDenied
-            | io::ErrorKind::ConnectionRefused
-            | io::ErrorKind::ConnectionReset
-            | io::ErrorKind::ConnectionAborted
-            | io::ErrorKind::NetworkDown
-            | io::ErrorKind::NetworkUnreachable
-            | io::ErrorKind::HostUnreachable
-            | io::ErrorKind::AddrNotAvailable
-            | io::ErrorKind::InvalidInput
-            | io::ErrorKind::TimedOut
-            | io::ErrorKind::Interrupted
-    ) {
+    if datagram_size_error(error)
+        || matches!(
+            error.kind(),
+            io::ErrorKind::PermissionDenied
+                | io::ErrorKind::ConnectionRefused
+                | io::ErrorKind::ConnectionReset
+                | io::ErrorKind::ConnectionAborted
+                | io::ErrorKind::NetworkDown
+                | io::ErrorKind::NetworkUnreachable
+                | io::ErrorKind::HostUnreachable
+                | io::ErrorKind::AddrNotAvailable
+                | io::ErrorKind::InvalidInput
+                | io::ErrorKind::TimedOut
+                | io::ErrorKind::Interrupted
+        )
+    {
         return true;
     }
     #[cfg(unix)]
     {
         matches!(
             error.raw_os_error(),
-            Some(libc::EMSGSIZE | libc::EHOSTDOWN | libc::EDESTADDRREQ)
+            Some(libc::EHOSTDOWN | libc::EDESTADDRREQ)
         )
     }
     #[cfg(windows)]
     {
-        use windows_sys::Win32::Networking::WinSock::{WSAEDESTADDRREQ, WSAEHOSTDOWN, WSAEMSGSIZE};
-        matches!(
-            error.raw_os_error(),
-            Some(WSAEMSGSIZE | WSAEHOSTDOWN | WSAEDESTADDRREQ)
-        )
+        use windows_sys::Win32::Networking::WinSock::{WSAEDESTADDRREQ, WSAEHOSTDOWN};
+        matches!(error.raw_os_error(), Some(WSAEHOSTDOWN | WSAEDESTADDRREQ))
     }
 }
 
@@ -58,24 +57,27 @@ pub fn isolated_datagram_send_error(error: &io::Error) -> bool {
 /// An asynchronous error identifies neither a peer nor a successful earlier send.
 /// Windows TTL-expiration reports preserve that distinction and their raw code.
 pub fn isolated_datagram_receive_error(error: &io::Error) -> bool {
-    if matches!(
-        error.kind(),
-        io::ErrorKind::ConnectionRefused
-            | io::ErrorKind::NetworkUnreachable
-            | io::ErrorKind::HostUnreachable
-            | io::ErrorKind::Interrupted
-    ) {
-        return true;
-    }
-    #[cfg(unix)]
-    {
-        error.raw_os_error() == Some(libc::EMSGSIZE)
-    }
+    let isolated = datagram_size_error(error)
+        || matches!(
+            error.kind(),
+            io::ErrorKind::ConnectionRefused
+                | io::ErrorKind::NetworkUnreachable
+                | io::ErrorKind::HostUnreachable
+                | io::ErrorKind::Interrupted
+        );
     #[cfg(windows)]
-    {
-        use windows_sys::Win32::Networking::WinSock::{WSAEMSGSIZE, WSAENETRESET};
-        matches!(error.raw_os_error(), Some(WSAEMSGSIZE | WSAENETRESET))
-    }
+    let isolated = isolated
+        || error.raw_os_error() == Some(windows_sys::Win32::Networking::WinSock::WSAENETRESET);
+    isolated
+}
+
+/// The native socket refused the datagram extent.
+pub fn datagram_size_error(error: &io::Error) -> bool {
+    #[cfg(unix)]
+    let size_error = libc::EMSGSIZE;
+    #[cfg(windows)]
+    let size_error = windows_sys::Win32::Networking::WinSock::WSAEMSGSIZE;
+    error.raw_os_error() == Some(size_error)
 }
 /// A genuine unavailable socket family/protocol/option, permitting another family.
 pub fn socket_family_unavailable(error: &io::Error) -> bool {

@@ -7,11 +7,25 @@ use std::{
     net::{Ipv4Addr, TcpListener, TcpStream},
     path::PathBuf,
     process::{Child, Command, Stdio},
+    sync::atomic::{AtomicUsize, Ordering},
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 struct Directory(PathBuf);
+impl Directory {
+    fn create() -> Result<Self> {
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "gn-cli-{}-{nonce:x}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir(&path)?;
+        Ok(Self(path))
+    }
+}
 impl Drop for Directory {
     fn drop(&mut self) {
         let _cleanup = fs::remove_dir_all(&self.0);
@@ -89,10 +103,7 @@ enum Program {
 }
 
 fn run(program: Program, set: bool, blocked: bool) -> Result<()> {
-    let nonce = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
-    let directory =
-        Directory(std::env::temp_dir().join(format!("gn-cli-{}-{nonce:x}", std::process::id())));
-    fs::create_dir(&directory.0)?;
+    let directory = Directory::create()?;
     fs::create_dir(directory.0.join("config.d"))?;
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
     fs::write(
@@ -165,9 +176,13 @@ fn run(program: Program, set: bool, blocked: bool) -> Result<()> {
         }
         thread::sleep(Duration::from_millis(5));
     };
-    server
+    let peer_result = server
         .join()
-        .map_err(|_| io::Error::other("controlled peer panicked"))??;
+        .map_err(|_| io::Error::other("controlled peer panicked"))?;
+    if let Err(peer_error) = peer_result {
+        let errors = fs::read_to_string(directory.0.join("err"))?;
+        return Err(format!("controlled peer: {peer_error}; CLI: {status}: {errors}").into());
+    }
     if blocked {
         if status.success() {
             return Err("blocked stdout was reported as completed GET".into());
