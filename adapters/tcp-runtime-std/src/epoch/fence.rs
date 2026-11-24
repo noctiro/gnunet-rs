@@ -2,13 +2,12 @@
 use super::{Failure, Outcome, Stage, failure};
 use gnunet_native::{
     DirectorySync,
-    filesystem::{Directory, FileIdentity, private_single_file_identity},
+    filesystem::{Directory, ExclusiveFile, FileIdentity, private_single_file_identity},
 };
 use std::{
     cell::Cell,
     ffi::OsString,
-    fs::{self, File},
-    io,
+    fs, io,
     path::{Path, PathBuf},
 };
 pub(super) struct Fence {
@@ -16,7 +15,7 @@ pub(super) struct Fence {
     pub name: OsString,
     path: PathBuf,
     guard_name: OsString,
-    guard: File,
+    guard: ExclusiveFile,
     parent_id: FileIdentity,
     pub guard_id: FileIdentity,
     pub barrier: Cell<DirectorySync>,
@@ -46,7 +45,7 @@ impl Fence {
             Err(cause) => return Err(map(cause)),
         };
         let guard_id = private_single_file_identity(&guard).map_err(map)?;
-        guard.try_lock().map_err(|cause| map(cause.into()))?;
+        let guard = ExclusiveFile::try_lock(guard).map_err(|cause| map(cause.into()))?;
         let parent_id = FileIdentity::of(parent.as_file()).map_err(map)?;
         let barrier = parent
             .sync()
@@ -71,10 +70,10 @@ impl Fence {
         selected.validate_namespace().map_err(map)?;
         if FileIdentity::of(selected.as_file()).map_err(map)? != self.parent_id
             || FileIdentity::of(self.parent.as_file()).map_err(map)? != self.parent_id
-            || private_single_file_identity(&self.guard).map_err(map)? != self.guard_id
+            || private_single_file_identity(self.guard.as_file()).map_err(map)? != self.guard_id
             || !self
                 .parent
-                .same_file(&self.guard_name, &self.guard)
+                .same_file(&self.guard_name, self.guard.as_file())
                 .map_err(map)?
         {
             return Err(map(io::Error::other(

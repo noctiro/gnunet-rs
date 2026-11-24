@@ -33,10 +33,6 @@ impl Stage {
             .ok_or_else(|| failure("writer-owner", Error::Storage, None))?;
         let writer_id = private_single_file_identity(writer.as_file())
             .map_err(|error| os("staging-writer-policy", error))?;
-        writer
-            .as_file()
-            .unlock()
-            .map_err(|error| os("staging-writer-unlock", error))?;
         let marker = self
             .marker
             .take()

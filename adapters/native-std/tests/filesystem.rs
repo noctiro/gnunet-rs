@@ -348,9 +348,14 @@ fn private_file_identity_refuses_hard_link_aliases_and_native_lock_release_is_ob
         ExclusiveFile::try_lock(contender),
         Err(std::fs::TryLockError::WouldBlock)
     ));
+    // A concurrent Unix fork can temporarily retain the locked open file description.
+    #[cfg(unix)]
+    let inherited = owner.as_file().try_clone()?;
     drop(owner);
     let next = ExclusiveFile::try_lock(directory.open_file_for_update(OsStr::new("lock"))?)?;
     assert_eq!(FileIdentity::of(next.as_file())?, original);
+    #[cfg(unix)]
+    assert_eq!(FileIdentity::of(&inherited)?, original);
     Ok(())
 }
 #[cfg(windows)]

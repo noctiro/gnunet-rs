@@ -347,10 +347,11 @@ changes the file's permissions, link count or selected name.
 
 `ExclusiveFile` owns the original physical lock file. It uses the standard
 [nonblocking native lock](https://doc.rust-lang.org/std/fs/struct.File.html#method.try_lock),
-preserves contention and native errors, and releases its handle on drop without
-unlinking the name. Unix locks are advisory; Windows locks also constrain data
-access. Borrowing the original file does not grant permission to clone, unlock
-or replace an application's lock owner.
+preserves contention and native errors, and unlocks before closing the handle
+without unlinking its name. Closing alone can leave a Unix lock held by a
+temporarily inherited file descriptor. Unix locks are advisory; Windows locks
+also constrain data access. Borrowing the original file does not grant
+permission to clone, unlock or replace an application's lock owner.
 
 Windows `ReadMapping` owns an unnamed read-only original-file section and view.
 It exposes a raw address for trusted synchronous native consumers, without a Rust
