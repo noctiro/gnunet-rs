@@ -4,19 +4,20 @@ use ::rsa::pkcs8::{
     der::{Decode, Reader, Tag, TagNumber, Tagged, asn1::AnyRef, asn1::OctetStringRef},
 };
 use crypto_bigint::CtEq;
-use rscrypto::{
-    MlDsa44, MlDsa44PreparedSecretKey, MlDsa44PreparedSecretKeyStorage, MlDsa44PublicKey,
-    MlDsa44SecretKey, MlDsa44Signature, MlDsa65, MlDsa65PreparedSecretKey,
-    MlDsa65PreparedSecretKeyStorage, MlDsa65PublicKey, MlDsa65SecretKey, MlDsa65Signature, MlDsa87,
-    MlDsa87PreparedSecretKey, MlDsa87PreparedSecretKeyStorage, MlDsa87PublicKey, MlDsa87SecretKey,
-    MlDsa87Signature, MlDsaError,
-};
 use rustls::{
     SignatureScheme,
     pki_types::{AlgorithmIdentifier, InvalidSignature, SubjectPublicKeyInfoDer, alg_id},
     sign::public_key_to_spki,
 };
-use std::alloc::Global;
+
+#[cfg(not(target_arch = "x86"))]
+mod accelerated;
+#[cfg(any(target_arch = "x86", test))]
+mod portable;
+#[cfg(not(target_arch = "x86"))]
+use accelerated as backend;
+#[cfg(target_arch = "x86")]
+use portable as backend;
 
 #[derive(Clone, Copy, Debug)]
 pub(super) enum Profile {
@@ -61,53 +62,35 @@ impl Profile {
         message: &[u8],
         signature: &[u8],
     ) -> Result<(), InvalidSignature> {
-        macro_rules! verify {
-            ($key:ident, $sig:ident) => {{
-                let key = $key::try_from_slice(public).map_err(|_| InvalidSignature)?;
-                let signature = $sig::try_from_slice(signature).map_err(|_| InvalidSignature)?;
-                key.verify(message, &signature)
-                    .map_err(|_| InvalidSignature)
-            }};
-        }
-        match self {
-            Self::MlDsa44 => verify!(MlDsa44PublicKey, MlDsa44Signature),
-            Self::MlDsa65 => verify!(MlDsa65PublicKey, MlDsa65Signature),
-            Self::MlDsa87 => verify!(MlDsa87PublicKey, MlDsa87Signature),
-        }
+        backend::verify(self, public, message, signature)
     }
 }
 
-pub(super) enum SigningKey {
-    MlDsa44(MlDsa44PreparedSecretKey<Box<MlDsa44PreparedSecretKeyStorage>>),
-    MlDsa65(MlDsa65PreparedSecretKey<Box<MlDsa65PreparedSecretKeyStorage>>),
-    MlDsa87(MlDsa87PreparedSecretKey<Box<MlDsa87PreparedSecretKeyStorage>>),
-}
+pub(super) struct SigningKey(backend::Key);
 
 impl SigningKey {
     pub(super) fn scheme(&self) -> SignatureScheme {
-        let profile = match self {
-            Self::MlDsa44(_) => Profile::MlDsa44,
-            Self::MlDsa65(_) => Profile::MlDsa65,
-            Self::MlDsa87(_) => Profile::MlDsa87,
-        };
-        profile.scheme()
+        self.0.profile().scheme()
     }
 
-    pub(super) fn sign(&self, message: &[u8]) -> Result<Vec<u8>, MlDsaError> {
-        let random = |output: &mut [u8]| {
-            getrandom::fill(output).map_err(|_| MlDsaError::RandomGenerationFailed)
+    pub(super) fn sign(&self, message: &[u8]) -> Option<Vec<u8>> {
+        self.0.sign(message)
+    }
+
+    pub(super) fn from_pkcs8(
+        info: PrivateKeyInfoRef<'_>,
+    ) -> Option<(Self, SubjectPublicKeyInfoDer<'static>)> {
+        if info.algorithm.parameters.is_some() {
+            return None;
+        }
+        let profile = Profile::from_oid(info.algorithm.oid)?;
+        let encoding = KeyEncoding::from_der(info.private_key.as_bytes())?;
+        let expected = match info.public_key {
+            Some(key) => Some(key.as_bytes()?),
+            None => None,
         };
-        macro_rules! sign {
-            ($key:expr) => {
-                $key.sign_with(message, &[], random)
-                    .map(|signature| signature.as_bytes().to_vec())
-            };
-        }
-        match self {
-            Self::MlDsa44(key) => sign!(key),
-            Self::MlDsa65(key) => sign!(key),
-            Self::MlDsa87(key) => sign!(key),
-        }
+        let (key, public) = backend::Key::load(profile, encoding, expected)?;
+        Some((Self(key), public))
     }
 }
 
@@ -149,59 +132,22 @@ impl<'a> KeyEncoding<'a> {
     }
 }
 
-impl SigningKey {
-    pub(super) fn from_pkcs8(
-        info: PrivateKeyInfoRef<'_>,
-    ) -> Option<(Self, SubjectPublicKeyInfoDer<'static>)> {
-        // The shared RFC 5958 parser accepts attributes that rscrypto's
-        // container parser rejects. Import only the parsed key material.
-        if info.algorithm.parameters.is_some() {
-            return None;
-        }
-        let profile = Profile::from_oid(info.algorithm.oid)?;
-        let encoding = KeyEncoding::from_der(info.private_key.as_bytes())?;
-        macro_rules! import {
-            ($variant:ident, $secret:ident) => {{
-                let key = match encoding {
-                    KeyEncoding::Expanded(expanded) => {
-                        $secret::try_from_slice_in(expanded, Global).ok()?
-                    }
-                    KeyEncoding::Seed { seed, expanded } => {
-                        if expanded.is_some_and(|expanded| expanded.len() != $secret::LENGTH) {
-                            return None;
-                        }
-                        let key = $variant::keypair_from_seed_in(seed, Global).ok()?.1;
-                        if let Some(expanded) = expanded
-                            && !key
-                                .expose_secret()
-                                .as_bytes()
-                                .as_slice()
-                                .ct_eq(expanded)
-                                .to_bool()
-                        {
-                            return None;
-                        }
-                        key
-                    }
-                };
-                let public = key.public_key().as_bytes();
-                if let Some(encoded_public) = info.public_key
-                    && encoded_public.as_bytes()? != public
-                {
-                    return None;
-                }
-                let prepared = key.prepare_in(Global).ok()?;
-                let public = public_key_to_spki(&profile.algorithm(), public);
-                Some((Self::$variant(prepared), public))
-            }};
-        }
-        match profile {
-            Profile::MlDsa44 => import!(MlDsa44, MlDsa44SecretKey),
-            Profile::MlDsa65 => import!(MlDsa65, MlDsa65SecretKey),
-            Profile::MlDsa87 => import!(MlDsa87, MlDsa87SecretKey),
-        }
-    }
+fn matches_expanded(derived: &[u8], expected: Option<&[u8]>) -> bool {
+    expected.is_none_or(|bytes| derived.len() == bytes.len() && derived.ct_eq(bytes).to_bool())
 }
+
+fn bind_public(
+    profile: Profile,
+    actual: &[u8],
+    expected: Option<&[u8]>,
+) -> Option<SubjectPublicKeyInfoDer<'static>> {
+    expected
+        .is_none_or(|bytes| bytes == actual)
+        .then(|| public_key_to_spki(&profile.algorithm(), actual))
+}
+
+#[cfg(test)]
+type TestMaterial = (zeroize::Zeroizing<Vec<u8>>, Vec<u8>);
 
 #[cfg(test)]
 mod tests {
@@ -215,6 +161,12 @@ mod tests {
     use std::io;
     use std::sync::Arc;
     use zeroize::Zeroizing;
+
+    const PROFILES: [(Profile, ObjectIdentifier, usize); 3] = [
+        (Profile::MlDsa44, Profile::OID_44, 4 * 96),
+        (Profile::MlDsa65, Profile::OID_65, 5 * 128),
+        (Profile::MlDsa87, Profile::OID_87, 7 * 96),
+    ];
 
     fn load(der: &[u8]) -> Result<Arc<dyn RustlsSigningKey>, rustls::Error> {
         KEY_PROVIDER.load_private_key(PrivatePkcs8KeyDer::from(der.to_vec()).into())
@@ -298,18 +250,7 @@ mod tests {
             }
         }
 
-        for (offset, mask) in [
-            (64, 1),
-            (128, 0xff),
-            (128 + s1_length, 0xff),
-            (expanded.len() - 1, 1),
-        ] {
-            let mut invalid = Zeroizing::new(expanded.to_vec());
-            if mask == 0xff {
-                invalid[offset] = mask;
-            } else {
-                invalid[offset] ^= mask;
-            }
+        for invalid in malformed_expansions(expanded, s1_length) {
             let document = container(oid, &OctetStringRef::new(&invalid)?, None)?;
             if load(document.as_bytes()).is_ok() {
                 return Err(io::Error::other("accepted invalid expanded private key").into());
@@ -322,27 +263,81 @@ mod tests {
         Ok(())
     }
 
+    fn malformed_expansions(
+        expanded: &[u8],
+        s1_length: usize,
+    ) -> impl Iterator<Item = Zeroizing<Vec<u8>>> {
+        [
+            (64, 1),
+            (128, 0xff),
+            (128 + s1_length, 0xff),
+            (expanded.len() - 1, 1),
+        ]
+        .into_iter()
+        .map(move |(offset, mask)| {
+            let mut invalid = Zeroizing::new(expanded.to_vec());
+            if mask == 0xff {
+                invalid[offset] = mask;
+            } else {
+                invalid[offset] ^= mask;
+            }
+            invalid
+        })
+    }
+
     #[test]
     fn private_key_encodings_and_signatures_preserve_all_profiles()
     -> Result<(), Box<dyn std::error::Error>> {
         let seed = Zeroizing::new([0x42; 32]);
-        macro_rules! check {
-            ($profile:ident, $oid:ident, $s1_length:expr) => {{
-                let (public, key) = $profile::keypair_from_seed_in(&seed, Global)?;
-                let expanded = key.expose_secret();
-                check_encodings(
-                    Profile::$profile,
-                    Profile::$oid,
-                    &seed,
-                    expanded.as_bytes(),
-                    public.as_bytes(),
-                    $s1_length,
-                )?;
-            }};
+        for (profile, oid, s1_length) in PROFILES {
+            let (expanded, public) = portable::test_material(profile, &seed);
+            check_encodings(profile, oid, &seed, &expanded, &public, s1_length)?;
         }
-        check!(MlDsa44, OID_44, 4 * 96);
-        check!(MlDsa65, OID_65, 5 * 128);
-        check!(MlDsa87, OID_87, 7 * 96);
+        Ok(())
+    }
+
+    #[cfg(not(target_arch = "x86"))]
+    #[test]
+    fn accelerated_and_portable_backends_accept_the_same_keys_and_signatures()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let seed = Zeroizing::new([0x35; 32]);
+        let message = b"ML-DSA between providers";
+        for (profile, _, s1_length) in PROFILES {
+            let (expanded, public) = portable::test_material(profile, &seed);
+            let both = KeyEncoding::Seed {
+                seed: &seed,
+                expanded: Some(&expanded),
+            };
+            let (accelerated, accelerated_public) =
+                backend::Key::load(profile, both, Some(&public)).ok_or_else(|| {
+                    io::Error::other("accelerated key does not match portable key")
+                })?;
+            let (portable, portable_public) =
+                portable::Key::load(profile, KeyEncoding::Expanded(&expanded), Some(&public))
+                    .ok_or_else(|| io::Error::other("portable expanded key rejected"))?;
+            if accelerated_public != portable_public
+                || portable.profile().scheme() != profile.scheme()
+            {
+                return Err(io::Error::other("the backend changed the public identity").into());
+            }
+            let from_portable = portable
+                .sign(message)
+                .ok_or_else(|| io::Error::other("portable signing failed"))?;
+            let from_accelerated = accelerated
+                .sign(message)
+                .ok_or_else(|| io::Error::other("accelerated signing failed"))?;
+            if profile.verify(&public, message, &from_portable).is_err()
+                || portable::verify(profile, &public, message, &from_accelerated).is_err()
+                || portable::verify(profile, &public, b"wrong message", &from_accelerated).is_ok()
+            {
+                return Err(io::Error::other("signatures did not interoperate").into());
+            }
+            for invalid in malformed_expansions(&expanded, s1_length) {
+                if portable::Key::load(profile, KeyEncoding::Expanded(&invalid), None).is_some() {
+                    return Err(io::Error::other("portable backend accepted malformed key").into());
+                }
+            }
+        }
         Ok(())
     }
 }

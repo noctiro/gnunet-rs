@@ -1339,6 +1339,7 @@ const POLICIES: &[Policy] = &[
             "ed25519-dalek",
             "getrandom",
             "hmac",
+            "macula-mldsa",
             "ml-kem",
             "p256",
             "p384",

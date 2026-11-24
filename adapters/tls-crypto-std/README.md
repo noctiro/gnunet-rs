@@ -18,11 +18,12 @@ policies.
 Certificate and handshake verification supports RSA, ECDSA, Ed25519 and
 ML-DSA. The private-key provider imports the applicable PKCS#8, PKCS#1 or
 SEC1 format, retains the key's SPKI, and blinds RSA signatures with OS entropy.
-The `rscrypto` ML-DSA backend accepts all three RFC 9881 encodings. When expanded bytes accompany a
-seed, they must match the key derived from it. Expanded-only import checks the
-packed secret coefficient ranges and reconstructs both the low-order coefficients
-and the public-key hash before accepting the signer. A supplied public component
-must match the derived public key.
+ML-DSA uses prepared `rscrypto` keys on supported architectures and
+`macula-mldsa` on 32-bit x86. Both accept all three RFC 9881 encodings. When
+expanded bytes accompany a seed, they must match the key derived from it.
+Expanded-only import checks the packed secret coefficient ranges and derives
+both the low-order coefficients and the public-key hash before accepting the
+signer. A supplied public component must match the derived public key.
 
 `certificate::P256Key` generates local keys for self-signed credentials,
 proxy CAs and server leaves. `certificate::ServerIssuer` loads a matching CA key and

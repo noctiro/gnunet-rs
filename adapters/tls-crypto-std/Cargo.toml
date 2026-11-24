@@ -20,7 +20,6 @@ p256 = { workspace = true, features = ["alloc", "ecdh", "pkcs8"] }
 p384 = { workspace = true, features = ["alloc", "ecdh", "pkcs8"] }
 p521 = { workspace = true, features = ["alloc", "ecdsa", "pkcs8"] }
 rcgen.workspace = true
-rscrypto = { version = "0.12.0", default-features = false, features = ["alloc", "ml-dsa"] }
 rsa.workspace = true
 rustls.workspace = true
 sha2.workspace = true
@@ -29,6 +28,15 @@ x25519-dalek = { workspace = true, features = ["precomputed-tables"] }
 x509-parser.workspace = true
 yasna = { workspace = true, features = ["time"] }
 zeroize.workspace = true
+
+[target.'cfg(not(target_arch = "x86"))'.dependencies]
+rscrypto = { version = "0.12.0", default-features = false, features = ["alloc", "ml-dsa"] }
+
+[target.'cfg(target_arch = "x86")'.dependencies]
+macula-mldsa.workspace = true
+
+[dev-dependencies]
+macula-mldsa.workspace = true
 
 [lints]
 workspace = true

@@ -83,6 +83,7 @@ jpxl-decode = { version = "0.3.0", default-features = false }
 jpxl-entropy = { version = "0.3.0", default-features = false }
 libc = { version = "0.2.191", default-features = false }
 libm = { version = "0.2.16", default-features = false }
+macula-mldsa = { version = "0.3.0", default-features = false, features = ["internal"] }
 md-5 = { version = "0.11.0", default-features = false, features = ["zeroize"] }
 miniz_oxide = { version = "0.9.1", default-features = false }
 ml-kem = { version = "0.3.4", default-features = false, features = ["zeroize"] }

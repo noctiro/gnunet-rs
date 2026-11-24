@@ -230,7 +230,7 @@ impl Signer for Selected {
                 .map_err(|_| signing_failed())?
                 .to_bytes()
                 .to_vec(),
-            Key::MlDsa(key) => key.sign(message).map_err(|_| signing_failed())?,
+            Key::MlDsa(key) => key.sign(message).ok_or_else(signing_failed)?,
         })
     }
 

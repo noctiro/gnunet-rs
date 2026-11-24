@@ -17,11 +17,6 @@ the comparison.
 
 ## Known limits
 
-- **Android x86 SDK.** The TLS adapter uses `rscrypto` for ML-DSA.
-  `rscrypto` 0.12.0 does not build on 32-bit x86, so the full Android AAR
-  cannot yet include the configured `i686-linux-android` target. The
-  remaining backend work must retain validation of all three RFC 9881 key
-  encodings.
 - **NAT-AUTO client routing (upstream C).** The selected C API connects to
   `nat` for the configuration request, but only `nat-auto` handles that
   message. Route the client to the separate NAT-AUTO endpoint to use the

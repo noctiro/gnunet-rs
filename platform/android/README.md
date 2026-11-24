@@ -11,8 +11,6 @@ For an init-managed native node in a vendor image, see the
 
 Use the [AAR build script](tools/README.md) to build the Rust archive, JNI
 library and Kotlin API for the ABIs in the [SDK profile](sdk-profile.properties).
-The all-ABI build currently stops at the
-[Android x86 SDK dependency limit](../../IMPLEMENTATION_STATUS.md#known-limits).
 
 ```sh
 bash platform/android/tools/build-sdk.sh --rust-targets
