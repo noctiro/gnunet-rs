@@ -25,7 +25,7 @@ use std::{
 };
 use tokio::{
     io::AsyncReadExt,
-    net::{TcpListener, TcpSocket},
+    net::TcpListener,
     time::{Instant, timeout},
 };
 #[path = "../../ipc-unix/tests/support/clock_source.rs"]
@@ -347,11 +347,9 @@ fn statistics_time_error_preserves_get_epoch_without_connect_retry() -> Test {
 #[test]
 fn actual_native_refusal_remains_socket_retry() -> Test {
     run(async {
-        // Reserve the endpoint without listening, so no other test can claim
-        // the port between reservation and the connection attempt.
-        let socket = TcpSocket::new_v4()?;
-        socket.bind("127.0.0.1:0".parse()?)?;
-        let port = socket.local_addr()?.port();
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let port = listener.local_addr()?.port();
+        drop(listener);
         let (context, mut driver, _source) = context(Refusal::Native, true)?;
         let mut statistics_instance_2 = gnunet_client::statistics_handle::Instance::new();
         let mut host = gnunet_ipc_unix::handle::StatisticsHandle::<4, 64, 2, 64, 8>::from_config(
@@ -385,7 +383,6 @@ fn actual_native_refusal_remains_socket_retry() -> Test {
         let error = host.take_io_error().ok_or("missing native error")?;
         assert_eq!(error.kind(), io::ErrorKind::ConnectionRefused);
         assert!(PortError::from_io(&error).is_none());
-        drop(socket);
         Ok(())
     })
 }
