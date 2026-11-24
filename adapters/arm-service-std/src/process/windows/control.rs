@@ -2,6 +2,7 @@
 use super::registry_error;
 use crate::process::{ChildRegistry, ControlEvent, ControlMode, LaunchError, OriginalChild};
 use gnunet_native::process::ProcessWait;
+use gnunet_native::socket_activation::OwnedSource;
 use gnunet_service_startup::{ControlSender, launch};
 use std::{
     io,
@@ -21,7 +22,7 @@ struct Session {
     stop_started: bool,
     stop_exit: Option<ProcessWait>,
     signal_notice: Option<LaunchError>,
-    sources: Vec<socket2::Socket>,
+    sources: Vec<OwnedSource>,
 }
 
 pub(super) enum Initial {
@@ -38,7 +39,7 @@ impl Prepared {
         self,
         initial: Initial,
         mode: ControlMode,
-        sources: Vec<socket2::Socket>,
+        sources: Vec<OwnedSource>,
     ) -> Control {
         let (parent, failure) = match initial {
             Initial::Starting(parent) => (Some(parent), None),

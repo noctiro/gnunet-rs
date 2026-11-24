@@ -114,11 +114,11 @@ async fn configured_bind_checks_activation_access_without_reading_addresses()
 }
 
 #[tokio::test]
-async fn prepared_listener_supplies_original_access_to_activation_export() -> io::Result<()> {
+async fn retained_listener_supplies_original_access_to_activation_export() -> io::Result<()> {
     use gnunet_native::{
         local_path::{EndpointAccess, EndpointProtection},
         local_socket,
-        socket_activation::ExportSection,
+        socket_activation::{ExportSection, Source},
     };
     use gnunet_service_runtime::local_listener::prepare;
 
@@ -126,8 +126,19 @@ async fn prepared_listener_supplies_original_access_to_activation_export() -> io
     let path = std::path::absolute(&fixture.socket)?;
     let prepared = prepare(path.clone(), LocalListenerAccess::Owner, 16).await?;
     {
-        let sources = [prepared.launch_source()];
+        let original = prepared.launch_source();
+        let retained = original.try_clone_to_owned()?;
+        let sources = [retained.as_source()];
         let [source] = &sources;
+        let mismatched = Source::new(source.as_socket()).with_protection(
+            original
+                .protection()
+                .ok_or_else(|| io::Error::other("missing local ACL evidence"))?,
+        );
+        assert!(matches!(
+            ExportSection::for_listeners(&[mismatched]),
+            Err(error) if error.kind() == io::ErrorKind::InvalidInput
+        ));
         assert_eq!(
             source.protection().map(EndpointProtection::access),
             Some(EndpointAccess::Owner)

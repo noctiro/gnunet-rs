@@ -1,10 +1,10 @@
 //! Windows ARM policy: native image selection and original-handle supervision.
 use super::*;
 use gnunet_native::process::{Console, LaunchLimits, Stdio};
-use gnunet_native::socket_activation::Source;
+use gnunet_native::socket_activation::OwnedSource;
 use gnunet_service_runtime::process::RegistryError;
 use gnunet_service_startup::{ParentRole, launch};
-use std::{os::windows::io::AsSocket, sync::Arc};
+use std::sync::Arc;
 mod account;
 mod control;
 pub(crate) use account::AccountPreparation;
@@ -80,7 +80,7 @@ pub(crate) fn spawn(
         .try_reserve_exact(request.listeners.len())
         .map_err(|_| LaunchError::Capacity)?;
     for original in &request.listeners {
-        match socket2::SockRef::from(original).try_clone() {
+        match original.try_clone_to_owned() {
             Ok(source) => sources.push(source),
             Err(error) => return Ok(SpawnResult::Refused { error: Some(error) }),
         }
@@ -89,18 +89,7 @@ pub(crate) fn spawn(
     published
         .try_reserve_exact(sources.len())
         .map_err(|_| LaunchError::Capacity)?;
-    published.extend(
-        sources
-            .iter()
-            .zip(&request.listeners)
-            .map(|(socket, original)| {
-                let source = Source::new(socket.as_socket());
-                match original.protection() {
-                    Some(protection) => source.with_protection(protection),
-                    None => source,
-                }
-            }),
-    );
+    published.extend(sources.iter().map(OwnedSource::as_source));
     // Reserve retained control backing before admitting the native process.
     let control_backing = control::Prepared::new();
     let launched = if let Some(profile) = request.profile {
