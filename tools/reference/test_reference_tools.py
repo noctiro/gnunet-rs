@@ -128,6 +128,33 @@ class HarnessBoundaries(unittest.TestCase):
 
 
 class BootstrapBuildTools(unittest.TestCase):
+    def test_download_fallback_requires_a_transport_failure_and_the_same_hash(self):
+        urls = ("https://primary.invalid/archive", "https://mirror.invalid/archive")
+        with tempfile.TemporaryDirectory() as folder:
+            archive = Path(folder) / "source.tar.gz"
+            archive.write_bytes(b"pinned bytes")
+            expected = bootstrap_dependencies.digest(archive)
+            archive.unlink()
+            attempts = []
+
+            def run(name, command, *, check):
+                self.assertFalse(check)
+                self.assertFalse(archive.exists())
+                url = command[-1]
+                attempts.append(url)
+                archive.write_bytes(b"partial" if url == urls[0] else b"pinned bytes")
+                return 28 if url == urls[0] else 0
+
+            package = bootstrap_dependencies.download("test", expected, urls, archive, run)
+            self.assertEqual(attempts, list(urls))
+            self.assertEqual(package, {"name": "test", "url": urls[1], "archive_sha256": expected})
+
+            archive.write_bytes(b"wrong bytes")
+            successful_transfer = unittest.mock.Mock(return_value=0)
+            with self.assertRaisesRegex(ValueError, "checksum mismatch"):
+                bootstrap_dependencies.download("test", expected, urls, archive, successful_transfer)
+            successful_transfer.assert_called_once()
+
     def test_rejected_wheel_cannot_fall_back_to_unhashed_build_tools_or_start_c_builds(self):
         with tempfile.TemporaryDirectory() as folder:
             output = Path(folder).resolve() / "private-build"
