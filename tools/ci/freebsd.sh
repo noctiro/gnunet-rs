@@ -33,6 +33,7 @@ mkdir -p target/ci/native
     platform_probe pwd -P
     platform_probe df -T "$TMPDIR" .
     platform_probe mount -p
+    platform_probe sysctl hw.physmem
     platform_probe sysctl vfs.timestamp_precision
     platform_probe git rev-parse HEAD
     platform_probe git status --porcelain --untracked-files=no

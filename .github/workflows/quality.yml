@@ -135,7 +135,8 @@ jobs:
         with:
           release: ${{ matrix.release }}
           arch: x86_64
-          mem: 6144
+          # A single FS test compiler can exhaust a 6 GiB guest.
+          mem: 10240
           cpu: 2
           sync: rsync
           copyback: true
