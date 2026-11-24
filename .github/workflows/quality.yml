@@ -24,9 +24,9 @@ jobs:
           host: x86_64-pc-windows-msvc
       - name: Check the original UDP destination failure
         run: cargo test --offline --locked -p gnunet-udp-communicator-host --all-features --lib native_destination_failure_keeps_the_shared_socket_and_other_endpoint -- --nocapture
-      - name: Check original Windows process handshakes
+      - name: Check the native image boundary
         if: '!cancelled()'
-        run: cargo test --offline --locked -p gnunet-service-startup --test windows_bootstrap --test windows_activation --test windows_daemon
-      - name: Check the native Resolver refusal
+        run: cargo test --offline --locked -p gnunet-uri-host --test dispatch
+      - name: Check the STATISTICS CLI on the standard Windows stack
         if: '!cancelled()'
-        run: cargo test --offline --locked -p gnunet-resolver-broker --test port_failures actual_native_refusal_remains_socket_retry
+        run: cargo test --offline --locked -p gnunet-cli --no-default-features --features statistics --test statistics_process
