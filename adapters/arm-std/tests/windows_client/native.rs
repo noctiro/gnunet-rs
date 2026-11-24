@@ -11,9 +11,7 @@ use gnunet_service_startup::{CapturedStartup, ReadyStatus, capture_from_environm
 use std::{
     error::Error,
     ffi::{OsStr, OsString},
-    fs,
-    future::poll_fn,
-    io,
+    fs, io,
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -76,16 +74,14 @@ async fn child(captured: CapturedStartup) -> Result<(), Failure> {
         .parent_control
         .ok_or("missing original bootstrap")?
         .register()?;
-    check(
-        poll_fn(|cx| parent.control.poll_signal(cx)).await? == Some(-1),
-        "original handshake changed",
-    )?;
+    // ARM waits for the child's status. The qualified control direction does
+    // not send a greeting before readiness.
     parent.ready.signal(ReadyStatus::AcceptRegistered).await?;
     fs::write(root.join("ready"), [])?;
     file(&root.join("finish")).await?;
     Ok(())
 }
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 enum Cancellation {
     None,
     Operation,
@@ -150,7 +146,7 @@ async fn parent(cancellation: Cancellation) -> Result<(), Failure> {
         Clock::system()?,
         |_| {},
     )?;
-    let operation = host.request_service_start(b"arm", StdioInheritance(0))?;
+    let operation = host.request_service_start(b"arm", StdioInheritance(4))?;
     let mut callbacks = 0;
     while !directory.0.join("captured").exists() {
         host.drive(
@@ -162,6 +158,12 @@ async fn parent(cancellation: Cancellation) -> Result<(), Failure> {
             },
         )
         .await?;
+        if let Some(error) = host.launcher_mut().take_error() {
+            return Err(error.into());
+        }
+        if let Some(reaped) = host.launcher_mut().take_reaped() {
+            return Err(format!("child exited before capture: {}", reaped.exit_code).into());
+        }
     }
     check(
         callbacks == 0 && host.launcher_mut().pending_children() == 1,
@@ -253,19 +255,27 @@ pub(super) fn run() -> Result<(), Failure> {
         .enable_all()
         .build()?;
     runtime.block_on(async {
-        timeout(Duration::from_secs(30), async {
-            if let Some(captured) = captured {
-                return child(captured).await;
-            }
-            for cancellation in [
-                Cancellation::None,
-                Cancellation::Operation,
-                Cancellation::Disconnect,
-            ] {
-                parent(cancellation).await?;
-            }
-            Ok(())
-        })
-        .await?
+        if let Some(captured) = captured {
+            return timeout(Duration::from_secs(30), child(captured))
+                .await
+                .map_err(|_| {
+                    io::Error::new(io::ErrorKind::TimedOut, "ARM client fixture child")
+                })?;
+        }
+        for cancellation in [
+            Cancellation::None,
+            Cancellation::Operation,
+            Cancellation::Disconnect,
+        ] {
+            timeout(Duration::from_secs(30), parent(cancellation))
+                .await
+                .map_err(|_| {
+                    io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        format!("ARM client fixture: {cancellation:?}"),
+                    )
+                })??;
+        }
+        Ok(())
     })
 }

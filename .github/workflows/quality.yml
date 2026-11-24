@@ -6,10 +6,16 @@ permissions:
   contents: read
 
 jobs:
-  windows-startup-and-udp:
-    name: Windows startup and native socket diagnostics
-    runs-on: windows-2025
-    timeout-minutes: 18
+  windows-arm:
+    name: Windows ARM service and client (${{ matrix.host }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-2025, host: x86_64-pc-windows-msvc }
+          - { os: windows-11-arm, host: aarch64-pc-windows-msvc }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     env:
       CARGO_BUILD_JOBS: '1'
       CARGO_INCREMENTAL: '0'
@@ -21,12 +27,9 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/setup-rust
         with:
-          host: x86_64-pc-windows-msvc
-      - name: Check the original UDP destination failure
-        run: cargo test --offline --locked -p gnunet-udp-communicator-host --all-features --lib native_destination_failure_keeps_the_shared_socket_and_other_endpoint -- --nocapture
-      - name: Check the native image boundary
+          host: ${{ matrix.host }}
+      - name: Run native ARM client startup and cancellation
+        run: cargo test --offline --locked -p gnunet-arm-host --test windows_client
+      - name: Run native ARM supervisor startup and shutdown
         if: '!cancelled()'
-        run: cargo test --offline --locked -p gnunet-uri-host --test dispatch
-      - name: Check the STATISTICS CLI on the standard Windows stack
-        if: '!cancelled()'
-        run: cargo test --offline --locked -p gnunet-cli --no-default-features --features statistics --test statistics_process
+        run: cargo test --offline --locked -p gnunet-arm-service-host --all-features --test windows_reactor

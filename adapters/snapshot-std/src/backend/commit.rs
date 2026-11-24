@@ -90,7 +90,7 @@ impl Store {
                 .image
                 .as_mut()
                 .ok_or_else(|| failure("published-owner", Error::OutcomeUnknown, None))?;
-            image::verify(&mut published.file, &header, &body)?;
+            image::verify(&self.dir, target, &mut published.file, &header, &body)?;
             self.fence()?;
             Ok(directory_sync)
         })();

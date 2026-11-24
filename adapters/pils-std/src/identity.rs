@@ -3,9 +3,7 @@
 mod namespace;
 use gnunet_native::{
     DirectorySync,
-    filesystem::{
-        EntryInfo, FileInfo, PrivateFileSnapshot, file_info, private_single_file_identity,
-    },
+    filesystem::{FileInfo, PrivateFileSnapshot, private_data_file_info},
 };
 use gnunet_pils::MasterKey;
 use namespace::Namespace;
@@ -19,21 +17,12 @@ use zeroize::Zeroizing;
 mod tests;
 
 fn exact(file: &File) -> io::Result<FileInfo> {
-    let observed = file_info(file)?;
-    let info = match observed {
-        EntryInfo::File(info) if info.bytes == 32 => info,
-        _ => {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("PILS requires an exact raw32 file: observed={observed:?}"),
-            ));
-        }
-    };
-    let private = private_single_file_identity(file)?;
-    if private != info.identity {
-        return Err(io::Error::other(format!(
-            "PILS private key observation changed: metadata={info:?}, private_identity={private:?}"
-        )));
+    let info = private_data_file_info(file)?;
+    if info.bytes != 32 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("PILS requires an exact raw32 file: observed={info:?}"),
+        ));
     }
     Ok(info)
 }
@@ -58,15 +47,8 @@ fn read_key(namespace: &Namespace, mut file: File) -> io::Result<RawKey> {
             ),
         ));
     }
-    let after = exact(&file)?;
-    if after != before {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("PILS key changed during read: before={before:?}, after={after:?}"),
-        ));
-    }
-    let snapshot = PrivateFileSnapshot::new(after, bytes.as_ref());
-    namespace.verify_key_snapshot(&file, &snapshot)?;
+    let snapshot =
+        namespace.confirm_key_read(&file, PrivateFileSnapshot::new(before, bytes.as_ref()))?;
     Ok(RawKey {
         file,
         bytes,

@@ -120,6 +120,14 @@ impl Namespace {
         self.verify()?;
         snapshot.verify(&self.directory, &self.key, file)
     }
+    pub(super) fn confirm_key_read(
+        &self,
+        file: &File,
+        snapshot: PrivateFileSnapshot,
+    ) -> io::Result<PrivateFileSnapshot> {
+        self.verify()?;
+        snapshot.confirm_read(&self.directory, &self.key, file)
+    }
     pub(super) fn open_key(&self) -> io::Result<File> {
         self.directory.open_file(&self.key)
     }

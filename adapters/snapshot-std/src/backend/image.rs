@@ -1,9 +1,10 @@
 //! Bounded versioned envelope codec; no platform or service interpretation.
 use super::{Failure, HEADER, Limits, Namespace, failure, os};
 use gnunet_crypto::hash512_parts;
-use gnunet_native::filesystem::private_data_file_info;
+use gnunet_native::filesystem::{Directory, PrivateFileSnapshot, private_data_file_info};
 use gnunet_types::Error;
 use std::{
+    ffi::OsStr,
     fs::File,
     io::{Read, Seek, SeekFrom, Write},
 };
@@ -77,7 +78,13 @@ pub(super) fn write(
 
 /// Compare the exact prepared image through the retained original reader.
 /// One bounded scratch buffer suffices even for the largest configured image.
-pub(super) fn verify(file: &mut File, header: &[u8; HEADER], body: &[u8]) -> Result<(), Failure> {
+pub(super) fn verify(
+    directory: &Directory,
+    name: &OsStr,
+    file: &mut File,
+    header: &[u8; HEADER],
+    body: &[u8],
+) -> Result<(), Failure> {
     let before = private_data_file_info(file).map_err(|e| os("readback-policy", e))?;
     if before.bytes != (HEADER + body.len()) as u64 {
         return Err(failure("readback-mismatch", Error::Storage, None));
@@ -107,6 +114,14 @@ pub(super) fn verify(file: &mut File, header: &[u8; HEADER], body: &[u8]) -> Res
     }
     let after = private_data_file_info(file).map_err(|e| os("readback-policy", e))?;
     if after != before {
+        if cfg!(target_os = "freebsd") {
+            // Reuse the native fence: a ctime-only advance requires a new
+            // stable content read from the original file at the selected name.
+            let digest = gnunet_crypto::hash256_parts(&[header, body]);
+            return PrivateFileSnapshot::with_sha256(before, digest)
+                .verify(directory, name, file)
+                .map_err(|e| os("readback-drift", e));
+        }
         return Err(os(
             "readback-drift",
             std::io::Error::other(format!(

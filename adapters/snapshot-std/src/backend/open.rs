@@ -94,7 +94,13 @@ impl Store {
                     .sync()
                     .map_err(|error| os("recovery-directory-sync", error))?;
                 directory_sync = directory_sync.combine(image_sync);
-                image::verify(&mut held.file, &decoded.header, &decoded.body)?;
+                image::verify(
+                    &store.dir,
+                    image_name,
+                    &mut held.file,
+                    &decoded.header,
+                    &decoded.body,
+                )?;
                 store.generation = decoded.generation;
                 store.image = Some(held);
                 decoded.body
